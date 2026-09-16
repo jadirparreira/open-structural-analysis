@@ -1,0 +1,971 @@
+{
+  "schema_version": 1,
+  "families": [
+    {
+      "name": "W Laminado",
+      "source": "Catálogo Gerdau",
+      "profiles": [
+        {
+          "name": "W 150 x 13.0",
+          "mass_kg_m": 13.0,
+          "d_mm": 148,
+          "bf_mm": 100,
+          "tw_mm": 4.3,
+          "tf_mm": 4.9,
+          "area_cm2": 16.6
+        },
+        {
+          "name": "W 150 x 18.0",
+          "mass_kg_m": 18.0,
+          "d_mm": 153,
+          "bf_mm": 102,
+          "tw_mm": 5.8,
+          "tf_mm": 7.1,
+          "area_cm2": 23.4
+        },
+        {
+          "name": "W 150 x 22.5",
+          "mass_kg_m": 22.5,
+          "d_mm": 152,
+          "bf_mm": 152,
+          "tw_mm": 5.8,
+          "tf_mm": 6.6,
+          "area_cm2": 29.0
+        },
+        {
+          "name": "W 150 x 24.0",
+          "mass_kg_m": 24.0,
+          "d_mm": 160,
+          "bf_mm": 102,
+          "tw_mm": 6.6,
+          "tf_mm": 10.3,
+          "area_cm2": 31.5
+        },
+        {
+          "name": "W 150 x 29.8",
+          "mass_kg_m": 29.8,
+          "d_mm": 157,
+          "bf_mm": 153,
+          "tw_mm": 6.6,
+          "tf_mm": 9.3,
+          "area_cm2": 38.5
+        },
+        {
+          "name": "W 150 x 37.1",
+          "mass_kg_m": 37.1,
+          "d_mm": 162,
+          "bf_mm": 154,
+          "tw_mm": 8.1,
+          "tf_mm": 11.6,
+          "area_cm2": 47.8
+        },
+        {
+          "name": "W 200 x 15.0",
+          "mass_kg_m": 15.0,
+          "d_mm": 200,
+          "bf_mm": 100,
+          "tw_mm": 4.3,
+          "tf_mm": 5.2,
+          "area_cm2": 19.4
+        },
+        {
+          "name": "W 200 x 19.3",
+          "mass_kg_m": 19.3,
+          "d_mm": 203,
+          "bf_mm": 102,
+          "tw_mm": 5.8,
+          "tf_mm": 6.5,
+          "area_cm2": 25.1
+        },
+        {
+          "name": "W 200 x 22.5",
+          "mass_kg_m": 22.5,
+          "d_mm": 206,
+          "bf_mm": 102,
+          "tw_mm": 6.2,
+          "tf_mm": 8.0,
+          "area_cm2": 29.0
+        },
+        {
+          "name": "W 200 x 26.6",
+          "mass_kg_m": 26.6,
+          "d_mm": 207,
+          "bf_mm": 133,
+          "tw_mm": 5.8,
+          "tf_mm": 8.4,
+          "area_cm2": 34.2
+        },
+        {
+          "name": "W 200 x 31.3",
+          "mass_kg_m": 31.3,
+          "d_mm": 210,
+          "bf_mm": 134,
+          "tw_mm": 6.4,
+          "tf_mm": 10.2,
+          "area_cm2": 40.3
+        },
+        {
+          "name": "W 200 x 35.9",
+          "mass_kg_m": 35.9,
+          "d_mm": 201,
+          "bf_mm": 165,
+          "tw_mm": 6.2,
+          "tf_mm": 10.2,
+          "area_cm2": 45.7
+        },
+        {
+          "name": "W 200 x 41.7",
+          "mass_kg_m": 41.7,
+          "d_mm": 205,
+          "bf_mm": 166,
+          "tw_mm": 7.2,
+          "tf_mm": 11.8,
+          "area_cm2": 53.5
+        },
+        {
+          "name": "W 200 x 46.1",
+          "mass_kg_m": 46.1,
+          "d_mm": 203,
+          "bf_mm": 203,
+          "tw_mm": 7.2,
+          "tf_mm": 11.0,
+          "area_cm2": 58.6
+        },
+        {
+          "name": "W 200 x 52.0",
+          "mass_kg_m": 52.0,
+          "d_mm": 206,
+          "bf_mm": 204,
+          "tw_mm": 7.9,
+          "tf_mm": 12.6,
+          "area_cm2": 66.9
+        },
+        {
+          "name": "W 200 x 59.0",
+          "mass_kg_m": 59.0,
+          "d_mm": 210,
+          "bf_mm": 205,
+          "tw_mm": 9.1,
+          "tf_mm": 14.2,
+          "area_cm2": 76.0
+        },
+        {
+          "name": "W 200 x 71.0",
+          "mass_kg_m": 71.0,
+          "d_mm": 216,
+          "bf_mm": 206,
+          "tw_mm": 10.2,
+          "tf_mm": 17.4,
+          "area_cm2": 91.0
+        },
+        {
+          "name": "W 200 x 86.0",
+          "mass_kg_m": 86.0,
+          "d_mm": 222,
+          "bf_mm": 209,
+          "tw_mm": 13.0,
+          "tf_mm": 20.6,
+          "area_cm2": 110.9
+        },
+        {
+          "name": "W 200 x 100.0",
+          "mass_kg_m": 100.0,
+          "d_mm": 229,
+          "bf_mm": 210,
+          "tw_mm": 14.5,
+          "tf_mm": 23.7,
+          "area_cm2": 127.1
+        },
+        {
+          "name": "W 250 x 17.9",
+          "mass_kg_m": 17.9,
+          "d_mm": 251,
+          "bf_mm": 101,
+          "tw_mm": 4.8,
+          "tf_mm": 5.3,
+          "area_cm2": 23.1
+        },
+        {
+          "name": "W 250 x 22.3",
+          "mass_kg_m": 22.3,
+          "d_mm": 254,
+          "bf_mm": 102,
+          "tw_mm": 5.8,
+          "tf_mm": 6.9,
+          "area_cm2": 28.9
+        },
+        {
+          "name": "W 250 x 25.3",
+          "mass_kg_m": 25.3,
+          "d_mm": 257,
+          "bf_mm": 102,
+          "tw_mm": 6.1,
+          "tf_mm": 8.4,
+          "area_cm2": 32.6
+        },
+        {
+          "name": "W 250 x 28.4",
+          "mass_kg_m": 28.4,
+          "d_mm": 260,
+          "bf_mm": 102,
+          "tw_mm": 6.4,
+          "tf_mm": 10.0,
+          "area_cm2": 36.6
+        },
+        {
+          "name": "W 250 x 32.7",
+          "mass_kg_m": 32.7,
+          "d_mm": 258,
+          "bf_mm": 146,
+          "tw_mm": 6.1,
+          "tf_mm": 9.1,
+          "area_cm2": 42.1
+        },
+        {
+          "name": "W 250 x 38.5",
+          "mass_kg_m": 38.5,
+          "d_mm": 262,
+          "bf_mm": 147,
+          "tw_mm": 6.6,
+          "tf_mm": 11.2,
+          "area_cm2": 49.6
+        },
+        {
+          "name": "W 250 x 44.8",
+          "mass_kg_m": 44.8,
+          "d_mm": 266,
+          "bf_mm": 148,
+          "tw_mm": 7.6,
+          "tf_mm": 13.0,
+          "area_cm2": 57.6
+        },
+        {
+          "name": "W 250 x 73.0",
+          "mass_kg_m": 73.0,
+          "d_mm": 253,
+          "bf_mm": 254,
+          "tw_mm": 8.6,
+          "tf_mm": 14.2,
+          "area_cm2": 92.7
+        },
+        {
+          "name": "W 250 x 80.0",
+          "mass_kg_m": 80.0,
+          "d_mm": 256,
+          "bf_mm": 255,
+          "tw_mm": 9.4,
+          "tf_mm": 15.6,
+          "area_cm2": 101.9
+        },
+        {
+          "name": "W 250 x 89.0",
+          "mass_kg_m": 89.0,
+          "d_mm": 260,
+          "bf_mm": 256,
+          "tw_mm": 10.7,
+          "tf_mm": 17.3,
+          "area_cm2": 113.9
+        },
+        {
+          "name": "W 250 x 101.0",
+          "mass_kg_m": 101.0,
+          "d_mm": 264,
+          "bf_mm": 257,
+          "tw_mm": 11.9,
+          "tf_mm": 19.6,
+          "area_cm2": 128.7
+        },
+        {
+          "name": "W 250 x 115.0",
+          "mass_kg_m": 115.0,
+          "d_mm": 269,
+          "bf_mm": 259,
+          "tw_mm": 13.5,
+          "tf_mm": 22.1,
+          "area_cm2": 146.1
+        },
+        {
+          "name": "W 250 x 131.0",
+          "mass_kg_m": 131.0,
+          "d_mm": 275,
+          "bf_mm": 261,
+          "tw_mm": 15.4,
+          "tf_mm": 25.1,
+          "area_cm2": 167.8
+        },
+        {
+          "name": "W 250 x 149.0",
+          "mass_kg_m": 149.0,
+          "d_mm": 282,
+          "bf_mm": 263,
+          "tw_mm": 17.3,
+          "tf_mm": 28.4,
+          "area_cm2": 190.5
+        },
+        {
+          "name": "W 250 x 167.0",
+          "mass_kg_m": 167.0,
+          "d_mm": 289,
+          "bf_mm": 265,
+          "tw_mm": 19.2,
+          "tf_mm": 31.8,
+          "area_cm2": 214.0
+        },
+        {
+          "name": "W 310 x 21.0",
+          "mass_kg_m": 21.0,
+          "d_mm": 303,
+          "bf_mm": 101,
+          "tw_mm": 5.1,
+          "tf_mm": 5.7,
+          "area_cm2": 27.2
+        },
+        {
+          "name": "W 310 x 23.8",
+          "mass_kg_m": 23.8,
+          "d_mm": 305,
+          "bf_mm": 101,
+          "tw_mm": 5.6,
+          "tf_mm": 6.7,
+          "area_cm2": 30.7
+        },
+        {
+          "name": "W 310 x 28.3",
+          "mass_kg_m": 28.3,
+          "d_mm": 309,
+          "bf_mm": 102,
+          "tw_mm": 6.0,
+          "tf_mm": 8.9,
+          "area_cm2": 36.5
+        },
+        {
+          "name": "W 310 x 32.7",
+          "mass_kg_m": 32.7,
+          "d_mm": 313,
+          "bf_mm": 102,
+          "tw_mm": 6.6,
+          "tf_mm": 10.8,
+          "area_cm2": 42.1
+        },
+        {
+          "name": "W 310 x 38.7",
+          "mass_kg_m": 38.7,
+          "d_mm": 310,
+          "bf_mm": 165,
+          "tw_mm": 5.8,
+          "tf_mm": 9.7,
+          "area_cm2": 49.7
+        },
+        {
+          "name": "W 310 x 44.5",
+          "mass_kg_m": 44.5,
+          "d_mm": 313,
+          "bf_mm": 166,
+          "tw_mm": 6.6,
+          "tf_mm": 11.2,
+          "area_cm2": 57.2
+        },
+        {
+          "name": "W 310 x 52.0",
+          "mass_kg_m": 52.0,
+          "d_mm": 317,
+          "bf_mm": 167,
+          "tw_mm": 7.6,
+          "tf_mm": 13.2,
+          "area_cm2": 67.0
+        },
+        {
+          "name": "W 310 x 60.0",
+          "mass_kg_m": 60.0,
+          "d_mm": 303,
+          "bf_mm": 203,
+          "tw_mm": 7.5,
+          "tf_mm": 13.1,
+          "area_cm2": 76.1
+        },
+        {
+          "name": "W 310 x 67.0",
+          "mass_kg_m": 67.0,
+          "d_mm": 306,
+          "bf_mm": 204,
+          "tw_mm": 8.5,
+          "tf_mm": 14.6,
+          "area_cm2": 85.3
+        },
+        {
+          "name": "W 310 x 74.0",
+          "mass_kg_m": 74.0,
+          "d_mm": 310,
+          "bf_mm": 205,
+          "tw_mm": 9.4,
+          "tf_mm": 16.3,
+          "area_cm2": 95.1
+        },
+        {
+          "name": "W 310 x 97.0",
+          "mass_kg_m": 97.0,
+          "d_mm": 308,
+          "bf_mm": 305,
+          "tw_mm": 9.9,
+          "tf_mm": 15.4,
+          "area_cm2": 123.6
+        },
+        {
+          "name": "W 310 x 107.0",
+          "mass_kg_m": 107.0,
+          "d_mm": 311,
+          "bf_mm": 306,
+          "tw_mm": 10.9,
+          "tf_mm": 17.0,
+          "area_cm2": 136.4
+        },
+        {
+          "name": "W 310 x 117.0",
+          "mass_kg_m": 117.0,
+          "d_mm": 314,
+          "bf_mm": 307,
+          "tw_mm": 11.9,
+          "tf_mm": 18.7,
+          "area_cm2": 149.9
+        },
+        {
+          "name": "W 310 x 129.0",
+          "mass_kg_m": 129.0,
+          "d_mm": 318,
+          "bf_mm": 308,
+          "tw_mm": 13.1,
+          "tf_mm": 20.6,
+          "area_cm2": 165.4
+        },
+        {
+          "name": "W 310 x 143.0",
+          "mass_kg_m": 143.0,
+          "d_mm": 323,
+          "bf_mm": 309,
+          "tw_mm": 14.0,
+          "tf_mm": 22.9,
+          "area_cm2": 182.5
+        },
+        {
+          "name": "W 310 x 158.0",
+          "mass_kg_m": 158.0,
+          "d_mm": 327,
+          "bf_mm": 310,
+          "tw_mm": 15.5,
+          "tf_mm": 25.1,
+          "area_cm2": 200.7
+        },
+        {
+          "name": "W 310 x 179.0",
+          "mass_kg_m": 179.0,
+          "d_mm": 333,
+          "bf_mm": 313,
+          "tw_mm": 18.0,
+          "tf_mm": 28.1,
+          "area_cm2": 227.9
+        },
+        {
+          "name": "W 310 x 202.0",
+          "mass_kg_m": 202.0,
+          "d_mm": 341,
+          "bf_mm": 315,
+          "tw_mm": 20.1,
+          "tf_mm": 31.8,
+          "area_cm2": 258.3
+        },
+        {
+          "name": "W 360 x 32.9",
+          "mass_kg_m": 32.9,
+          "d_mm": 349,
+          "bf_mm": 127,
+          "tw_mm": 5.8,
+          "tf_mm": 8.5,
+          "area_cm2": 42.1
+        },
+        {
+          "name": "W 360 x 39.0",
+          "mass_kg_m": 39.0,
+          "d_mm": 353,
+          "bf_mm": 128,
+          "tw_mm": 6.5,
+          "tf_mm": 10.7,
+          "area_cm2": 50.2
+        },
+        {
+          "name": "W 360 x 44.6",
+          "mass_kg_m": 44.6,
+          "d_mm": 352,
+          "bf_mm": 171,
+          "tw_mm": 6.9,
+          "tf_mm": 9.8,
+          "area_cm2": 57.7
+        },
+        {
+          "name": "W 360 x 51.0",
+          "mass_kg_m": 51.0,
+          "d_mm": 355,
+          "bf_mm": 171,
+          "tw_mm": 7.2,
+          "tf_mm": 11.6,
+          "area_cm2": 64.8
+        },
+        {
+          "name": "W 360 x 58",
+          "mass_kg_m": 58.0,
+          "d_mm": 358,
+          "bf_mm": 172,
+          "tw_mm": 7.9,
+          "tf_mm": 13.1,
+          "area_cm2": 72.5
+        },
+        {
+          "name": "W 360 x 64.0",
+          "mass_kg_m": 64.0,
+          "d_mm": 347,
+          "bf_mm": 203,
+          "tw_mm": 7.7,
+          "tf_mm": 13.5,
+          "area_cm2": 81.7
+        },
+        {
+          "name": "W 360 x 72.0",
+          "mass_kg_m": 72.0,
+          "d_mm": 350,
+          "bf_mm": 204,
+          "tw_mm": 8.6,
+          "tf_mm": 15.1,
+          "area_cm2": 91.3
+        },
+        {
+          "name": "W 360 x 79.0",
+          "mass_kg_m": 79.0,
+          "d_mm": 354,
+          "bf_mm": 205,
+          "tw_mm": 9.4,
+          "tf_mm": 16.8,
+          "area_cm2": 101.2
+        },
+        {
+          "name": "W 360 x 91.0",
+          "mass_kg_m": 91.0,
+          "d_mm": 353,
+          "bf_mm": 254,
+          "tw_mm": 9.5,
+          "tf_mm": 16.4,
+          "area_cm2": 115.9
+        },
+        {
+          "name": "W 360 x 101.0",
+          "mass_kg_m": 101.0,
+          "d_mm": 357,
+          "bf_mm": 255,
+          "tw_mm": 10.5,
+          "tf_mm": 18.3,
+          "area_cm2": 129.5
+        },
+        {
+          "name": "W 360 x 110.0",
+          "mass_kg_m": 110.0,
+          "d_mm": 360,
+          "bf_mm": 256,
+          "tw_mm": 11.4,
+          "tf_mm": 19.9,
+          "area_cm2": 140.6
+        },
+        {
+          "name": "W 360 x 122.0",
+          "mass_kg_m": 122.0,
+          "d_mm": 363,
+          "bf_mm": 257,
+          "tw_mm": 13.0,
+          "tf_mm": 21.7,
+          "area_cm2": 155.3
+        },
+        {
+          "name": "W 410 x 38.8",
+          "mass_kg_m": 38.8,
+          "d_mm": 399,
+          "bf_mm": 140,
+          "tw_mm": 6.4,
+          "tf_mm": 8.8,
+          "area_cm2": 50.3
+        },
+        {
+          "name": "W 410 x 46.1",
+          "mass_kg_m": 46.1,
+          "d_mm": 403,
+          "bf_mm": 140,
+          "tw_mm": 7.0,
+          "tf_mm": 11.2,
+          "area_cm2": 59.2
+        },
+        {
+          "name": "W 410 x 53.0",
+          "mass_kg_m": 53.0,
+          "d_mm": 403,
+          "bf_mm": 177,
+          "tw_mm": 7.5,
+          "tf_mm": 10.9,
+          "area_cm2": 68.4
+        },
+        {
+          "name": "W 410 x 60.0",
+          "mass_kg_m": 60.0,
+          "d_mm": 407,
+          "bf_mm": 178,
+          "tw_mm": 7.7,
+          "tf_mm": 12.8,
+          "area_cm2": 76.2
+        },
+        {
+          "name": "W 410 x 67.0",
+          "mass_kg_m": 67.0,
+          "d_mm": 410,
+          "bf_mm": 179,
+          "tw_mm": 8.8,
+          "tf_mm": 14.4,
+          "area_cm2": 86.3
+        },
+        {
+          "name": "W 410 x 75.0",
+          "mass_kg_m": 75.0,
+          "d_mm": 413,
+          "bf_mm": 180,
+          "tw_mm": 9.7,
+          "tf_mm": 16.0,
+          "area_cm2": 95.8
+        },
+        {
+          "name": "W 410 x 85.0",
+          "mass_kg_m": 85.0,
+          "d_mm": 417,
+          "bf_mm": 181,
+          "tw_mm": 10.9,
+          "tf_mm": 18.2,
+          "area_cm2": 108.6
+        },
+        {
+          "name": "W 460 x 52.0",
+          "mass_kg_m": 52.0,
+          "d_mm": 450,
+          "bf_mm": 152,
+          "tw_mm": 7.6,
+          "tf_mm": 10.8,
+          "area_cm2": 66.6
+        },
+        {
+          "name": "W 460 x 60.0",
+          "mass_kg_m": 60.0,
+          "d_mm": 455,
+          "bf_mm": 153,
+          "tw_mm": 8.0,
+          "tf_mm": 13.3,
+          "area_cm2": 76.2
+        },
+        {
+          "name": "W 460 x 68.0",
+          "mass_kg_m": 68.0,
+          "d_mm": 459,
+          "bf_mm": 154,
+          "tw_mm": 9.1,
+          "tf_mm": 15.4,
+          "area_cm2": 87.6
+        },
+        {
+          "name": "W 460 x 74.0",
+          "mass_kg_m": 74.0,
+          "d_mm": 457,
+          "bf_mm": 190,
+          "tw_mm": 9.0,
+          "tf_mm": 14.5,
+          "area_cm2": 94.9
+        },
+        {
+          "name": "W 460 x 82.0",
+          "mass_kg_m": 82.0,
+          "d_mm": 460,
+          "bf_mm": 191,
+          "tw_mm": 9.9,
+          "tf_mm": 16.0,
+          "area_cm2": 104.7
+        },
+        {
+          "name": "W 460 x 89.0",
+          "mass_kg_m": 89.0,
+          "d_mm": 463,
+          "bf_mm": 192,
+          "tw_mm": 10.5,
+          "tf_mm": 17.7,
+          "area_cm2": 114.1
+        },
+        {
+          "name": "W 460 x 97.0",
+          "mass_kg_m": 97.0,
+          "d_mm": 466,
+          "bf_mm": 193,
+          "tw_mm": 11.4,
+          "tf_mm": 19.0,
+          "area_cm2": 123.4
+        },
+        {
+          "name": "W 460 x 106.0",
+          "mass_kg_m": 106.0,
+          "d_mm": 469,
+          "bf_mm": 194,
+          "tw_mm": 12.6,
+          "tf_mm": 20.6,
+          "area_cm2": 135.1
+        },
+        {
+          "name": "W 530 x 66.0",
+          "mass_kg_m": 66.0,
+          "d_mm": 525,
+          "bf_mm": 165,
+          "tw_mm": 8.9,
+          "tf_mm": 11.4,
+          "area_cm2": 83.6
+        },
+        {
+          "name": "W 530 x 72.0",
+          "mass_kg_m": 72.0,
+          "d_mm": 524,
+          "bf_mm": 207,
+          "tw_mm": 9.0,
+          "tf_mm": 10.9,
+          "area_cm2": 91.6
+        },
+        {
+          "name": "W 530 x 74.0",
+          "mass_kg_m": 74.0,
+          "d_mm": 529,
+          "bf_mm": 166,
+          "tw_mm": 9.7,
+          "tf_mm": 13.6,
+          "area_cm2": 95.1
+        },
+        {
+          "name": "W 530 x 82.0",
+          "mass_kg_m": 82.0,
+          "d_mm": 528,
+          "bf_mm": 209,
+          "tw_mm": 9.5,
+          "tf_mm": 13.3,
+          "area_cm2": 104.5
+        },
+        {
+          "name": "W 530 x 85.0",
+          "mass_kg_m": 85.0,
+          "d_mm": 535,
+          "bf_mm": 166,
+          "tw_mm": 10.3,
+          "tf_mm": 16.5,
+          "area_cm2": 107.7
+        },
+        {
+          "name": "W 530 x 92.0",
+          "mass_kg_m": 92.0,
+          "d_mm": 533,
+          "bf_mm": 209,
+          "tw_mm": 10.2,
+          "tf_mm": 15.6,
+          "area_cm2": 117.6
+        },
+        {
+          "name": "W 530 x 101.0",
+          "mass_kg_m": 101.0,
+          "d_mm": 537,
+          "bf_mm": 210,
+          "tw_mm": 10.9,
+          "tf_mm": 17.4,
+          "area_cm2": 130.0
+        },
+        {
+          "name": "W 530 x 109.0",
+          "mass_kg_m": 109.0,
+          "d_mm": 539,
+          "bf_mm": 211,
+          "tw_mm": 11.6,
+          "tf_mm": 18.8,
+          "area_cm2": 139.7
+        },
+        {
+          "name": "W 530 x 123.0",
+          "mass_kg_m": 123.0,
+          "d_mm": 544,
+          "bf_mm": 212,
+          "tw_mm": 13.1,
+          "tf_mm": 21.2,
+          "area_cm2": 157.8
+        },
+        {
+          "name": "W 530 x 138.0",
+          "mass_kg_m": 138.0,
+          "d_mm": 549,
+          "bf_mm": 214,
+          "tw_mm": 14.7,
+          "tf_mm": 23.8,
+          "area_cm2": 177.8
+        },
+        {
+          "name": "W 610 x 82.0",
+          "mass_kg_m": 82.0,
+          "d_mm": 599,
+          "bf_mm": 178,
+          "tw_mm": 10.0,
+          "tf_mm": 12.8,
+          "area_cm2": 105.1
+        },
+        {
+          "name": "W 610 x 92.0",
+          "mass_kg_m": 92.0,
+          "d_mm": 603,
+          "bf_mm": 179,
+          "tw_mm": 10.9,
+          "tf_mm": 15.0,
+          "area_cm2": 118.4
+        },
+        {
+          "name": "W 610 x 101.0",
+          "mass_kg_m": 101.0,
+          "d_mm": 603,
+          "bf_mm": 228,
+          "tw_mm": 10.5,
+          "tf_mm": 14.9,
+          "area_cm2": 130.3
+        },
+        {
+          "name": "W 610 x 113.0",
+          "mass_kg_m": 113.0,
+          "d_mm": 608,
+          "bf_mm": 228,
+          "tw_mm": 11.2,
+          "tf_mm": 17.3,
+          "area_cm2": 145.3
+        },
+        {
+          "name": "W 610 x 125.0",
+          "mass_kg_m": 125.0,
+          "d_mm": 612,
+          "bf_mm": 229,
+          "tw_mm": 11.9,
+          "tf_mm": 19.6,
+          "area_cm2": 160.1
+        },
+        {
+          "name": "W 610 x 140.0",
+          "mass_kg_m": 140.0,
+          "d_mm": 617,
+          "bf_mm": 230,
+          "tw_mm": 13.1,
+          "tf_mm": 22.2,
+          "area_cm2": 179.3
+        },
+        {
+          "name": "W 610 x 153.0",
+          "mass_kg_m": 154.2,
+          "d_mm": 623,
+          "bf_mm": 229,
+          "tw_mm": 14.0,
+          "tf_mm": 24.9,
+          "area_cm2": 196.5
+        },
+        {
+          "name": "W 610 x 155.0",
+          "mass_kg_m": 155.0,
+          "d_mm": 611,
+          "bf_mm": 324,
+          "tw_mm": 12.7,
+          "tf_mm": 19.0,
+          "area_cm2": 198.1
+        },
+        {
+          "name": "W 610 x 174.0",
+          "mass_kg_m": 174.0,
+          "d_mm": 616,
+          "bf_mm": 325,
+          "tw_mm": 14.0,
+          "tf_mm": 21.6,
+          "area_cm2": 222.8
+        },
+        {
+          "name": "W 610 x 195.0",
+          "mass_kg_m": 195.0,
+          "d_mm": 622,
+          "bf_mm": 327,
+          "tw_mm": 15.4,
+          "tf_mm": 24.4,
+          "area_cm2": 250.1
+        },
+        {
+          "name": "W 610 x 217.0",
+          "mass_kg_m": 217.0,
+          "d_mm": 628,
+          "bf_mm": 328,
+          "tw_mm": 16.5,
+          "tf_mm": 27.7,
+          "area_cm2": 278.4
+        }
+      ]
+    },
+    {
+      "name": "U Laminado",
+      "profiles": []
+    },
+    {
+      "name": "L Laminado",
+      "profiles": []
+    },
+    {
+      "name": "T Laminado",
+      "profiles": []
+    },
+    {
+      "name": "U Simples Formado",
+      "profiles": []
+    },
+    {
+      "name": "U Enrijecido Formado",
+      "profiles": []
+    },
+    {
+      "name": "Z Simples Formado",
+      "profiles": []
+    },
+    {
+      "name": "Z Enrijecido Formado",
+      "profiles": []
+    },
+    {
+      "name": "L Formado",
+      "profiles": []
+    },
+    {
+      "name": "Cartola Formado",
+      "profiles": []
+    },
+    {
+      "name": "Tubular Circular",
+      "profiles": []
+    },
+    {
+      "name": "Tubular Quadrado",
+      "profiles": []
+    },
+    {
+      "name": "Tubular Retangular",
+      "profiles": []
+    },
+    {
+      "name": "Barra Redonda",
+      "profiles": []
+    },
+    {
+      "name": "Barra Quadrada",
+      "profiles": []
+    },
+    {
+      "name": "Barra Retangular",
+      "profiles": []
+    }
+  ]
+}

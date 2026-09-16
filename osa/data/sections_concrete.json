@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "material_type": "Concreto",
+  "families": [
+    {
+      "name": "Retangular",
+      "profiles": []
+    },
+    {
+      "name": "Circular",
+      "profiles": []
+    },
+    {
+      "name": "Tipo +",
+      "profiles": []
+    },
+    {
+      "name": "Tipo L",
+      "profiles": []
+    },
+    {
+      "name": "Tipo T",
+      "profiles": []
+    },
+    {
+      "name": "Tipo U",
+      "profiles": []
+    },
+    {
+      "name": "Tipo I",
+      "profiles": []
+    },
+    {
+      "name": "Retangular Vazado",
+      "profiles": []
+    },
+    {
+      "name": "Circular Vazado",
+      "profiles": []
+    },
+    {
+      "name": "Tipo L Aberto",
+      "profiles": []
+    }
+  ]
+}

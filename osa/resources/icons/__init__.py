@@ -1,0 +1,1 @@
+"""Ícones SVG da interface."""

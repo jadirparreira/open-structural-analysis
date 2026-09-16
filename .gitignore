@@ -1,0 +1,28 @@
+# Ambientes locais
+.venv/
+.env
+.env.*
+
+# Python e ferramentas
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Empacotamento e artefatos gerados
+build/
+dist/
+*.egg-info/
+
+# Arquivos de projeto locais e temporários
+*.osa.json
+*.tmp
+*.log
+
+# Configurações locais de editores e sistemas
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "material_type": "Madeira",
+  "families": [
+    {
+      "name": "Circular",
+      "profiles": []
+    },
+    {
+      "name": "Quadrada",
+      "profiles": []
+    },
+    {
+      "name": "Retangular",
+      "profiles": []
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-structural-analysis"
+version = "0.1.0"
+description = "Open-source structural bar-modeling application"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "GPL-3.0-or-later"}
+authors = [{name = "Open Structural Analysis contributors"}]
+dependencies = [
+    "PySide6>=6.6",
+    "pyvista>=0.43",
+    "pyvistaqt>=0.11",
+    "numpy>=1.26",
+    "PyNiteFEA>=1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+open-structural-analysis = "osa.main:main"
+
+[tool.setuptools.packages.find]
+include = ["osa*"]
+
+[tool.setuptools.package-data]
+"osa.data" = ["*.json"]
+"osa.resources" = ["icons/*.svg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+"osa/ui/common.py" = ["F401"]
+"osa/ui/*.py" = ["B023", "F403", "F405"]
