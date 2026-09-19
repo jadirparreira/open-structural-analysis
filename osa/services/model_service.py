@@ -45,6 +45,15 @@ class ModelService:
     def assign_profile(self, name: str, profile: str, geometry: dict[str, float]):
         return self.model.update_member_profile(name, profile, geometry)
 
+    def update_member_rotation(self, name: str, rotation: int):
+        return self.model.update_member_rotation(name, rotation)
+
+    def update_member_releases(self, name: str, releases: tuple[bool, ...]):
+        return self.model.update_member_releases(name, releases)
+
+    def update_member_color(self, name: str, color: str):
+        return self.model.update_member_color(name, color)
+
     def remove_node(self, name: str) -> None:
         self.model.remove_node(name)
 

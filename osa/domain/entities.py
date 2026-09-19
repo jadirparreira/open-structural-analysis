@@ -51,6 +51,9 @@ class Member:
     section: str = ""
     profile: str = ""
     section_geometry: tuple[tuple[str, float], ...] = ()
+    rotation: int = 0
+    releases: tuple[bool, ...] = (False,) * 12
+    color: str = "#6e7781"
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

@@ -148,6 +148,50 @@ class StructuralModel:
         self._touch()
         return self.bars[name]
 
+    @staticmethod
+    def _member_rotation(value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 179:
+            raise ValueError("A rotação do membro deve ser um número inteiro entre 0 e 179 graus.")
+        return value
+
+    def update_member_rotation(self, name: str, rotation: int) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        rotation = self._member_rotation(rotation)
+        self.bars[name] = replace(self.bars[name], rotation=rotation)
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _member_releases(values: tuple[bool, ...]) -> tuple[bool, ...]:
+        if len(values) != 12:
+            raise ValueError("As vinculações do membro devem possuir doze graus de liberdade.")
+        return tuple(bool(value) for value in values)
+
+    def update_member_releases(self, name: str, releases: tuple[bool, ...]) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        self.bars[name] = replace(self.bars[name], releases=self._member_releases(releases))
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _member_color(value: str) -> str:
+        if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+            raise ValueError("A cor do membro deve estar no formato hexadecimal #RRGGBB.")
+        try:
+            int(value[1:], 16)
+        except ValueError as error:
+            raise ValueError("A cor do membro deve estar no formato hexadecimal #RRGGBB.") from error
+        return value.lower()
+
+    def update_member_color(self, name: str, color: str) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        self.bars[name] = replace(self.bars[name], color=self._member_color(color))
+        self._touch()
+        return self.bars[name]
+
     def clear(self) -> None:
         self.nodes.clear(); self.bars.clear(); self.actions.clear()
         self.load_cases.clear(); self.load_combinations.clear(); self.analysis_results.clear()

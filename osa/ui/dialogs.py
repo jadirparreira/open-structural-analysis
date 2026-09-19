@@ -112,12 +112,12 @@ class SettingsDialog(QDialog):
                 section_row.addWidget(section_material, 1)
                 page_layout.addLayout(section_row)
                 section_catalog = {
-                    "Aço": ["W Laminado", "U Laminado", "L Laminado", "T Laminado", "U Simples Formado", "U Enrijecido Formado", "Z Simples Formado", "Z Enrijecido Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Redonda", "Barra Quadrada", "Barra Retangular"],
-                    "Concreto": ["Retangular", "Circular", "Tipo +", "Tipo L", "Tipo T", "Tipo U", "Tipo I", "Retangular Vazado", "Circular Vazado", "Tipo L Aberto"],
+                    "Aço": ["W Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Circular", "Barra Quadrada", "Barra Retangular"],
+                    "Concreto": ["Retangular", "Circular", "Tipo L", "Tipo T", "Tipo I", "Tipo U", "Tipo +", "Retangular Vazado", "Circular Vazado"],
                     "Madeira": ["Circular", "Quadrada", "Retangular"],
                 }
                 all_sections = section_catalog["Aço"]
-                included = self.window.model.sections.get("Aço") or ["W Laminado", "U Simples Formado", "Tubular Quadrado"]
+                included = self.window.model.sections.get("Aço") or ["U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado"]
                 available = [section for section in all_sections if section not in included]
                 lists = QHBoxLayout(); available_list = QListWidget(); included_list = QListWidget()
                 lists.setContentsMargins(0, 0, 0, 0)
@@ -129,7 +129,9 @@ class SettingsDialog(QDialog):
                 available_list.addItems(available); included_list.addItems(included)
                 for section_list in (available_list, included_list):
                     for row in range(section_list.count()):
-                        section_list.item(row).setSizeHint(QSize(0, 34))
+                        item = section_list.item(row)
+                        item.setData(Qt.ItemDataRole.UserRole, all_sections.index(item.text()))
+                        item.setSizeHint(QSize(0, 34))
                 transfer = QVBoxLayout(); transfer.addStretch()
                 add_section = QToolButton(); add_section.setText("←")
                 remove_section = QToolButton(); remove_section.setText("→")

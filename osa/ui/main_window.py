@@ -4,7 +4,14 @@ from .common import *
 from .dialogs import SettingsDialog
 from .palettes import FloatingPalette, TopIconPalette
 from .property_panel import PropertyPanel
-from .section_panel import SectionPanel
+from .section_panel import (
+    ILaminadoSectionPanel,
+    LLaminadoSectionPanel,
+    ParametricSectionPanel,
+    TLaminadoSectionPanel,
+    ULaminadoSectionPanel,
+    WLaminadoSectionPanel,
+)
 from .window_frame import TitleBar, WindowFrame
 
 
@@ -15,6 +22,7 @@ class MainWindow(QMainWindow):
         self.model_service = ModelService(self.model)
         self.material_service = MaterialService(self.model)
         self.section_service = SectionService(self.model)
+        self.section_property_service = SectionPropertyService()
         self.project_service = ProjectService(self.model)
         self.command_session = CommandSession(self.model_service)
         self.section_geometry: dict[str, dict[str, float]] = {}
@@ -47,7 +55,18 @@ class MainWindow(QMainWindow):
         self.top_icon_palette = TopIconPalette(self)
         self.top_icon_palette.reposition()
         self.properties = PropertyPanel(self)
-        self.section_panel = SectionPanel(self)
+        self.section_panels = {
+            "W Laminado": WLaminadoSectionPanel(self),
+            "I Laminado": ILaminadoSectionPanel(self),
+            "U Laminado": ULaminadoSectionPanel(self),
+            "L Laminado": LLaminadoSectionPanel(self),
+            "T Laminado": TLaminadoSectionPanel(self),
+        }
+        self.section_panels.update({
+            family: ParametricSectionPanel(self, family)
+            for family in SECTION_PARAMETRIC_SPECS
+        })
+        self.section_panel = self.section_panels["W Laminado"]
         self.history = CommandHistory(self)
         self.command_bar = CommandBar(self)
         self.command_bar.reposition()
@@ -73,7 +92,7 @@ class MainWindow(QMainWindow):
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Vista isométrica", "0", self.scene.plotter.view_isometric),
-            ("Enquadrar estrutura", "F", self.scene.plotter.reset_camera),
+            ("Enquadrar estrutura", "F", self.scene.reset_camera),
         )
         for label, shortcut, callback in actions:
             action = QAction(label, self)
@@ -89,6 +108,8 @@ class MainWindow(QMainWindow):
             self.top_icon_palette.reposition()
         if hasattr(self, "properties"):
             self.properties.reposition()
+            if self.properties._color_palette.isVisible():
+                self.properties.reposition_color_palette()
         if hasattr(self, "command_bar"):
             self.command_bar.reposition()
         if hasattr(self, "history"):
@@ -100,13 +121,39 @@ class MainWindow(QMainWindow):
         if section in ("", "Indefinido"):
             if button is not None: button.setChecked(False)
             return
-        if self.section_panel.isVisible():
-            self.section_panel.hide()
+        active_panel = self.section_panel
+        if active_panel.isVisible() and getattr(active_panel, "_section_family", "") == section:
+            active_panel.hide()
             if button is not None: button.setChecked(False)
         else:
-            self.section_panel.configure_for(self.selected[1] if self.selected and self.selected[0] == "bar" else "", section)
-            self.section_panel.reposition(); self.section_panel.show(); self.section_panel.raise_()
-            if button is not None: button.setChecked(True)
+            self.show_section_panel(section, button)
+
+    def close_section_panel(self, button=None) -> None:
+        """Hide the geometry editor and restore its trigger button state."""
+        self.section_panel.hide()
+        if button is not None:
+            button.setChecked(False)
+
+    def show_section_panel(self, section: str, button=None) -> None:
+        """Show the geometry panel that corresponds to a section family."""
+        panel = self.section_panels.get(section)
+        if panel is None:
+            if button is not None:
+                button.setChecked(False)
+            return
+        self.properties.close_color_palette()
+        for candidate in self.section_panels.values():
+            candidate.hide()
+        self.section_panel = panel
+        panel.configure_for(
+            self.selected[1] if self.selected and self.selected[0] == "bar" else "",
+            section,
+        )
+        panel.reposition()
+        panel.show()
+        panel.raise_()
+        if button is not None:
+            button.setChecked(True)
 
 
     def start_node_command(self) -> None:
@@ -196,6 +243,21 @@ class MainWindow(QMainWindow):
 
     def refresh_scene(self) -> None:
         self.scene.render_model(self.model)
+
+    def refresh_member_axes(self, member_name: str) -> None:
+        self.scene.update_member_axes(member_name)
+
+    def refresh_member_color(self, member_name: str) -> None:
+        self.scene.update_member_color(member_name)
+
+    def refresh_member_releases(self, member_name: str) -> None:
+        self.scene.update_member_releases(member_name)
+
+    def refresh_node_visual(self, node_name: str) -> None:
+        self.scene.update_node_visual(node_name)
+
+    def refresh_node(self, node_name: str) -> None:
+        self.scene.update_node(node_name)
 
     def show_error(self, message: str) -> None:
         QMessageBox.warning(self, "Dados inválidos", message)

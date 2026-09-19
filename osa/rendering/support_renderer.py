@@ -2,7 +2,7 @@ import pyvista as pv
 
 
 class SupportRenderer:
-    def render(self, plotter, node, radius: float) -> None:
+    def render(self, plotter, node, radius: float) -> object | None:
         if node.supports == (True, True, True, True, True, True):
             side = radius * 2.4
             mesh = pv.Cube(center=(node.x, node.y, node.z - side / 2),
@@ -17,6 +17,9 @@ class SupportRenderer:
                 (node.x, node.y, node.z),
             ])
         else:
-            return
-        plotter.add_mesh(mesh, color="#a8b0b9", edge_color="#6e7781", show_edges=True,
-                         line_width=1.5, pickable=False, name=f"support-{node.name}")
+            return None
+        return plotter.add_mesh(
+            mesh, color="#a8b0b9", edge_color="#6e7781", show_edges=True,
+            line_width=1.5, pickable=False, reset_camera=False,
+            name=f"support-{node.name}",
+        )

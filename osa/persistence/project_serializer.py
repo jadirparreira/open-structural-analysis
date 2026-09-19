@@ -56,6 +56,9 @@ class ProjectSerializer:
                 tuple(float(value) for value in item.get("material_values", (200.0, 76.9, 0.30, 7850.0))),
                 item.get("section", ""), item.get("profile", ""),
                 tuple((str(key), float(value)) for key, value in geometry),
+                candidate._member_rotation(item.get("rotation", 0)),
+                candidate._member_releases(tuple(bool(value) for value in item.get("releases", (False,) * 12))),
+                candidate._member_color(item.get("color", "#6e7781")),
             )
             candidate.bars[member.name] = member
 

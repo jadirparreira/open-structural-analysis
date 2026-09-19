@@ -11,10 +11,6 @@
       "profiles": []
     },
     {
-      "name": "Tipo +",
-      "profiles": []
-    },
-    {
       "name": "Tipo L",
       "profiles": []
     },
@@ -23,11 +19,15 @@
       "profiles": []
     },
     {
+      "name": "Tipo I",
+      "profiles": []
+    },
+    {
       "name": "Tipo U",
       "profiles": []
     },
     {
-      "name": "Tipo I",
+      "name": "Tipo +",
       "profiles": []
     },
     {
@@ -36,10 +36,6 @@
     },
     {
       "name": "Circular Vazado",
-      "profiles": []
-    },
-    {
-      "name": "Tipo L Aberto",
       "profiles": []
     }
   ]

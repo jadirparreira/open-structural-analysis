@@ -1,4 +1,5 @@
 from .common import *
+from .color_palette import HoneycombColorPalette
 from .window_frame import WindowFrame
 
 
@@ -21,13 +22,29 @@ class PropertyPanel(QFrame):
         self.identity_value = QLineEdit()
         self.identity_value.setReadOnly(True)
         self.identity_value.setObjectName("identityDisplay")
+        identity_row = QWidget()
+        identity_layout = QHBoxLayout(identity_row)
+        identity_layout.setContentsMargins(0, 0, 0, 0)
+        identity_layout.setSpacing(6)
+        identity_layout.addWidget(self.identity_value, 1)
+        self.member_color_button = QToolButton()
+        self.member_color_button.setFixedSize(34, 34)
+        self.member_color_button.setToolTip("Definir cor do membro")
+        self.member_color_button.setAccessibleName("Definir cor do membro")
+        self.member_color_button.clicked.connect(self._toggle_color_palette)
+        identity_layout.addWidget(self.member_color_button)
+        self._color_palette = HoneycombColorPalette(self.window, self._color_selected)
         self.layout.addWidget(self.title)
         self.layout.addWidget(self.name)
-        self.layout.addWidget(self.identity_value)
+        self.layout.addWidget(identity_row)
         self.coordinates_title = QLabel("Coordenadas")
         self.coordinates_title.setObjectName("propertySection")
         self.nodes_title = QLabel("Nós")
         self.nodes_title.setObjectName("propertySection")
+        self.rotation_title = QLabel("Rotação")
+        self.rotation_title.setObjectName("propertySection")
+        self.releases_title = QLabel("Vinculações")
+        self.releases_title.setObjectName("propertySection")
         self.supports_title = QLabel("Restrições")
         self.supports_title.setObjectName("propertySection")
         self.form = QFormLayout()
@@ -36,14 +53,17 @@ class PropertyPanel(QFrame):
         self.fields: list[QDoubleSpinBox | QComboBox] = []
         self._coordinates_widget: QWidget | None = None
         self._supports_widget: QWidget | None = None
+        self._rotation_box: QFrame | None = None
+        self._rotation_input: QLineEdit | None = None
+        self._releases_widget: QWidget | None = None
+        self._release_boxes: list[QCheckBox] = []
         self._material_widget: QWidget | None = None
         self._section_label: QLabel | None = None
         self._section_combo: QComboBox | None = None
         self._section_container: QWidget | None = None
         self._section_profile_display: QLineEdit | None = None
-        self._support_refresh_timer = QTimer(self)
-        self._support_refresh_timer.setSingleShot(True)
-        self._support_refresh_timer.timeout.connect(self.window.refresh_scene)
+        self._section_settings_button: QToolButton | None = None
+        self._identity_row = identity_row
         self.hide()
 
     def show_for(self, kind: str, name: str) -> None:
@@ -51,7 +71,11 @@ class PropertyPanel(QFrame):
         self._clear_form()
         self.coordinates_title.hide()
         self.nodes_title.hide()
+        self.rotation_title.hide()
+        self.releases_title.hide()
         self.supports_title.hide()
+        self._color_palette.hide()
+        self.member_color_button.setVisible(kind == "bar")
         self.title.setText("Nó" if kind == "node" else "Membro")
         self.name.setText("Identidade")
         self.identity_value.setText(name)
@@ -98,6 +122,7 @@ class PropertyPanel(QFrame):
             self.layout.insertWidget(6, supports)
         else:
             bar = self.window.model.bars[name]
+            self._set_member_color_button(bar.color)
             nodes = list(self.window.model.nodes)
             self.layout.insertWidget(3, self.nodes_title)
             self.nodes_title.show()
@@ -159,7 +184,8 @@ class PropertyPanel(QFrame):
             settings_button = QToolButton()
             settings_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "section-dimension.svg")))
             settings_button.setIconSize(QSize(18, 18)); settings_button.setFixedSize(34, 34)
-            settings_button.setToolTip("Configurar seções")
+            settings_button.setToolTip("Configurar seção")
+            settings_button.setAccessibleName("Configurar seção")
             settings_button.setCheckable(True)
             settings_button.clicked.connect(lambda _checked=False, combo=section_combo, button=settings_button:
                                             self.window.toggle_section_panel(combo.currentText(), button))
@@ -174,8 +200,74 @@ class PropertyPanel(QFrame):
                 self.window.section_profiles.get(name, "") or "Indefinido"
             )
             self.layout.addWidget(section_profile_display)
+            rotation_box = QFrame()
+            rotation_box.setObjectName("unitValueBox")
+            rotation_box.setStyleSheet(
+                "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } "
+                "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; padding: 2px 9px; } "
+                "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+            )
+            rotation_row = QHBoxLayout(rotation_box)
+            rotation_row.setContentsMargins(0, 0, 0, 0)
+            rotation_row.setSpacing(0)
+            rotation_input = QLineEdit()
+            rotation_input.setObjectName("unitValue")
+            rotation_input.setValidator(QIntValidator(0, 179, rotation_input))
+            rotation_input.setText(str(bar.rotation))
+            rotation_input.editingFinished.connect(self._rotation_changed)
+            rotation_row.addWidget(rotation_input, 1)
+            rotation_row.addWidget(QLabel("°"))
+            self._rotation_box = rotation_box
+            self._rotation_input = rotation_input
+            self.layout.addWidget(self.rotation_title)
+            self.rotation_title.show()
+            self.layout.addWidget(rotation_box)
+            releases_widget = QWidget()
+            releases_layout = QGridLayout(releases_widget)
+            releases_layout.setContentsMargins(0, 0, 0, 0)
+            releases_layout.setHorizontalSpacing(12)
+            releases_layout.setVerticalSpacing(self.layout.spacing())
+            release_labels = (
+                "Dxa", "Dxb", "Dya", "Dyb", "Dza", "Dzb",
+                "Rxa", "Rxb", "Rya", "Ryb", "Rza", "Rzb",
+            )
+            release_tooltips = {
+                "Dxa": "Deslocamento no eixo local x no nó inicial (A)",
+                "Dxb": "Deslocamento no eixo local x no nó final (B)",
+                "Dya": "Deslocamento no eixo local y no nó inicial (A)",
+                "Dyb": "Deslocamento no eixo local y no nó final (B)",
+                "Dza": "Deslocamento no eixo local z no nó inicial (A)",
+                "Dzb": "Deslocamento no eixo local z no nó final (B)",
+                "Rxa": "Rotação em torno do eixo local x no nó inicial (A)",
+                "Rxb": "Rotação em torno do eixo local x no nó final (B)",
+                "Rya": "Rotação em torno do eixo local y no nó inicial (A)",
+                "Ryb": "Rotação em torno do eixo local y no nó final (B)",
+                "Rza": "Rotação em torno do eixo local z no nó inicial (A)",
+                "Rzb": "Rotação em torno do eixo local z no nó final (B)",
+            }
+            self._release_boxes = []
+            for index, label in enumerate(release_labels):
+                checkbox = QCheckBox(label)
+                checkbox.setToolTip(release_tooltips[label])
+                checkbox.setStyleSheet(
+                    "QCheckBox { color: #57606a; spacing: 6px; }"
+                    "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+                    "border-radius: 5px; background: #ffffff; }"
+                    "QCheckBox::indicator:hover { border-color: #d0d7de; }"
+                    "QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover { "
+                    "background: #0969da; border-color: #0969da; }"
+                )
+                checkbox.setChecked(bar.releases[index])
+                checkbox.stateChanged.connect(self._releases_changed)
+                self._release_boxes.append(checkbox)
+                releases_layout.addWidget(checkbox, index // 2, index % 2)
+            self._releases_widget = releases_widget
+            self.layout.addWidget(self.releases_title)
+            self.releases_title.show()
+            self.layout.addWidget(releases_widget)
             self._section_label, self._section_combo = section_label, section_combo
             self._section_profile_display = section_profile_display
+            self._section_settings_button = settings_button
         # Recalculate after the previous form's deferred widgets are removed;
         # this is important when switching directly between selected elements.
         self.layout.activate()
@@ -202,11 +294,21 @@ class PropertyPanel(QFrame):
             self.layout.removeWidget(self._supports_widget)
             self._supports_widget.deleteLater()
             self._supports_widget = None
+        if self._rotation_box is not None:
+            self.layout.removeWidget(self._rotation_box)
+            self._rotation_box.deleteLater()
+            self._rotation_box = None
+            self._rotation_input = None
+        if self._releases_widget is not None:
+            self.layout.removeWidget(self._releases_widget)
+            self._releases_widget.deleteLater()
+            self._releases_widget = None
+            self._release_boxes.clear()
         if self._material_widget is not None:
             self.layout.removeWidget(self._material_widget)
             self._material_widget.deleteLater()
             self._material_widget = None
-        for widget_name in ("_section_label", "_section_combo", "_section_profile_display"):
+        for widget_name in ("_section_label", "_section_combo", "_section_profile_display", "_section_settings_button"):
             widget = getattr(self, widget_name)
             if widget is not None:
                 self.layout.removeWidget(widget); widget.deleteLater(); setattr(self, widget_name, None)
@@ -215,6 +317,8 @@ class PropertyPanel(QFrame):
             self._section_container.deleteLater(); self._section_container = None
         self.layout.removeWidget(self.coordinates_title)
         self.layout.removeWidget(self.nodes_title)
+        self.layout.removeWidget(self.rotation_title)
+        self.layout.removeWidget(self.releases_title)
         self.layout.removeWidget(self.supports_title)
         while self.form.count():
             item = self.form.takeAt(0)
@@ -226,7 +330,7 @@ class PropertyPanel(QFrame):
         values = [field.value() for field in self.fields if isinstance(field, QDoubleSpinBox)]
         if len(values) == 3:
             self.window.model_service.update_node(self._selected[1], *values)
-            self.window.refresh_scene()
+            self.window.refresh_node(self._selected[1])
 
     def _support_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "node" or self._supports_widget is None:
@@ -234,9 +338,7 @@ class PropertyPanel(QFrame):
         values = [box.isChecked() for box in self._supports_widget.findChildren(QCheckBox)]
         if len(values) == 6:
             self.window.model_service.update_supports(self._selected[1], tuple(values))
-            # Defer and coalesce scene rebuilds while the user clicks several
-            # restrictions in sequence, keeping the interface responsive.
-            self._support_refresh_timer.start(250)
+            self.window.refresh_node_visual(self._selected[1])
 
     def _bar_changed(self) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self.fields) != 2: return
@@ -247,7 +349,71 @@ class PropertyPanel(QFrame):
         except ValueError:
             pass
 
+    def _rotation_changed(self) -> None:
+        if not self._selected or self._selected[0] != "bar" or self._rotation_input is None:
+            return
+        value = self._rotation_input.text().strip()
+        if not value:
+            self._rotation_input.setText(str(self.window.model.bars[self._selected[1]].rotation))
+            return
+        self.window.model_service.update_member_rotation(self._selected[1], int(value))
+        self.window.refresh_member_axes(self._selected[1])
+
+    def _toggle_color_palette(self) -> None:
+        if not self._selected or self._selected[0] != "bar":
+            return
+        if self._color_palette.isVisible():
+            self._color_palette.hide()
+            return
+        if self.window.section_panel.isVisible():
+            self.window.close_section_panel(self._section_settings_button)
+        color = self.window.model.bars[self._selected[1]].color
+        self._color_palette.set_selected(color)
+        self.reposition_color_palette()
+        self._color_palette.show()
+        self._color_palette.raise_()
+
+    def close_color_palette(self) -> None:
+        self._color_palette.hide()
+
+    def reposition_color_palette(self) -> None:
+        position = self.mapToGlobal(QPoint(
+            -self._color_palette.width() - 12,
+            (self.height() - self._color_palette.height()) // 2,
+        ))
+        self._color_palette.move(position)
+
+    def _color_selected(self, color: str) -> None:
+        if not self._selected or self._selected[0] != "bar":
+            return
+        member_name = self._selected[1]
+        self.window.model_service.update_member_color(member_name, color)
+        self._set_member_color_button(color)
+        self.window.refresh_member_color(member_name)
+
+    def _set_member_color_button(self, color: str) -> None:
+        self.member_color_button.setStyleSheet(
+            "QToolButton { background: %s; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover { border-color: #0969da; }" % color
+        )
+
+    def hideEvent(self, event) -> None:
+        self._color_palette.hide()
+        super().hideEvent(event)
+
+    def _releases_changed(self, _state: int) -> None:
+        if not self._selected or self._selected[0] != "bar" or len(self._release_boxes) != 12:
+            return
+        releases = tuple(checkbox.isChecked() for checkbox in self._release_boxes)
+        self.window.model_service.update_member_releases(self._selected[1], releases)
+        self.window.refresh_member_releases(self._selected[1])
+
     def _material_selected(self, material: str) -> None:
+        # A section profile belongs to a material catalog. Changing material
+        # invalidates the open geometry editor, so close it before rebuilding
+        # the available section-family list.
+        if self.window.section_panel.isVisible():
+            self.window.close_section_panel(self._section_settings_button)
         if self._selected and self._selected[0] == "bar" and material in self.window.model.materials:
             self.window.model_service.assign_material(self._selected[1], material)
         if self._section_combo is not None:
@@ -277,6 +443,11 @@ class PropertyPanel(QFrame):
             self.window.section_geometry.pop(member_name, None)
             if self._section_profile_display is not None:
                 self._section_profile_display.setText("Indefinido")
+            # A visible geometry editor belongs to the previously selected
+            # family. Rebind it immediately when the member's section family
+            # changes, preserving the open state and the checked button.
+            if section and self.window.section_panel.isVisible():
+                self.window.show_section_panel(section, self._section_settings_button)
 
     def reposition(self) -> None:
         margin = 0 if self.window.isMaximized() else WindowFrame.MARGIN
