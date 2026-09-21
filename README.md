@@ -1,39 +1,11 @@
 # Open Structural Analysis
 
-Aplicação open source para modelagem e análise de estruturas, construída em Python, PySide6 e PyVista. O projeto possui domínio, serviços, comandos, renderização, persistência e integração do solver em camadas independentes.
+Aplicação open source para modelagem e análise estrutural tridimensional, desenvolvida em Python com PySide6, PyVista e PyNite.
 
-## Instalação no Linux
+O programa está sendo desenvolvido para oferecer um ambiente integrado de criação, edição, visualização e análise de estruturas. A estrutura é representada por nós e membros conectados entre si, aos quais podem ser atribuídos materiais, seções transversais, apoios, vinculações, carregamentos e demais propriedades necessárias à análise estrutural.
 
-É recomendável usar um ambiente virtual com Python 3.10 a 3.13 (algumas bibliotecas gráficas ainda não distribuem wheels para versões muito recentes do Python).
+A interface combina ferramentas de modelagem com uma cena tridimensional interativa, permitindo visualizar a geometria da estrutura, seus elementos, seções, eixos locais, apoios e condições de vinculação. O objetivo é tornar o processo de definição e interpretação do modelo estrutural mais claro, visual e acessível.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-open-structural-analysis
-```
+O projeto utiliza uma arquitetura modular, separando o domínio estrutural, a interface gráfica, a renderização tridimensional, a persistência dos projetos e o processamento numérico. A análise estrutural é realizada com apoio do PyNite, enquanto o PyVista é responsável pela visualização 3D e o PySide6 pela interface da aplicação.
 
-Para desenvolvimento:
-
-```bash
-pip install -e '.[dev]'
-pytest
-```
-
-## O que esta versão faz
-
-- Cria nós por coordenadas X, Y e Z;
-- Cria barras ligando dois nós existentes;
-- Mostra o modelo em uma cena 3D com grid, identificadores, apoios e eixos locais;
-- Permite selecionar e editar nós e membros pelo painel de propriedades;
-- Gerencia materiais e famílias de seções;
-- Salva e abre projetos no formato JSON versionado;
-- Aceita os comandos `node`, `member` e `portico`.
-
-## Próximas etapas
-
-1. Definição das ações, casos e combinações de carga;
-2. Complementação das propriedades de seção exigidas pelo PyNite;
-3. Processamento, resultados e diagramas de esforços.
-
-Os eixos locais são X (vermelho), Y (amarelo) e Z (verde). Consulte [a arquitetura](docs/architecture.md) para conhecer as responsabilidades dos módulos e a política de unidades.
+O Open Structural Analysis encontra-se em desenvolvimento ativo. A base de modelagem e visualização está sendo construída progressivamente, enquanto os recursos relacionados ao processamento estrutural, carregamentos, combinações e apresentação de resultados continuam em evolução.
