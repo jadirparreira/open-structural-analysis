@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from osa.domain import Action, AnalysisResult, Bar, LoadCase, LoadCombination, Node, StructuralModel
+from osa.domain import (
+    Action,
+    ActionDefinition,
+    ActionGroup,
+    AnalysisResult,
+    Bar,
+    LoadCase,
+    LoadCombination,
+    Node,
+    StructuralModel,
+)
 
 FORMAT_V1 = "open-structural-analysis/v1"
 FORMAT_V2 = "open-structural-analysis/v2"
@@ -25,6 +35,9 @@ class ProjectSerializer:
             },
             "included_sections": model.sections,
             "actions": [asdict(item) for item in model.actions.values()],
+            "action_groups": [asdict(item) for item in model.action_groups.values()],
+            "action_group_aliases": model.action_group_aliases,
+            "selected_action_group": model.selected_action_group,
             "load_cases": [asdict(item) for item in model.load_cases.values()],
             "load_combinations": [asdict(item) for item in model.load_combinations.values()],
             "results": [asdict(item) for item in model.analysis_results],
@@ -81,6 +94,20 @@ class ProjectSerializer:
                 )
                 for item in data.get("actions", ())
             }
+            candidate.action_groups = {
+                item["name"]: ActionGroup(
+                    item["name"], tuple(
+                        ActionDefinition(action["name"], action["abbreviation"])
+                        for action in item.get("actions", ())
+                    ),
+                )
+                for item in data.get("action_groups", ())
+            }
+            candidate.action_group_aliases = {
+                str(template): str(group)
+                for template, group in data.get("action_group_aliases", {}).items()
+            }
+            candidate.selected_action_group = str(data.get("selected_action_group", "PP+AP+AV"))
             candidate.load_cases = {
                 item["name"]: LoadCase(item["name"], tuple(item.get("actions", ())))
                 for item in data.get("load_cases", ())
@@ -105,6 +132,9 @@ class ProjectSerializer:
         model.material_types = candidate.material_types
         model.sections = candidate.sections
         model.actions = candidate.actions
+        model.action_groups = candidate.action_groups
+        model.action_group_aliases = candidate.action_group_aliases
+        model.selected_action_group = candidate.selected_action_group
         model.load_cases = candidate.load_cases
         model.load_combinations = candidate.load_combinations
         model.analysis_results = candidate.analysis_results

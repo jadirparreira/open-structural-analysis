@@ -1,3 +1,4 @@
+from osa.domain import ActionDefinition, ActionGroup
 from osa.model import StructuralModel
 
 
@@ -28,3 +29,28 @@ def test_v1_files_are_still_readable():
     model = StructuralModel(); model.load_dict(data)
     assert model.nodes["N1"].supports[0]
     assert model.bars["B1"].section == "W Laminado"
+
+
+def test_round_trip_preserves_action_groups(tmp_path):
+    model = StructuralModel()
+    model.add_action_group(ActionGroup(
+        "PP + AP + AV",
+        (
+            ActionDefinition("Peso próprio", "PP"),
+            ActionDefinition("Ação permanente", "AP"),
+            ActionDefinition("Ação variável", "AV"),
+        ),
+    ))
+    model.add_action_group(ActionGroup(
+        "PP+TESTE",
+        (ActionDefinition("Vento", "V"),),
+    ))
+    model.set_action_group_alias("PP+AP+AV+4V", "PP+TESTE")
+    model.set_selected_action_group("PP+TESTE")
+    path = tmp_path / "actions.osa.json"
+    model.save(path)
+    restored = StructuralModel()
+    restored.load(path)
+    assert restored.action_groups == model.action_groups
+    assert restored.selected_action_group == "PP+TESTE"
+    assert restored.action_group_aliases == {"PP+AP+AV+4V": "PP+TESTE"}

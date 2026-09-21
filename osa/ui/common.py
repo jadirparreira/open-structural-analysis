@@ -52,7 +52,14 @@ from osa.commands import CommandSession
 from osa.data import CatalogLoader
 from osa.model import StructuralModel
 from osa.scene import StructureScene
-from osa.services import MaterialService, ModelService, ProjectService, SectionPropertyService, SectionService
+from osa.services import (
+    ActionService,
+    MaterialService,
+    ModelService,
+    ProjectService,
+    SectionPropertyService,
+    SectionService,
+)
 
 from .theme import APP_STYLESHEET
 

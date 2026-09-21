@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from .entities import Action, AnalysisResult, Bar, LoadCase, LoadCombination, Node
+from .entities import Action, ActionDefinition, ActionGroup, AnalysisResult, Bar, LoadCase, LoadCombination, Node
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
 
 
@@ -21,6 +21,9 @@ class StructuralModel:
         self.material_types = dict(material_types or {})
         self.sections = {kind: list(items) for kind, items in (sections or {}).items()}
         self.actions: dict[str, Action] = {}
+        self.action_groups: dict[str, ActionGroup] = {}
+        self.action_group_aliases: dict[str, str] = {}
+        self.selected_action_group = "PP+AP+AV"
         self.load_cases: dict[str, LoadCase] = {}
         self.load_combinations: dict[str, LoadCombination] = {}
         self.analysis_results: list[AnalysisResult] = []
@@ -192,7 +195,87 @@ class StructuralModel:
         self._touch()
         return self.bars[name]
 
+    @staticmethod
+    def _action_group_data(group: ActionGroup) -> ActionGroup:
+        name = group.name.strip()
+        if not name:
+            raise ValueError("Informe o nome do grupo de ações.")
+        actions: list[ActionDefinition] = []
+        names: set[str] = set()
+        abbreviations: set[str] = set()
+        for action in group.actions:
+            action_name = action.name.strip()
+            abbreviation = action.abbreviation.strip()
+            if not action_name:
+                raise ValueError("Informe o nome de todas as ações.")
+            if not abbreviation:
+                raise ValueError("Informe a sigla de todas as ações.")
+            name_key = action_name.casefold()
+            abbreviation_key = abbreviation.casefold()
+            if name_key in names:
+                raise ValueError(f"Já existe uma ação chamada '{action_name}' neste grupo.")
+            if abbreviation_key in abbreviations:
+                raise ValueError(f"Já existe uma ação com a sigla '{abbreviation}'.")
+            names.add(name_key)
+            abbreviations.add(abbreviation_key)
+            actions.append(ActionDefinition(action_name, abbreviation))
+        return ActionGroup(name, tuple(actions))
+
+    def add_action_group(self, group: ActionGroup) -> ActionGroup:
+        group = self._action_group_data(group)
+        if group.name in self.action_groups:
+            raise ValueError(f"Já existe um grupo de ações chamado '{group.name}'.")
+        self.action_groups[group.name] = group
+        self._touch()
+        return group
+
+    def set_selected_action_group(self, name: str) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("Informe o grupo de ações selecionado.")
+        self.selected_action_group = name
+        self._touch()
+        return name
+
+    def set_action_group_alias(self, template_name: str, group_name: str) -> None:
+        template_name = template_name.strip()
+        group_name = group_name.strip()
+        if not template_name or not group_name:
+            raise ValueError("Informe os nomes do template e do grupo de ações.")
+        self.action_group_aliases[template_name] = group_name
+        self._touch()
+
+    def update_action_group(self, old_name: str, group: ActionGroup) -> ActionGroup:
+        if old_name not in self.action_groups:
+            raise ValueError(f"Grupo de ações '{old_name}' não encontrado.")
+        group = self._action_group_data(group)
+        if group.name != old_name and group.name in self.action_groups:
+            raise ValueError(f"Já existe um grupo de ações chamado '{group.name}'.")
+        del self.action_groups[old_name]
+        self.action_groups[group.name] = group
+        self.action_group_aliases = {
+            template: group.name if group_name == old_name else group_name
+            for template, group_name in self.action_group_aliases.items()
+        }
+        if self.selected_action_group == old_name:
+            self.selected_action_group = group.name
+        self._touch()
+        return group
+
+    def remove_action_group(self, name: str) -> None:
+        if self.action_groups.pop(name, None) is not None:
+            self.action_group_aliases = {
+                template: group
+                for template, group in self.action_group_aliases.items()
+                if group != name
+            }
+            if self.selected_action_group == name:
+                self.selected_action_group = "PP+AP+AV"
+            self._touch()
+
     def clear(self) -> None:
-        self.nodes.clear(); self.bars.clear(); self.actions.clear()
+        self.nodes.clear(); self.bars.clear(); self.actions.clear(); self.action_groups.clear()
+        self.action_group_aliases.clear()
         self.load_cases.clear(); self.load_combinations.clear(); self.analysis_results.clear()
+        self.selected_action_group = "PP+AP+AV"
         self._touch()

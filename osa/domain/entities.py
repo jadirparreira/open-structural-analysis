@@ -91,6 +91,22 @@ class Action:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionDefinition:
+    """Nome legível e sigla usada nas combinações de ações."""
+
+    name: str
+    abbreviation: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActionGroup:
+    """Conjunto nomeado de ações disponíveis para um modelo."""
+
+    name: str
+    actions: tuple[ActionDefinition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LoadCase:
     name: str
     actions: tuple[str, ...] = ()

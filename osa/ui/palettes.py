@@ -128,7 +128,7 @@ class FloatingPalette(QFrame):
             "Ações",
             "actions-bookmark.svg",
             (
-                ("Grupo de ações", "group-actions.svg", lambda: None),
+                ("Grupo de ações", "group-actions.svg", window.open_action_groups),
                 ("Adicionar ação", "add-action.svg", lambda: None),
             ),
         )

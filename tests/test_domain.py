@@ -1,5 +1,6 @@
 import pytest
 
+from osa.domain import ActionDefinition, ActionGroup
 from osa.domain.errors import DuplicateMemberError, DuplicateNodeCoordinatesError
 from osa.model import StructuralModel
 
@@ -30,3 +31,19 @@ def test_profile_geometry_belongs_to_each_member():
     model.update_member_profile("B2", "W 200 x 15.0", {"d": 200.0})
     assert model.bars["B1"].geometry_dict()["d"] == 148.0
     assert model.bars["B2"].geometry_dict()["d"] == 200.0
+
+
+def test_action_group_requires_unique_names_and_abbreviations():
+    model = StructuralModel()
+    group = ActionGroup(
+        "Combinação usual",
+        (ActionDefinition("Peso próprio", "PP"), ActionDefinition("Ação variável", "AV")),
+    )
+    model.add_action_group(group)
+    assert model.action_groups["Combinação usual"].actions[0].abbreviation == "PP"
+
+    with pytest.raises(ValueError, match="sigla"):
+        model.add_action_group(ActionGroup(
+            "Inválido",
+            (ActionDefinition("Ação 1", "A"), ActionDefinition("Ação 2", "a")),
+        ))

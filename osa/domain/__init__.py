@@ -2,6 +2,8 @@
 
 from .entities import (
     Action,
+    ActionDefinition,
+    ActionGroup,
     AnalysisResult,
     Bar,
     LoadCase,
@@ -15,6 +17,6 @@ from .entities import (
 from .model import StructuralModel
 
 __all__ = [
-    "Action", "AnalysisResult", "Bar", "LoadCase", "LoadCombination",
+    "Action", "ActionDefinition", "ActionGroup", "AnalysisResult", "Bar", "LoadCase", "LoadCombination",
     "Material", "Member", "Node", "Section", "StructuralModel", "Support",
 ]

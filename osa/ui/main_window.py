@@ -1,7 +1,7 @@
 """Janela principal e composição dos componentes visuais."""
 from .command_bar import CommandBar, CommandHistory
 from .common import *
-from .dialogs import SettingsDialog
+from .dialogs import ActionGroupDialog, SettingsDialog
 from .palettes import FloatingPalette, TopIconPalette
 from .property_panel import PropertyPanel
 from .section_panel import (
@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self.model = StructuralModel()
         self.model_service = ModelService(self.model)
         self.material_service = MaterialService(self.model)
+        self.action_service = ActionService(self.model)
         self.section_service = SectionService(self.model)
         self.section_property_service = SectionPropertyService()
         self.project_service = ProjectService(self.model)
@@ -75,6 +76,11 @@ class MainWindow(QMainWindow):
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
+    def open_action_groups(self) -> None:
+        dialog = ActionGroupDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
 
