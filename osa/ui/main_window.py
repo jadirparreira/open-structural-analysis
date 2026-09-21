@@ -247,6 +247,12 @@ class MainWindow(QMainWindow):
     def refresh_member_axes(self, member_name: str) -> None:
         self.scene.update_member_axes(member_name)
 
+    def refresh_member_rotation(self, member_name: str) -> None:
+        self.scene.update_member_rotation(member_name)
+
+    def refresh_member_geometry(self, member_name: str) -> None:
+        self.scene.update_member_geometry(member_name)
+
     def refresh_member_color(self, member_name: str) -> None:
         self.scene.update_member_color(member_name)
 

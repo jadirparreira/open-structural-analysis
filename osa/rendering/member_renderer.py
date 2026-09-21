@@ -6,6 +6,8 @@ from .release_renderer import ReleaseRenderer
 
 
 class MemberRenderer:
+    AURA_LINE_WIDTH = 6.0
+
     def __init__(self, axes_renderer=None, label_renderer=None, release_renderer=None) -> None:
         self.axes = axes_renderer or LocalAxesRenderer()
         self.labels = label_renderer or LabelRenderer()
@@ -29,7 +31,8 @@ class MemberRenderer:
                labels_visible: bool, axes_visible: bool):
         aura = plotter.add_mesh(
             pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z)),
-            color="#000000", line_width=10, pickable=False, reset_camera=False,
+            color="#000000", line_width=self.AURA_LINE_WIDTH, pickable=False,
+            reset_camera=False,
         )
         aura.SetVisibility(False)
         aura_caps = self._rounded_caps(

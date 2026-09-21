@@ -6,6 +6,8 @@ from .support_renderer import SupportRenderer
 
 
 class NodeRenderer:
+    AURA_RADIUS_FACTOR = 1.25
+
     supported_patterns = frozenset({
         (False, False, False, False, False, False),
         (True, True, True, False, False, False),
@@ -38,13 +40,29 @@ class NodeRenderer:
         plotter.add_actor(actor, pickable=False, render=False)
         return actor
 
-    def render(self, plotter, node, radius: float, register_actor, labels_visible: bool):
+    @staticmethod
+    def _sphere_actor(plotter, node, radius: float, color: str, *, visible: bool):
+        actor = plotter.add_mesh(
+            pv.Sphere(radius=radius, center=(0.0, 0.0, 0.0), theta_resolution=20,
+                      phi_resolution=12),
+            color=color, pickable=False, reset_camera=False, render=False,
+        )
+        actor.SetPosition(node.x, node.y, node.z)
+        actor.SetVisibility(visible)
+        return actor
+
+    def render(
+        self, plotter, node, radius: float, register_actor, labels_visible: bool,
+        *, support_radius: float | None = None,
+    ):
         color = "#000000"
-        aura = self._circle_actor(plotter, node, radius * 1.55, "#000000", visible=False)
-        actor = self._circle_actor(plotter, node, radius, color, visible=True)
+        aura = self._circle_actor(
+            plotter, node, radius * self.AURA_RADIUS_FACTOR, "#000000", visible=False,
+        )
+        actor = self._sphere_actor(plotter, node, radius, color, visible=True)
         register_actor(actor, "node", node.name)
         label = self.labels.render(
             plotter, (node.x, node.y, node.z + radius * 2.2), node.name, visible=labels_visible
         )
-        support = self.supports.render(plotter, node, radius)
+        support = self.supports.render(plotter, node, support_radius if support_radius is not None else radius)
         return label, aura, support

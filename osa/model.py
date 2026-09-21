@@ -19,12 +19,8 @@ class StructuralModel(_StructuralModel):
         }
         material_types = {item["name"]: item["type"] for item in catalog}
         defaults = {
-            "Aço": ["U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado"],
-            "Concreto": [
-                "Retangular", "Circular", "Tipo L", "Tipo T", "Tipo I", "Tipo U",
-                "Tipo +", "Retangular Vazado", "Circular Vazado",
-            ],
-            "Madeira": ["Circular", "Quadrada", "Retangular"],
+            material_type: [family["name"] for family in loader.section_families(material_type)]
+            for material_type in ("Aço", "Concreto", "Madeira")
         }
         super().__init__(materials=materials, material_types=material_types, sections=defaults)
 

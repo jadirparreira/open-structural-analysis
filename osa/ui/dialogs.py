@@ -117,7 +117,7 @@ class SettingsDialog(QDialog):
                     "Madeira": ["Circular", "Quadrada", "Retangular"],
                 }
                 all_sections = section_catalog["Aço"]
-                included = self.window.model.sections.get("Aço") or ["U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado"]
+                included = self.window.model.sections.get("Aço") or all_sections
                 available = [section for section in all_sections if section not in included]
                 lists = QHBoxLayout(); available_list = QListWidget(); included_list = QListWidget()
                 lists.setContentsMargins(0, 0, 0, 0)

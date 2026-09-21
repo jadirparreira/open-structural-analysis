@@ -6,13 +6,14 @@ from .local_axes_renderer import LocalAxesRenderer
 from .member_renderer import MemberRenderer
 from .navigation_widget import NavigationWidget
 from .node_renderer import NodeRenderer
-from .result_renderer import ResultRenderer
 from .release_renderer import ReleaseRenderer
+from .result_renderer import ResultRenderer
 from .scene import StructureScene
+from .solid_member_renderer import SolidMemberRenderer
 from .support_renderer import SupportRenderer
 
 __all__ = [
     "ActionRenderer", "LabelRenderer", "LocalAxesRenderer", "MemberRenderer",
-    "NavigationWidget", "NodeRenderer", "ReleaseRenderer", "ResultRenderer", "StructureScene",
-    "SupportRenderer",
+    "NavigationWidget", "NodeRenderer", "ReleaseRenderer", "ResultRenderer", "SolidMemberRenderer",
+    "StructureScene", "SupportRenderer",
 ]

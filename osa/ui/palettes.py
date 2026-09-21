@@ -9,7 +9,7 @@ class FloatingPalette(QFrame):
         super().__init__(window)
         self.window = window
         self.setObjectName("floatingPalette")
-        self.setFixedWidth(152)
+        self.setFixedWidth(204)
         self.setStyleSheet("""
             QFrame#floatingPalette {
                 background: rgba(246, 248, 250, 248); border: 1px solid #d0d7de;
@@ -90,7 +90,10 @@ class TopIconPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         for filename, tooltip, kind in (("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
-                                        ("axis-3d.svg", "Eixos locais", "axes")):
+                                        ("axis-3d.svg", "Eixos locais", "axes"),
+                                        ("box.svg", "Seções sólidas", "solid"),
+                                        ("release.svg", "Vinculações dos membros", "releases"),
+                                        ("support-3d.svg", "Apoios dos nós", "supports")):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
             button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
@@ -100,6 +103,12 @@ class TopIconPalette(QFrame):
             button.setChecked(True)
             if kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
+            elif kind == "solid":
+                button.toggled.connect(window.scene.set_solid_members_visible)
+            elif kind == "releases":
+                button.toggled.connect(window.scene.set_member_releases_visible)
+            elif kind == "supports":
+                button.toggled.connect(window.scene.set_node_supports_visible)
             else:
                 button.toggled.connect(lambda visible, element_kind=kind:
                                        window.scene.set_labels_visible(element_kind, visible))

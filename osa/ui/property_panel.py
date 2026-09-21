@@ -1,6 +1,8 @@
 from .common import *
 from .color_palette import HoneycombColorPalette
 from .window_frame import WindowFrame
+from PySide6.QtCore import QRegularExpression
+from PySide6.QtGui import QRegularExpressionValidator
 
 
 class PropertyPanel(QFrame):
@@ -212,7 +214,9 @@ class PropertyPanel(QFrame):
             rotation_row.setSpacing(0)
             rotation_input = QLineEdit()
             rotation_input.setObjectName("unitValue")
-            rotation_input.setValidator(QIntValidator(0, 179, rotation_input))
+            rotation_input.setValidator(
+                QRegularExpressionValidator(QRegularExpression(r"[+-]?\d*"), rotation_input)
+            )
             rotation_input.setText(str(bar.rotation))
             rotation_input.editingFinished.connect(self._rotation_changed)
             rotation_row.addWidget(rotation_input, 1)
@@ -356,8 +360,13 @@ class PropertyPanel(QFrame):
         if not value:
             self._rotation_input.setText(str(self.window.model.bars[self._selected[1]].rotation))
             return
-        self.window.model_service.update_member_rotation(self._selected[1], int(value))
-        self.window.refresh_member_axes(self._selected[1])
+        try:
+            member = self.window.model_service.update_member_rotation(self._selected[1], int(value))
+        except ValueError:
+            self._rotation_input.setText(str(self.window.model.bars[self._selected[1]].rotation))
+            return
+        self._rotation_input.setText(str(member.rotation))
+        self.window.refresh_member_rotation(self._selected[1])
 
     def _toggle_color_palette(self) -> None:
         if not self._selected or self._selected[0] != "bar":
@@ -426,6 +435,7 @@ class PropertyPanel(QFrame):
                 self._section_combo.setCurrentText(current)
             elif self._selected and self._selected[0] == "bar":
                 self.window.model_service.assign_section(self._selected[1], "")
+                self.window.refresh_member_geometry(self._selected[1])
             self._section_combo.blockSignals(False)
 
     def _sections_for_material(self, material: str) -> list[str]:
@@ -438,6 +448,7 @@ class PropertyPanel(QFrame):
         if self._selected and self._selected[0] == "bar":
             member_name = self._selected[1]
             self.window.model_service.assign_section(member_name, section)
+            self.window.refresh_member_geometry(member_name)
             # Selecting a section type starts a fresh profile selection.
             self.window.section_profiles.pop(member_name, None)
             self.window.section_geometry.pop(member_name, None)

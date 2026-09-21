@@ -240,6 +240,7 @@ class SectionPanel(QFrame):
             if profile != generated_profile:
                 self.window.section_profiles[member_name] = generated_profile
                 self.window.model_service.assign_profile(member_name, generated_profile, values)
+                self.window.refresh_member_geometry(member_name)
             profile = generated_profile
             display = getattr(self.window.properties, "_section_profile_display", None)
             if display is not None:
@@ -333,6 +334,7 @@ class SectionPanel(QFrame):
         )
         values.update(self._default_geometry(value))
         self.window.model_service.assign_profile(self._member_name, value, values)
+        self.window.refresh_member_geometry(self._member_name)
         for key, field in self.fields.items():
             field.setEnabled(True)
             field.setText(self._format_value(values.get(key, 0.0), key))
@@ -433,6 +435,7 @@ class SectionPanel(QFrame):
             display.setText(profile)
         self._populate_calculated_values(properties, True)
         self._update_preview(values)
+        self.window.refresh_member_geometry(self._member_name)
 
     def _switch_to_square_family(self, family: str, geometry: dict[str, float]) -> None:
         """Replace an equal-sided rectangular family without losing input."""
@@ -456,6 +459,7 @@ class SectionPanel(QFrame):
             combo.blockSignals(False)
         button = getattr(self.window.properties, "_section_settings_button", None)
         self.window.show_section_panel(family, button)
+        self.window.refresh_member_geometry(self._member_name)
 
     def _manual_profile_name(self, values: dict[str, float]) -> str:
         """Build the catalog-style identity for a manual section."""

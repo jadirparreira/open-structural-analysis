@@ -150,9 +150,9 @@ class StructuralModel:
 
     @staticmethod
     def _member_rotation(value: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 179:
-            raise ValueError("A rotação do membro deve ser um número inteiro entre 0 e 179 graus.")
-        return value
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("A rotação do membro deve ser um número inteiro.")  # noqa: TRY004
+        return value % 360
 
     def update_member_rotation(self, name: str, rotation: int) -> Bar:
         if name not in self.bars:

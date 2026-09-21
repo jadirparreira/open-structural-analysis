@@ -15,6 +15,7 @@ from .grid_renderer import GridRenderer
 from .member_renderer import MemberRenderer
 from .navigation_widget import NavigationWidget
 from .node_renderer import NodeRenderer
+from .solid_member_renderer import SolidMemberRenderer
 
 
 class StructureScene(QWidget):
@@ -32,6 +33,7 @@ class StructureScene(QWidget):
         self._grid_renderer = GridRenderer()
         self._node_renderer = NodeRenderer()
         self._member_renderer = MemberRenderer()
+        self._solid_member_renderer = SolidMemberRenderer()
         self._orientation_widget = self._create_orientation_widget()
         self._model = StructuralModel()
         self._actors: dict[str, tuple[str, str, object]] = {}
@@ -41,6 +43,8 @@ class StructureScene(QWidget):
         self._local_axis_actors: list[object] = []
         self._local_axis_actors_by_member: dict[str, list[object]] = {}
         self._member_aura_actors: dict[str, object] = {}
+        self._member_line_actors: dict[str, object] = {}
+        self._member_solid_actors: dict[str, object] = {}
         self._member_cap_actors: dict[str, list[object]] = {}
         self._member_aura_cap_actors: dict[str, list[object]] = {}
         self._member_release_actors: dict[str, list[object]] = {}
@@ -48,6 +52,9 @@ class StructureScene(QWidget):
         self._node_support_actors: dict[str, object] = {}
         self._local_axes_visible = True
         self._labels_visibility = {"node": True, "bar": True}
+        self._solid_members_visible = True
+        self._member_releases_visible = True
+        self._node_supports_visible = True
         self._hovered: str | None = None
         self._selected: tuple[str, str] | None = None
         self._marker_radius_current = 0.025
@@ -70,6 +77,8 @@ class StructureScene(QWidget):
         self._local_axis_actors.clear()
         self._local_axis_actors_by_member.clear()
         self._member_aura_actors.clear()
+        self._member_line_actors.clear()
+        self._member_solid_actors.clear()
         self._member_cap_actors.clear()
         self._member_aura_cap_actors.clear()
         self._member_release_actors.clear()
@@ -102,24 +111,32 @@ class StructureScene(QWidget):
             )
             self._label_actors["bar"].append(label_actor)
             self._member_label_actors[bar.name] = label_actor
+            self._member_line_actors[bar.name] = self._actors[f"bar:{bar.name}"][2]
             self._local_axis_actors_by_member[bar.name] = axes
             self._local_axis_actors.extend(axes)
             self._member_aura_actors[bar.name] = aura
             self._member_cap_actors[bar.name] = member_caps
             self._member_aura_cap_actors[bar.name] = aura_caps
             self._member_release_actors[bar.name] = release_actors
+            self._set_release_actors_visible(release_actors)
+
+        if self._solid_members_visible:
+            for member_name in model.bars:
+                self._switch_member_representation(member_name)
 
         # Render nodes after members so endpoint markers have visual priority
         # when their geometry overlaps a member or one of its axes.
         for node in model.nodes.values():
             label_actor, aura, support = self._node_renderer.render(
-                self.plotter, node, radius, self._register_actor, self._labels_visibility["node"]
+                self.plotter, node, self._node_marker_radius(), self._register_actor,
+                self._labels_visibility["node"], support_radius=self._marker_radius_current,
             )
             self._label_actors["node"].append(label_actor)
             self._node_label_actors[node.name] = label_actor
             self._node_aura_actors[node.name] = aura
             if support is not None:
                 self._node_support_actors[node.name] = support
+                self._set_support_actor_visible(support)
         if self._selected:
             selected_identifier = f"{self._selected[0]}:{self._selected[1]}"
             if selected_identifier in self._actors:
@@ -130,69 +147,8 @@ class StructureScene(QWidget):
             self.plotter.reset_camera()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
-        self._position_members_in_front()
-        self._position_nodes_in_front()
-        self._position_local_axes_in_front()
-        self._position_release_indicators_in_front()
+        self._update_depth_overlays()
         self.plotter.render()
-
-    def _position_members_in_front(self) -> None:
-        """Move member lines and their auras slightly toward the camera."""
-        camera_position = np.array(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
-        aura_offset = self._marker_radius_current * 0.08
-        member_offset = self._marker_radius_current * 0.22
-        for member_name, member in self._model.bars.items():
-            actor_entry = self._actors.get(f"bar:{member_name}")
-            aura = self._member_aura_actors.get(member_name)
-            if actor_entry is None or aura is None:
-                continue
-            start = self._model.nodes[member.start_node]
-            end = self._model.nodes[member.end_node]
-            midpoint = np.array(
-                ((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2),
-                dtype=float,
-            )
-            direction = camera_position - midpoint
-            length = np.linalg.norm(direction)
-            if length <= 1e-12:
-                continue
-            direction /= length
-            aura_front_offset = direction * aura_offset
-            member_front_offset = direction * member_offset
-            actor_entry[2].SetPosition(*member_front_offset)
-            aura.SetPosition(*aura_front_offset)
-            for caps, front_offset in (
-                (self._member_cap_actors.get(member_name, ()), member_front_offset),
-                (self._member_aura_cap_actors.get(member_name, ()), aura_front_offset),
-            ):
-                for cap, point in zip(caps, (start, end)):
-                    cap.SetPosition(
-                        point.x + front_offset[0],
-                        point.y + front_offset[1],
-                        point.z + front_offset[2],
-                    )
-
-    def _position_nodes_in_front(self) -> None:
-        """Keep node circles in front of members and their rounded caps."""
-        camera_position = np.array(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
-        offset = self._marker_radius_current * 0.8
-        for node_name, node in self._model.nodes.items():
-            self._position_node_in_front(node_name, node, camera_position, offset)
-
-    def _position_node_in_front(self, node_name, node, camera_position, offset) -> None:
-        identifier = f"node:{node_name}"
-        aura = self._node_aura_actors.get(node_name)
-        actor = self._actors.get(identifier, (None, None, None))[2]
-        if aura is None or actor is None:
-            return
-        node_position = np.array((node.x, node.y, node.z), dtype=float)
-        direction = camera_position - node_position
-        length = np.linalg.norm(direction)
-        if length <= 1e-12:
-            return
-        front_position = node_position + direction / length * offset
-        aura.SetPosition(*front_position)
-        actor.SetPosition(*front_position)
 
     def _current_parallel_scale(self) -> float | None:
         camera = self.plotter.renderer.GetActiveCamera()
@@ -229,70 +185,56 @@ class StructureScene(QWidget):
         height = self.plotter.render_window.GetSize()[1]
         world_units_per_pixel = (2.0 * current_scale / height) if height > 0 else 0.0
         for member_name in self._model.bars:
-            member_actor = self._actors.get(f"bar:{member_name}", (None, None, None))[2]
+            member_actor = self._member_line_actors.get(member_name)
             aura = self._member_aura_actors.get(member_name)
             if member_actor is not None:
                 member_actor.GetProperty().SetLineWidth(4.0 * zoom_factor)
             if aura is not None:
-                aura.GetProperty().SetLineWidth(10.0 * zoom_factor)
+                aura.GetProperty().SetLineWidth(self._member_renderer.AURA_LINE_WIDTH * zoom_factor)
             member_radius = 4.0 * zoom_factor * world_units_per_pixel / 2.0
-            aura_radius = 10.0 * zoom_factor * world_units_per_pixel / 2.0
+            aura_radius = (
+                self._member_renderer.AURA_LINE_WIDTH * zoom_factor * world_units_per_pixel / 2.0
+            )
             for cap in self._member_cap_actors.get(member_name, ()):
                 cap.SetScale(member_radius, member_radius, member_radius)
             for cap in self._member_aura_cap_actors.get(member_name, ()):
                 cap.SetScale(aura_radius, aura_radius, aura_radius)
 
-    def _position_local_axes_in_front(self) -> None:
-        """Move local-axis actors slightly toward the camera over members."""
-        camera_position = np.array(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
-        offset = self._marker_radius_current * 0.25
-        for member_name, actors in self._local_axis_actors_by_member.items():
-            member = self._model.bars.get(member_name)
-            if member is None:
-                continue
-            start = self._model.nodes[member.start_node]
-            end = self._model.nodes[member.end_node]
-            midpoint = np.array(
-                ((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2),
-                dtype=float,
-            )
-            direction = camera_position - midpoint
-            length = np.linalg.norm(direction)
-            if length <= 1e-12:
-                continue
-            front_offset = direction / length * offset
-            for actor in actors:
-                actor.SetPosition(*front_offset)
-
-    def _position_release_indicators_in_front(self) -> None:
-        """Move release symbols slightly toward the camera over the member."""
-        camera_position = np.array(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
-        offset = self._marker_radius_current * 0.3
-        for member_name, actors in self._member_release_actors.items():
-            member = self._model.bars.get(member_name)
-            if member is None:
-                continue
-            start = self._model.nodes[member.start_node]
-            end = self._model.nodes[member.end_node]
-            midpoint = np.array(
-                ((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2),
-                dtype=float,
-            )
-            direction = camera_position - midpoint
-            length = np.linalg.norm(direction)
-            if length <= 1e-12:
-                continue
-            front_offset = direction / length * offset
-            for actor in actors:
-                actor.SetPosition(*front_offset)
-
     def _on_interaction_end(self, *_args) -> None:
         self._update_zoom_dependent_sizes()
-        self._position_members_in_front()
-        self._position_nodes_in_front()
-        self._position_local_axes_in_front()
-        self._position_release_indicators_in_front()
+        self._update_depth_overlays()
         self.plotter.render()
+
+    def _update_depth_overlays(self) -> None:
+        """Offset only selection auras and local axes relative to the camera."""
+        camera_position = np.array(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
+        aura_offset = self._marker_radius_current * 0.08
+        axes_offset = self._marker_radius_current * 0.25
+        for member_name, member in self._model.bars.items():
+            start = self._model.nodes[member.start_node]
+            end = self._model.nodes[member.end_node]
+            midpoint = np.array(
+                ((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2),
+                dtype=float,
+            )
+            direction = camera_position - midpoint
+            length = np.linalg.norm(direction)
+            if length <= 1e-12:
+                continue
+            direction /= length
+            aura_position = -direction * aura_offset
+            axes_position = direction * axes_offset
+            aura = self._member_aura_actors.get(member_name)
+            if aura is not None:
+                aura.SetPosition(*aura_position)
+            for cap, point in zip(self._member_aura_cap_actors.get(member_name, ()), (start, end)):
+                cap.SetPosition(
+                    point.x + aura_position[0],
+                    point.y + aura_position[1],
+                    point.z + aura_position[2],
+                )
+            for actor in self._local_axis_actors_by_member.get(member_name, ()):
+                actor.SetPosition(*axes_position)
 
     def update_member_releases(self, member_name: str) -> None:
         """Update one member's release symbols without rebuilding the scene."""
@@ -304,11 +246,12 @@ class StructureScene(QWidget):
         member = self._model.bars[member_name]
         start = self._model.nodes[member.start_node]
         end = self._model.nodes[member.end_node]
-        self._member_release_actors[member_name] = self._member_renderer.releases.render(
+        release_actors = self._member_renderer.releases.render(
             self.plotter, start, end, member.releases, self._marker_radius_current,
             rotation=member.rotation,
         )
-        self._position_release_indicators_in_front()
+        self._member_release_actors[member_name] = release_actors
+        self._set_release_actors_visible(release_actors)
         self.plotter.render()
 
     def update_member_axes(self, member_name: str) -> None:
@@ -332,12 +275,40 @@ class StructureScene(QWidget):
         )
         self._local_axis_actors_by_member[member_name] = axes
         self._member_release_actors[member_name] = release_actors
+        self._set_release_actors_visible(release_actors)
         self._local_axis_actors = [
             actor for member_axes in self._local_axis_actors_by_member.values()
             for actor in member_axes
         ]
-        self._position_local_axes_in_front()
-        self._position_release_indicators_in_front()
+        self._update_depth_overlays()
+        self.plotter.render()
+
+    def update_member_rotation(self, member_name: str) -> None:
+        """Update a member's solid transform and local-axis annotations."""
+        if member_name not in self._model.bars or f"bar:{member_name}" not in self._actors:
+            self.render_model(self._model)
+            return
+        member = self._model.bars[member_name]
+        start = self._model.nodes[member.start_node]
+        end = self._model.nodes[member.end_node]
+        solid_visual = self._member_solid_actors.get(member_name)
+        if solid_visual is not None:
+            self._solid_member_renderer.update_transform(
+                solid_visual.face_actor, start, end, rotation=member.rotation,
+            )
+            self._solid_member_renderer.update_transform(
+                solid_visual.edge_actor, start, end, rotation=member.rotation,
+            )
+        self.update_member_axes(member_name)
+
+    def update_member_geometry(self, member_name: str) -> None:
+        """Rebuild one member after its section or profile geometry changes."""
+        if member_name not in self._model.bars or member_name not in self._member_line_actors:
+            self.render_model(self._model)
+            return
+        self._update_member_geometry(member_name)
+        self._update_zoom_dependent_sizes()
+        self._update_depth_overlays()
         self.plotter.render()
 
     def update_member_color(self, member_name: str) -> None:
@@ -346,14 +317,23 @@ class StructureScene(QWidget):
         if member_name not in self._model.bars or identifier not in self._actors:
             self.render_model(self._model)
             return
+        color = pv.Color(self._member_base_color(member_name)).float_rgb
+        solid_visual = self._member_solid_actors.get(member_name)
+        for actor in (
+            self._member_line_actors.get(member_name),
+            solid_visual.face_actor if solid_visual is not None else None,
+        ):
+            if actor is not None:
+                actor.GetProperty().SetColor(*color)
+        if solid_visual is not None:
+            solid_visual.edge_actor.GetProperty().SetColor(
+                *self._solid_member_renderer.edge_color(self._member_base_color(member_name))
+            )
+        for cap in self._member_cap_actors.get(member_name, ()):
+            cap.GetProperty().SetColor(*color)
         selected_identifier = f"{self._selected[0]}:{self._selected[1]}" if self._selected else None
         if identifier == self._hovered or identifier == selected_identifier:
             self._set_color(identifier, True)
-        else:
-            actor = self._actors[identifier][2]
-            actor.GetProperty().SetColor(*pv.Color(self._member_base_color(member_name)).float_rgb)
-            for cap in self._member_cap_actors.get(member_name, ()):
-                cap.GetProperty().SetColor(*pv.Color(self._member_base_color(member_name)).float_rgb)
         self.plotter.render()
 
     def update_node_visual(self, node_name: str) -> None:
@@ -377,6 +357,7 @@ class StructureScene(QWidget):
         )
         if support is not None:
             self._node_support_actors[node_name] = support
+            self._set_support_actor_visible(support)
         self.plotter.render()
 
     def update_node(self, node_name: str) -> None:
@@ -394,10 +375,7 @@ class StructureScene(QWidget):
 
         self._update_node_geometry(node_name)
         self._update_zoom_dependent_sizes()
-        self._position_members_in_front()
-        self._position_nodes_in_front()
-        self._position_local_axes_in_front()
-        self._position_release_indicators_in_front()
+        self._update_depth_overlays()
         self.plotter.render()
 
     def _update_node_geometry(self, node_name: str) -> None:
@@ -415,14 +393,15 @@ class StructureScene(QWidget):
 
         node = self._model.nodes[node_name]
         label, aura, support = self._node_renderer.render(
-            self.plotter, node, self._marker_radius_current,
-            self._register_actor, self._labels_visibility["node"],
+            self.plotter, node, self._node_marker_radius(), self._register_actor,
+            self._labels_visibility["node"], support_radius=self._marker_radius_current,
         )
         self._node_label_actors[node_name] = label
         self._label_actors["node"].append(label)
         self._node_aura_actors[node_name] = aura
         if support is not None:
             self._node_support_actors[node_name] = support
+            self._set_support_actor_visible(support)
         selected_identifier = f"{self._selected[0]}:{self._selected[1]}" if self._selected else None
         if identifier == self._hovered or identifier == selected_identifier:
             self._set_color(identifier, True)
@@ -430,9 +409,18 @@ class StructureScene(QWidget):
     def _update_member_geometry(self, member_name: str) -> None:
         member = self._model.bars[member_name]
         identifier = f"bar:{member_name}"
-        actor_entry = self._actors.pop(identifier, None)
-        if actor_entry is not None:
-            self.plotter.remove_actor(actor_entry[2], reset_camera=False, render=False)
+        active_entry = self._actors.pop(identifier, None)
+        line_actor = self._member_line_actors.pop(member_name, None)
+        solid_visual = self._member_solid_actors.pop(member_name, None)
+        removed = set()
+        solid_actors = (
+            (solid_visual.face_actor, solid_visual.edge_actor)
+            if solid_visual is not None else ()
+        )
+        for actor in (active_entry[2] if active_entry is not None else None, line_actor, *solid_actors):
+            if actor is not None and id(actor) not in removed:
+                self.plotter.remove_actor(actor, reset_camera=False, render=False)
+                removed.add(id(actor))
         aura = self._member_aura_actors.pop(member_name, None)
         if aura is not None:
             self.plotter.remove_actor(aura, reset_camera=False, render=False)
@@ -457,6 +445,7 @@ class StructureScene(QWidget):
             self._register_actor, self._labels_visibility["bar"], self._local_axes_visible,
         )
         self._member_label_actors[member_name] = label
+        self._member_line_actors[member_name] = self._actors[identifier][2]
         self._label_actors["bar"].append(label)
         self._local_axis_actors_by_member[member_name] = axes
         self._local_axis_actors.extend(axes)
@@ -464,6 +453,9 @@ class StructureScene(QWidget):
         self._member_cap_actors[member_name] = caps
         self._member_aura_cap_actors[member_name] = aura_caps
         self._member_release_actors[member_name] = releases
+        self._set_release_actors_visible(releases)
+        if self._solid_members_visible:
+            self._switch_member_representation(member_name)
         selected_identifier = f"{self._selected[0]}:{self._selected[1]}" if self._selected else None
         if identifier == self._hovered or identifier == selected_identifier:
             self._set_color(identifier, True)
@@ -484,10 +476,7 @@ class StructureScene(QWidget):
         self.plotter.reset_camera()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
-        self._position_members_in_front()
-        self._position_nodes_in_front()
-        self._position_local_axes_in_front()
-        self._position_release_indicators_in_front()
+        self._update_depth_overlays()
         self.plotter.render()
 
     def _lock_navigation_viewport(self, widget=None) -> None:
@@ -563,6 +552,12 @@ class StructureScene(QWidget):
             color = self._member_base_color(name) if kind == "bar" else self._node_base_color(name)
             actor.GetProperty().SetColor(*pv.Color(color).float_rgb)
             if kind == "bar":
+                solid_visual = self._member_solid_actors.get(name)
+                if solid_visual is not None and solid_visual.face_actor is actor:
+                    solid_visual.edge_actor.GetProperty().SetColor(
+                        *self._solid_member_renderer.edge_color(color)
+                    )
+                    return
                 reference_scale = self._zoom_reference_parallel_scale
                 current_scale = self._current_parallel_scale()
                 zoom_factor = (
@@ -596,6 +591,67 @@ class StructureScene(QWidget):
         actor.SetPickable(True)
         self._actors[identifier] = kind, name, actor
 
+    def _switch_member_representation(self, member_name: str) -> None:
+        """Make one member's line or solid actor the active representation."""
+        member = self._model.bars.get(member_name)
+        line_actor = self._member_line_actors.get(member_name)
+        if member is None or line_actor is None:
+            return
+        identifier = f"bar:{member_name}"
+        if self._solid_members_visible:
+            solid_visual = self._member_solid_actors.get(member_name)
+            if solid_visual is None:
+                start = self._model.nodes[member.start_node]
+                end = self._model.nodes[member.end_node]
+                solid_visual = self._solid_member_renderer.render(
+                    self.plotter, member, start, end, visible=True,
+                )
+                if solid_visual is not None:
+                    self._member_solid_actors[member_name] = solid_visual
+            if solid_visual is not None:
+                line_actor.SetVisibility(False)
+                line_actor.SetPickable(False)
+                for actor in self._member_cap_actors.get(member_name, ()):
+                    actor.SetVisibility(False)
+                for actor in self._member_aura_cap_actors.get(member_name, ()):
+                    actor.SetVisibility(False)
+                aura = self._member_aura_actors.get(member_name)
+                if aura is not None:
+                    aura.SetVisibility(False)
+                solid_visual.face_actor.SetObjectName(identifier)
+                solid_visual.face_actor.SetVisibility(True)
+                solid_visual.face_actor.SetPickable(True)
+                solid_visual.edge_actor.SetVisibility(True)
+                self._actors[identifier] = "bar", member_name, solid_visual.face_actor
+                return
+
+        solid_visual = self._member_solid_actors.get(member_name)
+        if solid_visual is not None:
+            solid_visual.face_actor.SetVisibility(False)
+            solid_visual.face_actor.SetPickable(False)
+            solid_visual.edge_actor.SetVisibility(False)
+        line_actor.SetObjectName(identifier)
+        line_actor.SetVisibility(True)
+        line_actor.SetPickable(True)
+        for actor in self._member_cap_actors.get(member_name, ()):
+            actor.SetVisibility(True)
+        self._actors[identifier] = "bar", member_name, line_actor
+
+    def set_solid_members_visible(self, visible: bool) -> None:
+        """Toggle the exclusive line/solid representation of structural members."""
+        visible = bool(visible)
+        if visible == self._solid_members_visible:
+            return
+        self._solid_members_visible = visible
+        self._hovered = None
+        for member_name in self._model.bars:
+            self._switch_member_representation(member_name)
+        selected_identifier = f"{self._selected[0]}:{self._selected[1]}" if self._selected else None
+        if selected_identifier in self._actors:
+            self._set_color(selected_identifier, True)
+        self._update_depth_overlays()
+        self.plotter.render()
+
     def set_labels_visible(self, kind: str, visible: bool) -> None:
         self._labels_visibility[kind] = visible
         for actor in self._label_actors.get(kind, []):
@@ -607,6 +663,31 @@ class StructureScene(QWidget):
         for actor in self._local_axis_actors:
             actor.SetVisibility(visible)
         self.plotter.render()
+
+    def set_member_releases_visible(self, visible: bool) -> None:
+        """Toggle the circular release symbols displayed on members."""
+        self._member_releases_visible = bool(visible)
+        for actors in self._member_release_actors.values():
+            self._set_release_actors_visible(actors)
+        self.plotter.render()
+
+    def set_node_supports_visible(self, visible: bool) -> None:
+        """Toggle the 3D support symbols displayed at supported nodes."""
+        self._node_supports_visible = bool(visible)
+        for actor in self._node_support_actors.values():
+            self._set_support_actor_visible(actor)
+        self.plotter.render()
+
+    def _set_release_actors_visible(self, actors: list[object]) -> None:
+        for actor in actors:
+            actor.SetVisibility(self._member_releases_visible)
+
+    def _set_support_actor_visible(self, actor: object) -> None:
+        actor.SetVisibility(self._node_supports_visible)
+
+    def _node_marker_radius(self) -> float:
+        """Return the radius used by the permanent 3D node marker."""
+        return self._marker_radius_current
 
 
     @staticmethod
