@@ -40,20 +40,25 @@ QPushButton#secondaryButton {
     border-radius: 7px; background: #f6f8fa; color: #24292f;
 }
 QPushButton#secondaryButton:hover { background: #eaeef2; }
-QPushButton#palettePrimary {
-    min-height: 38px; border: 0; border-radius: 8px; padding: 0 10px;
-    background: transparent; color: #24292f; font-weight: 700; text-align: left;
+QToolButton#palettePrimary {
+    border: 1px solid #d0d7de; border-radius: 6px; padding: 0;
+    background: #ffffff; color: #24292f;
 }
-QPushButton#palettePrimary:hover { background: #eaeef2; }
-QPushButton#palettePrimary:checked { background: #ddf4ff; color: #0550ae; }
-QPushButton#paletteSecondary {
-    min-height: 32px; border: 0; border-radius: 7px; padding: 0 8px;
-    background: transparent; color: #57606a; text-align: left;
+QToolButton#palettePrimary:hover { background: #eaeef2; }
+QToolButton#palettePrimary:checked,
+QToolButton#palettePrimary:checked:hover { background: #eaeef2; color: #24292f; }
+QToolButton#paletteSecondary {
+    border: 0; border-radius: 7px; padding: 0;
+    background: transparent; color: #57606a;
 }
-QPushButton#paletteSecondary:hover { background: #eaeef2; color: #24292f; }
-QPushButton#paletteSecondary:pressed { background: #d0d7de; }
+QToolButton#paletteSecondary:hover { background: #eaeef2; color: #24292f; }
+QToolButton#paletteSecondary:pressed { background: #d0d7de; }
+QLabel#paletteTooltip {
+    min-height: 28px; padding: 4px 9px; border: 1px solid #57606a;
+    border-radius: 6px; background: #24292f; color: #ffffff;
+}
 QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }
-QLabel#windowTitle { color: #24292f; font-weight: 600; padding-left: 10px; }
+QLabel#windowTitle { color: #24292f; font-weight: 600; }
 QToolButton#windowControl {
     min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px;
     border: 0; border-radius: 16px; color: #24292f; background: #e1e4e8; font-size: 16px;

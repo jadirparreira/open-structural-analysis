@@ -33,6 +33,7 @@ class TitleBar(QFrame):
         edit_menu_button.setText("Editar")
         edit_menu_button.setObjectName("menuButton")
         edit_menu = QMenu(edit_menu_button)
+        edit_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         edit_menu.addAction("Desfazer"); edit_menu.addAction("Refazer")
         edit_menu.addSeparator(); edit_menu.addAction("Recortar")
         edit_menu.addAction("Copiar"); edit_menu.addAction("Colar")
@@ -43,19 +44,60 @@ class TitleBar(QFrame):
         edit_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         layout.addWidget(edit_menu_button)
         layout.addStretch()
-        title = QLabel("Open Structural Analysis")
-        title.setObjectName("windowTitle")
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(title)
+        self.title = QLabel("Open Structural Analysis", self)
+        self.title.setObjectName("windowTitle")
+        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addStretch()
-        self._add_control(layout, "−", "Minimizar", window.showMinimized)
-        self.maximize_button = self._add_control(layout, "□", "Maximizar", self.toggle_maximized)
-        self._add_control(layout, "×", "Fechar", window.close)
+        self._add_control(layout, "", "Minimizar", window.showMinimized, "window-minus.svg")
+        self.maximize_button = self._add_control(layout, "", "Maximizar", self.toggle_maximized, "window-square.svg")
+        self._add_control(layout, "", "Fechar", window.close, "window-x.svg")
+        self.set_maximized(False)
+        self._position_title()
 
-    def _add_control(self, layout: QHBoxLayout, symbol: str, tooltip: str, callback) -> QToolButton:
+    def set_maximized(self, maximized: bool) -> None:
+        if maximized:
+            self.maximize_button.setText("")
+            self.maximize_button.setIcon(
+                QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "window-copy.svg"))
+            )
+            self.maximize_button.setIconSize(QSize(15, 15))
+            self.maximize_button.setToolTip("Restaurar")
+        else:
+            self.maximize_button.setText("")
+            self.maximize_button.setIcon(
+                QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "window-square.svg"))
+            )
+            self.maximize_button.setIconSize(QSize(15, 15))
+            self.maximize_button.setToolTip("Maximizar")
+
+    def _position_title(self) -> None:
+        self.title.adjustSize()
+        self.title.move(
+            (self.width() - self.title.width()) // 2,
+            (self.height() - self.title.height()) // 2,
+        )
+        self.title.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_title()
+
+    def _add_control(
+        self,
+        layout: QHBoxLayout,
+        symbol: str,
+        tooltip: str,
+        callback,
+        icon_filename: str | None = None,
+    ) -> QToolButton:
         button = QToolButton()
         button.setObjectName("windowControl")
-        button.setText(symbol)
+        if icon_filename is None:
+            button.setText(symbol)
+        else:
+            button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+            button.setIconSize(QSize(15, 15))
         button.setToolTip(tooltip)
         button.clicked.connect(callback)
         layout.addWidget(button)
@@ -64,12 +106,10 @@ class TitleBar(QFrame):
     def toggle_maximized(self) -> None:
         if self.window.isMaximized():
             self.window.showNormal()
-            self.maximize_button.setText("□")
-            self.maximize_button.setToolTip("Maximizar")
+            self.set_maximized(False)
         else:
             self.window.showMaximized()
-            self.maximize_button.setText("⧉")
-            self.maximize_button.setToolTip("Restaurar")
+            self.set_maximized(True)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

@@ -83,8 +83,7 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "window_frame"):
             self.window_frame.update_state()
             maximized = self.isMaximized()
-            self.title_bar.maximize_button.setText("⧉" if maximized else "□")
-            self.title_bar.maximize_button.setToolTip("Restaurar" if maximized else "Maximizar")
+            self.title_bar.set_maximized(maximized)
 
     def _make_shortcuts(self) -> None:
         actions = (
