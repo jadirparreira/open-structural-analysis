@@ -1,8 +1,9 @@
-from .common import *
-from .color_palette import HoneycombColorPalette
-from .window_frame import WindowFrame
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
+
+from .color_palette import HoneycombColorPalette
+from .common import *
+from .window_frame import WindowFrame
 
 
 class PropertyPanel(QFrame):
@@ -35,6 +36,19 @@ class PropertyPanel(QFrame):
         self.member_color_button.setAccessibleName("Definir cor do membro")
         self.member_color_button.clicked.connect(self._toggle_color_palette)
         identity_layout.addWidget(self.member_color_button)
+        self.delete_button = QToolButton()
+        self.delete_button.setFixedSize(34, 34)
+        self.delete_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "delete.svg")))
+        self.delete_button.setIconSize(QSize(18, 18))
+        self.delete_button.setToolTip("Excluir elemento")
+        self.delete_button.setAccessibleName("Excluir elemento")
+        self.delete_button.clicked.connect(self._delete_requested)
+        self.delete_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:disabled { background: #f6f8fa; border-color: #eaeef2; }"
+        )
+        identity_layout.addWidget(self.delete_button)
         self._color_palette = HoneycombColorPalette(self.window, self._color_selected)
         self.layout.addWidget(self.title)
         self.layout.addWidget(self.name)
@@ -66,6 +80,7 @@ class PropertyPanel(QFrame):
         self._section_profile_display: QLineEdit | None = None
         self._section_settings_button: QToolButton | None = None
         self._identity_row = identity_row
+        self.delete_button.setEnabled(False)
         self.hide()
 
     def show_for(self, kind: str, name: str) -> None:
@@ -78,6 +93,7 @@ class PropertyPanel(QFrame):
         self.supports_title.hide()
         self._color_palette.hide()
         self.member_color_button.setVisible(kind == "bar")
+        self.update_delete_button_state()
         self.title.setText("Nó" if kind == "node" else "Membro")
         self.name.setText("Identidade")
         self.identity_value.setText(name)
@@ -400,10 +416,32 @@ class PropertyPanel(QFrame):
         self._set_member_color_button(color)
         self.window.refresh_member_color(member_name)
 
+    def _delete_requested(self) -> None:
+        self.window.delete_selected()
+
+    def update_delete_button_state(self) -> None:
+        """Keep node deletion disabled while members still reference it."""
+        if self._selected is None or getattr(self.window, "selected", None) != self._selected:
+            self.delete_button.setEnabled(False)
+            return
+        kind, name = self._selected
+        if kind == "bar":
+            enabled = name in self.window.model.bars
+            tooltip = "Excluir membro"
+        else:
+            connected = any(
+                member.start_node == name or member.end_node == name
+                for member in self.window.model.bars.values()
+            )
+            enabled = name in self.window.model.nodes and not connected
+            tooltip = "Excluir nó" if enabled else "Remova os membros vinculados antes de excluir o nó"
+        self.delete_button.setEnabled(enabled)
+        self.delete_button.setToolTip(tooltip)
+
     def _set_member_color_button(self, color: str) -> None:
         self.member_color_button.setStyleSheet(
-            "QToolButton { background: %s; border: 1px solid #d0d7de; border-radius: 6px; } "
-            "QToolButton:hover { border-color: #0969da; }" % color
+            f"QToolButton {{ background: {color}; border: 1px solid #d0d7de; border-radius: 6px; }} "
+            "QToolButton:hover { border-color: #0969da; }"
         )
 
     def hideEvent(self, event) -> None:

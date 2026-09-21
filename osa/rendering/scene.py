@@ -311,6 +311,52 @@ class StructureScene(QWidget):
         self._update_depth_overlays()
         self.plotter.render()
 
+    def remove_element(self, kind: str, name: str) -> None:
+        """Remove one node or member's actors without rebuilding the scene."""
+        removed: set[int] = set()
+
+        def remove_actor(actor) -> None:
+            if actor is not None and id(actor) not in removed:
+                self.plotter.remove_actor(actor, reset_camera=False, render=False)
+                removed.add(id(actor))
+
+        if kind == "bar":
+            active_entry = self._actors.pop(f"bar:{name}", None)
+            remove_actor(active_entry[2] if active_entry is not None else None)
+            remove_actor(self._member_line_actors.pop(name, None))
+            solid_visual = self._member_solid_actors.pop(name, None)
+            if solid_visual is not None:
+                remove_actor(solid_visual.face_actor)
+                remove_actor(solid_visual.edge_actor)
+            remove_actor(self._member_aura_actors.pop(name, None))
+            for actor in self._member_cap_actors.pop(name, ()):
+                remove_actor(actor)
+            for actor in self._member_aura_cap_actors.pop(name, ()):
+                remove_actor(actor)
+            for actor in self._local_axis_actors_by_member.pop(name, ()):
+                remove_actor(actor)
+            for actor in self._member_release_actors.pop(name, ()):
+                remove_actor(actor)
+            self._local_axis_actors = [
+                actor for member_axes in self._local_axis_actors_by_member.values()
+                for actor in member_axes
+            ]
+            self._remove_label("bar", name)
+        elif kind == "node":
+            active_entry = self._actors.pop(f"node:{name}", None)
+            remove_actor(active_entry[2] if active_entry is not None else None)
+            remove_actor(self._node_aura_actors.pop(name, None))
+            remove_actor(self._node_support_actors.pop(name, None))
+            self._remove_label("node", name)
+        else:
+            return
+
+        if self._hovered == f"{kind}:{name}":
+            self._hovered = None
+        if self._selected == (kind, name):
+            self._selected = None
+        self.plotter.render()
+
     def update_member_color(self, member_name: str) -> None:
         """Update only one member's actor color without rebuilding the scene."""
         identifier = f"bar:{member_name}"

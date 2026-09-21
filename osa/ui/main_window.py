@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
             ("Novo modelo", QKeySequence.StandardKey.New, self.new_model),
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
+            ("Excluir elemento selecionado", "Delete", self.delete_selected),
             ("Vista isométrica", "0", self.scene.plotter.view_isometric),
             ("Enquadrar estrutura", "F", self.scene.reset_camera),
         )
@@ -199,6 +200,30 @@ class MainWindow(QMainWindow):
         self.properties.hide()
         self.section_panel.hide()
 
+    def delete_selected(self) -> None:
+        """Delete the selected element without rebuilding unrelated actors."""
+        if self.selected is None:
+            return
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
+            return
+        kind, name = self.selected
+        if kind == "node" and any(
+            member.start_node == name or member.end_node == name
+            for member in self.model.bars.values()
+        ):
+            return
+        try:
+            if kind == "node":
+                self.model_service.remove_node(name)
+            else:
+                self.model_service.remove_member(name)
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+        self.scene.remove_element(kind, name)
+        self.clear_selection()
+
 
 
     def new_model(self) -> None:
@@ -243,6 +268,7 @@ class MainWindow(QMainWindow):
 
     def refresh_scene(self) -> None:
         self.scene.render_model(self.model)
+        self.properties.update_delete_button_state()
 
     def refresh_member_axes(self, member_name: str) -> None:
         self.scene.update_member_axes(member_name)
