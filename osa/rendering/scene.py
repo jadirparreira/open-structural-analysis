@@ -64,6 +64,7 @@ class StructureScene(QWidget):
         self._picker.SetTolerance(0.01)
         self.plotter.iren.add_observer("MouseMoveEvent", self._on_mouse_move)
         self.plotter.iren.add_observer("LeftButtonPressEvent", self._on_left_click)
+        self.plotter.iren.add_observer("InteractionEvent", self._on_interaction)
         self.plotter.iren.add_observer("EndInteractionEvent", self._on_interaction_end)
 
     def render_model(self, model: StructuralModel) -> None:
@@ -87,12 +88,12 @@ class StructureScene(QWidget):
         self._hovered = None
         self.plotter.clear()
         self.plotter.set_background("#ffffff")
-        self._orientation_widget.SetEnabled(1)
         self._grid_renderer.render(self.plotter)
         if not model.nodes:
             self._marker_radius_locked = False
             if preserve_camera and camera_state is not None:
                 self._restore_camera(camera_state)
+            self._orientation_widget.sync_from_camera()
             self.plotter.render()
             return
 
@@ -148,6 +149,7 @@ class StructureScene(QWidget):
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._update_depth_overlays()
+        self._orientation_widget.sync_from_camera()
         self.plotter.render()
 
     def _current_parallel_scale(self) -> float | None:
@@ -200,9 +202,14 @@ class StructureScene(QWidget):
             for cap in self._member_aura_cap_actors.get(member_name, ()):
                 cap.SetScale(aura_radius, aura_radius, aura_radius)
 
+    def _on_interaction(self, *_args) -> None:
+        """Keep the orientation cube synchronized during camera motion."""
+        self._orientation_widget.sync_from_camera()
+
     def _on_interaction_end(self, *_args) -> None:
         self._update_zoom_dependent_sizes()
         self._update_depth_overlays()
+        self._orientation_widget.sync_from_camera()
         self.plotter.render()
 
     def _update_depth_overlays(self) -> None:
@@ -515,23 +522,21 @@ class StructureScene(QWidget):
                 self._label_actors[kind].remove(label)
 
     def _create_orientation_widget(self):
-        widget = NavigationWidget.create(self.plotter)
-        return widget
+        return NavigationWidget.create(self.plotter)
 
     def reset_camera(self) -> None:
         self.plotter.reset_camera()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._update_depth_overlays()
+        self._orientation_widget.sync_from_camera()
         self.plotter.render()
 
-    def _lock_navigation_viewport(self, widget=None) -> None:
-        widget = widget or self._orientation_widget
-        if hasattr(widget, "SetViewport"):
-            width, height = self.plotter.render_window.GetSize()
-            if width and height:
-                size = 100
-                widget.SetViewport(0.006, 0.012, (size + 6) / width, (size + 6) / height)
+    def view_isometric(self) -> None:
+        """Show the isometric view and keep the orientation cube synchronized."""
+        self.plotter.view_isometric()
+        self._orientation_widget.sync_from_camera()
+        self.plotter.render()
 
     def element_center(self, kind: str, name: str) -> tuple[float, float, float]:
         if kind == "node":
@@ -553,6 +558,9 @@ class StructureScene(QWidget):
         return kind, name
 
     def _on_mouse_move(self, *_args) -> None:
+        x, y = self.plotter.iren.get_event_position()
+        if self._orientation_widget.is_pointer_over(x, y):
+            return
         picked = self._pick()
         identifier = f"{picked[0]}:{picked[1]}" if picked else None
         if identifier == self._hovered:
@@ -566,6 +574,9 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def _on_left_click(self, *_args) -> None:
+        x, y = self.plotter.iren.get_event_position()
+        if self._orientation_widget.is_pointer_over(x, y):
+            return
         picked = self._pick()
         if picked:
             kind, name = picked
@@ -586,7 +597,8 @@ class StructureScene(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, "_orientation_widget"):
-            self._lock_navigation_viewport()
+            self._orientation_widget.resize()
+            self._orientation_widget.sync_from_camera()
             self._update_zoom_dependent_sizes()
 
 

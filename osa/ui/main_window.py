@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Excluir elemento selecionado", "Delete", self.delete_selected),
-            ("Vista isométrica", "0", self.scene.plotter.view_isometric),
+            ("Vista isométrica", "0", self.scene.view_isometric),
             ("Enquadrar estrutura", "F", self.scene.reset_camera),
         )
         for label, shortcut, callback in actions:
