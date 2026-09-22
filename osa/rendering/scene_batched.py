@@ -23,6 +23,10 @@ class StructureScene(QWidget):
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
     _axis_colors = ("#d1242f", "#f2b705", "#2da44e")
+    # View the model from -X, -Y and +Z.  With Z kept vertical on screen,
+    # positive X points northeast and positive Y points northwest.
+    _default_view_direction = (-1.0, -1.0, 1.0)
+    _default_view_up = (0.0, 0.0, 1.0)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,7 +138,7 @@ class StructureScene(QWidget):
         if preserve_camera and camera_state is not None:
             self._restore_camera(camera_state)
         else:
-            self.plotter.reset_camera()
+            self._set_default_isometric_view()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._sync_labels()
@@ -489,10 +493,18 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def view_isometric(self) -> None:
-        self.plotter.view_isometric()
+        self._set_default_isometric_view()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
+
+    def _set_default_isometric_view(self) -> None:
+        """Fit the scene using the structural-axis isometric convention."""
+        self.plotter.view_vector(
+            np.asarray(self._default_view_direction),
+            viewup=self._default_view_up,
+            render=False,
+        )
 
     def _on_interaction(self, *_args) -> None:
         self._camera_interacting = True
