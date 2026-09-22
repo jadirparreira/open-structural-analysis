@@ -50,6 +50,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._grid_actor = None
         self._node_actor = None
         self._support_actor = None
         self._release_actor = None
@@ -58,6 +59,7 @@ class StructureScene(QWidget):
         self._highlight_actors: dict[str, object] = {}
 
         self._local_axes_visible = True
+        self._grid_visible = True
         self._labels_visibility = {"node": True, "bar": True}
         self._solid_members_visible = True
         self._member_releases_visible = True
@@ -110,7 +112,8 @@ class StructureScene(QWidget):
         self._clear_actor_references()
         self.plotter.clear()
         self.plotter.set_background("#ffffff")
-        self._grid_renderer.render(self.plotter)
+        self._grid_actor = self._grid_renderer.render(self.plotter, model.nodes.values())
+        self._grid_actor.SetVisibility(self._grid_visible)
 
         if not model.nodes:
             self._marker_radius_locked = False
@@ -405,6 +408,12 @@ class StructureScene(QWidget):
             actor.SetVisibility(visible)
         self.plotter.render()
 
+    def set_grid_visible(self, visible: bool) -> None:
+        self._grid_visible = bool(visible)
+        if self._grid_actor is not None:
+            self._grid_actor.SetVisibility(visible)
+        self.plotter.render()
+
     def set_member_releases_visible(self, visible: bool) -> None:
         self._member_releases_visible = bool(visible)
         if self._release_actor is not None:
@@ -573,6 +582,7 @@ class StructureScene(QWidget):
         return any((self._member_line_actor, self._member_face_actor, self._node_actor))
 
     def _clear_actor_references(self) -> None:
+        self._grid_actor = None
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None

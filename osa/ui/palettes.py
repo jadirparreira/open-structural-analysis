@@ -225,7 +225,8 @@ class TopIconPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
-        for filename, tooltip, kind in (("dot-n.svg", "Identificadores dos nós", "node"),
+        for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
+                                        ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
                                         ("box.svg", "Seções sólidas", "solid"),
@@ -241,7 +242,9 @@ class TopIconPalette(QFrame):
             button.installEventFilter(self)
             button.setCheckable(True)
             button.setChecked(True)
-            if kind == "axes":
+            if kind == "grid":
+                button.toggled.connect(window.scene.set_grid_visible)
+            elif kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
             elif kind == "solid":
                 button.toggled.connect(window.scene.set_solid_members_visible)
