@@ -593,6 +593,12 @@ class StructureScene(QWidget):
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
 
+    def rotate_camera_clockwise(self) -> None:
+        self._orientation_widget.animate_camera_roll(clockwise=True)
+
+    def rotate_camera_counterclockwise(self) -> None:
+        self._orientation_widget.animate_camera_roll(clockwise=False)
+
     def _set_default_isometric_view(self) -> None:
         """Fit the scene using the structural-axis isometric convention."""
         self.plotter.view_vector(

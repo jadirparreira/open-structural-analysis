@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self.navigation_button.setProperty("paletteTooltip", "Enquadrar modelo")
         self.navigation_button.setAccessibleName("Enquadrar modelo")
         self.navigation_button.installEventFilter(self)
+        self.navigation_button.clicked.connect(self.scene.reset_camera)
         self.navigation_button.setIcon(
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "maximize.svg"))
         )
@@ -90,6 +91,7 @@ class MainWindow(QMainWindow):
         self.sloped_plane_button.setProperty("paletteTooltip", "Rotacionar +90°")
         self.sloped_plane_button.setAccessibleName("Rotacionar +90°")
         self.sloped_plane_button.installEventFilter(self)
+        self.sloped_plane_button.clicked.connect(self.scene.rotate_camera_clockwise)
         self.sloped_plane_right_button = SlopedPlaneButton(
             self, vertical_chamfer=12.0, icon_offset_x=-2, icon_offset_y=3,
         )
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self.sloped_plane_right_button.setProperty("paletteTooltip", "Rotacionar -90°")
         self.sloped_plane_right_button.setAccessibleName("Rotacionar -90°")
         self.sloped_plane_right_button.installEventFilter(self)
+        self.sloped_plane_right_button.clicked.connect(self.scene.rotate_camera_counterclockwise)
         self.previous_plane_button = LeftArrowButton(self)
         self.previous_plane_button.setObjectName("previousPlaneButton")
         self.previous_plane_button.setIcon(

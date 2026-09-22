@@ -272,6 +272,43 @@ class CameraCubeWidget:
         self._animation_elapsed = 0.0
         self._camera_animation.start()
 
+    def animate_camera_roll(self, *, clockwise: bool) -> None:
+        """Animate a 90-degree roll around the camera viewing direction."""
+        camera = self._parent_renderer.GetActiveCamera()
+        direction = np.asarray(camera.GetDirectionOfProjection(), dtype=float)
+        view_up = np.asarray(camera.GetViewUp(), dtype=float)
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm <= 1e-12:
+            return
+        direction /= direction_norm
+        view_up -= direction * np.dot(view_up, direction)
+        up_norm = np.linalg.norm(view_up)
+        if up_norm <= 1e-12:
+            return
+        view_up /= up_norm
+        right = np.cross(direction, view_up)
+        right_norm = np.linalg.norm(right)
+        if right_norm <= 1e-12:
+            return
+        right /= right_norm
+        # The visual clockwise direction corresponds to -right in the
+        # camera's world-up representation.
+        target_up = -right if clockwise else right
+        self._camera_animation.stop()
+        self._set_navigation_style_enabled(False)
+        self._animation_start = (
+            np.asarray(camera.GetPosition(), dtype=float),
+            np.asarray(camera.GetFocalPoint(), dtype=float),
+            view_up,
+        )
+        self._animation_end = (
+            self._animation_start[0].copy(),
+            self._animation_start[1].copy(),
+            target_up,
+        )
+        self._animation_elapsed = 0.0
+        self._camera_animation.start()
+
     def _animate_camera(self) -> None:
         if self._animation_start is None or self._animation_end is None:
             self._camera_animation.stop()
@@ -295,6 +332,7 @@ class CameraCubeWidget:
             self._camera_animation.stop()
             self._animation_start = None
             self._animation_end = None
+            self._set_navigation_style_enabled(True)
 
     def _create_beveled_cube(self) -> vtk.vtkConvexHull:
         """Create a convex cube whose twelve original edges are chamfered."""
