@@ -64,12 +64,64 @@ class CommandSession:
         return CommandResponse(value, "Não é um comando válido", "error")
 
     def _create_portico(self) -> None:
-        coordinates = [
-            (2, -2, 0), (-2, -2, 0), (-2, 2, 0), (2, 2, 0),
-            (2, -2, 4), (-2, -2, 4), (-2, 2, 4), (2, 2, 4),
-        ]
-        names = [self.service.create_node(*point).name for point in coordinates]
-        for name in names[:4]:
-            self.service.model.update_node_supports(name, (True, True, True, False, False, False))
-        for start, end in [(0, 4), (1, 5), (2, 6), (3, 7), (4, 5), (5, 6), (6, 7), (7, 4)]:
-            self.service.create_member(names[start], names[end])
+        model = self.service.model
+        supports = (True, True, True, False, False, False)
+        column_geometry = {"b": 250.0, "h": 500.0}
+        truss_geometry = {"d": 100.0, "bf": 50.0, "t": 3.0}
+        column_tops: dict[tuple[float, float], str] = {}
+
+        def configure_member(
+            name: str,
+            material: str,
+            section: str,
+            profile: str,
+            geometry: dict[str, float],
+        ) -> None:
+            model.update_bar_material(name, material, model.materials[material])
+            model.update_bar_section(name, section)
+            model.update_member_profile(name, profile, geometry)
+
+        # Galpão inicial: duas linhas de pilares em x, com cinco eixos em y.
+        # As coordenadas do modelo são expressas em metros; a seção permanece
+        # em milímetros, conforme o restante do sistema de seções.
+        for x in (0.0, 10.0):
+            for y in (0.0, 5.0, 10.0, 15.0, 20.0):
+                base = self.service.create_node(x, y, 0.0)
+                top = self.service.create_node(x, y, 6.0)
+                column_tops[(x, y)] = top.name
+                model.update_node_supports(base.name, supports)
+                member = self.service.create_member(base.name, top.name)
+                configure_member(
+                    member.name, "Concreto Estrutural", "Retangular", "R 250 x 500", column_geometry
+                )
+
+        # Com 500 mm de altura, um módulo horizontal de 500 mm produz
+        # diagonais exatamente a 45 graus. Cada treliça tem 20 módulos.
+        panel_count = 20
+        panel_length = 0.5
+        for y in (0.0, 5.0, 10.0, 15.0, 20.0):
+            bottom_nodes = [column_tops[(0.0, y)]]
+            for index in range(1, panel_count):
+                bottom_nodes.append(self.service.create_node(index * panel_length, y, 6.0).name)
+            bottom_nodes.append(column_tops[(10.0, y)])
+            top_nodes = [
+                self.service.create_node(index * panel_length, y, 6.5).name
+                for index in range(panel_count + 1)
+            ]
+
+            def add_truss_member(start: str, end: str) -> None:
+                member = self.service.create_member(start, end)
+                configure_member(
+                    member.name, "Aço Estrutural", "U Formado", "U 100 x 50 x 3", truss_geometry
+                )
+
+            for index in range(panel_count):
+                add_truss_member(bottom_nodes[index], bottom_nodes[index + 1])
+                add_truss_member(top_nodes[index], top_nodes[index + 1])
+            for index in range(panel_count + 1):
+                add_truss_member(bottom_nodes[index], top_nodes[index])
+            for index in range(panel_count):
+                if index % 2 == 0:
+                    add_truss_member(bottom_nodes[index], top_nodes[index + 1])
+                else:
+                    add_truss_member(top_nodes[index], bottom_nodes[index + 1])

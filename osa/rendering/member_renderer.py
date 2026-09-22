@@ -32,7 +32,7 @@ class MemberRenderer:
         aura = plotter.add_mesh(
             pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z)),
             color="#000000", line_width=self.AURA_LINE_WIDTH, pickable=False,
-            reset_camera=False,
+            reset_camera=False, render=False,
         )
         aura.SetVisibility(False)
         aura_caps = self._rounded_caps(
@@ -40,7 +40,7 @@ class MemberRenderer:
         )
         actor = plotter.add_mesh(
             pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z)),
-            color=member.color, line_width=4, reset_camera=False,
+            color=member.color, line_width=4, reset_camera=False, render=False,
         )
         member_caps = self._rounded_caps(
             plotter, start, end, member.color, visible=True, radius=radius * 0.01,

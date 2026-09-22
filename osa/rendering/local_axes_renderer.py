@@ -33,7 +33,8 @@ class LocalAxesRenderer:
         actors = []
         for axis, color in ((x_axis, "#d1242f"), (rotated_y, "#f2b705"), (rotated_z, "#2da44e")):
             actor = plotter.add_mesh(pv.Line(origin, origin + axis * scale), color=color,
-                                     line_width=4, pickable=False, reset_camera=False)
+                                     line_width=4, pickable=False, reset_camera=False,
+                                     render=False)
             actor.SetVisibility(visible)
             actors.append(actor)
         return actors
