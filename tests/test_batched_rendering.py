@@ -17,23 +17,23 @@ def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     model = warehouse_model()
     batch = BatchedMemberRenderer().build(model, 0.05)
 
-    assert len(batch.names) == 415
-    assert batch.lines.n_cells == 415
+    assert len(batch.names) == 839
+    assert batch.lines.n_cells == 839
     assert batch.faces.n_cells > len(batch.names)
     assert batch.edges.n_cells > len(batch.names)
-    assert [mesh.n_cells for mesh in batch.axes] == [415, 415, 415]
-    assert set(np.unique(batch.faces.cell_data["element_index"])) == set(range(415))
-    assert set(np.unique(batch.lines.cell_data["element_index"])) == set(range(415))
+    assert [mesh.n_cells for mesh in batch.axes] == [839, 839, 839]
+    assert set(np.unique(batch.faces.cell_data["element_index"])) == set(range(839))
+    assert set(np.unique(batch.lines.cell_data["element_index"])) == set(range(839))
     assert batch.faces.cell_data["rgb"].shape == (batch.faces.n_cells, 3)
-    assert len(batch.outlines) == 415
+    assert len(batch.outlines) == 839
 
 
 def test_node_batch_keeps_spherical_markers_and_pick_identity():
     model = warehouse_model()
     batch = BatchedNodeRenderer().build(model, 0.05)
 
-    assert len(batch.names) == 220
+    assert len(batch.names) == 408
     assert batch.geometry.n_cells > len(batch.names)
-    assert set(np.unique(batch.geometry.cell_data["element_index"])) == set(range(220))
+    assert set(np.unique(batch.geometry.cell_data["element_index"])) == set(range(408))
     assert batch.supports.n_cells == 10
-    assert batch.label_positions.shape == (220, 3)
+    assert batch.label_positions.shape == (408, 3)
