@@ -1,7 +1,7 @@
 """Fachada de compatibilidade para a antiga API ``osa.model``."""
 
 from osa.data import CatalogLoader
-from osa.domain import ActionDefinition, ActionGroup, Bar, Member, Node
+from osa.domain import ActionDefinition, ActionGroup, Bar, Member, Node, ReferenceAxis
 from osa.domain.model import StructuralModel as _StructuralModel
 from osa.persistence import ProjectRepository, ProjectSerializer
 
@@ -37,4 +37,4 @@ class StructuralModel(_StructuralModel):
         ProjectRepository().load(self, path)
 
 
-__all__ = ["ActionDefinition", "ActionGroup", "Bar", "Member", "Node", "StructuralModel"]
+__all__ = ["ActionDefinition", "ActionGroup", "Bar", "Member", "Node", "ReferenceAxis", "StructuralModel"]

@@ -27,6 +27,9 @@ class ModelService:
     def create_member(self, start_node: str, end_node: str, *, name: str | None = None):
         return self.model.add_bar(name or self.next_member_name(), start_node, end_node)
 
+    def set_reference_axes(self, axes) -> None:
+        self.model.set_reference_axes(axes)
+
     def update_node(self, name: str, x: float, y: float, z: float):
         return self.model.update_node(name, x, y, z)
 

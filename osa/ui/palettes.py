@@ -31,6 +31,15 @@ class PaletteTooltip(QLabel):
     def schedule_below(self, button: QToolButton, text: str) -> None:
         self._schedule(button, text, "below")
 
+    def schedule_upper_right(self, button: QToolButton, text: str) -> None:
+        self._schedule(button, text, "upper-right")
+
+    def schedule_left(self, button: QToolButton, text: str) -> None:
+        self._schedule(button, text, "left")
+
+    def schedule_above(self, button: QToolButton, text: str) -> None:
+        self._schedule(button, text, "above")
+
     def _schedule(self, button: QToolButton, text: str, placement: str) -> None:
         self._show_timer.stop()
         self._pending = button, text, placement
@@ -61,6 +70,21 @@ class PaletteTooltip(QLabel):
             self.move(
                 button_position.x() + (button.width() - self.width()) // 2,
                 button_position.y(),
+            )
+        elif placement == "upper-right":
+            button_position = button.mapTo(parent, QPoint(button.width() + 10, -self.height() - 10))
+            self.move(button_position)
+        elif placement == "above":
+            button_position = button.mapTo(parent, QPoint(0, -self.height() - 10))
+            self.move(
+                button_position.x() + (button.width() - self.width()) // 2,
+                button_position.y(),
+            )
+        elif placement == "left":
+            button_position = button.mapTo(parent, QPoint(-self.width() - 10, 0))
+            self.move(
+                button_position.x(),
+                button_position.y() + (button.height() - self.height()) // 2,
             )
         else:
             button_position = button.mapTo(parent, QPoint(button.width() + 10, 0))
@@ -120,6 +144,7 @@ class FloatingPalette(QFrame):
             "Geometria",
             "geometry-vector-square.svg",
             (
+                ("Configurar eixos", "axis-configuration.svg", window.toggle_axes_panel),
                 ("Adicionar nó", "node-circle.svg", window.start_node_command),
                 ("Adicionar membro", "member-spline.svg", window.start_member_command),
             ),
@@ -226,6 +251,7 @@ class TopIconPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
+                                        ("reference-axes.svg", "Eixos de referência", "reference-axes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
@@ -244,6 +270,8 @@ class TopIconPalette(QFrame):
             button.setChecked(True)
             if kind == "grid":
                 button.toggled.connect(window.scene.set_grid_visible)
+            elif kind == "reference-axes":
+                button.toggled.connect(window.scene.set_reference_axes_visible)
             elif kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
             elif kind == "solid":

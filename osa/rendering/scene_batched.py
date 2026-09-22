@@ -15,6 +15,7 @@ from .batched_renderer import BatchedMemberRenderer, BatchedNodeRenderer, Member
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay
 from .navigation_widget import NavigationWidget
+from .reference_axes_renderer import ReferenceAxesRenderer
 
 
 class StructureScene(QWidget):
@@ -38,6 +39,7 @@ class StructureScene(QWidget):
         self.plotter.enable_parallel_projection()
 
         self._grid_renderer = GridRenderer()
+        self._reference_axes_renderer = ReferenceAxesRenderer()
         self._member_renderer = BatchedMemberRenderer()
         self._node_renderer = BatchedNodeRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
@@ -51,6 +53,7 @@ class StructureScene(QWidget):
         self._member_face_actor = None
         self._member_edge_actor = None
         self._grid_actor = None
+        self._reference_axes_actor = None
         self._node_actor = None
         self._support_actor = None
         self._release_actor = None
@@ -60,6 +63,7 @@ class StructureScene(QWidget):
 
         self._local_axes_visible = True
         self._grid_visible = True
+        self._reference_axes_visible = True
         self._labels_visibility = {"node": True, "bar": True}
         self._solid_members_visible = True
         self._member_releases_visible = True
@@ -67,6 +71,7 @@ class StructureScene(QWidget):
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
         self._marker_radius_current = 0.05
+        self._reference_plane_z = 0.0
         self._marker_radius_locked = False
         self._zoom_reference_parallel_scale: float | None = None
         self._camera_interacting = False
@@ -107,20 +112,32 @@ class StructureScene(QWidget):
         camera_state = self._camera_state()
         preserve_camera = self._has_scene()
         self._model = model
+        self._reference_plane_z = self._reference_plane_elevation()
         self._hovered = None
         self._validate_selection()
         self._clear_actor_references()
         self.plotter.clear()
         self.plotter.set_background("#ffffff")
-        self._grid_actor = self._grid_renderer.render(self.plotter, model.nodes.values())
+        self._grid_actor = self._grid_renderer.render(self.plotter, model.nodes.values(), model.axes)
+        self._grid_renderer.set_elevation(self._reference_plane_z)
         self._grid_actor.SetVisibility(self._grid_visible)
+        self._reference_axes_actor = self._reference_axes_renderer.render(
+            self.plotter, model.axes, self._grid_renderer.bounds,
+        )
+        self._reference_axes_renderer.set_elevation(self._reference_plane_z)
+        if self._reference_axes_actor is not None:
+            self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
 
         if not model.nodes:
             self._marker_radius_locked = False
             self._label_overlay.clear()
+            self._add_reference_axis_labels()
             if preserve_camera and camera_state is not None:
                 self._restore_camera(camera_state)
+            elif self._reference_axes_actor is not None:
+                self.plotter.reset_camera()
             self._orientation_widget.sync_from_camera()
+            self._sync_labels()
             self.plotter.render()
             return
 
@@ -142,6 +159,7 @@ class StructureScene(QWidget):
             self._restore_camera(camera_state)
         else:
             self._set_default_isometric_view()
+        self._sync_reference_plane()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._sync_labels()
@@ -224,6 +242,7 @@ class StructureScene(QWidget):
             self._support_actor.SetVisibility(self._node_supports_visible)
 
     def _add_labels(self) -> None:
+        self._add_reference_axis_labels()
         if self._member_batch is not None:
             self._label_overlay.set_group(
                 "bar", self._member_batch.label_positions, self._member_batch.names,
@@ -234,6 +253,14 @@ class StructureScene(QWidget):
                 "node", self._node_batch.label_positions, self._node_batch.names,
                 visible=self._labels_visibility["node"],
             )
+
+    def _add_reference_axis_labels(self) -> None:
+        positions, labels = self._reference_axes_renderer.labels(
+            self._model.axes, self._grid_renderer.bounds, self._reference_plane_z,
+        )
+        self._label_overlay.set_group(
+            "reference-axis", positions, labels, visible=self._reference_axes_visible,
+        )
 
     def _add_colored_mesh(self, mesh: pv.PolyData, name: str, **options):
         if not mesh.n_cells:
@@ -414,6 +441,13 @@ class StructureScene(QWidget):
             self._grid_actor.SetVisibility(visible)
         self.plotter.render()
 
+    def set_reference_axes_visible(self, visible: bool) -> None:
+        self._reference_axes_visible = bool(visible)
+        if self._reference_axes_actor is not None:
+            self._reference_axes_actor.SetVisibility(visible)
+        self._label_overlay.set_group_visible("reference-axis", visible)
+        self.plotter.render()
+
     def set_member_releases_visible(self, visible: bool) -> None:
         self._member_releases_visible = bool(visible)
         if self._release_actor is not None:
@@ -528,10 +562,31 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def _sync_labels(self) -> None:
+        self._sync_reference_plane()
         self._label_overlay.sync(self.plotter.renderer)
 
     def _on_camera_modified(self, *_args) -> None:
         self._schedule_label_sync()
+
+    def _reference_plane_elevation(self) -> float:
+        if not self._model.nodes:
+            return 0.0
+        camera = self.plotter.renderer.GetActiveCamera()
+        position = camera.GetPosition()
+        focal_point = camera.GetFocalPoint()
+        elevations = [node.z for node in self._model.nodes.values()]
+        # A positive viewing direction in Z means the camera is looking upward,
+        # so the reference layer belongs above the structure; otherwise it stays below it.
+        return max(elevations) if focal_point[2] - position[2] > 1e-6 else min(elevations)
+
+    def _sync_reference_plane(self) -> None:
+        elevation = self._reference_plane_elevation()
+        if elevation == self._reference_plane_z:
+            return
+        self._reference_plane_z = elevation
+        self._grid_renderer.set_elevation(elevation)
+        self._reference_axes_renderer.set_elevation(elevation)
+        self._add_reference_axis_labels()
 
     def _schedule_label_sync(self) -> None:
         if not self._label_timer.isActive():
@@ -583,6 +638,7 @@ class StructureScene(QWidget):
 
     def _clear_actor_references(self) -> None:
         self._grid_actor = None
+        self._reference_axes_actor = None
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None

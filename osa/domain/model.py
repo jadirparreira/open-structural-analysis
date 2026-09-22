@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from .entities import Action, ActionDefinition, ActionGroup, AnalysisResult, Bar, LoadCase, LoadCombination, Node
+from .entities import (
+    Action, ActionDefinition, ActionGroup, AnalysisResult, Bar, LoadCase, LoadCombination, Node, ReferenceAxis,
+)
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
 
 
@@ -17,6 +19,7 @@ class StructuralModel:
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
         self.bars: dict[str, Bar] = {}
+        self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
         self.materials = {name: tuple(values) for name, values in (materials or {}).items()}
         self.material_types = dict(material_types or {})
         self.sections = {kind: list(items) for kind, items in (sections or {}).items()}
@@ -93,6 +96,30 @@ class StructuralModel:
         self.nodes[name] = node
         self._touch()
         return node
+
+    def set_reference_axes(self, axes: dict[str, tuple[ReferenceAxis, ...]]) -> None:
+        """Replace the named reference axes after validating their per-direction identity."""
+        normalized: dict[str, tuple[ReferenceAxis, ...]] = {}
+        for direction in ("X", "Y", "Z"):
+            labels: set[str] = set()
+            values: set[float] = set()
+            entries: list[ReferenceAxis] = []
+            for axis in axes.get(direction, ()):
+                label = str(axis.label).strip().upper()
+                value = round(float(axis.value), 3)
+                if not label or not label.isascii() or not label.isalnum():
+                    raise ValueError("O rótulo do eixo deve conter somente letras e números.")
+                if not math.isfinite(value):
+                    raise ValueError("O valor do eixo deve ser um número finito.")
+                if label in labels or value in values:
+                    raise ValueError("Não pode haver rótulos ou valores repetidos no mesmo eixo.")
+                labels.add(label)
+                values.add(value)
+                entries.append(ReferenceAxis(label, value))
+            normalized[direction] = tuple(entries)
+        if normalized != self.axes:
+            self.axes = normalized
+            self._touch()
 
     def _validate_member_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
         if start_node.casefold() == end_node.casefold():
@@ -274,7 +301,8 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
-        self.nodes.clear(); self.bars.clear(); self.actions.clear(); self.action_groups.clear()
+        self.nodes.clear(); self.bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
+        self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()
         self.load_cases.clear(); self.load_combinations.clear(); self.analysis_results.clear()
         self.selected_action_group = "PP+AP+AV"

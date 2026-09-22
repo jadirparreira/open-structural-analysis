@@ -1,5 +1,5 @@
 from osa.domain import ActionDefinition, ActionGroup
-from osa.model import StructuralModel
+from osa.model import ReferenceAxis, StructuralModel
 
 
 def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
@@ -29,6 +29,21 @@ def test_v1_files_are_still_readable():
     model = StructuralModel(); model.load_dict(data)
     assert model.nodes["N1"].supports[0]
     assert model.bars["B1"].section == "W Laminado"
+
+
+def test_round_trip_preserves_reference_axes(tmp_path):
+    model = StructuralModel()
+    model.set_reference_axes({
+        "X": (ReferenceAxis("A", 5.0),),
+        "Y": (ReferenceAxis("1", -2.5),),
+    })
+    path = tmp_path / "axes.osa.json"
+    model.save(path)
+
+    restored = StructuralModel()
+    restored.load(path)
+
+    assert restored.axes == model.axes
 
 
 def test_round_trip_preserves_action_groups(tmp_path):

@@ -1,8 +1,10 @@
 """Janela principal e composição dos componentes visuais."""
 from .command_bar import CommandBar, CommandHistory
 from .common import *
+from .axes_panel import AxesPanel
 from .dialogs import ActionGroupDialog, SettingsDialog
-from .palettes import FloatingPalette, TopIconPalette
+from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
+from .palettes import FloatingPalette, PaletteTooltip, TopIconPalette
 from .property_panel import PropertyPanel
 from .section_panel import (
     ILaminadoSectionPanel,
@@ -55,7 +57,89 @@ class MainWindow(QMainWindow):
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
         self.top_icon_palette.reposition()
+        self.navigation_button = QToolButton(self)
+        self.navigation_button.setObjectName("navigationButton")
+        self.navigation_button.setFixedSize(34, 34)
+        self._navigation_plane_icons = ("axis-plane-xy.svg", "axis-plane-xz.svg", "axis-plane-yz.svg")
+        self._navigation_plane_index = 0
+        self.navigation_button.setStyleSheet(
+            "QToolButton { border: 1px solid #d0d7de; border-radius: 7px; padding: 0; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QToolButton:hover { background: #eaeef2; color: #24292f; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        self.navigation_button.setIconSize(QSize(21, 21))
+        self._navigation_tooltip = PaletteTooltip(self)
+        self.navigation_button.setToolTip("Enquadrar modelo")
+        self.navigation_button.setProperty("paletteTooltip", "Enquadrar modelo")
+        self.navigation_button.setAccessibleName("Enquadrar modelo")
+        self.navigation_button.installEventFilter(self)
+        self.navigation_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "maximize.svg"))
+        )
+        self.sloped_plane_button = SlopedPlaneButton(
+            self, horizontal_chamfer=12.0, icon_offset_x=-3, icon_offset_y=2,
+        )
+        self.sloped_plane_button.setObjectName("slopedPlaneButton")
+        self.sloped_plane_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "corner-left-up.svg"))
+        )
+        self.sloped_plane_button.setIconSize(QSize(18, 18))
+        self.sloped_plane_button.setToolTip("Rotacionar +90°")
+        self.sloped_plane_button.setProperty("paletteTooltip", "Rotacionar +90°")
+        self.sloped_plane_button.setAccessibleName("Rotacionar +90°")
+        self.sloped_plane_button.installEventFilter(self)
+        self.sloped_plane_right_button = SlopedPlaneButton(
+            self, vertical_chamfer=12.0, icon_offset_x=-2, icon_offset_y=3,
+        )
+        self.sloped_plane_right_button.setObjectName("slopedPlaneRightButton")
+        self.sloped_plane_right_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "corner-down-right.svg"))
+        )
+        self.sloped_plane_right_button.setIconSize(QSize(18, 18))
+        self.sloped_plane_right_button.setToolTip("Rotacionar -90°")
+        self.sloped_plane_right_button.setProperty("paletteTooltip", "Rotacionar -90°")
+        self.sloped_plane_right_button.setAccessibleName("Rotacionar -90°")
+        self.sloped_plane_right_button.installEventFilter(self)
+        self.previous_plane_button = LeftArrowButton(self)
+        self.previous_plane_button.setObjectName("previousPlaneButton")
+        self.previous_plane_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "chevron-left.svg"))
+        )
+        self.previous_plane_button.setIconSize(QSize(20, 20))
+        self.previous_plane_button.setToolTip("Plano anterior")
+        self.previous_plane_button.setProperty("paletteTooltip", "Plano anterior")
+        self.previous_plane_button.setAccessibleName("Plano anterior")
+        self.previous_plane_button.installEventFilter(self)
+        self.plane_change_button = QToolButton(self)
+        self.plane_change_button.setObjectName("planeChangeButton")
+        self.plane_change_button.setFixedSize(34, 34)
+        self.plane_change_button.setStyleSheet(
+            "QToolButton { border: 1px solid #d0d7de; border-radius: 7px; padding: 0; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QToolButton:hover { background: #eaeef2; color: #24292f; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        self.plane_change_button.setIconSize(QSize(21, 21))
+        self.plane_change_button.setToolTip("Alterar plano")
+        self.plane_change_button.setProperty("paletteTooltip", "Alterar plano")
+        self.plane_change_button.setAccessibleName("Alterar plano")
+        self.plane_change_button.installEventFilter(self)
+        self.plane_change_button.clicked.connect(self._cycle_navigation_plane)
+        self._update_navigation_button_icon()
+        self.next_plane_button = RightArrowButton(self)
+        self.next_plane_button.setObjectName("nextPlaneButton")
+        self.next_plane_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "chevron-right.svg"))
+        )
+        self.next_plane_button.setIconSize(QSize(20, 20))
+        self.next_plane_button.setToolTip("Próximo plano")
+        self.next_plane_button.setProperty("paletteTooltip", "Próximo plano")
+        self.next_plane_button.setAccessibleName("Próximo plano")
+        self.next_plane_button.installEventFilter(self)
+        self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.axes_panel = AxesPanel(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
             "I Laminado": ILaminadoSectionPanel(self),
@@ -112,10 +196,14 @@ class MainWindow(QMainWindow):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
             self.top_icon_palette.reposition()
+        if hasattr(self, "navigation_button"):
+            self._reposition_navigation_button()
         if hasattr(self, "properties"):
             self.properties.reposition()
             if self.properties._color_palette.isVisible():
                 self.properties.reposition_color_palette()
+        if hasattr(self, "axes_panel") and self.axes_panel.isVisible():
+            self.axes_panel.reposition()
         if hasattr(self, "command_bar"):
             self.command_bar.reposition()
         if hasattr(self, "history"):
@@ -133,6 +221,85 @@ class MainWindow(QMainWindow):
             if button is not None: button.setChecked(False)
         else:
             self.show_section_panel(section, button)
+
+    def _reposition_navigation_button(self) -> None:
+        margin = 0 if self.isMaximized() else WindowFrame.MARGIN
+        self.navigation_button.move(
+            margin + 24,
+            self.height() - margin - self.navigation_button.height() - 24,
+        )
+        self.navigation_button.raise_()
+        if hasattr(self, "sloped_plane_button"):
+            self.sloped_plane_button.move(
+                self.navigation_button.x(),
+                self.navigation_button.y() - self.sloped_plane_button.height() - 8,
+            )
+            self.sloped_plane_button.raise_()
+        if hasattr(self, "sloped_plane_right_button"):
+            self.sloped_plane_right_button.move(
+                self.navigation_button.x() + self.navigation_button.width() + 8,
+                self.navigation_button.y(),
+            )
+            self.sloped_plane_right_button.raise_()
+        if hasattr(self, "plane_change_button"):
+            self.plane_change_button.move(
+                self.sloped_plane_right_button.x() + self.sloped_plane_right_button.width() + 80,
+                self.navigation_button.y(),
+            )
+            self.plane_change_button.raise_()
+        if hasattr(self, "previous_plane_button"):
+            self.previous_plane_button.move(
+                self.plane_change_button.x() - self.previous_plane_button.width() - 8,
+                self.navigation_button.y(),
+            )
+            self.previous_plane_button.raise_()
+        if hasattr(self, "next_plane_button"):
+            self.next_plane_button.move(
+                self.plane_change_button.x() + self.plane_change_button.width() + 8,
+                self.navigation_button.y(),
+            )
+            self.next_plane_button.raise_()
+
+    def _cycle_navigation_plane(self) -> None:
+        self._navigation_plane_index = (self._navigation_plane_index + 1) % len(self._navigation_plane_icons)
+        self._update_navigation_button_icon()
+
+    def _update_navigation_button_icon(self) -> None:
+        icon = self._navigation_plane_icons[self._navigation_plane_index]
+        self.plane_change_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon))
+        )
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        navigation_tooltips = {
+            getattr(self, "navigation_button", None): "Enquadrar modelo",
+            getattr(self, "sloped_plane_button", None): "Rotacionar +90°",
+            getattr(self, "sloped_plane_right_button", None): "Rotacionar -90°",
+            getattr(self, "previous_plane_button", None): "Plano anterior",
+            getattr(self, "plane_change_button", None): "Alterar plano",
+            getattr(self, "next_plane_button", None): "Próximo plano",
+        }
+        if watched in navigation_tooltips:
+            if event.type() == QEvent.Type.Enter:
+                if watched in (
+                    self.previous_plane_button,
+                    self.plane_change_button,
+                    self.next_plane_button,
+                ):
+                    self._navigation_tooltip.schedule_above(
+                        self.plane_change_button,
+                        navigation_tooltips[watched],
+                    )
+                else:
+                    self._navigation_tooltip.schedule_upper_right(
+                        self.navigation_button,
+                        navigation_tooltips[watched],
+                    )
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._navigation_tooltip.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
 
     def close_section_panel(self, button=None) -> None:
         """Hide the geometry editor and restore its trigger button state."""
@@ -160,6 +327,17 @@ class MainWindow(QMainWindow):
         panel.raise_()
         if button is not None:
             button.setChecked(True)
+
+    def toggle_axes_panel(self) -> None:
+        if self.axes_panel.isVisible():
+            self.axes_panel.hide()
+            return
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.axes_panel.reposition()
+        self.axes_panel.show()
+        self.axes_panel.raise_()
 
 
     def start_node_command(self) -> None:
@@ -197,6 +375,7 @@ class MainWindow(QMainWindow):
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
+        self.axes_panel.hide()
         self.selected = kind, name
         self.properties.show_for(kind, name)
 
@@ -204,6 +383,7 @@ class MainWindow(QMainWindow):
         self.selected = None
         self.properties.hide()
         self.section_panel.hide()
+        self.axes_panel.hide()
 
     def delete_selected(self) -> None:
         """Delete the selected element without rebuilding unrelated actors."""
@@ -232,6 +412,7 @@ class MainWindow(QMainWindow):
 
 
     def new_model(self) -> None:
+        self.axes_panel.discard()
         self.model.clear()
         self.section_profiles.clear()
         self.section_geometry.clear()
@@ -256,6 +437,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", "Modelo OSA (*.osa.json);;JSON (*.json)")
         if path:
             try:
+                self.axes_panel.discard()
                 self.project_service.load(path)
                 self.section_profiles = {
                     name: member.profile for name, member in self.model.bars.items() if member.profile

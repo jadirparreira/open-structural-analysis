@@ -1,6 +1,6 @@
 import numpy as np
 
-from osa.model import StructuralModel
+from osa.model import ReferenceAxis, StructuralModel
 from osa.rendering.grid_renderer import GridRenderer
 
 
@@ -24,3 +24,23 @@ def test_empty_model_keeps_the_default_ten_metre_grid_at_the_origin():
     grid.update(())
 
     np.testing.assert_allclose(grid.mesh.bounds, (-5.0, 5.0, -5.0, 5.0, 0.0, 0.0))
+
+
+def test_grid_uses_axis_positions_without_using_their_line_extensions():
+    grid = GridRenderer()
+    grid.update((), {
+        "X": (ReferenceAxis("A", 20.0),),
+        "Y": (ReferenceAxis("1", 10.0),),
+    })
+
+    np.testing.assert_allclose(grid.mesh.bounds, (5.0, 15.0, 15.0, 25.0, 0.0, 0.0))
+
+
+def test_grid_elevation_changes_without_rebuilding_the_xy_footprint():
+    grid = GridRenderer()
+    grid.update(())
+    bounds = grid.mesh.bounds
+
+    grid.set_elevation(8.0)
+
+    np.testing.assert_allclose(grid.mesh.bounds, (*bounds[:4], 8.0, 8.0))

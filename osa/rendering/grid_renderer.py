@@ -16,27 +16,50 @@ class GridRenderer:
         self._footprint_bounds = (0.0, 0.0, 0.0, 0.0)
         self.mesh = self._mesh_for_bounds(self._bounds, self._footprint_bounds)
 
-    def update(self, nodes: Iterable[object]) -> None:
+    def update(self, nodes: Iterable[object], axes=None) -> None:
         """Rebuild only when the XY footprint of the model has changed."""
         positions = tuple((float(node.x), float(node.y)) for node in nodes)
+        axes = axes or {}
+        x_axis_values = tuple(float(axis.value) for axis in axes.get("X", ()))
+        y_axis_values = tuple(float(axis.value) for axis in axes.get("Y", ()))
         if positions:
             xs, ys = zip(*positions)
-            footprint_bounds = (min(xs), max(xs), min(ys), max(ys))
-            bounds = (
-                footprint_bounds[0] - self.margin,
-                footprint_bounds[1] + self.margin,
-                footprint_bounds[2] - self.margin,
-                footprint_bounds[3] + self.margin,
+            footprint_bounds = (
+                min((*xs, *y_axis_values)), max((*xs, *y_axis_values)),
+                min((*ys, *x_axis_values)), max((*ys, *x_axis_values)),
+            )
+        elif x_axis_values or y_axis_values:
+            xs = y_axis_values or (0.0,)
+            ys = x_axis_values or (0.0,)
+            footprint_bounds = (
+                min(xs), max(xs), min(ys), max(ys),
             )
         else:
             footprint_bounds = (0.0, 0.0, 0.0, 0.0)
-            bounds = (-self.margin, self.margin, -self.margin, self.margin)
+        bounds = (
+            footprint_bounds[0] - self.margin,
+            footprint_bounds[1] + self.margin,
+            footprint_bounds[2] - self.margin,
+            footprint_bounds[3] + self.margin,
+        )
 
         if bounds == self._bounds and footprint_bounds == self._footprint_bounds:
             return
         self._bounds = bounds
         self._footprint_bounds = footprint_bounds
         self.mesh = self._mesh_for_bounds(bounds, footprint_bounds)
+
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        return self._bounds
+
+    def set_elevation(self, elevation: float) -> None:
+        """Move the shared reference plane without rebuilding its XY geometry."""
+        if not self.mesh.n_points or np.allclose(self.mesh.points[:, 2], elevation):
+            return
+        self.mesh.points[:, 2] = elevation
+        self.mesh.GetPoints().Modified()
+        self.mesh.Modified()
 
     @classmethod
     def _mesh_for_bounds(
@@ -72,8 +95,8 @@ class GridRenderer:
         rgba[:, 3] = np.rint(opacity * 255.0).astype(np.uint8)
         mesh.point_data["rgba"] = rgba
 
-    def render(self, plotter, nodes: Iterable[object]) -> None:
-        self.update(nodes)
+    def render(self, plotter, nodes: Iterable[object], axes=None) -> None:
+        self.update(nodes, axes)
         return plotter.add_mesh(
             self.mesh, scalars="rgba", rgb=True, line_width=1, pickable=False,
             name="reference-grid", render=False,

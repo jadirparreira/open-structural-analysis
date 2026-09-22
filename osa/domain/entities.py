@@ -42,6 +42,14 @@ class Node:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceAxis:
+    """A named reference line measured from a global coordinate axis."""
+
+    label: str
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
 class Member:
     name: str
     start_node: str

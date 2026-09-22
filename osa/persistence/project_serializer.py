@@ -14,6 +14,7 @@ from osa.domain import (
     LoadCase,
     LoadCombination,
     Node,
+    ReferenceAxis,
     StructuralModel,
 )
 
@@ -29,6 +30,7 @@ class ProjectSerializer:
             "members": [asdict(member) for member in model.bars.values()],
             # "bars" mantém interoperabilidade com leitores antigos.
             "bars": [asdict(member) for member in model.bars.values()],
+            "axes": {direction: [asdict(axis) for axis in axes] for direction, axes in model.axes.items()},
             "materials": {
                 name: {"type": model.material_types.get(name, ""), "values": list(values)}
                 for name, values in model.materials.items()
@@ -74,6 +76,14 @@ class ProjectSerializer:
                 candidate._member_color(item.get("color", "#6e7781")),
             )
             candidate.bars[member.name] = member
+
+        candidate.set_reference_axes({
+            direction: tuple(
+                ReferenceAxis(str(axis["label"]), float(axis["value"]))
+                for axis in data.get("axes", {}).get(direction, ())
+            )
+            for direction in ("X", "Y", "Z")
+        })
 
         if file_format == FORMAT_V2:
             materials = data.get("materials", {})
@@ -128,6 +138,7 @@ class ProjectSerializer:
 
         model.nodes = candidate.nodes
         model.bars = candidate.bars
+        model.axes = candidate.axes
         model.materials = candidate.materials
         model.material_types = candidate.material_types
         model.sections = candidate.sections
