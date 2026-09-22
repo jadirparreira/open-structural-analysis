@@ -71,6 +71,7 @@ class StructureScene(QWidget):
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
         self._marker_radius_current = 0.05
+        self._reference_plane_mode = "XY"
         self._reference_plane_z = 0.0
         self._marker_radius_locked = False
         self._zoom_reference_parallel_scale: float | None = None
@@ -112,19 +113,21 @@ class StructureScene(QWidget):
         camera_state = self._camera_state()
         preserve_camera = self._has_scene()
         self._model = model
-        self._reference_plane_z = self._reference_plane_elevation()
+        self._reference_plane_z = self._reference_plane_for_model(model)
         self._hovered = None
         self._validate_selection()
         self._clear_actor_references()
         self.plotter.clear()
         self.plotter.set_background("#ffffff")
-        self._grid_actor = self._grid_renderer.render(self.plotter, model.nodes.values(), model.axes)
-        self._grid_renderer.set_elevation(self._reference_plane_z)
+        self._grid_actor = self._grid_renderer.render(
+            self.plotter, model.nodes.values(), model.axes,
+            self._reference_plane_mode, self._reference_plane_z,
+        )
         self._grid_actor.SetVisibility(self._grid_visible)
         self._reference_axes_actor = self._reference_axes_renderer.render(
             self.plotter, model.axes, self._grid_renderer.bounds,
+            self._reference_plane_mode, self._reference_plane_z,
         )
-        self._reference_axes_renderer.set_elevation(self._reference_plane_z)
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
 
@@ -159,7 +162,6 @@ class StructureScene(QWidget):
             self._restore_camera(camera_state)
         else:
             self._set_default_isometric_view()
-        self._sync_reference_plane()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._sync_labels()
@@ -257,6 +259,7 @@ class StructureScene(QWidget):
     def _add_reference_axis_labels(self) -> None:
         positions, labels = self._reference_axes_renderer.labels(
             self._model.axes, self._grid_renderer.bounds, self._reference_plane_z,
+            self._reference_plane_mode, self._reference_plane_z,
         )
         self._label_overlay.set_group(
             "reference-axis", positions, labels, visible=self._reference_axes_visible,
@@ -460,6 +463,55 @@ class StructureScene(QWidget):
             self._support_actor.SetVisibility(visible)
         self.plotter.render()
 
+    def previous_reference_plane(self) -> None:
+        self._step_reference_plane(-1)
+
+    def next_reference_plane(self) -> None:
+        self._step_reference_plane(1)
+
+    def _step_reference_plane(self, step: int) -> None:
+        levels = self._reference_plane_levels()
+        current_index = min(
+            range(len(levels)),
+            key=lambda index: abs(levels[index] - self._reference_plane_z),
+        )
+        target_index = max(0, min(len(levels) - 1, current_index + step))
+        target = levels[target_index]
+        if np.isclose(target, self._reference_plane_z):
+            return
+        self._reference_plane_z = target
+        self._refresh_reference_plane_renderers()
+        self._add_reference_axis_labels()
+        self._sync_labels()
+        self.plotter.render()
+
+    def set_reference_plane_mode(self, mode: str) -> None:
+        mode = mode.upper()
+        if mode not in {"XY", "XZ", "YZ"}:
+            raise ValueError(f"Plano de referência desconhecido: {mode}")
+        self._reference_plane_mode = mode
+        self._reference_plane_z = self._reference_plane_for_model(self._model, preferred=0.0)
+        self._refresh_reference_plane_renderers()
+        self._add_reference_axis_labels()
+        self._sync_labels()
+        self.plotter.render()
+
+    def _refresh_reference_plane_renderers(self) -> None:
+        self._grid_renderer.update(
+            self._model.nodes.values(), self._model.axes,
+            self._reference_plane_mode, self._reference_plane_z,
+        )
+        self._reference_axes_renderer.mesh = self._reference_axes_renderer.build(
+            self._model.axes, self._grid_renderer.bounds,
+            self._reference_plane_mode, self._reference_plane_z,
+        )
+        if self._grid_actor is not None:
+            self._grid_actor.GetMapper().SetInputData(self._grid_renderer.mesh)
+            self._grid_actor.GetMapper().Modified()
+        if self._reference_axes_actor is not None:
+            self._reference_axes_actor.GetMapper().SetInputData(self._reference_axes_renderer.mesh)
+            self._reference_axes_actor.GetMapper().Modified()
+
     def update_member_color(self, member_name: str) -> None:
         batch = self._member_batch
         if batch is None or member_name not in batch.names:
@@ -562,31 +614,24 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def _sync_labels(self) -> None:
-        self._sync_reference_plane()
         self._label_overlay.sync(self.plotter.renderer)
 
     def _on_camera_modified(self, *_args) -> None:
         self._schedule_label_sync()
 
-    def _reference_plane_elevation(self) -> float:
-        if not self._model.nodes:
-            return 0.0
-        camera = self.plotter.renderer.GetActiveCamera()
-        position = camera.GetPosition()
-        focal_point = camera.GetFocalPoint()
-        elevations = [node.z for node in self._model.nodes.values()]
-        # A positive viewing direction in Z means the camera is looking upward,
-        # so the reference layer belongs above the structure; otherwise it stays below it.
-        return max(elevations) if focal_point[2] - position[2] > 1e-6 else min(elevations)
+    def _reference_plane_levels(self) -> tuple[float, ...]:
+        values = {0.0}
+        axis_name = {"XY": "Z", "XZ": "X", "YZ": "Y"}[self._reference_plane_mode]
+        values.update(float(axis.value) for axis in self._model.axes.get(axis_name, ()))
+        return tuple(sorted(values))
 
-    def _sync_reference_plane(self) -> None:
-        elevation = self._reference_plane_elevation()
-        if elevation == self._reference_plane_z:
-            return
-        self._reference_plane_z = elevation
-        self._grid_renderer.set_elevation(elevation)
-        self._reference_axes_renderer.set_elevation(elevation)
-        self._add_reference_axis_labels()
+    def _reference_plane_for_model(self, model: StructuralModel, preferred: float | None = None) -> float:
+        values = {0.0}
+        axis_name = {"XY": "Z", "XZ": "X", "YZ": "Y"}[self._reference_plane_mode]
+        values.update(float(axis.value) for axis in model.axes.get(axis_name, ()))
+        levels = tuple(sorted(values))
+        reference = self._reference_plane_z if preferred is None else preferred
+        return min(levels, key=lambda level: abs(level - reference))
 
     def _schedule_label_sync(self) -> None:
         if not self._label_timer.isActive():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import atan, degrees
 
+from osa.domain import ReferenceAxis
 from osa.services import ModelService
 
 from .parser import parse_coordinates, parse_member_nodes
@@ -56,15 +57,140 @@ class CommandSession:
         if command == "member":
             self.pending = "member"
             return CommandResponse(value, "Informe o nó inicial e final A,B")
-        if command == "portico":
+        if command == "galpao":
             try:
-                self._create_portico()
-                return CommandResponse(value, "Pórtico criado.", "success", True)
+                self._create_galpao()
+                return CommandResponse(value, "Galpão criado.", "success", True)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+        if command == "mezanino":
+            try:
+                self._create_mezanino()
+                return CommandResponse(value, "Mezanino criado.", "success", True)
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
         return CommandResponse(value, "Não é um comando válido", "error")
 
-    def _create_portico(self) -> None:
+    def _create_mezanino(self) -> None:
+        """Create a three-bay, all-steel mezzanine frame (21 x 4 x 4 m)."""
+        model = self.service.model
+        module_length = 7.0
+        module_width = 4.0
+        height = 4.0
+        x_grid = tuple(index * module_length for index in range(4))
+        y_grid = (0.0, module_width)
+        supports = (True, True, True, False, False, False)
+        member_color = "#6e7781"
+        profiles = {
+            "column": ("W 250 x 44.8", {"d": 266.0, "bf": 148.0, "tw": 7.6, "tf": 13.0}),
+            "girder": ("W 310 x 44.5", {"d": 313.0, "bf": 166.0, "tw": 6.6, "tf": 11.2}),
+            "joist": ("W 200 x 22.5", {"d": 206.0, "bf": 102.0, "tw": 6.2, "tf": 8.0}),
+            "brace": ("BC 10.0", {"d": 10.0}),
+        }
+        joist_releases = (False,) * 8 + (True,) * 4
+        brace_releases = (False,) * 6 + (True,) * 6
+        base_nodes: dict[tuple[float, float], str] = {}
+        top_nodes: dict[tuple[float, float], str] = {}
+        joist_x_grid = tuple(
+            sorted(
+                (*x_grid, *(start_x + module_length * fraction
+                            for start_x in x_grid[:-1] for fraction in (1 / 3, 2 / 3)))
+            )
+        )
+
+        def add_w_member(start: str, end: str, profile_kind: str):
+            profile, geometry = profiles[profile_kind]
+            member = self.service.create_member(start, end)
+            model.update_bar_material(member.name, "Aço Estrutural", model.materials["Aço Estrutural"])
+            section = "Barra Circular" if profile_kind == "brace" else "W Laminado"
+            model.update_bar_section(member.name, section)
+            model.update_member_profile(member.name, profile, geometry)
+            model.update_member_color(member.name, member_color)
+            if profile_kind == "joist":
+                model.update_member_releases(member.name, joist_releases)
+            elif profile_kind == "brace":
+                model.update_member_releases(member.name, brace_releases)
+            elif profile_kind == "girder":
+                start_x = model.nodes[start].x
+                end_x = model.nodes[end].x
+                is_middle_module = module_length < (start_x + end_x) / 2 < 2 * module_length
+                start_on_column = not is_middle_module and start_x in x_grid
+                end_on_column = not is_middle_module and end_x in x_grid
+                if start_on_column or end_on_column:
+                    model.update_member_releases(
+                        member.name,
+                        (False,) * 8 + (
+                            start_on_column, end_on_column,
+                            start_on_column, end_on_column,
+                        ),
+                    )
+            return member
+
+        # Pilares em cada canto dos três módulos, todos com 4 m de altura.
+        for x in x_grid:
+            for y in y_grid:
+                base = self.service.create_node(x, y, 0.0)
+                top = self.service.create_node(x, y, height)
+                model.update_node_supports(base.name, supports)
+                base_nodes[(x, y)] = base.name
+                top_nodes[(x, y)] = top.name
+                column = add_w_member(base.name, top.name, "column")
+                model.update_member_rotation(column.name, 90)
+
+        # Nós nas longarinas em cada travessa, inclusive nas duas internas de
+        # cada módulo, para que o piso fique conectado topologicamente.
+        for x in joist_x_grid:
+            for y in y_grid:
+                if (x, y) not in top_nodes:
+                    top_nodes[(x, y)] = self.service.create_node(x, y, height).name
+
+        # Duas longarinas contínuas, segmentadas em todos os apoios das travessas.
+        for y in y_grid:
+            for start_x, end_x in zip(joist_x_grid, joist_x_grid[1:]):
+                add_w_member(top_nodes[(start_x, y)], top_nodes[(end_x, y)], "girder")
+
+        # Travessas nos eixos dos pilares e duas vigas secundárias por módulo.
+        external_portal_apexes: dict[float, str] = {}
+        for x in joist_x_grid:
+            if x in (x_grid[0], x_grid[-1]):
+                apex = self.service.create_node(x, module_width / 2, height)
+                external_portal_apexes[x] = apex.name
+                add_w_member(top_nodes[(x, 0.0)], apex.name, "joist")
+                add_w_member(apex.name, top_nodes[(x, module_width)], "joist")
+            else:
+                add_w_member(top_nodes[(x, 0.0)], top_nodes[(x, module_width)], "joist")
+
+        # Pórticos externos: V invertido até o centro da viga superior.
+        for x, apex in external_portal_apexes.items():
+            add_w_member(base_nodes[(x, 0.0)], apex, "brace")
+            add_w_member(base_nodes[(x, module_width)], apex, "brace")
+
+        # Pórticos internos: composição de dois conjuntos em leque, espelhados
+        # no mesmo plano YZ e ligados aos dois nós superiores.
+        for x in x_grid[1:-1]:
+            left_hub = self.service.create_node(x, module_width / 4, height * 3 / 4)
+            right_hub = self.service.create_node(x, module_width * 3 / 4, height * 3 / 4)
+            for node in (base_nodes[(x, 0.0)], top_nodes[(x, 0.0)], top_nodes[(x, module_width)]):
+                add_w_member(node, left_hub.name, "brace")
+            for node in (base_nodes[(x, module_width)], top_nodes[(x, 0.0)], top_nodes[(x, module_width)]):
+                add_w_member(node, right_hub.name, "brace")
+
+        self.service.set_reference_axes({
+            "X": tuple(
+                ReferenceAxis(label, y)
+                for label, y in zip(("A", "B"), y_grid)
+            ),
+            "Y": tuple(
+                ReferenceAxis(str(index), x)
+                for index, x in enumerate(x_grid, start=1)
+            ),
+            "Z": (
+                ReferenceAxis("0", 0.0),
+                ReferenceAxis(str(int(height * 100)), height),
+            ),
+        })
+
+    def _create_galpao(self) -> None:
         model = self.service.model
         span_x = 12.0
         supports = (True, True, True, False, False, False)

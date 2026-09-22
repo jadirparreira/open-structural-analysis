@@ -15,8 +15,11 @@ class ReferenceAxesRenderer:
     def __init__(self) -> None:
         self.mesh = pv.PolyData()
 
-    def render(self, plotter, axes, bounds: tuple[float, float, float, float]):
-        self.mesh = self.build(axes, bounds)
+    def render(
+        self, plotter, axes, bounds: tuple[float, float, float, float],
+        plane: str = "XY", offset: float = 0.0,
+    ):
+        self.mesh = self.build(axes, bounds, plane, offset)
         if not self.mesh.n_cells:
             return None
         return plotter.add_mesh(
@@ -33,20 +36,16 @@ class ReferenceAxesRenderer:
         self.mesh.GetPoints().Modified()
         self.mesh.Modified()
 
-    def build(self, axes, bounds: tuple[float, float, float, float]) -> pv.PolyData:
+    def build(
+        self, axes, bounds: tuple[float, float, float, float],
+        plane: str = "XY", offset: float = 0.0,
+    ) -> pv.PolyData:
         segments: list[tuple[np.ndarray, np.ndarray]] = []
-        x_start, x_end, y_start, y_end = self._line_extents(axes, bounds)
-        for axis in axes.get("X", ()):
+        for start, end, _label, _offset in self._line_specs(axes, bounds, plane, offset):
             self._append_dash_dot(
                 segments,
-                np.asarray((x_start, axis.value, 0.0)),
-                np.asarray((x_end, axis.value, 0.0)),
-            )
-        for axis in axes.get("Y", ()):
-            self._append_dash_dot(
-                segments,
-                np.asarray((axis.value, y_start, 0.0)),
-                np.asarray((axis.value, y_end, 0.0)),
+                self._world_point(start, plane, offset),
+                self._world_point(end, plane, offset),
             )
         if not segments:
             return pv.PolyData()
@@ -61,20 +60,75 @@ class ReferenceAxesRenderer:
 
     def labels(
         self, axes, bounds: tuple[float, float, float, float], elevation: float = 0.0,
+        plane: str = "XY", offset: float | None = None,
     ) -> tuple[np.ndarray, tuple[str, ...]]:
-        """Return label positions at both ends of every rendered X/Y axis."""
-        x_start, x_end, y_start, y_end = self._line_extents(axes, bounds)
+        """Return label positions at both ends of every axis on the active plane."""
+        plane_offset = elevation if offset is None else offset
         minimum_x, maximum_x, minimum_y, maximum_y = bounds
-        offset = max(0.25, max(maximum_x - minimum_x, maximum_y - minimum_y) * 0.015)
         positions: list[tuple[float, float, float]] = []
         labels: list[str] = []
-        for axis in axes.get("X", ()):
-            positions.extend(((x_start, axis.value + offset, elevation), (x_end, axis.value + offset, elevation)))
-            labels.extend((axis.label, axis.label))
-        for axis in axes.get("Y", ()):
-            positions.extend(((axis.value + offset, y_start, elevation), (axis.value + offset, y_end, elevation)))
-            labels.extend((axis.label, axis.label))
+        for start, end, label, label_offset in self._line_specs(axes, bounds, plane, plane_offset):
+            if not label:
+                continue
+            start_label = self._world_point((start[0] + label_offset[0], start[1] + label_offset[1]), plane, plane_offset)
+            end_label = self._world_point((end[0] + label_offset[0], end[1] + label_offset[1]), plane, plane_offset)
+            positions.extend((start_label, end_label))
+            labels.extend((label, label))
         return np.asarray(positions, dtype=float).reshape((-1, 3)), tuple(labels)
+
+    def _line_specs(self, axes, bounds, plane: str, offset: float):
+        plane = plane.upper()
+        minimum_u, maximum_u, minimum_v, maximum_v = bounds
+        x_values = tuple(float(axis.value) for axis in axes.get("X", ()))
+        y_values = tuple(float(axis.value) for axis in axes.get("Y", ()))
+        z_values = tuple(float(axis.value) for axis in axes.get("Z", ()))
+        u_start, u_end = self._extended_range(y_values if plane != "YZ" else x_values, minimum_u, maximum_u)
+        v_start, v_end = self._extended_range(z_values, minimum_v, maximum_v)
+        specs = []
+        if plane == "XZ":
+            for axis in axes.get("X", ()):
+                if np.isclose(float(axis.value), offset):
+                    specs.append(((u_start, 0.0), (u_end, 0.0), "", (0.0, self._label_offset(bounds))))
+            for axis in axes.get("Y", ()):
+                specs.append(((axis.value, v_start), (axis.value, v_end), axis.label, (self._label_offset(bounds), 0.0)))
+            for axis in axes.get("Z", ()):
+                specs.append(((u_start, axis.value), (u_end, axis.value), axis.label, (0.0, self._label_offset(bounds))))
+        elif plane == "YZ":
+            for axis in axes.get("Y", ()):
+                if np.isclose(float(axis.value), offset):
+                    specs.append(((u_start, 0.0), (u_end, 0.0), "", (0.0, self._label_offset(bounds))))
+            for axis in axes.get("X", ()):
+                specs.append(((axis.value, v_start), (axis.value, v_end), axis.label, (self._label_offset(bounds), 0.0)))
+            for axis in axes.get("Z", ()):
+                specs.append(((u_start, axis.value), (u_end, axis.value), axis.label, (0.0, self._label_offset(bounds))))
+        else:
+            x_start, x_end, y_start, y_end = self._line_extents(axes, bounds)
+            label_offset = self._label_offset(bounds)
+            for axis in axes.get("X", ()):
+                specs.append(((x_start, axis.value), (x_end, axis.value), axis.label, (0.0, label_offset)))
+            for axis in axes.get("Y", ()):
+                specs.append(((axis.value, y_start), (axis.value, y_end), axis.label, (label_offset, 0.0)))
+        return specs
+
+    @classmethod
+    def _extended_range(cls, values, minimum, maximum):
+        return (
+            min(values) - cls._extension if values else minimum,
+            max(values) + cls._extension if values else maximum,
+        )
+
+    @staticmethod
+    def _label_offset(bounds) -> float:
+        return max(0.25, max(bounds[1] - bounds[0], bounds[3] - bounds[2]) * 0.015)
+
+    @staticmethod
+    def _world_point(point, plane: str, offset: float) -> np.ndarray:
+        u, v = point
+        if plane.upper() == "XZ":
+            return np.asarray((u, offset, v), dtype=float)
+        if plane.upper() == "YZ":
+            return np.asarray((offset, u, v), dtype=float)
+        return np.asarray((u, v, offset), dtype=float)
 
     def _line_extents(self, axes, bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
         minimum_x, maximum_x, minimum_y, maximum_y = bounds

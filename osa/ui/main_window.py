@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
         self._navigation_plane_icons = ("axis-plane-xy.svg", "axis-plane-xz.svg", "axis-plane-yz.svg")
+        self._navigation_plane_modes = ("XY", "XZ", "YZ")
         self._navigation_plane_index = 0
         self.navigation_button.setStyleSheet(
             "QToolButton { border: 1px solid #d0d7de; border-radius: 7px; padding: 0; "
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
         self.previous_plane_button.setProperty("paletteTooltip", "Plano anterior")
         self.previous_plane_button.setAccessibleName("Plano anterior")
         self.previous_plane_button.installEventFilter(self)
+        self.previous_plane_button.clicked.connect(self.scene.previous_reference_plane)
         self.plane_change_button = QToolButton(self)
         self.plane_change_button.setObjectName("planeChangeButton")
         self.plane_change_button.setFixedSize(34, 34)
@@ -137,6 +139,7 @@ class MainWindow(QMainWindow):
         self.next_plane_button.setProperty("paletteTooltip", "Próximo plano")
         self.next_plane_button.setAccessibleName("Próximo plano")
         self.next_plane_button.installEventFilter(self)
+        self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
         self.axes_panel = AxesPanel(self)
@@ -262,6 +265,7 @@ class MainWindow(QMainWindow):
 
     def _cycle_navigation_plane(self) -> None:
         self._navigation_plane_index = (self._navigation_plane_index + 1) % len(self._navigation_plane_icons)
+        self.scene.set_reference_plane_mode(self._navigation_plane_modes[self._navigation_plane_index])
         self._update_navigation_button_icon()
 
     def _update_navigation_button_icon(self) -> None:

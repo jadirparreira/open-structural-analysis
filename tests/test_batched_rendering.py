@@ -8,7 +8,7 @@ from osa.services import ModelService
 
 def warehouse_model():
     model = StructuralModel()
-    response = CommandSession(ModelService(model)).submit("portico")
+    response = CommandSession(ModelService(model)).submit("galpao")
     assert response.model_changed
     return model
 

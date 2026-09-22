@@ -25,9 +25,9 @@ def test_member_names_are_case_insensitive():
     assert model.bars["B1"].start_node == "N1"
 
 
-def test_portico_does_not_leave_a_pending_command():
+def test_galpao_does_not_leave_a_pending_command():
     model, commands = session()
-    assert commands.submit("portico").model_changed
+    assert commands.submit("galpao").model_changed
     assert commands.pending is None
     assert len(model.nodes) == 408
     assert len(model.bars) == 839
@@ -413,3 +413,96 @@ def test_portico_does_not_leave_a_pending_command():
         assert roof_heights[6.0] == 6.8
         assert abs((roof_heights[6.0] - roof_heights[0.0]) / 6.0 - 0.05) < 1e-9
         assert abs((roof_heights[12.0] - roof_heights[6.0]) / 6.0 + 0.05) < 1e-9
+
+
+def test_portico_is_not_a_command_and_does_not_change_the_model():
+    model, commands = session()
+
+    response = commands.submit("portico")
+
+    assert response.level == "error"
+    assert not response.model_changed
+    assert commands.pending is None
+    assert not model.nodes
+    assert not model.bars
+
+
+def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
+    model, commands = session()
+
+    response = commands.submit("mezanino")
+
+    assert response.model_changed
+    assert commands.pending is None
+    assert len(model.nodes) == 34
+    assert len(model.bars) == 54
+    assert {(node.x, node.y, node.z) for node in model.nodes.values()} == {
+        *((x, y, z) for x in (0.0, 7.0, 14.0, 21.0) for y in (0.0, 4.0) for z in (0.0, 4.0)),
+        *((x, y, 4.0) for x in (7.0 / 3, 14.0 / 3, 28.0 / 3, 35.0 / 3, 49.0 / 3, 56.0 / 3)
+          for y in (0.0, 4.0)),
+        *((x, 2.0, 4.0) for x in (0.0, 21.0)),
+        *((x, y, 3.0) for x in (7.0, 14.0) for y in (1.0, 3.0)),
+    }
+    assert all(
+        node.supports[:3] == (True, True, True)
+        for node in model.nodes.values()
+        if node.z == 0.0
+    )
+    assert all(member.material == "Aço Estrutural" for member in model.bars.values())
+    profiles = {profile: [member for member in model.bars.values() if member.profile == profile]
+                for profile in ("W 250 x 44.8", "W 310 x 44.5", "W 200 x 22.5", "BC 10.0")}
+    assert {profile: len(members) for profile, members in profiles.items()} == {
+        "W 250 x 44.8": 8,
+        "W 310 x 44.5": 18,
+        "W 200 x 22.5": 12,
+        "BC 10.0": 16,
+    }
+    columns = profiles["W 250 x 44.8"]
+    assert all(member.rotation == 90 for member in columns)
+    assert all(member.releases == (False,) * 8 + (True,) * 4
+               for member in profiles["W 200 x 22.5"])
+    for member in profiles["W 310 x 44.5"]:
+        start_x = model.nodes[member.start_node].x
+        end_x = model.nodes[member.end_node].x
+        is_middle_module = 7.0 < (start_x + end_x) / 2 < 14.0
+        start_on_column = not is_middle_module and start_x in (0.0, 7.0, 14.0, 21.0)
+        end_on_column = not is_middle_module and end_x in (0.0, 7.0, 14.0, 21.0)
+        assert member.releases == (False,) * 8 + (
+            start_on_column, end_on_column, start_on_column, end_on_column,
+        )
+    braces = profiles["BC 10.0"]
+    assert all(
+        member.section == "Barra Circular"
+        and member.geometry_dict() == {"d": 10.0}
+        and member.releases == (False,) * 6 + (True,) * 6
+        for member in braces
+    )
+    assert all(model.nodes[member.start_node].x == model.nodes[member.end_node].x
+               for member in braces)
+    assert {
+        frozenset(((model.nodes[member.start_node].y, model.nodes[member.start_node].z),
+                   (model.nodes[member.end_node].y, model.nodes[member.end_node].z)))
+        for member in braces
+        if model.nodes[member.start_node].x in (0.0, 21.0)
+    } == {
+        frozenset(((0.0, 0.0), (2.0, 4.0))),
+        frozenset(((4.0, 0.0), (2.0, 4.0))),
+    }
+    assert {
+        frozenset(((model.nodes[member.start_node].y, model.nodes[member.start_node].z),
+                   (model.nodes[member.end_node].y, model.nodes[member.end_node].z)))
+        for member in braces
+        if model.nodes[member.start_node].x in (7.0, 14.0)
+    } == {
+        frozenset((corner, hub))
+        for hub, corners in (
+            ((1.0, 3.0), ((0.0, 0.0), (0.0, 4.0), (4.0, 4.0))),
+            ((3.0, 3.0), ((4.0, 0.0), (0.0, 4.0), (4.0, 4.0))),
+        )
+        for corner in corners
+    }
+    assert [(axis.label, axis.value) for axis in model.axes["X"]] == [("A", 0.0), ("B", 4.0)]
+    assert [(axis.label, axis.value) for axis in model.axes["Y"]] == [
+        ("1", 0.0), ("2", 7.0), ("3", 14.0), ("4", 21.0),
+    ]
+    assert [(axis.label, axis.value) for axis in model.axes["Z"]] == [("0", 0.0), ("400", 4.0)]
