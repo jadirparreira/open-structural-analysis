@@ -59,6 +59,8 @@ class ActionService:
         normalized_reference = reference.casefold()
         if normalized_reference not in {"global", "local"}:
             raise ValueError("O sistema de direção deve ser Global ou Local.")
+        if normalized_reference == "global" and direction.upper() == "Z":
+            self._remove_member_action(target, "member_distributed_force_selfweight_Z", load_case)
         suffix = f"{normalized_reference}_" if normalized_reference == "local" else ""
         kind = f"member_distributed_force_{suffix}{direction.upper()}"
         index = 1
@@ -69,6 +71,43 @@ class ActionService:
             (float(initial), float(final)), load_case,
         )
         return self.add_action(action)
+
+    def add_member_selfweight(self, target: str, value: float, load_case: str) -> Action:
+        self._remove_member_action(target, "member_distributed_force_Z", load_case)
+        self._remove_member_action(target, "member_distributed_force_global_Z", load_case)
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", "member_distributed_force_selfweight_Z", target,
+            (float(value), float(value)), load_case,
+        ))
+
+    def replace_action_with_selfweight(
+        self, load_case: str, weights: tuple[tuple[str, float], ...],
+    ) -> tuple[Action, ...]:
+        """Apaga todas as cargas da ação e recria somente os pesos próprios."""
+        for name, action in tuple(self.model.actions.items()):
+            if action.load_case == load_case:
+                del self.model.actions[name]
+        created: list[Action] = []
+        for target, value in weights:
+            index = 1
+            while f"Carga {index}" in self.model.actions:
+                index += 1
+            action = Action(
+                f"Carga {index}", "member_distributed_force_selfweight_Z", target,
+                (float(value), float(value)), load_case,
+            )
+            self.model.actions[action.name] = action
+            created.append(action)
+        self.model._touch()
+        return tuple(created)
+
+    def _remove_member_action(self, target: str, kind: str, load_case: str) -> None:
+        for name, action in tuple(self.model.actions.items()):
+            if action.target == target and action.kind == kind and action.load_case == load_case:
+                del self.model.actions[name]
 
     def add_member_moment(self, target: str, direction: str, value: float, load_case: str) -> Action:
         index = 1

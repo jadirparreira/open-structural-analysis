@@ -381,7 +381,7 @@ class MainWindow(QMainWindow):
         self.command_bar.input.setFocus()
 
     def handle_command(self, command: str) -> None:
-        if command.strip().casefold() == "load" and self.command_session.pending is None:
+        if command.strip().casefold() in {"load", "selfweight"} and self.command_session.pending is None:
             self.palette.show_group("Ações")
         response = self.command_session.submit(command)
         self._command_mode = self.command_session.pending
@@ -396,7 +396,13 @@ class MainWindow(QMainWindow):
             )
         else:
             self.history.append(f"> <b>{escaped}</b>")
-        if response.distributed_member_forces:
+        if response.selfweights:
+            self.action_service.replace_action_with_selfweight(
+                self.selected_action_name or "",
+                tuple((weight.target, weight.value) for weight in response.selfweights),
+            )
+            self.refresh_scene()
+        elif response.distributed_member_forces:
             for load in response.distributed_member_forces:
                 self.action_service.add_member_distributed_force(
                     load.target, load.direction, load.initial, load.final,

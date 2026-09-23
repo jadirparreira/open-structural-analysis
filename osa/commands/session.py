@@ -42,6 +42,12 @@ class NodeMoment:
 
 
 @dataclass(frozen=True, slots=True)
+class SelfWeight:
+    target: str
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
 class CommandResponse:
     command: str
     message: str
@@ -51,6 +57,7 @@ class CommandResponse:
     member_moments: tuple[MemberMoment, ...] = ()
     node_forces: tuple[NodeForce, ...] = ()
     node_moments: tuple[NodeMoment, ...] = ()
+    selfweights: tuple[SelfWeight, ...] = ()
 
 
 class CommandSession:
@@ -60,12 +67,14 @@ class CommandSession:
         self.load_target: tuple[str, tuple[str, ...]] | None = None
         self.load_direction: str | None = None
         self.load_reference: str = "global"
+        self._pending_selfweights: tuple[SelfWeight, ...] = ()
 
     def cancel(self) -> None:
         self.pending = None
         self.load_target = None
         self.load_direction = None
         self.load_reference = "global"
+        self._pending_selfweights = ()
 
     def submit(self, text: str) -> CommandResponse:
         value = text.strip()
@@ -231,6 +240,21 @@ class CommandSession:
                     for name in target[1]
                 ),
             )
+        if self.pending == "selfweight_confirmation":
+            answer = value.casefold()
+            if answer in {"sim", "s"}:
+                weights = self._pending_selfweights
+                self.cancel()
+                return CommandResponse(
+                    value,
+                    "Pesos próprios criados.",
+                    "success",
+                    selfweights=weights,
+                )
+            if answer in {"não", "nao", "n"}:
+                self.cancel()
+                return CommandResponse(value, "Operação cancelada.")
+            return CommandResponse(value, "Responda apenas Sim ou Não.", "error")
 
         command = value.casefold()
         if command == "node":
@@ -243,6 +267,19 @@ class CommandSession:
             self.pending = "load_target"
             self.load_target = None
             return CommandResponse(value, "Informe a identidade do nó ou do membro.")
+        if command == "selfweight":
+            if not self.service.model.bars:
+                return CommandResponse(value, "Não há membros no modelo para aplicar o peso próprio.", "error")
+            try:
+                weights = self.service.member_selfweights()
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            self._pending_selfweights = tuple(SelfWeight(name, value) for name, value in weights)
+            self.pending = "selfweight_confirmation"
+            return CommandResponse(
+                value,
+                "Todos os pesos da ação atual serão apagados e substituídos pelo peso próprio dos elementos. Confirma? (Sim/Não)",
+            )
         if command == "galpao":
             try:
                 self._create_galpao()

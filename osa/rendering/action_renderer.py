@@ -13,6 +13,7 @@ class ActionRenderer:
 
     COLOR = "#cf222e"
     LOCAL_COLOR = "#0969da"
+    SELFWEIGHT_COLOR = "#2da44e"
     MOMENT_COLOR = "#0969da"
     MOMENT_RADIUS = 0.30
     MOMENT_SPACING = 1.0
@@ -75,7 +76,12 @@ class ActionRenderer:
 
             direction_name = action.kind.removeprefix("member_distributed_force_")
             is_local = direction_name.startswith("local_")
-            direction = direction_name.removeprefix("local_").removeprefix("global_")
+            is_selfweight = direction_name.startswith("selfweight_")
+            direction = (
+                direction_name.removeprefix("local_")
+                .removeprefix("global_")
+                .removeprefix("selfweight_")
+            )
             if direction not in {"X", "Y", "Z"}:
                 continue
             if is_local:
@@ -84,6 +90,9 @@ class ActionRenderer:
                     continue
                 force_direction = basis["XYZ".index(direction)]
                 force_color = self.LOCAL_COLOR
+            elif is_selfweight:
+                force_direction = np.array((0.0, 0.0, 1.0))
+                force_color = self.SELFWEIGHT_COLOR
             else:
                 force_direction = np.zeros(3)
                 force_direction["XYZ".index(direction)] = 1.0
@@ -217,20 +226,27 @@ class ActionRenderer:
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
 
     @staticmethod
+    def _format_number(value: float) -> str:
+        rounded = round(float(value), 3)
+        if np.isclose(rounded, 0.0):
+            rounded = 0.0
+        return f"{rounded:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+
+    @staticmethod
     def _format_force(value: float) -> str:
-        return f"{value:g}".replace(".", ",") + " kN/m"
+        return ActionRenderer._format_number(value) + " kN/m"
 
     @staticmethod
     def _format_node_force(value: float) -> str:
-        return f"{value:g}".replace(".", ",") + " kN"
+        return ActionRenderer._format_number(value) + " kN"
 
     @staticmethod
     def _format_moment(value: float) -> str:
-        return f"{value:g}".replace(".", ",") + " kNm/m"
+        return ActionRenderer._format_number(value) + " kNm/m"
 
     @staticmethod
     def _format_node_moment(value: float) -> str:
-        return f"{value:g}".replace(".", ",") + " kNm"
+        return ActionRenderer._format_number(value) + " kNm"
 
     def _add_moment_symbol(
         self,

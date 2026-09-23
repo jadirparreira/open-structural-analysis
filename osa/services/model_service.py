@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from osa.domain import StructuralModel
+from .section_property_service import SectionPropertyService
 
 
 class ModelService:
@@ -56,6 +57,31 @@ class ModelService:
 
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
+
+    def member_selfweights(self) -> tuple[tuple[str, float], ...]:
+        """Retorna o peso linear de cada membro em kN/m, usando g = 10 m/s²."""
+        properties_service = SectionPropertyService()
+        weights: list[tuple[str, float]] = []
+        missing: list[str] = []
+        for member in self.model.bars.values():
+            if not member.section or not member.section_geometry:
+                missing.append(member.name)
+                continue
+            try:
+                properties = properties_service.calculate(
+                    member.section,
+                    member.geometry_dict(),
+                    member.material_values[3],
+                )
+            except (KeyError, TypeError, ValueError):
+                missing.append(member.name)
+                continue
+            # kg/m * 10 N/kg / 1000 = kg/m / 100 kN/m.
+            weights.append((member.name, -properties.mass_kg_m / 100.0))
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(f"Não foi possível obter o peso linear dos membros: {names}.")
+        return tuple(weights)
 
     def remove_node(self, name: str) -> None:
         self.model.remove_node(name)

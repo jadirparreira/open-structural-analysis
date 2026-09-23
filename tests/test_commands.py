@@ -1,13 +1,24 @@
+import pytest
+
 from osa.commands import CommandSession
 from osa.model import StructuralModel
 from osa.services.action_service import ActionService
 from osa.services import ModelService
+from osa.sections import calculate_section_properties
+from osa.rendering.action_renderer import ActionRenderer
 from osa.ui.color_palette import MEMBER_COLOR_CELLS
 
 
 def session():
     model = StructuralModel()
     return model, CommandSession(ModelService(model))
+
+
+def test_action_labels_use_up_to_three_decimal_places_without_trailing_zeros():
+    assert ActionRenderer._format_number(1.23456) == "1,235"
+    assert ActionRenderer._format_number(1.230) == "1,23"
+    assert ActionRenderer._format_number(4.0) == "4"
+    assert ActionRenderer._format_number(-0.0004) == "0"
 
 
 def test_node_command_flow():
@@ -99,6 +110,45 @@ def test_member_distributed_force_can_use_the_local_direction():
     assert load.direction == "Z"
     assert load.reference == "local"
     assert load.initial == load.final == 1.5
+
+
+def test_selfweight_creates_negative_global_z_loads_from_member_mass():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
+    model.update_bar_section("B1", "W Laminado")
+    model.update_member_profile("B1", "W 200 x 15.0", geometry)
+
+    response = commands.submit("selfweight")
+
+    assert response.level == "instruction"
+    assert response.message.endswith("(Sim/Não)")
+    assert commands.pending == "selfweight_confirmation"
+    response = commands.submit("sim")
+
+    assert response.level == "success"
+    assert response.selfweights[0].target == "B1"
+    expected_mass = calculate_section_properties("W Laminado", geometry, 7850).mass_kg_m
+    assert response.selfweights[0].value == pytest.approx(-expected_mass / 100.0)
+
+
+def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_bar_section("B1", "W Laminado")
+    model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
+
+    commands.submit("selfweight")
+    invalid = commands.submit("talvez")
+    assert invalid.level == "error"
+    assert commands.pending == "selfweight_confirmation"
+    cancelled = commands.submit("não")
+    assert cancelled.message == "Operação cancelada."
+    assert commands.pending is None
 
 
 def test_force_replaces_the_same_direction_only_within_its_action():

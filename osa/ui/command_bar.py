@@ -69,17 +69,37 @@ class CommandHistory(QFrame):
         for line in self._lines:
             label = QLabel(line)
             label.setObjectName("historyLine")
-            label.setFixedHeight(24)
             label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            label.setMinimumWidth(0)
             self.content_layout.insertWidget(self.content_layout.count() - 1, label)
-        self.setFixedHeight(min(140, 24 * min(len(self._lines), 5) + 12))
+        self.setFixedHeight(min(220, 24 * min(len(self._lines), 5) + 12))
         self.show_history()
         self.reposition()
-        QTimer.singleShot(0, self._scroll_to_latest)
+        QTimer.singleShot(0, self._refresh_layout)
 
     def _scroll_to_latest(self) -> None:
         scrollbar = self.scroll.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _refresh_layout(self) -> None:
+        """Dimensiona as linhas conforme a largura real do histórico."""
+        viewport_width = self.scroll.viewport().width()
+        margins = self.content_layout.contentsMargins()
+        line_width = max(1, viewport_width - margins.left() - margins.right() - 2)
+        for label in self.content.findChildren(QLabel, "historyLine"):
+            label.setFixedWidth(line_width)
+            label.setFixedHeight(max(24, label.heightForWidth(line_width)))
+        self.content_layout.activate()
+        content_height = self.content.sizeHint().height() + 8
+        self.setFixedHeight(min(220, max(40, content_height)))
+        self.reposition()
+        self._scroll_to_latest()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._refresh_layout)
 
     def show_history(self) -> None:
         if not self._lines:
