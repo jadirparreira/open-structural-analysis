@@ -1,7 +1,7 @@
 """Janela principal e composição dos componentes visuais."""
+from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
-from .axes_panel import AxesPanel
 from .dialogs import ActionGroupDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import ActionTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
@@ -439,13 +439,21 @@ class MainWindow(QMainWindow):
                 )
             self.refresh_scene()
         elif response.model_changed:
+            self.refresh_action_palette()
             self.refresh_scene()
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
         self.selected = kind, name
-        self.properties.show_for(kind, name)
+        self.properties.show_for(kind, name, self.palette.active_group or "Geometria")
+
+    def refresh_selected_property_panel(self, section: str | None) -> None:
+        """Rebuild the open inspector when the work section changes."""
+        if section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
+            self.close_section_panel()
+        if self.selected is not None and hasattr(self, "properties"):
+            self.properties.show_for(*self.selected, section or "Geometria")
 
     def clear_selection(self) -> None:
         self.selected = None
@@ -543,6 +551,8 @@ class MainWindow(QMainWindow):
             self.action_service.has_selfweight(self.selected_action_name or "")
         )
         self.scene.set_active_load_case(self.selected_action_name)
+        if hasattr(self, "properties"):
+            self.refresh_selected_property_panel(self.palette.active_group)
 
     def _select_active_action(self, name: str) -> None:
         self.selected_action_name = name or None
@@ -551,6 +561,7 @@ class MainWindow(QMainWindow):
             self.action_service.has_selfweight(self.selected_action_name or "")
         )
         self.scene.set_active_load_case(self.selected_action_name)
+        self.refresh_selected_property_panel(self.palette.active_group)
 
     def refresh_member_axes(self, member_name: str) -> None:
         self.scene.update_member_axes(member_name)

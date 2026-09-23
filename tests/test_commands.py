@@ -2,10 +2,10 @@ import pytest
 
 from osa.commands import CommandSession
 from osa.model import StructuralModel
-from osa.services.action_service import ActionService
-from osa.services import ModelService
-from osa.sections import calculate_section_properties
 from osa.rendering.action_renderer import ActionRenderer
+from osa.sections import calculate_section_properties
+from osa.services import ModelService
+from osa.services.action_service import ActionService
 from osa.ui.color_palette import MEMBER_COLOR_CELLS
 
 
@@ -808,3 +808,49 @@ def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
         ("1", 0.0), ("2", 7.0), ("3", 14.0), ("4", 21.0),
     ]
     assert [(axis.label, axis.value) for axis in model.axes["Z"]] == [("0", 0.0), ("400", 4.0)]
+
+
+def test_mezanino_assigns_floor_loads_to_the_default_action_group():
+    model, commands = session()
+    model.set_selected_action_group("PP+AP+AV+4V")
+
+    commands.submit("mezanino")
+
+    assert model.selected_action_group == "PP+AP+AV"
+    joists = [member for member in model.bars.values() if member.profile == "W 200 x 22.5"]
+    edge_joists = {
+        member.name for member in joists
+        if model.nodes[member.start_node].x in (0.0, 21.0)
+        or model.nodes[member.end_node].x in (0.0, 21.0)
+    }
+    middle_joists = {member.name for member in joists} - edge_joists
+    assert len(edge_joists) == 4
+    assert len(middle_joists) == 8
+
+    selfweight = [
+        action
+        for action in model.actions.values()
+        if action.load_case == "Peso próprio"
+        and action.kind == "member_distributed_force_selfweight_Z"
+    ]
+    permanent = {
+        action.target: action.components
+        for action in model.actions.values()
+        if action.load_case == "Ação permanente"
+        and action.kind == "member_distributed_force_Z"
+    }
+    variable = {
+        action.target: action.components
+        for action in model.actions.values()
+        if action.load_case == "Ação variável"
+        and action.kind == "member_distributed_force_Z"
+    }
+    assert {action.target for action in selfweight} == set(model.bars)
+    assert permanent == {
+        **{name: (-1.17, -1.17) for name in middle_joists},
+        **{name: (-0.58, -0.58) for name in edge_joists},
+    }
+    assert variable == {
+        **{name: (-4.67, -4.67) for name in middle_joists},
+        **{name: (-2.34, -2.34) for name in edge_joists},
+    }

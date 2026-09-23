@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from math import atan, degrees
 
 from osa.domain import ReferenceAxis
-from osa.services import ModelService
+from osa.services import ActionService, ModelService
 
 from .parser import parse_coordinates, parse_distributed_force, parse_load_value, parse_member_nodes
 
@@ -374,6 +374,8 @@ class CommandSession:
     def _create_mezanino(self) -> None:
         """Create a three-bay, all-steel mezzanine frame (21 x 4 x 4 m)."""
         model = self.service.model
+        action_service = ActionService(model)
+        model.set_selected_action_group("PP+AP+AV")
         module_length = 7.0
         module_width = 4.0
         height = 4.0
@@ -446,14 +448,38 @@ class CommandSession:
 
         # Travessas nos eixos dos pilares e duas vigas secundárias por módulo.
         external_portal_apexes: dict[float, str] = {}
+        middle_joists: list[str] = []
+        edge_joists: list[str] = []
         for x in joist_x_grid:
             if x in (x_grid[0], x_grid[-1]):
                 apex = self.service.create_node(x, module_width / 2, height)
                 external_portal_apexes[x] = apex.name
-                add_w_member(top_nodes[(x, 0.0)], apex.name, "joist")
-                add_w_member(apex.name, top_nodes[(x, module_width)], "joist")
+                edge_joists.extend((
+                    add_w_member(top_nodes[(x, 0.0)], apex.name, "joist").name,
+                    add_w_member(apex.name, top_nodes[(x, module_width)], "joist").name,
+                ))
             else:
-                add_w_member(top_nodes[(x, 0.0)], top_nodes[(x, module_width)], "joist")
+                middle_joists.append(
+                    add_w_member(top_nodes[(x, 0.0)], top_nodes[(x, module_width)], "joist").name
+                )
+
+        # As cargas do piso recaem apenas sobre as travessas.
+        for name in middle_joists:
+            action_service.add_member_distributed_force(
+                name, "Z", -1.17, -1.17, "Ação permanente", "global"
+            )
+        for name in edge_joists:
+            action_service.add_member_distributed_force(
+                name, "Z", -0.58, -0.58, "Ação permanente", "global"
+            )
+        for name in middle_joists:
+            action_service.add_member_distributed_force(
+                name, "Z", -4.67, -4.67, "Ação variável", "global"
+            )
+        for name in edge_joists:
+            action_service.add_member_distributed_force(
+                name, "Z", -2.34, -2.34, "Ação variável", "global"
+            )
 
         # Pórticos externos: V invertido até o centro da viga superior.
         for x, apex in external_portal_apexes.items():
@@ -469,6 +495,14 @@ class CommandSession:
                 add_w_member(node, left_hub.name, "brace")
             for node in (base_nodes[(x, module_width)], top_nodes[(x, 0.0)], top_nodes[(x, module_width)]):
                 add_w_member(node, right_hub.name, "brace")
+
+        # O peso próprio usa os pesos lineares calculados para todos os
+        # elementos, tal como o comando ``selfweight`` com a opção "Todos".
+        # Isso ocorre após a criação dos contraventamentos para incluí-los.
+        action_service.replace_action_with_selfweight(
+            "Peso próprio",
+            self.service.member_selfweights(),
+        )
 
         self.service.set_reference_axes({
             "X": tuple(

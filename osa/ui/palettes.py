@@ -235,6 +235,13 @@ class FloatingPalette(QFrame):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
         if hasattr(self.window, "scene"):
             self.window.scene.set_actions_visible(next_group == "Ações")
+        if hasattr(self.window, "refresh_selected_property_panel"):
+            self.window.refresh_selected_property_panel(next_group)
+
+    @property
+    def active_group(self) -> str | None:
+        """The currently open primary palette section."""
+        return self._expanded
 
     def show_group(self, name: str) -> None:
         """Abre um grupo sem alterná-lo para fechado quando já está ativo."""
