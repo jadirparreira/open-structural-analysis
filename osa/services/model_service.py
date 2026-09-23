@@ -58,12 +58,17 @@ class ModelService:
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 
-    def member_selfweights(self) -> tuple[tuple[str, float], ...]:
-        """Retorna o peso linear de cada membro em kN/m, usando g = 10 m/s²."""
+    def member_selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
+        """Retorna pesos lineares em kN/m, opcionalmente filtrados por material."""
         properties_service = SectionPropertyService()
         weights: list[tuple[str, float]] = []
         missing: list[str] = []
-        for member in self.model.bars.values():
+        material_key = material.casefold() if material is not None else None
+        members = tuple(
+            member for member in self.model.bars.values()
+            if material_key is None or member.material.casefold() == material_key
+        )
+        for member in members:
             if not member.section or not member.section_geometry:
                 missing.append(member.name)
                 continue

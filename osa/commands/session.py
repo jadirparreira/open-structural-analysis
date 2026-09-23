@@ -260,6 +260,38 @@ class CommandSession:
                 self.cancel()
                 return CommandResponse(value, "Operação cancelada.")
             return CommandResponse(value, "Responda apenas Sim ou Não.", "error")
+        if self.pending == "selfweight_material":
+            materials = tuple(self.service.model.materials)
+            all_materials = value.casefold() == "todos"
+            material = next(
+                (name for name in materials if name.casefold() == value.casefold()),
+                None,
+            )
+            if not all_materials and material is None:
+                options = ", ".join((*materials, "Todos"))
+                return CommandResponse(
+                    value,
+                    f"Material inválido. Escolha uma das opções: {options}.",
+                    "error",
+                )
+            try:
+                weights = self.service.member_selfweights(None if all_materials else material)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            if not weights:
+                scope = "nenhum material" if all_materials else f"o material '{material}'"
+                return CommandResponse(
+                    value,
+                    f"Não há membros com {scope} para aplicar o peso próprio. Escolha outro material.",
+                    "error",
+                )
+            self._pending_selfweights = tuple(SelfWeight(name, weight) for name, weight in weights)
+            self.pending = "selfweight_confirmation"
+            scope = "todos os materiais" if all_materials else f"o material '{material}'"
+            return CommandResponse(
+                value,
+                f"Todos os pesos da ação atual serão apagados e substituídos pelo peso próprio dos elementos de {scope}. Confirma? (Sim/Não)",
+            )
 
         command = value.casefold()
         if command == "node":
@@ -296,15 +328,14 @@ class CommandSession:
                 )
             if not self.service.model.bars:
                 return CommandResponse(value, "Não há membros no modelo para aplicar o peso próprio.", "error")
-            try:
-                weights = self.service.member_selfweights()
-            except ValueError as error:
-                return CommandResponse(value, str(error), "error")
-            self._pending_selfweights = tuple(SelfWeight(name, value) for name, value in weights)
-            self.pending = "selfweight_confirmation"
+            materials = tuple(self.service.model.materials)
+            if not materials:
+                return CommandResponse(value, "Não há materiais cadastrados para aplicar o peso próprio.", "error")
+            self.pending = "selfweight_material"
+            options = ", ".join((*materials, "Todos"))
             return CommandResponse(
                 value,
-                "Todos os pesos da ação atual serão apagados e substituídos pelo peso próprio dos elementos. Confirma? (Sim/Não)",
+                f"Informe o material para aplicar o peso próprio. Disponíveis: {options}.",
             )
         if command == "galpao":
             try:

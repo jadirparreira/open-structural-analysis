@@ -117,6 +117,7 @@ def test_selfweight_creates_negative_global_z_loads_from_member_mass():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 4, 0, 0)
     model.add_bar("B1", "N1", "N2")
+    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
     geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 200 x 15.0", geometry)
@@ -124,6 +125,10 @@ def test_selfweight_creates_negative_global_z_loads_from_member_mass():
     response = commands.submit("selfweight")
 
     assert response.level == "instruction"
+    assert "Aço Estrutural" in response.message
+    assert "Todos" in response.message
+    assert commands.pending == "selfweight_material"
+    response = commands.submit("Aço Estrutural")
     assert response.message.endswith("(Sim/Não)")
     assert commands.pending == "selfweight_confirmation"
     response = commands.submit("sim")
@@ -139,16 +144,44 @@ def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 4, 0, 0)
     model.add_bar("B1", "N1", "N2")
+    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
 
     commands.submit("selfweight")
+    commands.submit("Aço Estrutural")
     invalid = commands.submit("talvez")
     assert invalid.level == "error"
     assert commands.pending == "selfweight_confirmation"
     cancelled = commands.submit("não")
     assert cancelled.message == "Operação cancelada."
     assert commands.pending is None
+
+
+def test_selfweight_filters_members_by_selected_material_and_lists_custom_materials():
+    model, commands = session()
+    model.materials["Material leve"] = (10.0, 5.0, 0.2, 500.0)
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_node("N3", 8, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N2", "N3")
+    geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
+    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B2", "Material leve", model.materials["Material leve"])
+    for name in ("B1", "B2"):
+        model.update_bar_section(name, "W Laminado")
+        model.update_member_profile(name, "W 200 x 15.0", geometry)
+
+    prompt = commands.submit("selfweight")
+    assert "Material leve" in prompt.message
+    assert "Todos" in prompt.message
+    selected = commands.submit("material LEVE")
+    assert selected.message.endswith("(Sim/Não)")
+    created = commands.submit("sim")
+    assert tuple(weight.target for weight in created.selfweights) == ("B2",)
+    expected = calculate_section_properties("W Laminado", geometry, 500).mass_kg_m
+    assert created.selfweights[0].value == pytest.approx(-expected / 100.0)
 
 
 def test_selfweight_locks_the_active_action_and_toggles_off():
