@@ -58,6 +58,7 @@ class CommandResponse:
     node_forces: tuple[NodeForce, ...] = ()
     node_moments: tuple[NodeMoment, ...] = ()
     selfweights: tuple[SelfWeight, ...] = ()
+    remove_selfweight: bool = False
 
 
 class CommandSession:
@@ -68,6 +69,10 @@ class CommandSession:
         self.load_direction: str | None = None
         self.load_reference: str = "global"
         self._pending_selfweights: tuple[SelfWeight, ...] = ()
+        self.active_load_case: str | None = None
+
+    def set_active_load_case(self, name: str | None) -> None:
+        self.active_load_case = name or None
 
     def cancel(self) -> None:
         self.pending = None
@@ -264,10 +269,31 @@ class CommandSession:
             self.pending = "member"
             return CommandResponse(value, "Informe o nó inicial e final A,B")
         if command == "load":
+            if self.active_load_case and any(
+                action.load_case == self.active_load_case
+                and action.kind == "member_distributed_force_selfweight_Z"
+                for action in self.service.model.actions.values()
+            ):
+                return CommandResponse(
+                    value,
+                    "A ação atual está restrita apenas a cargas de peso próprio.",
+                    "error",
+                )
             self.pending = "load_target"
             self.load_target = None
             return CommandResponse(value, "Informe a identidade do nó ou do membro.")
         if command == "selfweight":
+            if self.active_load_case and any(
+                action.load_case == self.active_load_case
+                and action.kind == "member_distributed_force_selfweight_Z"
+                for action in self.service.model.actions.values()
+            ):
+                return CommandResponse(
+                    value,
+                    "Pesos próprios removidos. A ação está liberada para novas cargas.",
+                    "success",
+                    remove_selfweight=True,
+                )
             if not self.service.model.bars:
                 return CommandResponse(value, "Não há membros no modelo para aplicar o peso próprio.", "error")
             try:

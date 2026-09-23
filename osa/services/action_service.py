@@ -104,6 +104,33 @@ class ActionService:
         self.model._touch()
         return tuple(created)
 
+    def has_selfweight(self, load_case: str) -> bool:
+        return any(
+            action.load_case == load_case
+            and action.kind == "member_distributed_force_selfweight_Z"
+            for action in self.model.actions.values()
+        )
+
+    def selfweight_load_cases(self) -> set[str]:
+        """Retorna as ações que estão restritas ao peso próprio."""
+        return {
+            action.load_case
+            for action in self.model.actions.values()
+            if action.kind == "member_distributed_force_selfweight_Z"
+        }
+
+    def remove_selfweight(self, load_case: str) -> None:
+        names = [
+            name for name, action in self.model.actions.items()
+            if action.load_case == load_case
+            and action.kind == "member_distributed_force_selfweight_Z"
+        ]
+        if not names:
+            return
+        for name in names:
+            del self.model.actions[name]
+        self.model._touch()
+
     def _remove_member_action(self, target: str, kind: str, load_case: str) -> None:
         for name, action in tuple(self.model.actions.items()):
             if action.target == target and action.kind == kind and action.load_case == load_case:

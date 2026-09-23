@@ -323,6 +323,35 @@ class TopIconPalette(QFrame):
 class ActionTopPalette(QFrame):
     """Barra superior contextual para a edição de ações estruturais."""
 
+    class ActionSelector(QComboBox):
+        """Seletor que mostra o indicador de peso próprio dentro do campo."""
+
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            self._weight_rows: set[int] = set()
+            self.setIconSize(QSize(15, 15))
+            self._weight_icon = QIcon(
+                str(Path(__file__).parents[1] / "resources" / "icons" / "weight.svg")
+            )
+
+        def set_weight_rows(self, rows: set[int]) -> None:
+            self._weight_rows = set(rows)
+            for index in range(self.count()):
+                self.setItemIcon(index, self._weight_icon if index in self._weight_rows else QIcon())
+            self.update()
+
+        def set_selfweight_active(self, active: bool) -> None:
+            index = self.currentIndex()
+            if index < 0:
+                return
+            if active:
+                self._weight_rows.add(index)
+                self.setItemIcon(index, self._weight_icon)
+            else:
+                self._weight_rows.discard(index)
+                self.setItemIcon(index, QIcon())
+            self.update()
+
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self.setObjectName("topIconPalette")
@@ -342,7 +371,7 @@ class ActionTopPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
-        self.action_selector = QComboBox(self)
+        self.action_selector = self.ActionSelector(self)
         self.action_selector.setToolTip("Ação ativa")
         self.action_selector.setAccessibleName("Ação ativa")
         self.action_selector.currentTextChanged.connect(window._select_active_action)
@@ -369,13 +398,25 @@ class ActionTopPalette(QFrame):
             layout.addWidget(button)
         self.adjustSize()
 
-    def set_actions(self, action_names: tuple[str, ...], selected_name: str | None = None) -> None:
+    def set_actions(
+        self,
+        action_names: tuple[str, ...],
+        selected_name: str | None = None,
+        selfweight_names: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
         self.action_selector.blockSignals(True)
         self.action_selector.clear()
         self.action_selector.addItems(action_names)
+        self.action_selector.set_weight_rows({
+            index for index, name in enumerate(action_names) if name in selfweight_names
+        })
         index = self.action_selector.findText(selected_name or "", Qt.MatchFlag.MatchExactly)
         self.action_selector.setCurrentIndex(index if index >= 0 else (0 if action_names else -1))
         self.action_selector.blockSignals(False)
+        self.adjustSize()
+
+    def set_selfweight_active(self, active: bool) -> None:
+        self.action_selector.set_selfweight_active(active)
         self.adjustSize()
 
     def set_actions_visible(self, visible: bool) -> None:

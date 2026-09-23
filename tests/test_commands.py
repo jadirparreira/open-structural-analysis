@@ -151,6 +151,29 @@ def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
     assert commands.pending is None
 
 
+def test_selfweight_locks_the_active_action_and_toggles_off():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_bar_section("B1", "W Laminado")
+    model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
+    commands.set_active_load_case("Peso próprio")
+    service = ActionService(model)
+    service.add_member_selfweight("B1", -0.452, "Peso próprio")
+
+    blocked = commands.submit("load")
+    assert blocked.level == "error"
+    assert blocked.message == "A ação atual está restrita apenas a cargas de peso próprio."
+    assert commands.pending is None
+
+    removed = commands.submit("selfweight")
+    assert removed.remove_selfweight
+    service.remove_selfweight("Peso próprio")
+    assert not service.has_selfweight("Peso próprio")
+    assert commands.submit("load").message == "Informe a identidade do nó ou do membro."
+
+
 def test_force_replaces_the_same_direction_only_within_its_action():
     model = StructuralModel()
     service = ActionService(model)

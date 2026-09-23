@@ -372,6 +372,12 @@ class MainWindow(QMainWindow):
         self.command_bar.input.setFocus()
 
     def start_load_command(self) -> None:
+        if self.action_service.has_selfweight(self.selected_action_name or ""):
+            self.history.append(
+                "> <b>load</b> <span style='color:#8c959f'>(A ação atual está restrita apenas a cargas de peso próprio.)</span>"
+            )
+            self.command_bar.input.setFocus()
+            return
         self.command_session.pending = "load_target"
         self.command_session.load_target = None
         self._command_mode = "load_target"
@@ -396,11 +402,16 @@ class MainWindow(QMainWindow):
             )
         else:
             self.history.append(f"> <b>{escaped}</b>")
-        if response.selfweights:
+        if response.remove_selfweight:
+            self.action_service.remove_selfweight(self.selected_action_name or "")
+            self.refresh_action_palette()
+            self.refresh_scene()
+        elif response.selfweights:
             self.action_service.replace_action_with_selfweight(
                 self.selected_action_name or "",
                 tuple((weight.target, weight.value) for weight in response.selfweights),
             )
+            self.refresh_action_palette()
             self.refresh_scene()
         elif response.distributed_member_forces:
             for load in response.distributed_member_forces:
@@ -521,12 +532,24 @@ class MainWindow(QMainWindow):
         group = self.action_service.selected_group()
         names = tuple(action.name for action in group.actions) if group else ()
         previous = self.selected_action_name
-        self.action_top_palette.set_actions(names, previous)
+        self.action_top_palette.set_actions(
+            names,
+            previous,
+            self.action_service.selfweight_load_cases(),
+        )
         self.selected_action_name = self.action_top_palette.action_selector.currentText() or None
+        self.command_session.set_active_load_case(self.selected_action_name)
+        self.action_top_palette.set_selfweight_active(
+            self.action_service.has_selfweight(self.selected_action_name or "")
+        )
         self.scene.set_active_load_case(self.selected_action_name)
 
     def _select_active_action(self, name: str) -> None:
         self.selected_action_name = name or None
+        self.command_session.set_active_load_case(self.selected_action_name)
+        self.action_top_palette.set_selfweight_active(
+            self.action_service.has_selfweight(self.selected_action_name or "")
+        )
         self.scene.set_active_load_case(self.selected_action_name)
 
     def refresh_member_axes(self, member_name: str) -> None:
