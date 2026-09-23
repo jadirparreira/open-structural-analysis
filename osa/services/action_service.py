@@ -31,15 +31,77 @@ class ActionService:
     def __init__(self, model: StructuralModel) -> None:
         self.model = model
 
-    def add_action(self, action: Action) -> None:
-        if action.name in self.model.actions:
+    def add_action(self, action: Action) -> Action:
+        """Cria ou substitui uma ação do mesmo tipo, alvo e ação ativa."""
+        existing = next(
+            (
+                candidate for candidate in self.model.actions.values()
+                if (
+                    candidate.kind == action.kind
+                    and candidate.target == action.target
+                    and candidate.load_case == action.load_case
+                )
+            ),
+            None,
+        )
+        if existing is not None:
+            action = Action(existing.name, action.kind, action.target, action.components, action.load_case)
+        elif action.name in self.model.actions:
             raise ValueError(f"Já existe uma ação chamada '{action.name}'.")
         self.model.actions[action.name] = action
         self.model._touch()
+        return action
+
+    def add_member_distributed_force(
+        self, target: str, direction: str, initial: float, final: float, load_case: str,
+        reference: str = "global",
+    ) -> Action:
+        normalized_reference = reference.casefold()
+        if normalized_reference not in {"global", "local"}:
+            raise ValueError("O sistema de direção deve ser Global ou Local.")
+        suffix = f"{normalized_reference}_" if normalized_reference == "local" else ""
+        kind = f"member_distributed_force_{suffix}{direction.upper()}"
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        action = Action(
+            f"Carga {index}", kind, target,
+            (float(initial), float(final)), load_case,
+        )
+        return self.add_action(action)
+
+    def add_member_moment(self, target: str, direction: str, value: float, load_case: str) -> Action:
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", f"member_moment_{direction.upper()}", target, (float(value),), load_case,
+        ))
+
+    def add_node_force(self, target: str, direction: str, value: float, load_case: str) -> Action:
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", f"node_force_{direction.upper()}", target, (float(value),), load_case,
+        ))
+
+    def add_node_moment(self, target: str, direction: str, value: float, load_case: str) -> Action:
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", f"node_moment_{direction.upper()}", target, (float(value),), load_case,
+        ))
 
     @staticmethod
     def templates() -> dict[str, ActionGroup]:
         return {name: _template_group(group) for name, group in ACTION_GROUP_TEMPLATES.items()}
+
+    def selected_group(self) -> ActionGroup | None:
+        """Retorna o grupo ativo, incluindo os templates ainda não salvos."""
+        name = self.model.selected_action_group
+        return self.model.action_groups.get(name) or self.templates().get(name)
 
     def add_action_group(self, group: ActionGroup) -> None:
         self.model.add_action_group(group)

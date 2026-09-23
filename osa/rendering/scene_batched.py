@@ -12,6 +12,7 @@ from pyvistaqt import QtInteractor
 from osa.model import StructuralModel
 
 from .batched_renderer import BatchedMemberRenderer, BatchedNodeRenderer, MemberBatch, NodeBatch
+from .action_renderer import ActionRenderer
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay
 from .navigation_widget import NavigationWidget
@@ -42,6 +43,7 @@ class StructureScene(QWidget):
         self._reference_axes_renderer = ReferenceAxesRenderer()
         self._member_renderer = BatchedMemberRenderer()
         self._node_renderer = BatchedNodeRenderer()
+        self._action_renderer = ActionRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
@@ -58,6 +60,16 @@ class StructureScene(QWidget):
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors: list[object] = []
+        self._action_actors: list[object] = []
+        self._action_label_positions = np.empty((0, 3), dtype=float)
+        self._action_labels: tuple[str, ...] = ()
+        self._active_load_case: str | None = None
+        self._action_visibility = {
+            "node_forces": True,
+            "node_moments": True,
+            "member_forces": True,
+            "member_moments": True,
+        }
         self._pick_sources: dict[str, tuple[str, pv.PolyData, tuple[str, ...]]] = {}
         self._highlight_actors: dict[str, object] = {}
 
@@ -153,6 +165,7 @@ class StructureScene(QWidget):
         self._node_batch = self._node_renderer.build(model, self._node_marker_radius())
         self._add_member_batches()
         self._add_node_batches()
+        self._add_actions()
         self._add_labels()
         self._apply_representation_visibility()
         self._configure_picker()
@@ -243,6 +256,15 @@ class StructureScene(QWidget):
             )
             self._support_actor.SetVisibility(self._node_supports_visible)
 
+    def _add_actions(self) -> None:
+        (
+            self._action_actors,
+            self._action_label_positions,
+            self._action_labels,
+        ) = self._action_renderer.render(
+            self.plotter, self._model, self._active_load_case, self._action_visibility,
+        )
+
     def _add_labels(self) -> None:
         self._add_reference_axis_labels()
         if self._member_batch is not None:
@@ -255,6 +277,9 @@ class StructureScene(QWidget):
                 "node", self._node_batch.label_positions, self._node_batch.names,
                 visible=self._labels_visibility["node"],
             )
+        self._label_overlay.set_group(
+            "action", self._action_label_positions, self._action_labels, visible=True,
+        )
 
     def _add_reference_axis_labels(self) -> None:
         positions, labels = self._reference_axes_renderer.labels(
@@ -462,6 +487,24 @@ class StructureScene(QWidget):
         if self._support_actor is not None:
             self._support_actor.SetVisibility(visible)
         self.plotter.render()
+
+    def set_active_load_case(self, name: str | None) -> None:
+        """Exibe somente as cargas associadas à ação selecionada."""
+        name = name or None
+        if name == self._active_load_case:
+            return
+        self._active_load_case = name
+        self.render_model(self._model)
+
+    def set_action_visibility(self, kind: str, visible: bool) -> None:
+        """Liga ou desliga uma das quatro categorias de ações renderizadas."""
+        if kind not in self._action_visibility:
+            return
+        visible = bool(visible)
+        if self._action_visibility[kind] == visible:
+            return
+        self._action_visibility[kind] = visible
+        self.render_model(self._model)
 
     def previous_reference_plane(self) -> None:
         self._step_reference_plane(-1)
@@ -698,6 +741,9 @@ class StructureScene(QWidget):
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors = []
+        self._action_actors = []
+        self._action_label_positions = np.empty((0, 3), dtype=float)
+        self._action_labels = ()
         self._pick_sources.clear()
         self._highlight_actors.clear()
         self._member_batch = None

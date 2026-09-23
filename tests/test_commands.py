@@ -1,5 +1,6 @@
 from osa.commands import CommandSession
 from osa.model import StructuralModel
+from osa.services.action_service import ActionService
 from osa.services import ModelService
 from osa.ui.color_palette import MEMBER_COLOR_CELLS
 
@@ -23,6 +24,195 @@ def test_member_names_are_case_insensitive():
     commands.submit("member")
     assert commands.submit("n1,N2").model_changed
     assert model.bars["B1"].start_node == "N1"
+
+
+def test_load_command_validates_target_before_asking_for_its_type():
+    model, commands = session()
+    model.add_node("N3", 0, 0, 0)
+    model.add_node("N4", 1, 0, 0)
+    model.add_bar("B3", "N3", "N4")
+
+    assert commands.submit("load").message == "Informe a identidade do nó ou do membro."
+    response = commands.submit("n3")
+    assert response.message == "Informe o tipo de ação: Força ou Momento."
+    assert commands.pending == "load_type"
+    assert commands.load_target == ("node", ("N3",))
+
+    commands.cancel()
+    commands.submit("load")
+    response = commands.submit("b3")
+    assert response.message == "Informe o tipo de ação: Força ou Momento."
+    assert commands.load_target == ("member", ("B3",))
+
+
+def test_load_command_repeats_when_target_does_not_exist():
+    model, commands = session()
+    commands.submit("load")
+
+    response = commands.submit("N99")
+
+    assert response.level == "error"
+    assert response.message == "Não existe nó ou membro chamado 'N99'."
+    assert commands.pending == "load_target"
+    model.add_node("N99", 0, 0, 0)
+    assert commands.submit("N99").message == "Informe o tipo de ação: Força ou Momento."
+
+
+def test_member_distributed_force_command_flow():
+    model, commands = session()
+    model.add_node("N3", 0, 0, 0)
+    model.add_node("N4", 4, 0, 0)
+    model.add_bar("B3", "N3", "N4")
+
+    commands.submit("load")
+    commands.submit("B3")
+    assert commands.submit("Força").message == "Informe o sistema de direção: Global ou Local."
+    assert commands.submit("Global").message == "Informe a direção global: X, Y ou Z."
+    assert commands.submit("Y").message == "Informe a força linear no membro (kN/m)."
+    response = commands.submit("-2,5;1.25")
+
+    assert response.level == "success"
+    assert len(response.distributed_member_forces) == 1
+    load = response.distributed_member_forces[0]
+    assert load.target == "B3"
+    assert load.direction == "Y"
+    assert load.initial == -2.5
+    assert load.final == 1.25
+    assert load.reference == "global"
+    assert commands.pending is None
+
+
+def test_member_distributed_force_can_use_the_local_direction():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    commands.submit("load")
+    commands.submit("B1")
+    commands.submit("força")
+    assert commands.submit("local").message == "Informe a direção local: X, Y ou Z."
+    assert commands.submit("Z").message == "Informe a força linear no membro (kN/m)."
+    response = commands.submit("1,5")
+
+    load = response.distributed_member_forces[0]
+    assert load.direction == "Z"
+    assert load.reference == "local"
+    assert load.initial == load.final == 1.5
+
+
+def test_force_replaces_the_same_direction_only_within_its_action():
+    model = StructuralModel()
+    service = ActionService(model)
+
+    service.add_member_distributed_force("B3", "Y", -2, -2, "Peso próprio")
+    service.add_member_distributed_force("B3", "Y", -5, -3, "Peso próprio")
+    service.add_member_distributed_force("B3", "Y", -1, -1, "Ação variável")
+    service.add_member_distributed_force("B3", "Z", -1, -1, "Peso próprio")
+
+    assert len(model.actions) == 3
+    own_weight_y = next(action for action in model.actions.values() if action.load_case == "Peso próprio" and action.kind.endswith("Y"))
+    assert own_weight_y.components == (-5.0, -3.0)
+
+
+def test_member_moment_is_uniform_and_uses_the_selected_local_direction():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    commands.submit("load")
+    commands.submit("B1")
+    assert commands.submit("Momento").message == "Informe a direção local: X, Y ou Z."
+    assert commands.submit("Z").message == "Informe o momento (kNm/m)."
+    response = commands.submit("-12,5")
+
+    assert response.level == "success"
+    assert len(response.member_moments) == 1
+    moment = response.member_moments[0]
+    assert moment.target == "B1"
+    assert moment.direction == "Z"
+    assert moment.value == -12.5
+    assert commands.pending is None
+
+
+def test_load_command_applies_a_variable_force_to_multiple_members():
+    model, commands = session()
+    for name, x in (("N1", 0), ("N2", 1), ("N3", 2), ("N4", 3), ("N5", 4), ("N6", 5)):
+        model.add_node(name, x, 0, 0)
+    for name, start, end in (("B1", "N1", "N2"), ("B2", "N3", "N4"), ("B3", "N5", "N6")):
+        model.add_bar(name, start, end)
+
+    commands.submit("load")
+    commands.submit("b1,B2,b3")
+    commands.submit("força")
+    commands.submit("global")
+    commands.submit("Z")
+    response = commands.submit("1,25;3.4")
+
+    assert [load.target for load in response.distributed_member_forces] == ["B1", "B2", "B3"]
+    assert all((load.initial, load.final) == (1.25, 3.4) for load in response.distributed_member_forces)
+
+
+def test_load_command_repeats_when_nodes_and_members_are_mixed():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    commands.submit("load")
+
+    response = commands.submit("N1,B1")
+
+    assert response.level == "error"
+    assert response.message == "Os elementos informados devem ser todos nós ou todos membros."
+    assert commands.pending == "load_target"
+    assert commands.submit("N1,N2").message == "Informe o tipo de ação: Força ou Momento."
+
+
+def test_load_command_applies_a_point_force_to_multiple_nodes():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+
+    commands.submit("load")
+    commands.submit("N1,n2")
+    commands.submit("força")
+    assert commands.submit("X").message == "Informe a força no nó (kN)."
+    response = commands.submit("-12,5")
+
+    assert [(force.target, force.direction, force.value) for force in response.node_forces] == [
+        ("N1", "X", -12.5), ("N2", "X", -12.5),
+    ]
+
+
+def test_load_command_applies_a_node_moment_in_the_global_direction():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+
+    commands.submit("load")
+    commands.submit("N1,n2")
+    assert commands.submit("momento").message == "Informe a direção global: X, Y ou Z."
+    assert commands.submit("Z").message == "Informe o momento no nó (kNm)."
+    response = commands.submit("-8,5")
+
+    assert [(moment.target, moment.direction, moment.value) for moment in response.node_moments] == [
+        ("N1", "Z", -8.5), ("N2", "Z", -8.5),
+    ]
+
+
+def test_member_moment_replaces_only_the_previous_moment_in_same_action_and_direction():
+    model = StructuralModel()
+    service = ActionService(model)
+
+    service.add_member_distributed_force("B1", "X", 1, 1, "Peso próprio")
+    service.add_member_moment("B1", "X", 10, "Peso próprio")
+    service.add_member_moment("B1", "X", -8, "Peso próprio")
+    service.add_member_moment("B1", "Y", 4, "Peso próprio")
+
+    assert len(model.actions) == 3
+    moment = next(action for action in model.actions.values() if action.kind == "member_moment_X")
+    assert moment.components == (-8.0,)
 
 
 def test_galpao_does_not_leave_a_pending_command():

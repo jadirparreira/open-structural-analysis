@@ -66,3 +66,7 @@ class ModelService:
     def resolve_node_name(self, value: str) -> str | None:
         folded = value.strip().casefold()
         return next((name for name in self.model.nodes if name.casefold() == folded), None)
+
+    def resolve_member_name(self, value: str) -> str | None:
+        folded = value.strip().casefold()
+        return next((name for name in self.model.bars if name.casefold() == folded), None)

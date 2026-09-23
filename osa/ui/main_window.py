@@ -4,7 +4,7 @@ from .common import *
 from .axes_panel import AxesPanel
 from .dialogs import ActionGroupDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
-from .palettes import FloatingPalette, PaletteTooltip, TopIconPalette
+from .palettes import ActionTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
 from .property_panel import PropertyPanel
 from .section_panel import (
     ILaminadoSectionPanel,
@@ -57,6 +57,11 @@ class MainWindow(QMainWindow):
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
         self.top_icon_palette.reposition()
+        self.selected_action_name: str | None = None
+        self.action_top_palette = ActionTopPalette(self)
+        self.refresh_action_palette()
+        self.action_top_palette.set_actions_visible(False)
+        self.action_top_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -173,6 +178,7 @@ class MainWindow(QMainWindow):
         dialog = ActionGroupDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        self.refresh_action_palette()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -202,6 +208,8 @@ class MainWindow(QMainWindow):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
             self.top_icon_palette.reposition()
+        if hasattr(self, "action_top_palette"):
+            self.action_top_palette.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -363,7 +371,18 @@ class MainWindow(QMainWindow):
         )
         self.command_bar.input.setFocus()
 
+    def start_load_command(self) -> None:
+        self.command_session.pending = "load_target"
+        self.command_session.load_target = None
+        self._command_mode = "load_target"
+        self.history.append(
+            "> <b>load</b> <span style='color:#57606a'>(Informe a identidade do nó ou do membro.)</span>"
+        )
+        self.command_bar.input.setFocus()
+
     def handle_command(self, command: str) -> None:
+        if command.strip().casefold() == "load" and self.command_session.pending is None:
+            self.palette.show_group("Ações")
         response = self.command_session.submit(command)
         self._command_mode = self.command_session.pending
         escaped = escape(response.command)
@@ -377,7 +396,32 @@ class MainWindow(QMainWindow):
             )
         else:
             self.history.append(f"> <b>{escaped}</b>")
-        if response.model_changed:
+        if response.distributed_member_forces:
+            for load in response.distributed_member_forces:
+                self.action_service.add_member_distributed_force(
+                    load.target, load.direction, load.initial, load.final,
+                    self.selected_action_name or "", load.reference,
+                )
+            self.refresh_scene()
+        elif response.member_moments:
+            for moment in response.member_moments:
+                self.action_service.add_member_moment(
+                    moment.target, moment.direction, moment.value, self.selected_action_name or "",
+                )
+            self.refresh_scene()
+        elif response.node_forces:
+            for force in response.node_forces:
+                self.action_service.add_node_force(
+                    force.target, force.direction, force.value, self.selected_action_name or "",
+                )
+            self.refresh_scene()
+        elif response.node_moments:
+            for moment in response.node_moments:
+                self.action_service.add_node_moment(
+                    moment.target, moment.direction, moment.value, self.selected_action_name or "",
+                )
+            self.refresh_scene()
+        elif response.model_changed:
             self.refresh_scene()
 
 
@@ -427,6 +471,7 @@ class MainWindow(QMainWindow):
         self._command_mode = None
         self.clear_selection()
         self.current_path = None
+        self.refresh_action_palette()
         self.refresh_scene()
 
     def save_model(self) -> None:
@@ -456,6 +501,7 @@ class MainWindow(QMainWindow):
                 self.command_session.cancel()
                 self.clear_selection()
                 self.current_path = Path(path)
+                self.refresh_action_palette()
                 self.refresh_scene()
             except (OSError, ValueError, KeyError) as error:
                 self.show_error(f"Não foi possível abrir o modelo: {error}")
@@ -463,6 +509,19 @@ class MainWindow(QMainWindow):
     def refresh_scene(self) -> None:
         self.scene.render_model(self.model)
         self.properties.update_delete_button_state()
+
+    def refresh_action_palette(self) -> None:
+        """Atualiza o seletor a partir do grupo de ações atualmente ativo."""
+        group = self.action_service.selected_group()
+        names = tuple(action.name for action in group.actions) if group else ()
+        previous = self.selected_action_name
+        self.action_top_palette.set_actions(names, previous)
+        self.selected_action_name = self.action_top_palette.action_selector.currentText() or None
+        self.scene.set_active_load_case(self.selected_action_name)
+
+    def _select_active_action(self, name: str) -> None:
+        self.selected_action_name = name or None
+        self.scene.set_active_load_case(self.selected_action_name)
 
     def refresh_member_axes(self, member_name: str) -> None:
         self.scene.update_member_axes(member_name)

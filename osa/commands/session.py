@@ -8,7 +8,37 @@ from math import atan, degrees
 from osa.domain import ReferenceAxis
 from osa.services import ModelService
 
-from .parser import parse_coordinates, parse_member_nodes
+from .parser import parse_coordinates, parse_distributed_force, parse_load_value, parse_member_nodes
+
+
+@dataclass(frozen=True, slots=True)
+class DistributedMemberForce:
+    target: str
+    direction: str
+    initial: float
+    final: float
+    reference: str = "global"
+
+
+@dataclass(frozen=True, slots=True)
+class MemberMoment:
+    target: str
+    direction: str
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
+class NodeForce:
+    target: str
+    direction: str
+    value: float
+
+
+@dataclass(frozen=True, slots=True)
+class NodeMoment:
+    target: str
+    direction: str
+    value: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,15 +47,25 @@ class CommandResponse:
     message: str
     level: str = "instruction"
     model_changed: bool = False
+    distributed_member_forces: tuple[DistributedMemberForce, ...] = ()
+    member_moments: tuple[MemberMoment, ...] = ()
+    node_forces: tuple[NodeForce, ...] = ()
+    node_moments: tuple[NodeMoment, ...] = ()
 
 
 class CommandSession:
     def __init__(self, service: ModelService) -> None:
         self.service = service
         self.pending: str | None = None
+        self.load_target: tuple[str, tuple[str, ...]] | None = None
+        self.load_direction: str | None = None
+        self.load_reference: str = "global"
 
     def cancel(self) -> None:
         self.pending = None
+        self.load_target = None
+        self.load_direction = None
+        self.load_reference = "global"
 
     def submit(self, text: str) -> CommandResponse:
         value = text.strip()
@@ -49,6 +89,148 @@ class CommandSession:
                 return CommandResponse(value, "Membro criado.", "success", True)
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
+        if self.pending == "load_target":
+            try:
+                self.load_target = self._resolve_load_targets(value)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            self.pending = "load_type"
+            return CommandResponse(value, "Informe o tipo de ação: Força ou Momento.")
+        if self.pending == "load_type":
+            kind = value.casefold()
+            if self.load_target is None:
+                self.cancel()
+                return CommandResponse(value, "A sequência de carga foi interrompida.", "error")
+            if kind in ("força", "forca"):
+                if self.load_target[0] == "member":
+                    self.pending = "member_force_reference"
+                    return CommandResponse(value, "Informe o sistema de direção: Global ou Local.")
+                self.pending = "load_direction"
+                return CommandResponse(value, "Informe a direção global: X, Y ou Z.")
+            if kind in ("momento", "moment"):
+                if self.load_target[0] == "member":
+                    self.pending = "member_moment_direction"
+                    return CommandResponse(value, "Informe a direção local: X, Y ou Z.")
+                self.pending = "node_moment_direction"
+                return CommandResponse(value, "Informe a direção global: X, Y ou Z.")
+            self.cancel()
+            return CommandResponse(value, "Informe Força ou Momento.", "error")
+        if self.pending == "member_force_reference":
+            reference = value.casefold()
+            if reference in {"global", "g"}:
+                self.load_reference = "global"
+                self.pending = "load_direction"
+                return CommandResponse(value, "Informe a direção global: X, Y ou Z.")
+            if reference in {"local", "l"}:
+                self.load_reference = "local"
+                self.pending = "local_force_direction"
+                return CommandResponse(value, "Informe a direção local: X, Y ou Z.")
+            return CommandResponse(value, "Informe Global ou Local.", "error")
+        if self.pending == "load_direction":
+            direction = value.upper()
+            if direction not in {"X", "Y", "Z"}:
+                return CommandResponse(value, "Informe uma direção global válida: X, Y ou Z.", "error")
+            self.load_direction = direction
+            if self.load_target and self.load_target[0] == "node":
+                self.pending = "node_force"
+                return CommandResponse(value, "Informe a força no nó (kN).")
+            self.pending = "load_force"
+            return CommandResponse(value, "Informe a força linear no membro (kN/m).")
+        if self.pending == "local_force_direction":
+            direction = value.upper()
+            if direction not in {"X", "Y", "Z"}:
+                return CommandResponse(value, "Informe uma direção local válida: X, Y ou Z.", "error")
+            self.load_direction = direction
+            self.pending = "load_force"
+            return CommandResponse(value, "Informe a força linear no membro (kN/m).")
+        if self.pending == "load_force":
+            try:
+                initial, final = parse_distributed_force(value)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            target = self.load_target
+            direction = self.load_direction
+            reference = self.load_reference
+            self.cancel()
+            if target is None or direction is None or initial is None:
+                return CommandResponse(value, "A sequência de carga foi interrompida.", "error")
+            return CommandResponse(
+                value,
+                "Forças distribuídas criadas.",
+                "success",
+                distributed_member_forces=tuple(
+                    DistributedMemberForce(name, direction, initial, final, reference)
+                    for name in target[1]
+                ),
+            )
+        if self.pending == "node_force":
+            try:
+                force = parse_load_value(value)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            target = self.load_target
+            direction = self.load_direction
+            self.cancel()
+            if target is None or direction is None:
+                return CommandResponse(value, "A sequência de carga foi interrompida.", "error")
+            return CommandResponse(
+                value,
+                "Forças nodais criadas.",
+                "success",
+                node_forces=tuple(NodeForce(name, direction, force) for name in target[1]),
+            )
+        if self.pending == "member_moment":
+            try:
+                value_moment = parse_load_value(value)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            target = self.load_target
+            direction = self.load_direction
+            self.cancel()
+            if target is None or direction is None:
+                return CommandResponse(value, "A sequência de carga foi interrompida.", "error")
+            return CommandResponse(
+                value,
+                "Momentos criados.",
+                "success",
+                member_moments=tuple(
+                    MemberMoment(name, direction, value_moment)
+                    for name in target[1]
+                ),
+            )
+        if self.pending == "member_moment_direction":
+            direction = value.upper()
+            if direction not in {"X", "Y", "Z"}:
+                return CommandResponse(value, "Informe uma direção local válida: X, Y ou Z.", "error")
+            self.load_direction = direction
+            self.pending = "member_moment"
+            return CommandResponse(value, "Informe o momento (kNm/m).")
+        if self.pending == "node_moment_direction":
+            direction = value.upper()
+            if direction not in {"X", "Y", "Z"}:
+                return CommandResponse(value, "Informe uma direção global válida: X, Y ou Z.", "error")
+            self.load_direction = direction
+            self.pending = "node_moment"
+            return CommandResponse(value, "Informe o momento no nó (kNm).")
+        if self.pending == "node_moment":
+            try:
+                value_moment = parse_load_value(value)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            target = self.load_target
+            direction = self.load_direction
+            self.cancel()
+            if target is None or direction is None:
+                return CommandResponse(value, "A sequência de carga foi interrompida.", "error")
+            return CommandResponse(
+                value,
+                "Momentos nodais criados.",
+                "success",
+                node_moments=tuple(
+                    NodeMoment(name, direction, value_moment)
+                    for name in target[1]
+                ),
+            )
 
         command = value.casefold()
         if command == "node":
@@ -57,6 +239,10 @@ class CommandSession:
         if command == "member":
             self.pending = "member"
             return CommandResponse(value, "Informe o nó inicial e final A,B")
+        if command == "load":
+            self.pending = "load_target"
+            self.load_target = None
+            return CommandResponse(value, "Informe a identidade do nó ou do membro.")
         if command == "galpao":
             try:
                 self._create_galpao()
@@ -70,6 +256,26 @@ class CommandSession:
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
         return CommandResponse(value, "Não é um comando válido", "error")
+
+    def _resolve_load_targets(self, value: str) -> tuple[str, tuple[str, ...]]:
+        identifiers = [identifier.strip() for identifier in value.split(",")]
+        if not identifiers or not all(identifiers):
+            raise ValueError("Informe uma ou mais identidades separadas por vírgula.")
+        targets: list[tuple[str, str]] = []
+        for identifier in identifiers:
+            node_name = self.service.resolve_node_name(identifier)
+            member_name = self.service.resolve_member_name(identifier)
+            if node_name:
+                targets.append(("node", node_name))
+            elif member_name:
+                targets.append(("member", member_name))
+            else:
+                raise ValueError(f"Não existe nó ou membro chamado '{identifier}'.")
+        kinds = {kind for kind, _name in targets}
+        if len(kinds) != 1:
+            raise ValueError("Os elementos informados devem ser todos nós ou todos membros.")
+        names = tuple(dict.fromkeys(name for _kind, name in targets))
+        return targets[0][0], names
 
     def _create_mezanino(self) -> None:
         """Create a three-bay, all-steel mezzanine frame (21 x 4 x 4 m)."""
@@ -91,12 +297,7 @@ class CommandSession:
         brace_releases = (False,) * 6 + (True,) * 6
         base_nodes: dict[tuple[float, float], str] = {}
         top_nodes: dict[tuple[float, float], str] = {}
-        joist_x_grid = tuple(
-            sorted(
-                (*x_grid, *(start_x + module_length * fraction
-                            for start_x in x_grid[:-1] for fraction in (1 / 3, 2 / 3)))
-            )
-        )
+        joist_x_grid = tuple(index * module_length / 3.0 for index in range(10))
 
         def add_w_member(start: str, end: str, profile_kind: str):
             profile, geometry = profiles[profile_kind]

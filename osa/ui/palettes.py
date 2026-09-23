@@ -154,7 +154,7 @@ class FloatingPalette(QFrame):
             "actions-bookmark.svg",
             (
                 ("Grupo de ações", "group-actions.svg", window.open_action_groups),
-                ("Adicionar ação", "add-action.svg", lambda: None),
+                ("Adicionar ação", "add-action.svg", window.start_load_command),
             ),
         )
         self._add_group(
@@ -231,6 +231,13 @@ class FloatingPalette(QFrame):
         self.setFixedHeight(self.sizeHint().height())
         if hasattr(self.window, "top_icon_palette"):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
+        if hasattr(self.window, "action_top_palette"):
+            self.window.action_top_palette.set_actions_visible(next_group == "Ações")
+
+    def show_group(self, name: str) -> None:
+        """Abre um grupo sem alterná-lo para fechado quando já está ativo."""
+        if self._expanded != name:
+            self.toggle_group(name)
 
     def reposition(self) -> None:
         margin = 0 if self.window.isMaximized() else WindowFrame.MARGIN
@@ -306,6 +313,85 @@ class TopIconPalette(QFrame):
         if not visible:
             self._tooltip.dismiss()
         self.setVisible(visible)
+
+    def reposition(self) -> None:
+        margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
+        self.move((self.window().width() - self.width()) // 2, margin + 52)
+        self.raise_()
+
+
+class ActionTopPalette(QFrame):
+    """Barra superior contextual para a edição de ações estruturais."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.setObjectName("topIconPalette")
+        self.setStyleSheet(
+            "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QComboBox { min-width: 210px; min-height: 24px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self._tooltip = PaletteTooltip(window)
+        self.action_selector = QComboBox(self)
+        self.action_selector.setToolTip("Ação ativa")
+        self.action_selector.setAccessibleName("Ação ativa")
+        self.action_selector.currentTextChanged.connect(window._select_active_action)
+        layout.addWidget(self.action_selector)
+        for filename, tooltip, kind in (
+            ("node-force.svg", "Forças nos nós", "node_forces"),
+            ("node-moment.svg", "Momentos nos nós", "node_moments"),
+            ("member-force.svg", "Forças nos membros", "member_forces"),
+            ("member-moment.svg", "Momentos nos membros", "member_moments"),
+        ):
+            button = QToolButton(self)
+            button.setFixedSize(24, 24)
+            button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
+            button.setIconSize(QSize(19, 19))
+            button.setToolTip(tooltip)
+            button.setProperty("paletteTooltip", tooltip)
+            button.setAccessibleName(tooltip)
+            button.setCheckable(True)
+            button.setChecked(True)
+            button.toggled.connect(
+                lambda visible, action_kind=kind: window.scene.set_action_visibility(action_kind, visible)
+            )
+            button.installEventFilter(self)
+            layout.addWidget(button)
+        self.adjustSize()
+
+    def set_actions(self, action_names: tuple[str, ...], selected_name: str | None = None) -> None:
+        self.action_selector.blockSignals(True)
+        self.action_selector.clear()
+        self.action_selector.addItems(action_names)
+        index = self.action_selector.findText(selected_name or "", Qt.MatchFlag.MatchExactly)
+        self.action_selector.setCurrentIndex(index if index >= 0 else (0 if action_names else -1))
+        self.action_selector.blockSignals(False)
+        self.adjustSize()
+
+    def set_actions_visible(self, visible: bool) -> None:
+        if not visible:
+            self._tooltip.dismiss()
+        self.setVisible(visible)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(watched, QToolButton):
+            if event.type() == QEvent.Type.Enter:
+                self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._tooltip.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
 
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
