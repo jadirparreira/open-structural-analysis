@@ -64,6 +64,7 @@ class StructureScene(QWidget):
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels: tuple[str, ...] = ()
         self._active_load_case: str | None = None
+        self._actions_visible = False
         self._action_visibility = {
             "node_forces": True,
             "node_moments": True,
@@ -257,6 +258,11 @@ class StructureScene(QWidget):
             self._support_actor.SetVisibility(self._node_supports_visible)
 
     def _add_actions(self) -> None:
+        if not self._actions_visible:
+            self._action_actors = []
+            self._action_label_positions = np.empty((0, 3), dtype=float)
+            self._action_labels = ()
+            return
         (
             self._action_actors,
             self._action_label_positions,
@@ -494,6 +500,14 @@ class StructureScene(QWidget):
         if name == self._active_load_case:
             return
         self._active_load_case = name
+        self.render_model(self._model)
+
+    def set_actions_visible(self, visible: bool) -> None:
+        """Exibe ações somente quando a seção Ações estiver ativa."""
+        visible = bool(visible)
+        if visible == self._actions_visible:
+            return
+        self._actions_visible = visible
         self.render_model(self._model)
 
     def set_action_visibility(self, kind: str, visible: bool) -> None:

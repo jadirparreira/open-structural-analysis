@@ -233,6 +233,8 @@ class FloatingPalette(QFrame):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
         if hasattr(self.window, "action_top_palette"):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
+        if hasattr(self.window, "scene"):
+            self.window.scene.set_actions_visible(next_group == "Ações")
 
     def show_group(self, name: str) -> None:
         """Abre um grupo sem alterná-lo para fechado quando já está ativo."""

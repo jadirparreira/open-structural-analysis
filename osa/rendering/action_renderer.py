@@ -18,6 +18,7 @@ class ActionRenderer:
     MOMENT_RADIUS = 0.30
     MOMENT_SPACING = 1.0
     MAX_HEIGHT = 1.0
+    MIN_HEIGHT = 0.1
     LABEL_CLEARANCE = 0.12
     AXIAL_TAIL_LENGTH = 1.0
 
@@ -115,10 +116,10 @@ class ActionRenderer:
             # A faixa fica no lado oposto ao sentido da ação, como convenção
             # gráfica para diagramas de cargas distribuídas.
             initial_offset = (
-                -force_direction * initial_sign * self.MAX_HEIGHT * abs(initial) / maximum_intensity
+                -force_direction * initial_sign * self._force_height(initial, maximum_intensity)
             )
             final_offset = (
-                -force_direction * final_sign * self.MAX_HEIGHT * abs(final) / maximum_intensity
+                -force_direction * final_sign * self._force_height(final, maximum_intensity)
             )
             top_start = start + initial_offset
             top_end = end + final_offset
@@ -171,7 +172,7 @@ class ActionRenderer:
             global_direction["XYZ".index(direction)] = 1.0
             force_direction = global_direction * np.sign(force)
             node_position = np.array((node.x, node.y, node.z), dtype=float)
-            arrow_length = self.MAX_HEIGHT * abs(force) / maximum_intensity if maximum_intensity else 0.0
+            arrow_length = self._force_height(force, maximum_intensity)
             line_start = node_position - force_direction * arrow_length
             actors.append(self._add_node_force_arrow(
                 plotter, line_start, node_position, force_direction, arrow_length,
@@ -224,6 +225,14 @@ class ActionRenderer:
             labels.append(self._format_node_moment(action.components[0]))
 
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+
+    @staticmethod
+    def _force_height(value: float, maximum_intensity: float) -> float:
+        """Escala uma força entre 0,1 e 1 unidade, sem engrossar cargas nulas."""
+        value = abs(float(value))
+        if np.isclose(value, 0.0) or maximum_intensity <= 0.0:
+            return 0.0
+        return max(ActionRenderer.MIN_HEIGHT, ActionRenderer.MAX_HEIGHT * value / maximum_intensity)
 
     @staticmethod
     def _format_number(value: float) -> str:

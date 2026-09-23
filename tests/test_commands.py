@@ -21,6 +21,12 @@ def test_action_labels_use_up_to_three_decimal_places_without_trailing_zeros():
     assert ActionRenderer._format_number(-0.0004) == "0"
 
 
+def test_action_force_drawing_keeps_nonzero_sizes_between_point_one_and_one():
+    assert ActionRenderer._force_height(10.0, 10.0) == pytest.approx(1.0)
+    assert ActionRenderer._force_height(0.01, 10.0) == pytest.approx(0.1)
+    assert ActionRenderer._force_height(0.0, 10.0) == pytest.approx(0.0)
+
+
 def test_node_command_flow():
     model, commands = session()
     assert commands.submit("node").message == "Informe as coordenadas do nó em X,Y,Z"
