@@ -35,5 +35,7 @@ def test_node_batch_keeps_spherical_markers_and_pick_identity():
     assert len(batch.names) == 408
     assert batch.geometry.n_cells > len(batch.names)
     assert set(np.unique(batch.geometry.cell_data["element_index"])) == set(range(408))
+    assert batch.geometry.cell_data["rgb"].shape == (batch.geometry.n_cells, 3)
+    assert np.all(batch.geometry.cell_data["rgb"] == 0)
     assert batch.supports.n_cells == 10
     assert batch.label_positions.shape == (408, 3)

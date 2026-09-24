@@ -112,7 +112,7 @@ class NodeBatch:
 class BatchedRigidBarRenderer:
     """Build the line-only representation used by idealized rigid bars."""
 
-    COLOR = "#4b5563"
+    COLOR = "#374151"
 
     def build(self, model) -> tuple[tuple[str, ...], pv.PolyData]:
         names = tuple(model.rigid_bars)
@@ -289,9 +289,14 @@ class BatchedNodeRenderer:
             if support is not None:
                 support_parts.append(support)
 
+        geometry = _merge(node_parts)
+        if geometry.n_cells:
+            geometry.cell_data["rgb"] = np.tile(
+                _rgb("#000000"), (geometry.n_cells, 1),
+            )
         return NodeBatch(
             names=names,
-            geometry=_merge(node_parts),
+            geometry=geometry,
             supports=_merge(support_parts),
             label_positions=label_positions,
         )

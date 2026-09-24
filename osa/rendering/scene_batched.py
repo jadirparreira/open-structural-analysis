@@ -32,9 +32,9 @@ class StructureScene(QWidget):
     empty_clicked = Signal()
     # The wireframe member and local-axis strokes are intentionally separate:
     # they may be tuned independently while remaining visually lightweight.
-    _member_line_width = 2.0
-    _local_axis_line_width = 2.0
-    _rigid_bar_line_width = 4.0
+    _member_line_width = 1.5
+    _local_axis_line_width = 1.0
+    _rigid_bar_line_width = 2.0
     _hover_highlight_padding = 2.0
     _selected_highlight_padding = 3.0
     _axis_colors = ("#d1242f", "#f2b705", "#2da44e")
@@ -186,8 +186,8 @@ class StructureScene(QWidget):
         self._member_batch = self._member_renderer.build(model, self._marker_radius_current)
         self._node_batch = self._node_renderer.build(model, self._node_marker_radius())
         self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_bar_renderer.build(model)
-        self._add_member_batches()
         self._add_rigid_bar_batch()
+        self._add_member_batches()
         self._add_node_batches()
         self._add_actions()
         self._add_labels()
@@ -286,9 +286,8 @@ class StructureScene(QWidget):
         if batch is None:
             return
         if batch.geometry.n_cells:
-            self._node_actor = self.plotter.add_mesh(
-                batch.geometry, color="#000000", smooth_shading=True,
-                pickable=True, reset_camera=False, render=False,
+            self._node_actor = self._add_colored_mesh(
+                batch.geometry, "batch:nodes", smooth_shading=True,
             )
             self._register_pick_source(
                 self._node_actor, "batch:nodes", "node", batch.geometry, batch.names,
@@ -311,6 +310,8 @@ class StructureScene(QWidget):
             lighting=False,
         )
         rigid_mapper = self._rigid_bar_actor.GetMapper()
+        # Rigid bars share the members' depth level. They must not receive a
+        # special foreground/background offset when crossing a member or node.
         rigid_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0.0, 0.0)
         self._rigid_bar_actor.SetObjectName("batch:rigid-bars")
         self._register_pick_source(
@@ -547,9 +548,11 @@ class StructureScene(QWidget):
         self.element_clicked.emit(kind, name, self.element_center(kind, name))
 
     def _sync_highlights(self) -> None:
+        self._reset_node_highlight_colors()
         self._replace_highlight("selected", self._selected, "#0969da")
         hover = None if self._hovered == self._selected else self._hovered
-        self._replace_highlight("hover", hover, "#24292f")
+        hover_color = "#4b5563" if hover is not None and hover[0] == "node" else "#24292f"
+        self._replace_highlight("hover", hover, hover_color)
 
     def _replace_highlight(
         self, slot: str, target: tuple[str, str] | None, color: str,
@@ -560,6 +563,9 @@ class StructureScene(QWidget):
         if target is None:
             return
         kind, name = target
+        if kind == "node" and slot == "hover":
+            self._set_node_highlight_color(name, color)
+            return
         if kind in {"bar", "rigid_bar"}:
             mesh = self._member_highlight_mesh(name)
             if mesh is None or not mesh.n_cells:
@@ -583,6 +589,33 @@ class StructureScene(QWidget):
             )
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
+
+    def _reset_node_highlight_colors(self) -> None:
+        batch = self._node_batch
+        if batch is None or not batch.geometry.n_cells:
+            return
+        values = batch.geometry.cell_data.get("rgb")
+        if values is None:
+            return
+        values[...] = np.asarray(pv.Color("#000000").int_rgb, dtype=np.uint8)
+        batch.geometry.cell_data["rgb"] = values
+        batch.geometry.GetCellData().Modified()
+        batch.geometry.Modified()
+
+    def _set_node_highlight_color(self, name: str, color: str) -> None:
+        batch = self._node_batch
+        if batch is None or name not in batch.names:
+            return
+        values = batch.geometry.cell_data.get("rgb")
+        indices = batch.geometry.cell_data.get("element_index")
+        if values is None or indices is None:
+            return
+        values[np.asarray(indices) == batch.names.index(name)] = np.asarray(
+            pv.Color(color).int_rgb, dtype=np.uint8,
+        )
+        batch.geometry.cell_data["rgb"] = values
+        batch.geometry.GetCellData().Modified()
+        batch.geometry.Modified()
 
     def _highlight_line_width(self, slot: str, kind: str = "bar") -> float:
         """Return a stroke wider than the representation currently visible.
