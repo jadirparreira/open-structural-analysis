@@ -12,9 +12,16 @@ O Open Structural Analysis encontra-se em desenvolvimento ativo. A base de model
 
 ## Instalação e execução
 
-Requisitos: Python entre 3.10 e 3.13 e [uv](https://docs.astral.sh/uv/).
+Requisitos: Git, Python entre 3.10 e 3.13 e [uv](https://docs.astral.sh/uv/).
 
-No diretório do projeto, execute:
+Clone o repositório e entre no diretório do projeto:
+
+```bash
+git clone https://github.com/jadirparreira/open-structural-analysis.git
+cd open-structural-analysis
+```
+
+Instale as dependências e execute a aplicação:
 
 ```bash
 uv sync
