@@ -15,7 +15,7 @@ class PropertyPanel(QFrame):
         super().__init__(window)
         self.window = window
         self.setObjectName("propertyPanel")
-        self.setFixedWidth(238)
+        self.setFixedWidth(300)
         self._selected: tuple[str, str] | None = None
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(14, 14, 14, 14)
@@ -61,6 +61,8 @@ class PropertyPanel(QFrame):
         self.nodes_title.setObjectName("propertySection")
         self.rotation_title = QLabel("Rotação")
         self.rotation_title.setObjectName("propertySection")
+        self.solid_offsets_title = QLabel("Deslocamento")
+        self.solid_offsets_title.setObjectName("propertySection")
         self.releases_title = QLabel("Vinculações")
         self.releases_title.setObjectName("propertySection")
         self.supports_title = QLabel("Restrições")
@@ -73,8 +75,16 @@ class PropertyPanel(QFrame):
         self._supports_widget: QWidget | None = None
         self._rotation_box: QFrame | None = None
         self._rotation_input: QLineEdit | None = None
+        self._solid_offsets_widget: QWidget | None = None
+        self._solid_offset_inputs: dict[str, QLineEdit] = {}
         self._releases_widget: QWidget | None = None
+        self._releases_header: QWidget | None = None
+        self._release_stack: QStackedWidget | None = None
         self._release_boxes: list[QCheckBox] = []
+        self._release_end = "A"
+        self._release_switch_indicator: QFrame | None = None
+        self._release_switch_buttons: dict[str, QToolButton] = {}
+        self._release_switch_animation: QPropertyAnimation | None = None
         self._material_widget: QWidget | None = None
         self._section_label: QLabel | None = None
         self._section_combo: QComboBox | None = None
@@ -99,6 +109,7 @@ class PropertyPanel(QFrame):
         self.coordinates_title.hide()
         self.nodes_title.hide()
         self.rotation_title.hide()
+        self.solid_offsets_title.hide()
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
@@ -260,11 +271,7 @@ class PropertyPanel(QFrame):
             self.layout.addWidget(self.rotation_title)
             self.rotation_title.show()
             self.layout.addWidget(rotation_box)
-            releases_widget = QWidget()
-            releases_layout = QGridLayout(releases_widget)
-            releases_layout.setContentsMargins(0, 0, 0, 0)
-            releases_layout.setHorizontalSpacing(12)
-            releases_layout.setVerticalSpacing(self.layout.spacing())
+            self._show_member_solid_offsets(bar)
             release_labels = (
                 "Dxa", "Dxb", "Dya", "Dyb", "Dza", "Dzb",
                 "Rxa", "Rxb", "Rya", "Ryb", "Rza", "Rzb",
@@ -283,26 +290,47 @@ class PropertyPanel(QFrame):
                 "Rza": "Rotação em torno do eixo local z no nó inicial (A)",
                 "Rzb": "Rotação em torno do eixo local z no nó final (B)",
             }
-            self._release_boxes = []
-            for index, label in enumerate(release_labels):
-                checkbox = QCheckBox(label)
-                checkbox.setToolTip(release_tooltips[label])
-                checkbox.setStyleSheet(
-                    "QCheckBox { color: #57606a; spacing: 6px; }"
-                    "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
-                    "border-radius: 5px; background: #ffffff; }"
-                    "QCheckBox::indicator:hover { border-color: #d0d7de; }"
-                    "QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover { "
-                    "background: #0969da; border-color: #0969da; }"
-                )
-                checkbox.setChecked(bar.releases[index])
-                checkbox.stateChanged.connect(self._releases_changed)
-                self._release_boxes.append(checkbox)
-                releases_layout.addWidget(checkbox, index // 2, index % 2)
-            self._releases_widget = releases_widget
-            self.layout.addWidget(self.releases_title)
+            release_boxes: list[QCheckBox | None] = [None] * len(release_labels)
+            checkbox_style = (
+                "QCheckBox { color: #57606a; spacing: 6px; }"
+                "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+                "border-radius: 5px; background: #ffffff; }"
+                "QCheckBox::indicator:hover { border-color: #d0d7de; }"
+                "QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover { "
+                "background: #0969da; border-color: #0969da; }"
+            )
+            endpoint_indices = {"A": (0, 6, 2, 8, 4, 10), "B": (1, 7, 3, 9, 5, 11)}
+            self._release_stack = QStackedWidget()
+            for endpoint in ("A", "B"):
+                endpoint_widget = QWidget()
+                endpoint_layout = QGridLayout(endpoint_widget)
+                endpoint_layout.setContentsMargins(0, 0, 0, 0)
+                endpoint_layout.setHorizontalSpacing(12)
+                endpoint_layout.setVerticalSpacing(self.layout.spacing())
+                for position, index in enumerate(endpoint_indices[endpoint]):
+                    label = release_labels[index]
+                    checkbox = QCheckBox(label)
+                    checkbox.setToolTip(release_tooltips[label])
+                    checkbox.setStyleSheet(checkbox_style)
+                    checkbox.setChecked(bar.releases[index])
+                    checkbox.stateChanged.connect(self._releases_changed)
+                    release_boxes[index] = checkbox
+                    endpoint_layout.addWidget(checkbox, position // 2, position % 2)
+                self._release_stack.addWidget(endpoint_widget)
+            self._release_boxes = [box for box in release_boxes if box is not None]
+            self._release_stack.setCurrentIndex(0)
+            release_header = QWidget()
+            release_header_layout = QHBoxLayout(release_header)
+            release_header_layout.setContentsMargins(0, 0, 0, 0)
+            release_header_layout.setSpacing(8)
+            release_header_layout.addWidget(self.releases_title)
+            release_header_layout.addStretch(1)
+            release_header_layout.addWidget(self._release_switch(), 0, Qt.AlignmentFlag.AlignVCenter)
+            self._releases_header = release_header
+            self._releases_widget = self._release_stack
+            self.layout.addWidget(release_header)
             self.releases_title.show()
-            self.layout.addWidget(releases_widget)
+            self.layout.addWidget(self._release_stack)
             self._section_label, self._section_combo = section_label, section_combo
             self._section_profile_display = section_profile_display
             self._section_settings_button = settings_button
@@ -314,6 +342,56 @@ class PropertyPanel(QFrame):
         self.reposition()
         self.show(); self.raise_()
         QTimer.singleShot(0, self._refresh_size)
+
+    def _show_member_solid_offsets(self, bar) -> None:
+        """Show visual-only offsets used to position solid member faces."""
+        self._solid_offset_inputs.clear()
+        offsets = getattr(bar, "solid_face_offsets", (0.0, 0.0))
+        self.layout.addWidget(self.solid_offsets_title)
+        self.solid_offsets_title.show()
+        offsets_widget = QWidget()
+        offsets_layout = QGridLayout(offsets_widget)
+        offsets_layout.setContentsMargins(0, 0, 0, 0)
+        offsets_layout.setHorizontalSpacing(8)
+        offsets_layout.setVerticalSpacing(self.layout.spacing())
+        self._solid_offsets_widget = offsets_widget
+        for column, (endpoint_index, endpoint) in enumerate(((0, "A"), (1, "B"))):
+            endpoint_label = QLabel(endpoint)
+            endpoint_label.setObjectName("propertySection")
+            box = QFrame()
+            box.setObjectName("unitValueBox")
+            box.setStyleSheet(
+                "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+                "border-radius: 6px; background: #ffffff; } "
+                "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; "
+                "color: #57606a; padding: 2px 9px; } "
+                "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+            )
+            box_layout = QHBoxLayout(box)
+            box_layout.setContentsMargins(0, 0, 0, 0)
+            box_layout.setSpacing(0)
+            field = QLineEdit()
+            field.setObjectName("unitValue")
+            field.setMinimumWidth(0)
+            field.setValidator(QRegularExpressionValidator(
+                QRegularExpression(r"[+-]?\d*(?:[.,]\d{0,2})?"), field
+            ))
+            field.setText(
+                self._format_solid_offset(float(offsets[endpoint_index]))
+                if len(offsets) == 2 else "0"
+            )
+            field.setToolTip("Positivo aumenta e negativo reduz o comprimento da extremidade")
+            field.setAccessibleName(f"Deslocamento da face sólida no extremo {endpoint}")
+            field.editingFinished.connect(
+                lambda selected_endpoint=endpoint: self._solid_offset_changed(selected_endpoint)
+            )
+            self._solid_offset_inputs[endpoint] = field
+            box_layout.addWidget(field, 1)
+            box_layout.addWidget(QLabel("mm"))
+            offsets_layout.addWidget(endpoint_label, 0, column * 2)
+            offsets_layout.addWidget(box, 0, column * 2 + 1)
+            offsets_layout.setColumnStretch(column * 2 + 1, 1)
+        self.layout.addWidget(offsets_widget)
 
     def _show_rigid_bar_geometry(self, name: str) -> None:
         rigid = self.window.model.rigid_bars[name]
@@ -597,6 +675,82 @@ class PropertyPanel(QFrame):
             row_layout.addWidget(field_label)
             row_layout.addWidget(value_box, 1)
             self._add_context_widget(row)
+
+    def _release_switch(self) -> QFrame:
+        switch = QFrame()
+        switch.setObjectName("releaseEndSwitch")
+        switch.setFixedSize(70, 30)
+        switch.setStyleSheet(
+            "QFrame#releaseEndSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        indicator = QFrame(switch)
+        indicator.setObjectName("releaseEndIndicator")
+        indicator.setStyleSheet(
+            "QFrame#releaseEndIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        self._release_switch_indicator = indicator
+        layout = QHBoxLayout(switch)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        buttons = QButtonGroup(switch)
+        buttons.setExclusive(True)
+        for endpoint in ("A", "B"):
+            button = QToolButton(switch)
+            button.setText(endpoint)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(31, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(endpoint == self._release_end)
+            button.setAccessibleName(f"Exibir vinculações do extremo {endpoint}")
+            button.clicked.connect(
+                lambda checked=False, selected_endpoint=endpoint: self._set_release_end(selected_endpoint)
+            )
+            buttons.addButton(button)
+            layout.addWidget(button)
+            self._release_switch_buttons[endpoint] = button
+        indicator.setGeometry(self._release_switch_indicator_geometry())
+        indicator.lower()
+        self._update_release_switch_text()
+        return switch
+
+    def _release_switch_indicator_geometry(self) -> QRect:
+        if self._release_end == "A":
+            return QRect(4, 5, 29, 20)
+        return QRect(36, 5, 29, 20)
+
+    def _update_release_switch_text(self) -> None:
+        for endpoint, button in self._release_switch_buttons.items():
+            color = "#ffffff" if endpoint == self._release_end else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _set_release_end(self, endpoint: str) -> None:
+        if endpoint == self._release_end or endpoint not in {"A", "B"}:
+            return
+        self._release_end = endpoint
+        if self._release_stack is not None:
+            self._release_stack.setCurrentIndex(0 if endpoint == "A" else 1)
+        if self._release_switch_animation is not None:
+            self._release_switch_animation.stop()
+        indicator = self._release_switch_indicator
+        if indicator is not None:
+            animation = QPropertyAnimation(indicator, b"geometry", indicator)
+            animation.setDuration(160)
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            animation.setStartValue(indicator.geometry())
+            animation.setEndValue(self._release_switch_indicator_geometry())
+            self._release_switch_animation = animation
+            animation.start()
+        self._update_release_switch_text()
 
     def _member_action_switch(self) -> QFrame:
         switch = QFrame()
@@ -883,11 +1037,33 @@ class PropertyPanel(QFrame):
             self._rotation_box.deleteLater()
             self._rotation_box = None
             self._rotation_input = None
+        if self._solid_offsets_widget is not None:
+            self.layout.removeWidget(self._solid_offsets_widget)
+            self._solid_offsets_widget.deleteLater()
+            self._solid_offsets_widget = None
+            self._solid_offset_inputs.clear()
         if self._releases_widget is not None:
             self.layout.removeWidget(self._releases_widget)
             self._releases_widget.deleteLater()
             self._releases_widget = None
+            self._release_stack = None
             self._release_boxes.clear()
+        if self._releases_header is not None:
+            header = self._releases_header
+            self.layout.removeWidget(header)
+            # The title is reused on the next member selection. Detach it
+            # before deleting the header so it is not destroyed with it.
+            header.layout().removeWidget(self.releases_title)
+            self.releases_title.setParent(self)
+            self.releases_title.hide()
+            header.deleteLater()
+            self._releases_header = None
+        if self._release_switch_animation is not None:
+            self._release_switch_animation.stop()
+        self._release_switch_animation = None
+        self._release_switch_indicator = None
+        self._release_switch_buttons.clear()
+        self._release_end = "A"
         if self._material_widget is not None:
             self.layout.removeWidget(self._material_widget)
             self._material_widget.deleteLater()
@@ -902,7 +1078,7 @@ class PropertyPanel(QFrame):
         self.layout.removeWidget(self.coordinates_title)
         self.layout.removeWidget(self.nodes_title)
         self.layout.removeWidget(self.rotation_title)
-        self.layout.removeWidget(self.releases_title)
+        self.layout.removeWidget(self.solid_offsets_title)
         self.layout.removeWidget(self.supports_title)
         while self.form.count():
             item = self.form.takeAt(0)
@@ -975,6 +1151,52 @@ class PropertyPanel(QFrame):
             return
         self._rotation_input.setText(str(member.rotation))
         self.window.refresh_member_rotation(self._selected[1])
+
+    @staticmethod
+    def _format_solid_offset(value: float) -> str:
+        if abs(value) < 0.000005:
+            value = 0.0
+        formatted = f"{value * 1000.0:.2f}".rstrip("0").rstrip(".")
+        return formatted or "0"
+
+    def _solid_offset_changed(self, endpoint: str) -> None:
+        if not self._selected or self._selected[0] != "bar":
+            return
+        member = self.window.model.bars.get(self._selected[1])
+        field = self._solid_offset_inputs.get(endpoint)
+        if member is None or field is None or endpoint not in {"A", "B"}:
+            return
+        try:
+            value_mm = float(field.text().strip().replace(",", "."))
+            if not isfinite(value_mm):
+                raise ValueError
+        except ValueError:
+            self._update_solid_offset_inputs()
+            return
+        offsets = list(getattr(member, "solid_face_offsets", (0.0, 0.0)))
+        offsets[0 if endpoint == "A" else 1] = value_mm / 1000.0
+        try:
+            updated = self.window.model_service.update_member_solid_face_offsets(
+                member.name, tuple(offsets)
+            )
+        except ValueError:
+            self._update_solid_offset_inputs()
+            return
+        field.setText(self._format_solid_offset(updated.solid_face_offsets[0 if endpoint == "A" else 1]))
+        self.window.refresh_member_geometry(member.name)
+
+    def _update_solid_offset_inputs(self) -> None:
+        if not self._selected or self._selected[0] != "bar":
+            return
+        member = self.window.model.bars.get(self._selected[1])
+        if member is None:
+            return
+        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+        for index, endpoint in enumerate(("A", "B")):
+            field = self._solid_offset_inputs.get(endpoint)
+            if field is None or len(offsets) != 2:
+                continue
+            field.setText(self._format_solid_offset(offsets[index]))
 
     def _toggle_color_palette(self) -> None:
         if not self._selected or self._selected[0] != "bar":

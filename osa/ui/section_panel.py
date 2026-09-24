@@ -30,7 +30,7 @@ class SectionPanel(QFrame):
         super().__init__(window)
         self.window = window
         self.setObjectName("propertyPanel")
-        self.setFixedWidth(340)
+        self.setFixedWidth(300)
         # Let the panel size itself from its contents; a fixed/minimum height
         # used to compress the geometry rows when the widget was repositioned.
         self.setMinimumHeight(0)

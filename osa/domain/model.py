@@ -253,6 +253,24 @@ class StructuralModel:
         return self.bars[name]
 
     @staticmethod
+    def _member_solid_face_offsets(values: tuple[float, ...]) -> tuple[float, float]:
+        if len(values) != 2:
+            raise ValueError("Os deslocamentos das faces sólidas devem possuir dois valores.")
+        offsets = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) for value in offsets):
+            raise ValueError("Os deslocamentos das faces sólidas devem ser números finitos.")
+        return offsets  # type: ignore[return-value]
+
+    def update_member_solid_face_offsets(self, name: str, offsets: tuple[float, ...]) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        self.bars[name] = replace(
+            self.bars[name], solid_face_offsets=self._member_solid_face_offsets(offsets),
+        )
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
     def _member_color(value: str) -> str:
         if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
             raise ValueError("A cor do membro deve estar no formato hexadecimal #RRGGBB.")

@@ -206,6 +206,7 @@ class StructureScene(QWidget):
         if not preserve_camera or self._zoom_reference_parallel_scale is None:
             self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
+        self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
@@ -245,6 +246,13 @@ class StructureScene(QWidget):
         )
         if self._member_edge_actor is not None:
             self._member_edge_actor.SetPickable(False)
+            edge_mapper = self._member_edge_actor.GetMapper()
+            # Bring contour lines in front of coincident profile faces. This
+            # prevents an edge from disappearing when another solid touches
+            # the same face, without changing the analytical geometry.
+            edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
 
         for mesh, color in zip(batch.axes, self._axis_colors):
             if not mesh.n_cells:
@@ -254,6 +262,14 @@ class StructureScene(QWidget):
                 reset_camera=False, render=False, render_lines_as_tubes=True,
                 lighting=False,
             )
+            axis_mapper = actor.GetMapper()
+            # Local axes are an analytical overlay: keep them visible over
+            # coincident solid faces, just as the profile contour lines are.
+            # The relative offset only affects depth ties and does not alter
+            # the axis geometry or the picking order of structural elements.
+            axis_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            axis_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            axis_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
             actor.SetVisibility(self._local_axes_visible)
             self._local_axis_actors.append(actor)
 
@@ -294,6 +310,8 @@ class StructureScene(QWidget):
             pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
             lighting=False,
         )
+        rigid_mapper = self._rigid_bar_actor.GetMapper()
+        rigid_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0.0, 0.0)
         self._rigid_bar_actor.SetObjectName("batch:rigid-bars")
         self._register_pick_source(
             self._rigid_bar_actor, "batch:rigid-bars", "rigid_bar", mesh, self._rigid_bar_names,
@@ -831,12 +849,14 @@ class StructureScene(QWidget):
         self.plotter.reset_camera()
         self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
+        self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
 
     def view_isometric(self) -> None:
         self._set_default_isometric_view()
+        self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
@@ -863,6 +883,7 @@ class StructureScene(QWidget):
     def _on_interaction_end(self, *_args) -> None:
         self._camera_interacting = False
         self._update_zoom_dependent_sizes()
+        self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
@@ -871,7 +892,29 @@ class StructureScene(QWidget):
         self._label_overlay.sync(self.plotter.renderer)
 
     def _on_camera_modified(self, *_args) -> None:
+        self._update_depth_overlays()
         self._schedule_label_sync()
+
+    def _update_depth_overlays(self) -> None:
+        """Move analytical axis strokes slightly toward the active camera.
+
+        The axes are batched into three actors, so one camera-facing offset is
+        applied to each actor.  This reproduces the previous per-member
+        overlay behavior while avoiding one actor per member.
+        """
+        if not self._local_axis_actors:
+            return
+        camera = self.plotter.renderer.GetActiveCamera()
+        direction = np.asarray(camera.GetPosition(), dtype=float) - np.asarray(
+            camera.GetFocalPoint(), dtype=float,
+        )
+        length = float(np.linalg.norm(direction))
+        if length <= 1e-12:
+            return
+        direction /= length
+        offset = direction * (self._marker_radius_current * 0.25)
+        for actor in self._local_axis_actors:
+            actor.SetPosition(*offset)
 
     def _reference_plane_levels(self) -> tuple[float, ...]:
         values = {0.0}

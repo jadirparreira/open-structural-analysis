@@ -61,6 +61,9 @@ class ModelService:
     def update_member_releases(self, name: str, releases: tuple[bool, ...]):
         return self.model.update_member_releases(name, releases)
 
+    def update_member_solid_face_offsets(self, name: str, offsets: tuple[float, ...]):
+        return self.model.update_member_solid_face_offsets(name, offsets)
+
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 

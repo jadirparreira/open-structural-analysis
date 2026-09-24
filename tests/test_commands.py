@@ -92,7 +92,7 @@ def test_rigid_bar_command_creates_pair_named_element():
     assert tuple(model.rigid_bars) == ("N1-N2",)
 
 
-def test_portico_command_creates_a_concrete_four_column_portal_without_rigid_members():
+def test_portico_command_creates_a_concrete_four_column_portal_with_offset_rigid_connections():
     model, commands = session()
 
     response = commands.submit("portico")
@@ -100,13 +100,77 @@ def test_portico_command_creates_a_concrete_four_column_portal_without_rigid_mem
     assert response.level == "success"
     assert response.model_changed
     assert response.message == "Pórtico criado."
-    assert len(model.nodes) == 8
+    assert len(model.nodes) == 16
     assert len(model.bars) == 8
+    assert len(model.rigid_bars) == 8
+    assert all(
+        member.solid_face_offsets == (0.0, 0.2)
+        for member in model.bars.values()
+        if model.nodes[member.start_node].z == 0.0
+    )
+    assert all(
+        member.solid_face_offsets == (-0.1, -0.1)
+        for member in model.bars.values()
+        if (
+            model.nodes[member.start_node].z == 3.8
+            and model.nodes[member.end_node].z == 3.8
+            and model.nodes[member.start_node].y == model.nodes[member.end_node].y
+        )
+    )
+    assert all(
+        member.solid_face_offsets == (0.0, 0.0)
+        for member in model.bars.values()
+        if (
+            model.nodes[member.start_node].z == 3.8
+            and model.nodes[member.end_node].z == 3.8
+            and model.nodes[member.start_node].x == model.nodes[member.end_node].x
+        )
+    )
     assert {
         (node.x, node.y, node.z)
         for node in model.nodes.values()
         if node.z == 0.0
     } == {(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 4.0, 0.0), (0.0, 4.0, 0.0)}
+    assert {
+        (node.x, node.y, node.z)
+        for node in model.nodes.values()
+        if node.z == 3.8 and node.y in {0.0, 4.0}
+    } == {
+        (0.0, 0.0, 3.8), (4.0, 0.0, 3.8), (4.0, 4.0, 3.8), (0.0, 4.0, 3.8),
+    }
+    assert {
+        (node.x, node.y, node.z)
+        for node in model.nodes.values()
+        if node.z == 3.8 and node.y not in {0.0, 4.0}
+    } == {
+        (0.0, -0.1, 3.8), (4.0, -0.1, 3.8), (4.0, 4.1, 3.8), (0.0, 4.1, 3.8),
+        (4.0, 0.2, 3.8), (4.0, 3.8, 3.8), (0.0, 3.8, 3.8), (0.0, 0.2, 3.8),
+    }
+    assert {
+        model.nodes[member.start_node].y
+        for member in model.bars.values()
+        if (
+            model.nodes[member.start_node].z == 3.8
+            and model.nodes[member.end_node].z == 3.8
+            and model.nodes[member.start_node].y == model.nodes[member.end_node].y
+            and model.nodes[member.start_node].x != model.nodes[member.end_node].x
+        )
+    } == {-0.1, 4.1}
+    assert {
+        tuple(sorted((model.nodes[member.start_node].y, model.nodes[member.end_node].y)))
+        for member in model.bars.values()
+        if (
+            model.nodes[member.start_node].z == 3.8
+            and model.nodes[member.end_node].z == 3.8
+            and model.nodes[member.start_node].x == model.nodes[member.end_node].x
+            and model.nodes[member.start_node].y != model.nodes[member.end_node].y
+        )
+    } == {(0.2, 3.8)}
+    assert all(
+        model.nodes[rigid.start_node].z == 3.8
+        and model.nodes[rigid.end_node].z == 3.8
+        for rigid in model.rigid_bars.values()
+    )
     assert all(node.supports == (True, True, True, False, False, False)
                for node in model.nodes.values() if node.z == 0.0)
     assert all(member.material == "Concreto Estrutural" for member in model.bars.values())
@@ -789,10 +853,10 @@ def test_galpao_does_not_leave_a_pending_command():
         assert abs((roof_heights[12.0] - roof_heights[6.0]) / 6.0 + 0.05) < 1e-9
 
 
-def test_portico_is_not_a_command_and_does_not_change_the_model():
+def test_unknown_command_does_not_change_the_model():
     model, commands = session()
 
-    response = commands.submit("portico")
+    response = commands.submit("comando-desconhecido")
 
     assert response.level == "error"
     assert not response.model_changed

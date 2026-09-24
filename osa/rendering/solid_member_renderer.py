@@ -77,11 +77,15 @@ class SolidMemberRenderer:
         edge_actor.SetObjectName(f"bar-edge:{member.name}")
         edge_actor.SetPickable(False)
         edge_actor.SetVisibility(visible)
-        self.update_transform(face_actor, start, end, rotation=member.rotation)
-        self.update_transform(edge_actor, start, end, rotation=member.rotation)
+        edge_mapper = edge_actor.GetMapper()
+        edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+        edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+        edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+        self.update_transform(face_actor, start, end, rotation=member.rotation, member=member)
+        self.update_transform(edge_actor, start, end, rotation=member.rotation, member=member)
         return SolidMemberVisual(face_actor, edge_actor)
 
-    def update_transform(self, actor, start, end, *, rotation: int = 0) -> bool:
+    def update_transform(self, actor, start, end, *, rotation: int = 0, member=None) -> bool:
         """Update an existing actor without rebuilding its shared mesh."""
         basis = LocalAxesRenderer.basis(start, end, rotation=rotation)
         if basis is None:
@@ -89,6 +93,13 @@ class SolidMemberRenderer:
         x_axis, y_axis, z_axis = basis
         start_point = np.asarray((start.x, start.y, start.z), dtype=float)
         end_point = np.asarray((end.x, end.y, end.z), dtype=float)
+        if member is not None:
+            offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+            if len(offsets) == 2:
+                candidate_start = start_point - x_axis * float(offsets[0])
+                candidate_end = end_point + x_axis * float(offsets[1])
+                if float(np.dot(candidate_end - candidate_start, x_axis)) > 1e-9:
+                    start_point, end_point = candidate_start, candidate_end
         length = float(np.linalg.norm(end_point - start_point))
         matrix = vtk.vtkMatrix4x4()
         matrix.Identity()

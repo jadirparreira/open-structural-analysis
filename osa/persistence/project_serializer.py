@@ -77,6 +77,9 @@ class ProjectSerializer:
                 candidate._member_rotation(item.get("rotation", 0)),
                 candidate._member_releases(tuple(bool(value) for value in item.get("releases", (False,) * 12))),
                 candidate._member_color(item.get("color", "#6e7781")),
+                candidate._member_solid_face_offsets(
+                    tuple(float(value) for value in item.get("solid_face_offsets", (0.0, 0.0)))
+                ),
             )
             candidate.bars[member.name] = member
 

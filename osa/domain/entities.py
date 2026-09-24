@@ -62,6 +62,9 @@ class Member:
     rotation: int = 0
     releases: tuple[bool, ...] = (False,) * 12
     color: str = "#6e7781"
+    # Distâncias visuais, em metros, entre os nós analíticos e as faces
+    # sólidas nas extremidades A e B. Não participam do modelo do solver.
+    solid_face_offsets: tuple[float, float] = (0.0, 0.0)
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

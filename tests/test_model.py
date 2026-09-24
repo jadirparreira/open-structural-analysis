@@ -44,6 +44,32 @@ def test_rigid_bar_uses_node_pair_as_identity_and_round_trips(tmp_path):
     assert loaded.rigid_bars == model.rigid_bars
 
 
+def test_member_solid_face_offsets_are_visual_and_round_trip(tmp_path):
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 5, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_member_solid_face_offsets("B1", (0.25, 0.4))
+
+    assert model.bars["B1"].solid_face_offsets == (0.25, 0.4)
+    path = tmp_path / "solid-offsets.osa.json"
+    model.save(path)
+    loaded = StructuralModel()
+    loaded.load(path)
+    assert loaded.bars["B1"].solid_face_offsets == (0.25, 0.4)
+
+
+def test_member_solid_face_offsets_accept_signed_values():
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    member = model.update_member_solid_face_offsets("B1", (0.1, -0.1))
+
+    assert member.solid_face_offsets == (0.1, -0.1)
+
+
 def test_node_with_rigid_bar_cannot_be_removed():
     model = StructuralModel()
     model.add_node("N1", 0, 0, 0)

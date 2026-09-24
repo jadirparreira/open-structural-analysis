@@ -175,14 +175,28 @@ class BatchedMemberRenderer:
                 release_polylines, start, end, member.releases, marker_radius, basis,
             )
 
+            # Os deslocamentos das faces sólidas são exclusivamente visuais:
+            # valores positivos aumentam o comprimento nas extremidades e
+            # valores negativos o reduzem. Linhas, eixos locais e liberações
+            # continuam referenciando os nós analíticos originais.
+            solid_start = start.copy()
+            solid_end = end.copy()
+            offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+            if len(offsets) == 2:
+                candidate_start = start - local_x * float(offsets[0])
+                candidate_end = end + local_x * float(offsets[1])
+                if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
+                    solid_start, solid_end = candidate_start, candidate_end
+            solid_delta = solid_end - solid_start
+
             try:
                 shape = section_shape(member.section, member.geometry_dict(), arc_steps=12)
                 if shape is None:
                     raise ValueError("Seção incompleta.")
                 face_source = self.solids._mesh_for(shape)
                 edge_source = self.solids._edge_mesh_for(shape)
-                face = _transformed_mesh(face_source, start, delta, local_y, local_z)
-                edge = _transformed_mesh(edge_source, start, delta, local_y, local_z)
+                face = _transformed_mesh(face_source, solid_start, solid_delta, local_y, local_z)
+                edge = _transformed_mesh(edge_source, solid_start, solid_delta, local_y, local_z)
             except (KeyError, TypeError, ValueError):
                 fallback_segments.append((start, end, element_index, color))
                 continue

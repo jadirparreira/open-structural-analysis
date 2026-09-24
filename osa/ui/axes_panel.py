@@ -73,7 +73,7 @@ class AxesPanel(QFrame):
         super().__init__(window)
         self.window = window
         self.setObjectName("propertyPanel")
-        self.setFixedWidth(238)
+        self.setFixedWidth(300)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(7)
