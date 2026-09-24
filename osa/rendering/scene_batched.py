@@ -5,13 +5,19 @@ from __future__ import annotations
 import numpy as np
 import pyvista as pv
 import vtk
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 
 from osa.model import StructuralModel
 
-from .batched_renderer import BatchedMemberRenderer, BatchedNodeRenderer, MemberBatch, NodeBatch
+from .batched_renderer import (
+    BatchedMemberRenderer,
+    BatchedNodeRenderer,
+    BatchedRigidBarRenderer,
+    MemberBatch,
+    NodeBatch,
+)
 from .action_renderer import ActionRenderer
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay
@@ -24,6 +30,13 @@ class StructureScene(QWidget):
 
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
+    # The wireframe member and local-axis strokes are intentionally separate:
+    # they may be tuned independently while remaining visually lightweight.
+    _member_line_width = 2.0
+    _local_axis_line_width = 2.0
+    _rigid_bar_line_width = 4.0
+    _hover_highlight_padding = 2.0
+    _selected_highlight_padding = 3.0
     _axis_colors = ("#d1242f", "#f2b705", "#2da44e")
     # View the model from -X, -Y and +Z.  With Z kept vertical on screen,
     # positive X points northeast and positive Y points northwest.
@@ -36,6 +49,8 @@ class StructureScene(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
         layout.addWidget(self.plotter)
+        self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.plotter.installEventFilter(self)
         self.plotter.set_background("#ffffff")
         self.plotter.enable_parallel_projection()
 
@@ -43,17 +58,21 @@ class StructureScene(QWidget):
         self._reference_axes_renderer = ReferenceAxesRenderer()
         self._member_renderer = BatchedMemberRenderer()
         self._node_renderer = BatchedNodeRenderer()
+        self._rigid_bar_renderer = BatchedRigidBarRenderer()
         self._action_renderer = ActionRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
+        self._rigid_bar_names: tuple[str, ...] = ()
+        self._rigid_bar_mesh: pv.PolyData | None = None
 
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._rigid_bar_actor = None
         self._grid_actor = None
         self._reference_axes_actor = None
         self._node_actor = None
@@ -83,6 +102,8 @@ class StructureScene(QWidget):
         self._node_supports_visible = True
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
+        self._tab_hover_candidates: list[tuple[str, str]] = []
+        self._tab_hover_position: tuple[int, int] | None = None
         self._marker_radius_current = 0.05
         self._reference_plane_mode = "XY"
         self._reference_plane_z = 0.0
@@ -164,7 +185,9 @@ class StructureScene(QWidget):
 
         self._member_batch = self._member_renderer.build(model, self._marker_radius_current)
         self._node_batch = self._node_renderer.build(model, self._node_marker_radius())
+        self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_bar_renderer.build(model)
         self._add_member_batches()
+        self._add_rigid_bar_batch()
         self._add_node_batches()
         self._add_actions()
         self._add_labels()
@@ -176,7 +199,12 @@ class StructureScene(QWidget):
             self._restore_camera(camera_state)
         else:
             self._set_default_isometric_view()
-        self._zoom_reference_parallel_scale = self._current_parallel_scale()
+        # Keep the zoom reference when rebuilding an existing scene.  Toggling
+        # the Ações palette rebuilds the actors while preserving the camera;
+        # replacing the reference here would reset the line-width multiplier
+        # and make members/axes visibly change thickness for one rebuild.
+        if not preserve_camera or self._zoom_reference_parallel_scale is None:
+            self._zoom_reference_parallel_scale = self._current_parallel_scale()
         self._update_zoom_dependent_sizes()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
@@ -187,14 +215,14 @@ class StructureScene(QWidget):
         if batch is None:
             return
         self._member_line_actor = self._add_colored_mesh(
-            batch.lines, "batch:member-lines", line_width=4,
+            batch.lines, "batch:member-lines", line_width=self._member_line_width,
             render_lines_as_tubes=True, lighting=False,
         )
         self._register_pick_source(
             self._member_line_actor, "batch:member-lines", "bar", batch.lines, batch.names,
         )
         self._member_fallback_actor = self._add_colored_mesh(
-            batch.fallback_lines, "batch:member-fallback", line_width=4,
+            batch.fallback_lines, "batch:member-fallback", line_width=self._member_line_width,
             render_lines_as_tubes=True, lighting=False,
         )
         self._register_pick_source(
@@ -222,7 +250,7 @@ class StructureScene(QWidget):
             if not mesh.n_cells:
                 continue
             actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=4, pickable=False,
+                mesh, color=color, line_width=self._local_axis_line_width, pickable=False,
                 reset_camera=False, render=False, render_lines_as_tubes=True,
                 lighting=False,
             )
@@ -256,6 +284,20 @@ class StructureScene(QWidget):
                 reset_camera=False, render=False,
             )
             self._support_actor.SetVisibility(self._node_supports_visible)
+
+    def _add_rigid_bar_batch(self) -> None:
+        mesh = self._rigid_bar_mesh
+        if mesh is None or not mesh.n_cells:
+            return
+        self._rigid_bar_actor = self.plotter.add_mesh(
+            mesh, color=BatchedRigidBarRenderer.COLOR, line_width=self._rigid_bar_line_width,
+            pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
+            lighting=False,
+        )
+        self._rigid_bar_actor.SetObjectName("batch:rigid-bars")
+        self._register_pick_source(
+            self._rigid_bar_actor, "batch:rigid-bars", "rigid_bar", mesh, self._rigid_bar_names,
+        )
 
     def _add_actions(self) -> None:
         if not self._actions_visible:
@@ -316,7 +358,7 @@ class StructureScene(QWidget):
 
     def _configure_picker(self) -> None:
         self._picker.InitializePickList()
-        actors = [self._node_actor]
+        actors = [self._node_actor, self._rigid_bar_actor]
         if self._solid_members_visible:
             actors.extend((self._member_face_actor, self._member_fallback_actor))
         else:
@@ -324,7 +366,7 @@ class StructureScene(QWidget):
         active = {id(actor) for actor in actors if actor is not None}
         for actor in (
             self._node_actor, self._member_face_actor,
-            self._member_fallback_actor, self._member_line_actor,
+            self._member_fallback_actor, self._member_line_actor, self._rigid_bar_actor,
         ):
             if actor is None:
                 continue
@@ -351,10 +393,102 @@ class StructureScene(QWidget):
             return None
         return kind, names[element_index]
 
+    @staticmethod
+    def _distance_to_segment_2d(
+        point: np.ndarray, start: np.ndarray, end: np.ndarray,
+    ) -> float:
+        delta = end - start
+        length_squared = float(np.dot(delta, delta))
+        if length_squared <= 1e-12:
+            return float(np.linalg.norm(point - start))
+        fraction = float(np.dot(point - start, delta) / length_squared)
+        fraction = min(1.0, max(0.0, fraction))
+        projection = start + delta * fraction
+        return float(np.linalg.norm(point - projection))
+
+    def _world_to_display(self, point: tuple[float, float, float]) -> tuple[np.ndarray, float]:
+        renderer = self.plotter.renderer
+        renderer.SetWorldPoint(*point, 1.0)
+        renderer.WorldToDisplay()
+        display = renderer.GetDisplayPoint()
+        return np.asarray(display[:2], dtype=float), float(display[2])
+
+    def _hover_candidates_near_cursor(self) -> list[tuple[str, str]]:
+        x, y = self.plotter.iren.get_event_position()
+        cursor = np.asarray((x, y), dtype=float)
+        candidates: list[tuple[float, float, tuple[str, str]]] = []
+        tolerance = 12.0
+
+        for name, node in self._model.nodes.items():
+            display, depth = self._world_to_display((node.x, node.y, node.z))
+            distance = float(np.linalg.norm(cursor - display))
+            if distance <= tolerance:
+                candidates.append((distance, depth, ("node", name)))
+
+        for kind, elements in (("bar", self._model.bars), ("rigid_bar", self._model.rigid_bars)):
+            for name, element in elements.items():
+                start_node = self._model.nodes.get(element.start_node)
+                end_node = self._model.nodes.get(element.end_node)
+                if start_node is None or end_node is None:
+                    continue
+                start, start_depth = self._world_to_display(
+                    (start_node.x, start_node.y, start_node.z),
+                )
+                end, end_depth = self._world_to_display(
+                    (end_node.x, end_node.y, end_node.z),
+                )
+                distance = self._distance_to_segment_2d(cursor, start, end)
+                if distance <= tolerance:
+                    candidates.append((distance, (start_depth + end_depth) / 2.0, (kind, name)))
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        ordered = [candidate for _distance, _depth, candidate in candidates]
+        picked = self._pick()
+        if picked is not None and picked not in ordered:
+            ordered.insert(0, picked)
+        elif picked in ordered:
+            ordered.remove(picked)
+            ordered.insert(0, picked)
+        return ordered
+
+    def _cycle_hover(self) -> None:
+        if self._camera_interacting:
+            return
+        self._hover_timer.stop()
+        x, y = self.plotter.iren.get_event_position()
+        if self._orientation_widget.is_pointer_over(x, y):
+            return
+        position = (int(x), int(y))
+        if position != self._tab_hover_position:
+            self._tab_hover_candidates = self._hover_candidates_near_cursor()
+            self._tab_hover_position = position
+        if not self._tab_hover_candidates:
+            return
+        if self._hovered in self._tab_hover_candidates:
+            index = self._tab_hover_candidates.index(self._hovered)
+            index = (index + 1) % len(self._tab_hover_candidates)
+        else:
+            index = 0
+        self._hovered = self._tab_hover_candidates[index]
+        self._sync_highlights()
+        self.plotter.render()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.plotter and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Tab:
+                self._cycle_hover()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
     def _on_mouse_move(self, *_args) -> None:
         if self._camera_interacting:
             return
         x, y = self.plotter.iren.get_event_position()
+        position = (int(x), int(y))
+        if position != self._tab_hover_position:
+            self._tab_hover_candidates = []
+            self._tab_hover_position = None
         if self._orientation_widget.is_pointer_over(x, y):
             if self._hovered is not None:
                 self._hovered = None
@@ -378,7 +512,13 @@ class StructureScene(QWidget):
         x, y = self.plotter.iren.get_event_position()
         if self._orientation_widget.is_pointer_over(x, y):
             return
-        picked = self._pick()
+        position = (int(x), int(y))
+        picked = (
+            self._hovered
+            if position == self._tab_hover_position
+            and self._hovered in self._tab_hover_candidates
+            else self._pick()
+        )
         self._selected = picked
         self._sync_highlights()
         self.plotter.render()
@@ -402,12 +542,12 @@ class StructureScene(QWidget):
         if target is None:
             return
         kind, name = target
-        if kind == "bar":
+        if kind in {"bar", "rigid_bar"}:
             mesh = self._member_highlight_mesh(name)
             if mesh is None or not mesh.n_cells:
                 return
             actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=4 if slot == "selected" else 3,
+                mesh, color=color, line_width=self._highlight_line_width(slot, kind),
                 render_lines_as_tubes=True, lighting=False, pickable=False,
                 reset_camera=False, render=False,
             )
@@ -426,16 +566,54 @@ class StructureScene(QWidget):
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
 
+    def _highlight_line_width(self, slot: str, kind: str = "bar") -> float:
+        """Return a stroke wider than the representation currently visible.
+
+        Member strokes are scaled after camera zoom.  A fixed-width hover
+        actor could therefore be completely covered when the camera is close
+        to a member.  Reading the active actor width keeps the highlight on
+        top at every zoom level while preserving the separate solid/line
+        representations.
+        """
+        if kind == "rigid_bar":
+            reference_actor = self._rigid_bar_actor
+            fallback = self._rigid_bar_line_width
+        elif self._solid_members_visible:
+            # Valid solid members are represented by the contour batch; a
+            # member without a valid section remains a visible fallback line.
+            reference_actor = (
+                self._member_fallback_actor
+                or self._member_edge_actor
+                or self._member_line_actor
+            )
+            fallback = self._member_line_width if self._member_fallback_actor else 1.5
+        else:
+            reference_actor = self._member_line_actor or self._member_fallback_actor
+            fallback = self._member_line_width
+        width = fallback
+        if reference_actor is not None:
+            width = float(reference_actor.GetProperty().GetLineWidth())
+        padding = (
+            self._selected_highlight_padding
+            if slot == "selected" else self._hover_highlight_padding
+        )
+        return max(1.0, width + padding)
+
     def _member_highlight_mesh(self, name: str) -> pv.PolyData | None:
         member = self._model.bars.get(name)
-        if member is None:
+        if member is not None:
+            if self._solid_members_visible and self._member_batch is not None:
+                outline = self._member_batch.outlines.get(name)
+                if outline is not None:
+                    return outline
+            start = self._model.nodes[member.start_node]
+            end = self._model.nodes[member.end_node]
+            return pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z))
+        rigid = self._model.rigid_bars.get(name)
+        if rigid is None:
             return None
-        if self._solid_members_visible and self._member_batch is not None:
-            outline = self._member_batch.outlines.get(name)
-            if outline is not None:
-                return outline
-        start = self._model.nodes[member.start_node]
-        end = self._model.nodes[member.end_node]
+        start = self._model.nodes[rigid.start_node]
+        end = self._model.nodes[rigid.end_node]
         return pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z))
 
     def _apply_representation_visibility(self) -> None:
@@ -608,6 +786,14 @@ class StructureScene(QWidget):
     def update_node(self, _node_name: str) -> None:
         self._schedule_rebuild()
 
+    def update_rigid_bar_name(self, old_name: str, new_name: str) -> None:
+        """Refresh a renamed rigid bar without losing its scene selection."""
+        if self._selected == ("rigid_bar", old_name):
+            self._selected = "rigid_bar", new_name
+        if self._hovered == ("rigid_bar", old_name):
+            self._hovered = "rigid_bar", new_name
+        self.render_model(self._model)
+
     def _schedule_rebuild(self) -> None:
         """Coalesce rapid property edits into one batch reconstruction."""
         self._rebuild_timer.start()
@@ -627,9 +813,14 @@ class StructureScene(QWidget):
         if kind == "node":
             node = self._model.nodes[name]
             return node.x, node.y, node.z
-        member = self._model.bars[name]
-        start = self._model.nodes[member.start_node]
-        end = self._model.nodes[member.end_node]
+        element = (
+            self._model.bars.get(name)
+            if kind == "bar" else self._model.rigid_bars.get(name)
+        )
+        if element is None:
+            raise KeyError(name)
+        start = self._model.nodes[element.start_node]
+        end = self._model.nodes[element.end_node]
         return (
             (start.x + end.x) / 2.0,
             (start.y + end.y) / 2.0,
@@ -708,7 +899,17 @@ class StructureScene(QWidget):
         zoom_factor = reference / current
         for actor in (self._member_line_actor, self._member_fallback_actor):
             if actor is not None:
-                actor.GetProperty().SetLineWidth(4.0 * zoom_factor)
+                actor.GetProperty().SetLineWidth(self._member_line_width * zoom_factor)
+        if self._rigid_bar_actor is not None:
+            self._rigid_bar_actor.GetProperty().SetLineWidth(self._rigid_bar_line_width * zoom_factor)
+        for actor in self._local_axis_actors:
+            actor.GetProperty().SetLineWidth(self._local_axis_line_width * zoom_factor)
+        highlight_targets = {"selected": self._selected, "hover": self._hovered}
+        for slot, actor in self._highlight_actors.items():
+            if actor is not None and slot in {"selected", "hover"}:
+                target = highlight_targets.get(slot)
+                kind = target[0] if target is not None else "bar"
+                actor.GetProperty().SetLineWidth(self._highlight_line_width(slot, kind))
 
     def _current_parallel_scale(self) -> float | None:
         camera = self.plotter.renderer.GetActiveCamera()
@@ -737,12 +938,16 @@ class StructureScene(QWidget):
         if self._selected is None:
             return
         kind, name = self._selected
-        collection = self._model.nodes if kind == "node" else self._model.bars
+        collection = (
+            self._model.nodes if kind == "node"
+            else self._model.bars if kind == "bar"
+            else self._model.rigid_bars
+        )
         if name not in collection:
             self._selected = None
 
     def _has_scene(self) -> bool:
-        return any((self._member_line_actor, self._member_face_actor, self._node_actor))
+        return any((self._member_line_actor, self._member_face_actor, self._rigid_bar_actor, self._node_actor))
 
     def _clear_actor_references(self) -> None:
         self._grid_actor = None
@@ -751,6 +956,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._rigid_bar_actor = None
         self._node_actor = None
         self._support_actor = None
         self._release_actor = None
@@ -762,6 +968,8 @@ class StructureScene(QWidget):
         self._highlight_actors.clear()
         self._member_batch = None
         self._node_batch = None
+        self._rigid_bar_names = ()
+        self._rigid_bar_mesh = None
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

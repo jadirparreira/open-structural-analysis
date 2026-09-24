@@ -376,6 +376,14 @@ class MainWindow(QMainWindow):
         )
         self.command_bar.input.setFocus()
 
+    def start_rigid_bar_command(self) -> None:
+        self.command_session.pending = "rigid_bar"
+        self._command_mode = "rigid_bar"
+        self.history.append(
+            "> <b>rigid</b> <span style='color:#57606a'>(Informe o nó inicial e final A,B)</span>"
+        )
+        self.command_bar.input.setFocus()
+
     def start_load_command(self) -> None:
         if self.action_service.has_selfweight(self.selected_action_name or ""):
             self.history.append(
@@ -479,11 +487,20 @@ class MainWindow(QMainWindow):
             for member in self.model.bars.values()
         ):
             return
+        if kind == "node" and any(
+            rigid.start_node == name or rigid.end_node == name
+            for rigid in self.model.rigid_bars.values()
+        ):
+            return
         try:
             if kind == "node":
                 self.model_service.remove_node(name)
-            else:
+            elif kind == "bar":
                 self.model_service.remove_member(name)
+            elif kind == "rigid_bar":
+                self.model_service.remove_rigid_bar(name)
+            else:
+                return
         except ValueError as error:
             self.show_error(str(error))
             return
@@ -588,6 +605,9 @@ class MainWindow(QMainWindow):
 
     def refresh_node(self, node_name: str) -> None:
         self.scene.update_node(node_name)
+
+    def refresh_rigid_bar_name(self, old_name: str, new_name: str) -> None:
+        self.scene.update_rigid_bar_name(old_name, new_name)
 
     def show_error(self, message: str) -> None:
         QMessageBox.warning(self, "Dados inválidos", message)

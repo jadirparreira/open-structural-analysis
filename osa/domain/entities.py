@@ -67,6 +67,15 @@ class Member:
         return dict(self.section_geometry)
 
 
+@dataclass(frozen=True, slots=True)
+class RigidBar:
+    """Idealized rigid connection between two existing nodes."""
+
+    name: str
+    start_node: str
+    end_node: str
+
+
 # Compatibilidade pública com o nome utilizado até agora.
 Bar = Member
 

@@ -89,6 +89,9 @@ class CommandSession:
         if self.pending == "member":
             self.pending = None
             return self._create_member(value, value)
+        if self.pending == "rigid_bar":
+            self.pending = None
+            return self._create_rigid_bar(value, value)
         if self.pending == "load_target":
             try:
                 self.load_target = self._resolve_load_targets(value)
@@ -292,6 +295,11 @@ class CommandSession:
                 return self._create_member(value, arguments)
             self.pending = "member"
             return CommandResponse(value, "Informe o nó inicial e final A,B")
+        if command in {"rigid", "rigidbar", "rigid_bar", "barrarigida"}:
+            if arguments:
+                return self._create_rigid_bar(value, arguments)
+            self.pending = "rigid_bar"
+            return CommandResponse(value, "Informe o nó inicial e final A,B")
         if command == "load":
             if self.active_load_case and any(
                 action.load_case == self.active_load_case
@@ -341,6 +349,12 @@ class CommandSession:
                 return CommandResponse(value, "Mezanino criado.", "success", True)
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
+        if command == "portico":
+            try:
+                self._create_portico()
+                return CommandResponse(value, "Pórtico criado.", "success", True)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
         return CommandResponse(value, "Não é um comando válido", "error")
 
     def _create_node(self, command: str, coordinates_text: str) -> CommandResponse:
@@ -366,6 +380,21 @@ class CommandSession:
         except ValueError as error:
             return CommandResponse(command, str(error), "error")
 
+    def _create_rigid_bar(self, command: str, nodes_text: str) -> CommandResponse:
+        try:
+            start, end = parse_member_nodes(nodes_text)
+            resolved_start = self.service.resolve_node_name(start)
+            resolved_end = self.service.resolve_node_name(end)
+            missing = [
+                node for node, resolved in ((start, resolved_start), (end, resolved_end)) if not resolved
+            ]
+            if missing:
+                raise ValueError(f"Não existe o nó informado: {', '.join(missing)}.")
+            rigid = self.service.create_rigid_bar(resolved_start, resolved_end)
+            return CommandResponse(command, f"Barra rígida {rigid.name} criada.", "success", True)
+        except ValueError as error:
+            return CommandResponse(command, str(error), "error")
+
     def _resolve_load_targets(self, value: str) -> tuple[str, tuple[str, ...]]:
         identifiers = [identifier.strip() for identifier in value.split(",")]
         if not identifiers or not all(identifiers):
@@ -385,6 +414,48 @@ class CommandSession:
             raise ValueError("Os elementos informados devem ser todos nós ou todos membros.")
         names = tuple(dict.fromkeys(name for _kind, name in targets))
         return targets[0][0], names
+
+    def _create_portico(self) -> None:
+        """Create a one-storey concrete portal with four columns and four top beams."""
+        model = self.service.model
+        span = 4.0
+        height = 4.0
+        supports = (True, True, True, False, False, False)
+        geometry = {"b": 200.0, "h": 400.0}
+        member_color = "#6e7781"
+        top_nodes: dict[tuple[float, float], str] = {}
+
+        def configure_member(name: str) -> None:
+            model.update_bar_material(name, "Concreto Estrutural", model.materials["Concreto Estrutural"])
+            model.update_bar_section(name, "Retangular")
+            model.update_member_profile(name, "R 200 x 400", geometry)
+            model.update_member_color(name, member_color)
+
+        # Quatro pilares nos vértices de uma malha de 4 x 4 m, com 4 m de altura.
+        for x, y in ((0.0, 0.0), (span, 0.0), (span, span), (0.0, span)):
+            base = self.service.create_node(x, y, 0.0)
+            top = self.service.create_node(x, y, height)
+            model.update_node_supports(base.name, supports)
+            top_nodes[(x, y)] = top.name
+            column = self.service.create_member(base.name, top.name)
+            configure_member(column.name)
+
+        # Quatro vigas no perímetro superior. Não são adicionadas barras rígidas.
+        perimeter = (
+            ((0.0, 0.0), (span, 0.0)),
+            ((span, 0.0), (span, span)),
+            ((span, span), (0.0, span)),
+            ((0.0, span), (0.0, 0.0)),
+        )
+        for start, end in perimeter:
+            beam = self.service.create_member(top_nodes[start], top_nodes[end])
+            configure_member(beam.name)
+
+        self.service.set_reference_axes({
+            "X": (ReferenceAxis("A", 0.0), ReferenceAxis("B", span)),
+            "Y": (ReferenceAxis("1", 0.0), ReferenceAxis("2", span)),
+            "Z": (ReferenceAxis("0", 0.0), ReferenceAxis("400", height)),
+        })
 
     def _create_mezanino(self) -> None:
         """Create a three-bay, all-steel mezzanine frame (21 x 4 x 4 m)."""

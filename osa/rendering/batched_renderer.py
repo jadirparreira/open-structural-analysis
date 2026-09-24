@@ -109,6 +109,28 @@ class NodeBatch:
     label_positions: np.ndarray
 
 
+class BatchedRigidBarRenderer:
+    """Build the line-only representation used by idealized rigid bars."""
+
+    COLOR = "#4b5563"
+
+    def build(self, model) -> tuple[tuple[str, ...], pv.PolyData]:
+        names = tuple(model.rigid_bars)
+        segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
+        color = _rgb(self.COLOR)
+        for element_index, name in enumerate(names):
+            rigid = model.rigid_bars[name]
+            start_node = model.nodes[rigid.start_node]
+            end_node = model.nodes[rigid.end_node]
+            segments.append((
+                np.asarray((start_node.x, start_node.y, start_node.z), dtype=float),
+                np.asarray((end_node.x, end_node.y, end_node.z), dtype=float),
+                element_index,
+                color,
+            ))
+        return names, _line_mesh(segments)
+
+
 class BatchedMemberRenderer:
     """Build a handful of meshes for any number of structural members."""
 

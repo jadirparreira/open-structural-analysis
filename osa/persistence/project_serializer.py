@@ -15,6 +15,7 @@ from osa.domain import (
     LoadCombination,
     Node,
     ReferenceAxis,
+    RigidBar,
     StructuralModel,
 )
 
@@ -30,6 +31,7 @@ class ProjectSerializer:
             "members": [asdict(member) for member in model.bars.values()],
             # "bars" mantém interoperabilidade com leitores antigos.
             "bars": [asdict(member) for member in model.bars.values()],
+            "rigid_bars": [asdict(rigid) for rigid in model.rigid_bars.values()],
             "axes": {direction: [asdict(axis) for axis in axes] for direction, axes in model.axes.items()},
             "materials": {
                 name: {"type": model.material_types.get(name, ""), "values": list(values)}
@@ -77,6 +79,13 @@ class ProjectSerializer:
                 candidate._member_color(item.get("color", "#6e7781")),
             )
             candidate.bars[member.name] = member
+
+        for item in data.get("rigid_bars", ()):
+            candidate._validate_rigid_bar_nodes(item["start_node"], item["end_node"])
+            rigid = RigidBar(item["name"], item["start_node"], item["end_node"])
+            if rigid.name != f"{rigid.start_node}-{rigid.end_node}":
+                raise ValueError("A identidade da barra rígida deve indicar seus nós.")
+            candidate.rigid_bars[rigid.name] = rigid
 
         candidate.set_reference_axes({
             direction: tuple(
@@ -150,6 +159,7 @@ class ProjectSerializer:
 
         model.nodes = candidate.nodes
         model.bars = candidate.bars
+        model.rigid_bars = candidate.rigid_bars
         model.axes = candidate.axes
         model.materials = candidate.materials
         model.material_types = candidate.material_types

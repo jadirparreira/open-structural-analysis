@@ -28,6 +28,9 @@ class ModelService:
     def create_member(self, start_node: str, end_node: str, *, name: str | None = None):
         return self.model.add_bar(name or self.next_member_name(), start_node, end_node)
 
+    def create_rigid_bar(self, start_node: str, end_node: str):
+        return self.model.add_rigid_bar(start_node, end_node)
+
     def set_reference_axes(self, axes) -> None:
         self.model.set_reference_axes(axes)
 
@@ -39,6 +42,9 @@ class ModelService:
 
     def update_member_nodes(self, name: str, start_node: str, end_node: str):
         return self.model.update_bar(name, start_node, end_node)
+
+    def update_rigid_bar_nodes(self, name: str, start_node: str, end_node: str):
+        return self.model.update_rigid_bar(name, start_node, end_node)
 
     def assign_material(self, name: str, material: str):
         return self.model.update_bar_material(name, material, self.model.materials[material])
@@ -94,6 +100,9 @@ class ModelService:
     def remove_member(self, name: str) -> None:
         self.model.remove_bar(name)
 
+    def remove_rigid_bar(self, name: str) -> None:
+        self.model.remove_rigid_bar(name)
+
     def resolve_node_name(self, value: str) -> str | None:
         folded = value.strip().casefold()
         return next((name for name in self.model.nodes if name.casefold() == folded), None)
@@ -101,3 +110,7 @@ class ModelService:
     def resolve_member_name(self, value: str) -> str | None:
         folded = value.strip().casefold()
         return next((name for name in self.model.bars if name.casefold() == folded), None)
+
+    def resolve_rigid_bar_name(self, value: str) -> str | None:
+        folded = value.strip().casefold()
+        return next((name for name in self.model.rigid_bars if name.casefold() == folded), None)

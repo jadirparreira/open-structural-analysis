@@ -80,6 +80,41 @@ def test_member_command_accepts_nodes_on_the_same_line_and_reports_missing_nodes
     assert len(model.bars) == 1
 
 
+def test_rigid_bar_command_creates_pair_named_element():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+
+    response = commands.submit("rigid n1,n2")
+
+    assert response.model_changed
+    assert response.message == "Barra rígida N1-N2 criada."
+    assert tuple(model.rigid_bars) == ("N1-N2",)
+
+
+def test_portico_command_creates_a_concrete_four_column_portal_without_rigid_members():
+    model, commands = session()
+
+    response = commands.submit("portico")
+
+    assert response.level == "success"
+    assert response.model_changed
+    assert response.message == "Pórtico criado."
+    assert len(model.nodes) == 8
+    assert len(model.bars) == 8
+    assert {
+        (node.x, node.y, node.z)
+        for node in model.nodes.values()
+        if node.z == 0.0
+    } == {(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 4.0, 0.0), (0.0, 4.0, 0.0)}
+    assert all(node.supports == (True, True, True, False, False, False)
+               for node in model.nodes.values() if node.z == 0.0)
+    assert all(member.material == "Concreto Estrutural" for member in model.bars.values())
+    assert all(member.section == "Retangular" for member in model.bars.values())
+    assert all(member.profile == "R 200 x 400" for member in model.bars.values())
+    assert all(member.geometry_dict() == {"b": 200.0, "h": 400.0} for member in model.bars.values())
+
+
 def test_load_command_validates_target_before_asking_for_its_type():
     model, commands = session()
     model.add_node("N3", 0, 0, 0)

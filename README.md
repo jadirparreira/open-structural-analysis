@@ -9,3 +9,20 @@ A interface combina ferramentas de modelagem com uma cena tridimensional interat
 O projeto utiliza uma arquitetura modular, separando o domínio estrutural, a interface gráfica, a renderização tridimensional, a persistência dos projetos e o processamento numérico. A análise estrutural é realizada com apoio do PyNite, enquanto o PyVista é responsável pela visualização 3D e o PySide6 pela interface da aplicação.
 
 O Open Structural Analysis encontra-se em desenvolvimento ativo. A base de modelagem e visualização está sendo construída progressivamente, enquanto os recursos relacionados ao processamento estrutural, carregamentos, combinações e apresentação de resultados continuam em evolução.
+
+## Instalação e execução
+
+Requisitos: Python entre 3.10 e 3.13 e [uv](https://docs.astral.sh/uv/).
+
+No diretório do projeto, execute:
+
+```bash
+uv sync
+uv run open-structural-analysis
+```
+
+O comando `uv sync` cria o ambiente virtual e instala as dependências nas versões registradas em `uv.lock`. Para executar diretamente pelo módulo Python, use:
+
+```bash
+uv run python -m osa
+```

@@ -104,7 +104,7 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         self.member_color_button.setVisible(kind == "bar")
         self.update_delete_button_state()
-        self.title.setText("Nó" if kind == "node" else "Membro")
+        self.title.setText({"node": "Nó", "bar": "Membro", "rigid_bar": "Barra rígida"}.get(kind, "Elemento"))
         self.name.setText("Identidade")
         self.identity_value.setText(name)
         if kind == "bar":
@@ -155,6 +155,8 @@ class PropertyPanel(QFrame):
                 row.addWidget(value)
                 supports_layout.addLayout(row)
             self.layout.insertWidget(6, supports)
+        elif kind == "rigid_bar":
+            self._show_rigid_bar_geometry(name)
         else:
             bar = self.window.model.bars[name]
             nodes = list(self.window.model.nodes)
@@ -313,6 +315,41 @@ class PropertyPanel(QFrame):
         self.show(); self.raise_()
         QTimer.singleShot(0, self._refresh_size)
 
+    def _show_rigid_bar_geometry(self, name: str) -> None:
+        rigid = self.window.model.rigid_bars[name]
+        nodes = list(self.window.model.nodes)
+        self.layout.insertWidget(3, self.nodes_title)
+        self.nodes_title.show()
+        start, end = QComboBox(), QComboBox()
+        start.addItems(nodes); end.addItems(nodes)
+        for combo in (start, end):
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            combo.view().setMinimumHeight(min(5, len(nodes)) * 28 + 2)
+            combo.view().setMaximumHeight(min(5, len(nodes)) * 28 + 2)
+        start.setCurrentText(rigid.start_node); end.setCurrentText(rigid.end_node)
+        start.currentTextChanged.connect(self._rigid_bar_changed)
+        end.currentTextChanged.connect(self._rigid_bar_changed)
+        self.fields.extend((start, end))
+        start_label = QLabel("A")
+        start_label.setObjectName("propertySection")
+        end_label = QLabel("B")
+        end_label.setObjectName("propertySection")
+        endpoints = QWidget()
+        endpoint_grid = QGridLayout(endpoints)
+        endpoint_grid.setContentsMargins(0, 0, 0, 0)
+        endpoint_grid.setHorizontalSpacing(8)
+        endpoint_grid.addWidget(start_label, 0, 0)
+        endpoint_grid.addWidget(start, 0, 1)
+        endpoint_grid.addWidget(end_label, 0, 2)
+        endpoint_grid.addWidget(end, 0, 3)
+        endpoint_grid.setColumnStretch(1, 1)
+        endpoint_grid.setColumnStretch(3, 1)
+        self.form.addRow(endpoints)
+        note = QLabel("Elemento idealizado sem seção volumétrica.")
+        note.setWordWrap(True)
+        note.setObjectName("propertySection")
+        self._add_context_widget(note)
+
     def _add_context_widget(self, widget: QWidget) -> None:
         """Append a widget that is exclusive to a non-geometry inspector."""
         self._context_widgets.append(widget)
@@ -338,6 +375,11 @@ class PropertyPanel(QFrame):
     def _show_actions(self, kind: str, name: str, *, select_available_reference: bool = False) -> None:
         if kind == "bar":
             self._show_member_actions(name, select_available_reference)
+            return
+        if kind == "rigid_bar":
+            message = QLabel("Barras rígidas não recebem ações diretamente.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
             return
         if kind == "node":
             self._show_node_actions(name)
@@ -805,7 +847,11 @@ class PropertyPanel(QFrame):
             if getattr(result, data_key).get(name) is not None
         ]
         if not element_results:
-            message = QLabel("Não há resultados para este " + ("nó." if kind == "node" else "membro."))
+            if kind == "node":
+                message = QLabel("Não há resultados para este nó.")
+            else:
+                label = "barra rígida" if kind == "rigid_bar" else "membro"
+                message = QLabel(f"Não há resultados para esta {label}.")
             message.setWordWrap(True)
             self._add_context_widget(message)
             return
@@ -900,6 +946,21 @@ class PropertyPanel(QFrame):
         except ValueError:
             pass
 
+    def _rigid_bar_changed(self) -> None:
+        if not self._selected or self._selected[0] != "rigid_bar" or len(self.fields) != 2:
+            return
+        start, end = (field.currentText() for field in self.fields if isinstance(field, QComboBox))
+        old_name = self._selected[1]
+        try:
+            rigid = self.window.model_service.update_rigid_bar_nodes(old_name, start, end)
+        except ValueError:
+            self.show_for("rigid_bar", old_name, self.window.palette.active_group or "Geometria")
+            return
+        self._selected = "rigid_bar", rigid.name
+        self.window.selected = self._selected
+        self.window.refresh_rigid_bar_name(old_name, rigid.name)
+        self.show_for("rigid_bar", rigid.name, self.window.palette.active_group or "Geometria")
+
     def _rotation_changed(self) -> None:
         if not self._selected or self._selected[0] != "bar" or self._rotation_input is None:
             return
@@ -959,10 +1020,17 @@ class PropertyPanel(QFrame):
         if kind == "bar":
             enabled = name in self.window.model.bars
             tooltip = "Excluir membro"
+        elif kind == "rigid_bar":
+            enabled = name in self.window.model.rigid_bars
+            tooltip = "Excluir barra rígida"
         else:
             connected = any(
                 member.start_node == name or member.end_node == name
                 for member in self.window.model.bars.values()
+            )
+            connected = connected or any(
+                rigid.start_node == name or rigid.end_node == name
+                for rigid in self.window.model.rigid_bars.values()
             )
             enabled = name in self.window.model.nodes and not connected
             tooltip = "Excluir nó" if enabled else "Remova os membros vinculados antes de excluir o nó"

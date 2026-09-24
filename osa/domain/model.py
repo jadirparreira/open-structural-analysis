@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from .entities import (
     Action, ActionDefinition, ActionGroup, AnalysisResult, Bar, LoadCase, LoadCombination, Node, ReferenceAxis,
+    RigidBar,
 )
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
 
@@ -19,6 +20,7 @@ class StructuralModel:
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
         self.bars: dict[str, Bar] = {}
+        self.rigid_bars: dict[str, RigidBar] = {}
         self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
         self.materials = {name: tuple(values) for name, values in (materials or {}).items()}
         self.material_types = dict(material_types or {})
@@ -83,6 +85,10 @@ class StructuralModel:
         if name not in self.nodes:
             return
         connected = [bar.name for bar in self.bars.values() if name in (bar.start_node, bar.end_node)]
+        connected.extend(
+            rigid.name for rigid in self.rigid_bars.values()
+            if name in (rigid.start_node, rigid.end_node)
+        )
         if connected:
             raise ValueError(f"O nó '{name}' pertence às barras: {', '.join(connected)}. Remova-as primeiro.")
         del self.nodes[name]
@@ -161,6 +167,46 @@ class StructuralModel:
             self._touch()
 
     remove_member = remove_bar
+
+    def _validate_rigid_bar_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
+        if start_node.casefold() == end_node.casefold():
+            raise ValueError("Uma barra rígida deve conectar dois nós diferentes.")
+        if start_node not in self.nodes or end_node not in self.nodes:
+            raise ValueError("Selecione dois nós válidos.")
+        pair = frozenset((start_node, end_node))
+        if any(
+            rigid.name != ignore
+            and frozenset((rigid.start_node, rigid.end_node)) == pair
+            for rigid in self.rigid_bars.values()
+        ):
+            raise ValueError("Já existe uma barra rígida entre esses nós.")
+
+    def add_rigid_bar(self, start_node: str, end_node: str) -> RigidBar:
+        self._validate_rigid_bar_nodes(start_node, end_node)
+        name = f"{start_node}-{end_node}"
+        if name in self.rigid_bars:
+            raise ValueError(f"Já existe uma barra rígida chamada '{name}'.")
+        rigid = RigidBar(name, start_node, end_node)
+        self.rigid_bars[name] = rigid
+        self._touch()
+        return rigid
+
+    def update_rigid_bar(self, name: str, start_node: str, end_node: str) -> RigidBar:
+        if name not in self.rigid_bars:
+            raise EntityNotFoundError(f"Barra rígida '{name}' não encontrada.")
+        self._validate_rigid_bar_nodes(start_node, end_node, ignore=name)
+        new_name = f"{start_node}-{end_node}"
+        if new_name != name and new_name in self.rigid_bars:
+            raise ValueError(f"Já existe uma barra rígida chamada '{new_name}'.")
+        rigid = RigidBar(new_name, start_node, end_node)
+        del self.rigid_bars[name]
+        self.rigid_bars[new_name] = rigid
+        self._touch()
+        return rigid
+
+    def remove_rigid_bar(self, name: str) -> None:
+        if self.rigid_bars.pop(name, None) is not None:
+            self._touch()
 
     def update_bar_material(self, name: str, material: str, values: tuple[float, float, float, float]) -> Bar:
         self.bars[name] = replace(self.bars[name], material=material, material_values=tuple(values))
@@ -302,7 +348,7 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
-        self.nodes.clear(); self.bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
+        self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()
         self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear()

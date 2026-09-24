@@ -146,6 +146,7 @@ class FloatingPalette(QFrame):
             (
                 ("Configurar eixos", "axis-configuration.svg", window.toggle_axes_panel),
                 ("Adicionar nó", "node-circle.svg", window.start_node_command),
+                ("Adicionar barra rígida", "rigid-member.svg", window.start_rigid_bar_command),
                 ("Adicionar membro", "member-spline.svg", window.start_member_command),
             ),
         )
