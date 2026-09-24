@@ -133,6 +133,7 @@ class ProjectSerializer:
                         str(action) for action in item["active_actions"]
                     ),
                     None if item.get("action_group") is None else str(item["action_group"]),
+                    str(item.get("limit_state", "CAR")),
                 )
                 for item in data.get("load_combinations", ())
             }

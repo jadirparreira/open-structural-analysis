@@ -703,6 +703,8 @@ class CombinationsDialog(QDialog):
         "QListWidget#combinationList::item:selected { background: #f6f8fa; color: #24292f; }"
         "QLabel#combinationName { color: #24292f; }"
         "QLabel#combinationExpression { color: #57606a; font-size: 8pt; }"
+        "QLabel#combinationLimitState { min-width: 27px; padding: 3px 4px; border-radius: 5px;"
+        " background: #eaeef2; color: #57606a; font-size: 8pt; font-weight: 600; }"
         "QLineEdit#activeGroup { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px;"
         " padding: 2px 9px; background: #ffffff; color: #24292f; }"
         "QTableWidget#combinationTable { border: 1px solid #d0d7de; border-radius: 6px;"
@@ -718,10 +720,15 @@ class CombinationsDialog(QDialog):
         "QTableWidget#combinationTable QCheckBox::indicator:hover { border-color: #0969da; }"
         "QTableWidget#combinationTable QCheckBox::indicator:checked {"
         " background: #0969da; border-color: #0969da; }"
+        "QLabel#combinationAction { color: #24292f; padding-left: 4px; }"
         "QToolButton#groupActionButton { border: 1px solid #d0d7de; border-radius: 6px;"
         " background: #ffffff; padding: 4px; color: #24292f; }"
         "QToolButton#groupActionButton:hover { background: #eaeef2; }"
         "QToolButton#groupActionButton:disabled { background: #f6f8fa; color: #afb8c1; }"
+        "QToolButton#limitStateButton { min-width: 38px; min-height: 30px; padding: 0 7px;"
+        " border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #57606a; }"
+        "QToolButton#limitStateButton:checked { background: #eaeef2; color: #24292f; font-weight: 600; }"
+        "QToolButton#limitStateButton:disabled { background: #ffffff; color: #afb8c1; }"
         "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de;"
         " border-radius: 7px; background: #f6f8fa; color: #24292f; }"
         "QPushButton#secondaryButton:hover { background: #eaeef2; }"
@@ -766,7 +773,10 @@ class CombinationsDialog(QDialog):
         body.setSpacing(16)
         left = QVBoxLayout()
         left.setSpacing(8)
-        combinations_header = QHBoxLayout()
+        combinations_header_widget = QWidget()
+        combinations_header_widget.setFixedHeight(36)
+        combinations_header = QHBoxLayout(combinations_header_widget)
+        combinations_header.setContentsMargins(0, 0, 0, 0)
         combinations_label = QLabel("Combinações")
         combinations_label.setObjectName("sectionLabel")
         combinations_header.addWidget(combinations_label)
@@ -774,7 +784,7 @@ class CombinationsDialog(QDialog):
         self._add_icon_button(combinations_header, "plus", "Adicionar combinação", self._add_combination)
         self.edit_button = self._add_icon_button(combinations_header, "pencil", "Renomear combinação", self._rename_combination)
         self.remove_button = self._add_icon_button(combinations_header, "x", "Excluir combinação", self._remove_combination)
-        left.addLayout(combinations_header)
+        left.addWidget(combinations_header_widget)
         self.combination_list = QListWidget()
         self.combination_list.setObjectName("combinationList")
         self.combination_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -786,22 +796,47 @@ class CombinationsDialog(QDialog):
 
         right = QVBoxLayout()
         right.setSpacing(8)
+        actions_header = QWidget()
+        actions_header.setFixedHeight(36)
+        actions_header_layout = QHBoxLayout(actions_header)
+        actions_header_layout.setContentsMargins(0, 0, 0, 0)
         actions_label = QLabel("Ações do grupo")
         actions_label.setObjectName("sectionLabel")
-        right.addWidget(actions_label)
-        self.factors_table = QTableWidget(0, 5)
+        actions_header_layout.addWidget(actions_label)
+        actions_header_layout.addStretch()
+        self.limit_state_group = QButtonGroup(self)
+        self.limit_state_buttons: dict[str, QToolButton] = {}
+        actions_header_layout.setSpacing(4)
+        state_descriptions = {
+            "CAR": "Combinação Característica",
+            "ELU": "Estado Limite Último",
+            "ELS": "Estado Limite de Serviço",
+        }
+        for state in ("CAR", "ELU", "ELS"):
+            button = QToolButton()
+            button.setObjectName("limitStateButton")
+            button.setText(state)
+            button.setCheckable(True)
+            button.setFixedSize(38, 30)
+            button.setEnabled(False)
+            button.setToolTip(state_descriptions[state])
+            button.setAccessibleName(state_descriptions[state])
+            self.limit_state_group.addButton(button)
+            button.toggled.connect(lambda checked, value=state: checked and self._set_limit_state(value))
+            self.limit_state_buttons[state] = button
+            actions_header_layout.addWidget(button)
+        right.addWidget(actions_header)
+        self.factors_table = QTableWidget(0, 4)
         self.factors_table.setObjectName("combinationTable")
-        self.factors_table.setHorizontalHeaderLabels(("", "Ação", "γf", "ψ₀", "ψ₁; ψ₂"))
+        self.factors_table.setHorizontalHeaderLabels(("Ação", "γf", "ψ₀", "ψ₁; ψ₂"))
         self.factors_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.factors_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.factors_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.factors_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.factors_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.factors_table.verticalHeader().setVisible(False)
-        self.factors_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.factors_table.setColumnWidth(0, 42)
-        self.factors_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (2, 3, 4):
+        self.factors_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in (1, 2, 3):
             self.factors_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.factors_table.setColumnWidth(column, 100)
         right.addWidget(self.factors_table, 1)
@@ -832,8 +867,8 @@ class CombinationsDialog(QDialog):
         if disabled_icon.exists():
             icon.addFile(str(disabled_icon), QSize(24, 24), QIcon.Mode.Disabled)
         button.setIcon(icon)
-        button.setIconSize(QSize(24, 24))
-        button.setFixedSize(36, 36)
+        button.setIconSize(QSize(20, 20))
+        button.setFixedSize(30, 30)
         button.setToolTip(tooltip)
         button.setAccessibleName(tooltip)
         button.setObjectName("groupActionButton")
@@ -870,14 +905,15 @@ class CombinationsDialog(QDialog):
         all_active = abbreviations
         ones = tuple((abbreviation, 1.0) for abbreviation in abbreviations)
         defaults = (
-            LoadCombination("Combinação 01", ones, ones, ones, all_active, group_name),
+            LoadCombination("Combinação 01", ones, ones, ones, all_active, group_name, "CAR"),
             LoadCombination(
                 "Combinação 02",
-                (("PP", 1.25), ("AP", 1.35), ("AV", 1.50)), ones, ones, all_active, group_name,
+                (("PP", 1.25), ("AP", 1.35), ("AV", 1.50)), ones, ones,
+                all_active, group_name, "ELU",
             ),
             LoadCombination(
                 "Combinação 03", ones, ones,
-                (("PP", 1.0), ("AP", 1.0), ("AV", 0.60)), all_active, group_name,
+                (("PP", 1.0), ("AP", 1.0), ("AV", 0.60)), all_active, group_name, "ELS",
             ),
         )
         for combination in defaults:
@@ -942,16 +978,27 @@ class CombinationsDialog(QDialog):
         if widget is None:
             widget = QWidget()
             widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout = QVBoxLayout(widget)
+            layout = QHBoxLayout(widget)
             layout.setContentsMargins(0, 5, 0, 5)
-            layout.setSpacing(1)
+            layout.setSpacing(7)
+            state_label = QLabel()
+            state_label.setObjectName("combinationLimitState")
+            state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(state_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            text_widget = QWidget()
+            text_layout = QVBoxLayout(text_widget)
+            text_layout.setContentsMargins(0, 0, 0, 0)
+            text_layout.setSpacing(1)
             name_label = QLabel()
             name_label.setObjectName("combinationName")
             expression_label = QLabel()
             expression_label.setObjectName("combinationExpression")
-            layout.addWidget(name_label)
-            layout.addWidget(expression_label)
+            text_layout.addWidget(name_label)
+            text_layout.addWidget(expression_label)
+            layout.addWidget(text_widget, 1)
             self.combination_list.setItemWidget(item, widget)
+        combination = self.window.model.load_combinations[name]
+        widget.findChild(QLabel, "combinationLimitState").setText(combination.limit_state)
         widget.findChild(QLabel, "combinationName").setText(name)
         widget.findChild(QLabel, "combinationExpression").setText(expression)
 
@@ -995,7 +1042,7 @@ class CombinationsDialog(QDialog):
         from osa.domain import LoadCombination
         self.action_service.set_combination(LoadCombination(
             name, combination.factors, combination.factors_2, combination.factors_3,
-            combination.active_actions, combination.action_group or self._active_group_name,
+            combination.active_actions, combination.action_group or self._active_group_name, combination.limit_state,
         ))
         self._refresh_combinations(name)
 
@@ -1050,15 +1097,15 @@ class CombinationsDialog(QDialog):
             is_active = combination is not None and action.abbreviation in active_actions
             checkbox.setChecked(is_active)
             checkbox.setEnabled(combination is not None)
-            checkbox_container = QWidget()
-            checkbox_layout = QHBoxLayout(checkbox_container)
-            checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            checkbox_layout.addWidget(checkbox)
-            self.factors_table.setCellWidget(row, 0, checkbox_container)
-            action_item = QTableWidgetItem(f"{action.name} ({action.abbreviation})")
-            action_item.setFlags(action_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.factors_table.setItem(row, 1, action_item)
+            action_container = QWidget()
+            action_layout = QHBoxLayout(action_container)
+            action_layout.setContentsMargins(10, 0, 8, 0)
+            action_layout.setSpacing(8)
+            action_layout.addWidget(checkbox)
+            action_label = QLabel(f"{action.name} ({action.abbreviation})")
+            action_label.setObjectName("combinationAction")
+            action_layout.addWidget(action_label, 1)
+            self.factors_table.setCellWidget(row, 0, action_container)
             for factor_index, values in enumerate(factors):
                 field = QLineEdit(self._format_factor(values.get(action.abbreviation, 1.0)) if is_active else "")
                 field.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1066,12 +1113,17 @@ class CombinationsDialog(QDialog):
                 field.editingFinished.connect(
                     lambda r=row, index=factor_index, input_field=field: self._save_factor(r, index, input_field)
                 )
-                self.factors_table.setCellWidget(row, factor_index + 2, field)
+                self.factors_table.setCellWidget(row, factor_index + 1, field)
             checkbox.toggled.connect(lambda checked, r=row: self._set_action_enabled(r, checked))
         self._loading = False
         has_selection = combination is not None
         self.edit_button.setEnabled(has_selection)
         self.remove_button.setEnabled(has_selection)
+        for state, button in self.limit_state_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(combination is not None and combination.limit_state == state)
+            button.setEnabled(has_selection)
+            button.blockSignals(False)
 
     def _set_action_enabled(self, row: int, enabled: bool) -> None:
         if self._loading or self.combination_list.currentItem() is None or row >= len(self._group_actions):
@@ -1092,13 +1144,26 @@ class CombinationsDialog(QDialog):
         from osa.domain import LoadCombination
         self.action_service.set_combination(LoadCombination(
             name, combination.factors, combination.factors_2, combination.factors_3,
-            active_actions, combination.action_group or self._active_group_name,
+            active_actions, combination.action_group or self._active_group_name, combination.limit_state,
         ))
         values = (dict(combination.factors), dict(combination.factors_2), dict(combination.factors_3))
         for factor_index, factors_for_column in enumerate(values):
-            field = self.factors_table.cellWidget(row, factor_index + 2)
+            field = self.factors_table.cellWidget(row, factor_index + 1)
             field.setEnabled(enabled)
             field.setText(self._format_factor(factors_for_column.get(action.abbreviation, 1.0)) if enabled else "")
+        self._refresh_current_expression()
+
+    def _set_limit_state(self, state: str) -> None:
+        if self._loading or self.combination_list.currentItem() is None:
+            return
+        name = self._combination_name(self.combination_list.currentItem())
+        combination = self.window.model.load_combinations[name]
+        if combination.limit_state == state:
+            return
+        self.action_service.set_combination(LoadCombination(
+            name, combination.factors, combination.factors_2, combination.factors_3,
+            combination.active_actions, combination.action_group or self._active_group_name, state,
+        ))
         self._refresh_current_expression()
 
     @staticmethod
@@ -1120,7 +1185,7 @@ class CombinationsDialog(QDialog):
         from osa.domain import LoadCombination
         self.action_service.set_combination(LoadCombination(
             name, *(tuple(values.items()) for values in all_factors),
-            combination.active_actions, combination.action_group or self._active_group_name,
+            combination.active_actions, combination.action_group or self._active_group_name, combination.limit_state,
         ))
         field.setText(self._format_factor(value))
         self._refresh_current_expression()

@@ -128,6 +128,7 @@ class LoadCombination:
     factors_3: tuple[tuple[str, float], ...] = ()
     active_actions: tuple[str, ...] | None = None
     action_group: str | None = None
+    limit_state: str = "CAR"
 
 
 @dataclass(frozen=True, slots=True)

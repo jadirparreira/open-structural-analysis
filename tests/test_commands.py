@@ -35,12 +35,49 @@ def test_node_command_flow():
     assert (model.nodes["N1"].x, model.nodes["N1"].y, model.nodes["N1"].z) == (0, 5, 8)
 
 
+def test_node_command_accepts_coordinates_on_the_same_line():
+    model, commands = session()
+
+    response = commands.submit("node 0,5,8")
+
+    assert response.model_changed
+    assert response.message == "Nó criado."
+    assert (model.nodes["N1"].x, model.nodes["N1"].y, model.nodes["N1"].z) == (0, 5, 8)
+
+
+def test_node_command_reports_invalid_inline_coordinates():
+    model, commands = session()
+
+    response = commands.submit("node 0,5")
+
+    assert response.level == "error"
+    assert response.message == "Informe as coordenadas no formato X,Y,Z."
+    assert not model.nodes
+
+
 def test_member_names_are_case_insensitive():
     model, commands = session()
     model.add_node("N1", 0, 0, 0); model.add_node("N2", 1, 0, 0)
     commands.submit("member")
     assert commands.submit("n1,N2").model_changed
     assert model.bars["B1"].start_node == "N1"
+
+
+def test_member_command_accepts_nodes_on_the_same_line_and_reports_missing_nodes():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+
+    response = commands.submit("member n1,n2")
+
+    assert response.model_changed
+    assert model.bars["B1"].start_node == "N1"
+    assert model.bars["B1"].end_node == "N2"
+
+    invalid = commands.submit("member n1,n99")
+    assert invalid.level == "error"
+    assert invalid.message == "Não existe o nó informado: n99."
+    assert len(model.bars) == 1
 
 
 def test_load_command_validates_target_before_asking_for_its_type():

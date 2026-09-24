@@ -85,24 +85,10 @@ class CommandSession:
         value = text.strip()
         if self.pending == "node":
             self.pending = None
-            try:
-                coordinates = parse_coordinates(value)
-                self.service.create_node(*coordinates)
-                return CommandResponse(value, "Nó criado.", "success", True)
-            except ValueError as error:
-                return CommandResponse(value, str(error), "error")
+            return self._create_node(value, value)
         if self.pending == "member":
             self.pending = None
-            try:
-                start, end = parse_member_nodes(value)
-                resolved_start = self.service.resolve_node_name(start)
-                resolved_end = self.service.resolve_node_name(end)
-                if not resolved_start or not resolved_end:
-                    raise ValueError("Um dos nós informados não existe.")
-                self.service.create_member(resolved_start, resolved_end)
-                return CommandResponse(value, "Membro criado.", "success", True)
-            except ValueError as error:
-                return CommandResponse(value, str(error), "error")
+            return self._create_member(value, value)
         if self.pending == "load_target":
             try:
                 self.load_target = self._resolve_load_targets(value)
@@ -293,11 +279,17 @@ class CommandSession:
                 f"Todos os pesos da ação atual serão apagados e substituídos pelo peso próprio dos elementos de {scope}. Confirma? (Sim/Não)",
             )
 
-        command = value.casefold()
+        parts = value.split(maxsplit=1)
+        command = parts[0].casefold() if parts else ""
+        arguments = parts[1].strip() if len(parts) == 2 else ""
         if command == "node":
+            if arguments:
+                return self._create_node(value, arguments)
             self.pending = "node"
             return CommandResponse(value, "Informe as coordenadas do nó em X,Y,Z")
         if command == "member":
+            if arguments:
+                return self._create_member(value, arguments)
             self.pending = "member"
             return CommandResponse(value, "Informe o nó inicial e final A,B")
         if command == "load":
@@ -350,6 +342,29 @@ class CommandSession:
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
         return CommandResponse(value, "Não é um comando válido", "error")
+
+    def _create_node(self, command: str, coordinates_text: str) -> CommandResponse:
+        try:
+            coordinates = parse_coordinates(coordinates_text)
+            self.service.create_node(*coordinates)
+            return CommandResponse(command, "Nó criado.", "success", True)
+        except ValueError as error:
+            return CommandResponse(command, str(error), "error")
+
+    def _create_member(self, command: str, nodes_text: str) -> CommandResponse:
+        try:
+            start, end = parse_member_nodes(nodes_text)
+            resolved_start = self.service.resolve_node_name(start)
+            resolved_end = self.service.resolve_node_name(end)
+            missing = [
+                node for node, resolved in ((start, resolved_start), (end, resolved_end)) if not resolved
+            ]
+            if missing:
+                raise ValueError(f"Não existe o nó informado: {', '.join(missing)}.")
+            self.service.create_member(resolved_start, resolved_end)
+            return CommandResponse(command, "Membro criado.", "success", True)
+        except ValueError as error:
+            return CommandResponse(command, str(error), "error")
 
     def _resolve_load_targets(self, value: str) -> tuple[str, tuple[str, ...]]:
         identifiers = [identifier.strip() for identifier in value.split(",")]
