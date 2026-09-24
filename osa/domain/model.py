@@ -29,6 +29,7 @@ class StructuralModel:
         self.selected_action_group = "PP+AP+AV"
         self.load_cases: dict[str, LoadCase] = {}
         self.load_combinations: dict[str, LoadCombination] = {}
+        self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
         self.revision = 0
 
@@ -304,6 +305,6 @@ class StructuralModel:
         self.nodes.clear(); self.bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()
-        self.load_cases.clear(); self.load_combinations.clear(); self.analysis_results.clear()
+        self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear()
         self.selected_action_group = "PP+AP+AV"
         self._touch()

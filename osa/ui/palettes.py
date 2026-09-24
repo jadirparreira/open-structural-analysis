@@ -161,7 +161,7 @@ class FloatingPalette(QFrame):
             "Análise",
             "analysis-frame.svg",
             (
-                ("Combinações", "add-combination.svg", lambda: None),
+                ("Combinações", "add-combination.svg", window.open_combinations),
                 ("Processar", "process-analysis.svg", lambda: None),
             ),
         )

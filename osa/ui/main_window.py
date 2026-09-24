@@ -2,7 +2,7 @@
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
-from .dialogs import ActionGroupDialog, SettingsDialog
+from .dialogs import ActionGroupDialog, CombinationsDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import ActionTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
 from .property_panel import PropertyPanel
@@ -179,6 +179,11 @@ class MainWindow(QMainWindow):
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
         self.refresh_action_palette()
+
+    def open_combinations(self) -> None:
+        dialog = CombinationsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
 
     def changeEvent(self, event):
         super().changeEvent(event)

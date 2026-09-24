@@ -124,6 +124,10 @@ class LoadCase:
 class LoadCombination:
     name: str
     factors: tuple[tuple[str, float], ...] = ()
+    factors_2: tuple[tuple[str, float], ...] = ()
+    factors_3: tuple[tuple[str, float], ...] = ()
+    active_actions: tuple[str, ...] | None = None
+    action_group: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

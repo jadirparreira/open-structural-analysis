@@ -191,3 +191,8 @@ class ActionService:
     def set_combination(self, combination: LoadCombination) -> None:
         self.model.load_combinations[combination.name] = combination
         self.model._touch()
+
+    def remove_combination(self, name: str) -> None:
+        if name in self.model.load_combinations:
+            del self.model.load_combinations[name]
+            self.model._touch()

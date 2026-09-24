@@ -42,6 +42,7 @@ class ProjectSerializer:
             "selected_action_group": model.selected_action_group,
             "load_cases": [asdict(item) for item in model.load_cases.values()],
             "load_combinations": [asdict(item) for item in model.load_combinations.values()],
+            "combination_groups_initialized": sorted(model.combination_groups_initialized),
             "results": [asdict(item) for item in model.analysis_results],
         }
 
@@ -124,9 +125,19 @@ class ProjectSerializer:
             }
             candidate.load_combinations = {
                 item["name"]: LoadCombination(
-                    item["name"], tuple((str(name), float(factor)) for name, factor in item.get("factors", ()))
+                    item["name"],
+                    tuple((str(name), float(factor)) for name, factor in item.get("factors", ())),
+                    tuple((str(name), float(factor)) for name, factor in item.get("factors_2", ())),
+                    tuple((str(name), float(factor)) for name, factor in item.get("factors_3", ())),
+                    None if item.get("active_actions") is None else tuple(
+                        str(action) for action in item["active_actions"]
+                    ),
+                    None if item.get("action_group") is None else str(item["action_group"]),
                 )
                 for item in data.get("load_combinations", ())
+            }
+            candidate.combination_groups_initialized = {
+                str(group) for group in data.get("combination_groups_initialized", ())
             }
             candidate.analysis_results = [
                 AnalysisResult(
@@ -148,5 +159,6 @@ class ProjectSerializer:
         model.selected_action_group = candidate.selected_action_group
         model.load_cases = candidate.load_cases
         model.load_combinations = candidate.load_combinations
+        model.combination_groups_initialized = candidate.combination_groups_initialized
         model.analysis_results = candidate.analysis_results
         model.revision += 1
