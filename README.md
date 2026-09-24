@@ -33,3 +33,15 @@ O comando `uv sync` cria o ambiente virtual e instala as dependências nas vers�
 ```bash
 uv run python -m osa
 ```
+
+### Atualização
+
+Para atualizar uma cópia já clonada do projeto, execute no diretório do repositório:
+
+```bash
+git pull
+uv sync
+uv run open-structural-analysis
+```
+
+O `git pull` baixa as alterações do GitHub e o `uv sync` atualiza o ambiente quando as dependências do projeto mudam.
