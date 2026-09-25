@@ -389,6 +389,11 @@ class CameraCubeWidget:
         self.plotter.render()
 
         if progress >= 1.0:
+            # A face/roll animation changes the view direction while retaining
+            # the focal point and zoom.  Refresh the depth range to keep every
+            # visible structural actor inside the new frustum.
+            self._parent_renderer.ResetCameraClippingRange()
+            self.plotter.render()
             self._camera_animation.stop()
             self._animation_start = None
             self._animation_end = None

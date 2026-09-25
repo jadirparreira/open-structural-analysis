@@ -145,9 +145,9 @@ class FloatingPalette(QFrame):
             "geometry-vector-square.svg",
             (
                 ("Configurar eixos", "axis-configuration.svg", window.toggle_axes_panel),
-                ("Adicionar nó", "node-circle.svg", window.start_node_command),
-                ("Adicionar barra rígida", "rigid-member.svg", window.start_rigid_bar_command),
-                ("Adicionar membro", "member-spline.svg", window.start_member_command),
+                ("Adicionar nó", "node-circle.svg", window.start_node_placement),
+                ("Adicionar barra rígida", "rigid-member.svg", window.start_rigid_bar_placement),
+                ("Adicionar membro", "member-spline.svg", window.start_member_placement),
             ),
         )
         self._add_group(
@@ -312,6 +312,33 @@ class TopIconPalette(QFrame):
                 "QToolButton:pressed { background: #afb8c1; }"
             )
             layout.addWidget(button)
+
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        snap_button = QToolButton(self)
+        snap_button.setFixedSize(24, 24)
+        snap_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "magnet.svg")))
+        snap_button.setIconSize(QSize(19, 19))
+        snap_button.setToolTip("Snap")
+        snap_button.setProperty("paletteTooltip", "Snap")
+        snap_button.setAccessibleName("Snap")
+        snap_button.setCheckable(True)
+        snap_button.setChecked(True)
+        snap_button.toggled.connect(window.scene.set_snap_enabled)
+        snap_button.installEventFilter(self)
+        snap_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(snap_button)
+        self.snap_button = snap_button
         self.adjustSize()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:

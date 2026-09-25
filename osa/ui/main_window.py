@@ -7,7 +7,7 @@ from .analysis_panel import ProcessingPanel
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
-from .dialogs import ActionGroupDialog, CombinationsDialog, SettingsDialog
+from .dialogs import ActionGroupDialog, CombinationsDialog, ProgramSettingsDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import ActionTopPalette, AnalysisTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
 from .property_panel import PropertyPanel
@@ -23,6 +23,8 @@ from .window_frame import TitleBar, WindowFrame
 
 
 class MainWindow(QMainWindow):
+    _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
+
     def __init__(self) -> None:
         super().__init__()
         self.model = StructuralModel()
@@ -38,6 +40,7 @@ class MainWindow(QMainWindow):
         self.section_profiles: dict[str, str] = {}
         self.current_path: Path | None = None
         self._command_mode: str | None = None
+        self._member_placement_start: tuple[float, float, float] | None = None
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("Open Structural Analysis")
@@ -58,6 +61,9 @@ class MainWindow(QMainWindow):
         self.selected: tuple[str, str] | None = None
         self.scene.element_clicked.connect(self.select_element)
         self.scene.empty_clicked.connect(self.clear_selection)
+        self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self._make_shortcuts()
         self.palette = FloatingPalette(self)
         self.palette.reposition()
@@ -211,6 +217,11 @@ class MainWindow(QMainWindow):
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
 
+    def open_program_settings(self) -> None:
+        dialog = ProgramSettingsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
     def open_action_groups(self) -> None:
         dialog = ActionGroupDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
@@ -236,12 +247,15 @@ class MainWindow(QMainWindow):
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Excluir elemento selecionado", "Delete", self.delete_selected),
+            ("Cancelar lançamento", "Escape", self.cancel_member_placement),
             ("Vista isométrica", "0", self.scene.view_isometric),
             ("Enquadrar estrutura", "F", self.scene.reset_camera),
         )
         for label, shortcut, callback in actions:
             action = QAction(label, self)
             action.setShortcut(shortcut)
+            if label == "Cancelar lançamento":
+                action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             action.triggered.connect(callback)
             self.addAction(action)
 
@@ -405,6 +419,8 @@ class MainWindow(QMainWindow):
     def start_node_command(self) -> None:
         self.command_session.pending = "node"
         self._command_mode = "node"  # compatibilidade com extensões existentes
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         self.history.append(
             "> <b>node</b> <span style='color:#57606a'>(Informe as coordenadas do nó em X,Y,Z)</span>"
         )
@@ -413,20 +429,60 @@ class MainWindow(QMainWindow):
     def start_member_command(self) -> None:
         self.command_session.pending = "member"
         self._command_mode = "member"
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         self.history.append(
             "> <b>member</b> <span style='color:#57606a'>(Informe o nó inicial e final A,B)</span>"
         )
         self.command_bar.input.setFocus()
 
+    def start_member_placement(self) -> None:
+        """Start the graphical member-placement flow from the geometry palette."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._command_mode = "member_placement"
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição inicial do membro)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_node_placement(self) -> None:
+        """Start the single-click graphical node-placement flow."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._command_mode = "node_placement"
+        self.scene.set_node_placement_mode(True)
+        self.history.append(
+            "> <b>Adicionar nó</b> <span style='color:#57606a'>(Clique na posição do nó)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_rigid_bar_placement(self) -> None:
+        """Start the graphical two-click rigid-bar placement flow."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._command_mode = "rigid_bar_placement"
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            "> <b>Adicionar barra rígida</b> "
+            "<span style='color:#57606a'>(Clique na posição inicial da barra rígida)</span>"
+        )
+        self.scene.plotter.setFocus()
+
     def start_rigid_bar_command(self) -> None:
         self.command_session.pending = "rigid_bar"
         self._command_mode = "rigid_bar"
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         self.history.append(
             "> <b>rigid</b> <span style='color:#57606a'>(Informe o nó inicial e final A,B)</span>"
         )
         self.command_bar.input.setFocus()
 
     def start_load_command(self) -> None:
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         if self.action_service.has_selfweight(self.selected_action_name or ""):
             self.history.append(
                 "> <b>load</b> <span style='color:#8c959f'>(A ação atual está restrita apenas a cargas de peso próprio.)</span>"
@@ -442,6 +498,10 @@ class MainWindow(QMainWindow):
         self.command_bar.input.setFocus()
 
     def handle_command(self, command: str) -> None:
+        had_model_geometry = bool(self.model.nodes)
+        command_name = command.strip().casefold().split(maxsplit=1)[0] if command.strip() else ""
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         if command.strip().casefold() in {"load", "selfweight"} and self.command_session.pending is None:
             self.palette.show_group("Ações")
         response = self.command_session.submit(command)
@@ -496,7 +556,219 @@ class MainWindow(QMainWindow):
         elif response.model_changed:
             self.refresh_action_palette()
             self.refresh_analysis_palette()
-            self.refresh_scene()
+            self.refresh_scene(
+                fit_camera=(
+                    not had_model_geometry and command_name in self._initial_framing_commands
+                ),
+            )
+
+    def _handle_member_placement_point(self, point: object) -> None:
+        """Advance the two-click graphical member placement flow."""
+        if self._command_mode != "member_placement":
+            return
+        coordinates = tuple(float(value) for value in point)
+        if self._member_placement_start is None:
+            self._member_placement_start = coordinates
+            self.scene.set_member_preview_start(coordinates)
+            self.history.append(
+                "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição final do membro)</span>"
+            )
+            return
+
+        start = self._member_placement_start
+        try:
+            start_name, end_name, member_name = self._create_graphical_member(start, coordinates)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        self._member_placement_start = None
+        self.command_session.cancel()
+        self._command_mode = "member_placement"
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            f"> <b>Adicionar membro</b> <span style='color:#57606a'>"
+            f"(Membro {escape(member_name)} criado entre {escape(start_name)} e {escape(end_name)})</span>"
+        )
+        self.history.append(
+            "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição inicial do próximo membro)</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        # The point signal is deferred until VTK processes the mouse release.
+        # Keep the scene rebuild queued as well so the next terrain orbit
+        # always starts from a fully finished camera gesture.
+        QTimer.singleShot(0, self.refresh_scene)
+
+    def _handle_node_placement_point(self, point: object) -> None:
+        """Create one node and keep the graphical node tool active."""
+        if self._command_mode != "node_placement":
+            return
+        coordinates = tuple(float(value) for value in point)
+        node_name = self._node_at_coordinates(coordinates)
+        if node_name is not None:
+            self.history.append(
+                f"> <b>Adicionar nó</b> <span style='color:#8c959f'>"
+                f"(O nó {escape(node_name)} já existe nessa posição)</span>"
+            )
+            return
+
+        try:
+            node_name = self.model_service.next_node_name()
+            self.model_service.create_node(*coordinates, name=node_name)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar nó</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        self.command_session.cancel()
+        self._command_mode = "node_placement"
+        self.scene.set_node_placement_mode(True)
+        self.history.append(
+            f"> <b>Adicionar nó</b> <span style='color:#57606a'>"
+            f"(Nó {escape(node_name)} criado em "
+            f"X {coordinates[0]:.3f} m, Y {coordinates[1]:.3f} m, Z {coordinates[2]:.3f} m)</span>"
+        )
+        self.history.append(
+            "> <b>Adicionar nó</b> <span style='color:#57606a'>(Clique na posição do próximo nó)</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        QTimer.singleShot(0, self.refresh_scene)
+
+    def _handle_rigid_bar_placement_point(self, point: object) -> None:
+        """Advance the two-click graphical rigid-bar placement flow."""
+        if self._command_mode != "rigid_bar_placement":
+            return
+        coordinates = tuple(float(value) for value in point)
+        if self._member_placement_start is None:
+            self._member_placement_start = coordinates
+            self.scene.set_member_preview_start(coordinates)
+            self.history.append(
+                "> <b>Adicionar barra rígida</b> "
+                "<span style='color:#57606a'>(Clique na posição final da barra rígida)</span>"
+            )
+            return
+
+        start = self._member_placement_start
+        try:
+            start_name, end_name, rigid_name = self._create_graphical_rigid_bar(start, coordinates)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar barra rígida</b> "
+                f"<span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        self._member_placement_start = None
+        self.command_session.cancel()
+        self._command_mode = "rigid_bar_placement"
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            f"> <b>Adicionar barra rígida</b> <span style='color:#57606a'>"
+            f"(Barra rígida {escape(rigid_name)} criada entre "
+            f"{escape(start_name)} e {escape(end_name)})</span>"
+        )
+        self.history.append(
+            "> <b>Adicionar barra rígida</b> "
+            "<span style='color:#57606a'>(Clique na posição inicial da próxima barra rígida)</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        QTimer.singleShot(0, self.refresh_scene)
+
+    def cancel_member_placement(self) -> None:
+        """Cancel the active graphical geometry launch."""
+        if self._command_mode not in {
+            "member_placement", "node_placement", "rigid_bar_placement",
+        }:
+            return
+        labels = {
+            "member_placement": "Adicionar membro",
+            "node_placement": "Adicionar nó",
+            "rigid_bar_placement": "Adicionar barra rígida",
+        }
+        label = labels[self._command_mode]
+        self._member_placement_start = None
+        self._command_mode = None
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self.history.append(
+            f"> <b>{label}</b> "
+            "<span style='color:#8c959f'>(Lançamento cancelado)</span>"
+        )
+
+    def _create_graphical_member(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+    ) -> tuple[str, str, str]:
+        tolerance = self.model.coordinate_tolerance
+        if all(abs(start[index] - end[index]) <= tolerance for index in range(3)):
+            raise ValueError("O segundo ponto deve ser diferente do ponto inicial.")
+
+        start_name = self._node_at_coordinates(start)
+        end_name = self._node_at_coordinates(end)
+        created_nodes: list[str] = []
+        try:
+            if start_name is None:
+                start_name = self.model_service.next_node_name()
+                self.model_service.create_node(*start, name=start_name)
+                created_nodes.append(start_name)
+            if end_name is None:
+                end_name = self.model_service.next_node_name()
+                self.model_service.create_node(*end, name=end_name)
+                created_nodes.append(end_name)
+            member_name = self.model_service.next_member_name()
+            self.model_service.create_member(start_name, end_name, name=member_name)
+        except ValueError:
+            for node_name in reversed(created_nodes):
+                self.model_service.remove_node(node_name)
+            raise
+        return start_name, end_name, member_name
+
+    def _create_graphical_rigid_bar(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+    ) -> tuple[str, str, str]:
+        tolerance = self.model.coordinate_tolerance
+        if all(abs(start[index] - end[index]) <= tolerance for index in range(3)):
+            raise ValueError("O segundo ponto deve ser diferente do ponto inicial.")
+
+        start_name = self._node_at_coordinates(start)
+        end_name = self._node_at_coordinates(end)
+        created_nodes: list[str] = []
+        try:
+            if start_name is None:
+                start_name = self.model_service.next_node_name()
+                self.model_service.create_node(*start, name=start_name)
+                created_nodes.append(start_name)
+            if end_name is None:
+                end_name = self.model_service.next_node_name()
+                self.model_service.create_node(*end, name=end_name)
+                created_nodes.append(end_name)
+            rigid = self.model_service.create_rigid_bar(start_name, end_name)
+        except ValueError:
+            for node_name in reversed(created_nodes):
+                self.model_service.remove_node(node_name)
+            raise
+        return start_name, end_name, rigid.name
+
+    def _node_at_coordinates(self, coordinates: tuple[float, float, float]) -> str | None:
+        tolerance = self.model.coordinate_tolerance
+        for name, node in self.model.nodes.items():
+            if all(
+                abs(coordinate - node_coordinate) <= tolerance
+                for coordinate, node_coordinate in zip(coordinates, (node.x, node.y, node.z))
+            ):
+                return name
+        return None
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
@@ -559,11 +831,13 @@ class MainWindow(QMainWindow):
         self.section_geometry.clear()
         self.command_session.cancel()
         self._command_mode = None
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
         self.clear_selection()
         self.current_path = None
         self.refresh_action_palette()
         self.refresh_analysis_palette()
-        self.refresh_scene()
+        self.refresh_scene(fit_camera=True)
 
     def save_model(self) -> None:
         path = str(self.current_path) if self.current_path else ""
@@ -590,16 +864,19 @@ class MainWindow(QMainWindow):
                     if member.section_geometry
                 }
                 self.command_session.cancel()
+                self._command_mode = None
+                self._member_placement_start = None
+                self.scene.set_member_placement_mode(False)
                 self.clear_selection()
                 self.current_path = Path(path)
                 self.refresh_action_palette()
                 self.refresh_analysis_palette()
-                self.refresh_scene()
+                self.refresh_scene(fit_camera=True)
             except (OSError, ValueError, KeyError) as error:
                 self.show_error(f"Não foi possível abrir o modelo: {error}")
 
-    def refresh_scene(self) -> None:
-        self.scene.render_model(self.model)
+    def refresh_scene(self, *, fit_camera: bool = False) -> None:
+        self.scene.render_model(self.model, preserve_camera=not fit_camera)
         self.properties.update_delete_button_state()
 
     def refresh_action_palette(self) -> None:

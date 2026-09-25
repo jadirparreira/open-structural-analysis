@@ -204,6 +204,108 @@ class SettingsDialog(QDialog):
         )
 
 
+class ProgramSettingsDialog(QDialog):
+    """Application settings window using the same navigation as properties."""
+
+    _snap_options = (
+        ("grid", "Malha", "hash.svg"),
+        ("endpoint", "Extremidade", "square.svg"),
+        ("center", "Centro", "triangle.svg"),
+        ("perpendicular", "Perpendicular", "axis-configuration.svg"),
+        ("orthogonal", "Ortogonal", "axis-3d.svg"),
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.window = parent
+        self.setWindowTitle("Configurações")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.resize(640, 400)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
+            "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
+            "QListWidget:focus { outline: none; border: 0; }"
+            "QCheckBox { color: #57606a; spacing: 8px; min-height: 30px; }"
+            "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+            "border-radius: 5px; background: #ffffff; }"
+            "QCheckBox::indicator:hover { border-color: #0969da; }"
+            "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#closeProperties:hover { background: #eaeef2; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Configurações")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        categories = QListWidget()
+        categories.setFixedWidth(170)
+        categories.setSpacing(8)
+        categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        categories.addItem("Snaps")
+        pages = QStackedWidget()
+        snaps_page = QWidget()
+        page_layout = QVBoxLayout(snaps_page)
+        page_layout.addSpacing(10)
+        hint = QLabel("Selecione os pontos que podem atrair o cursor durante o lançamento.")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        page_layout.addWidget(hint)
+        page_layout.addSpacing(8)
+        self._snap_checkboxes: dict[str, QCheckBox] = {}
+        icon_path = Path(__file__).parents[1] / "resources" / "icons"
+        for snap_kind, label, icon_name in self._snap_options:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            checkbox = QCheckBox()
+            checkbox.setAccessibleName(f"Snap {label.casefold()}")
+            checkbox.setChecked(self.window.scene.snap_type_enabled(snap_kind))
+            checkbox.toggled.connect(
+                lambda enabled, kind=snap_kind: self.window.scene.set_snap_type_enabled(kind, enabled)
+            )
+            icon = QLabel()
+            icon.setFixedSize(22, 22)
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icon.setPixmap(QIcon(str(icon_path / icon_name)).pixmap(QSize(20, 20)))
+            name = QLabel(label)
+            self._snap_checkboxes[snap_kind] = checkbox
+            row_layout.addWidget(checkbox)
+            row_layout.addWidget(icon)
+            row_layout.addWidget(name)
+            row_layout.addStretch(1)
+            page_layout.addWidget(row)
+        page_layout.addStretch(1)
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("closeProperties")
+        close_button.clicked.connect(self.accept)
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_row.addWidget(close_button)
+        page_layout.addLayout(close_row)
+        pages.addWidget(snaps_page)
+        categories.currentRowChanged.connect(pages.setCurrentIndex)
+        categories.setCurrentRow(0)
+        layout.addWidget(categories)
+        layout.addWidget(pages, 1)
+        outer.addLayout(layout, 1)
+
+
 class ActionGroupDialog(QDialog):
     """Cadastro dos grupos e das siglas usadas nas combinações."""
 
