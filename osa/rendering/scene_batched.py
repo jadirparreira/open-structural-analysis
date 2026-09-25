@@ -54,6 +54,11 @@ class StructureScene(QWidget):
         self.plotter.installEventFilter(self)
         self.plotter.set_background("#ffffff")
         self.plotter.enable_parallel_projection()
+        # Terrain style orbits around the focal point with a stable world-up
+        # axis: horizontal dragging changes azimuth and vertical dragging
+        # changes elevation, without the accumulated camera roll of VTK's
+        # default trackball. This matches the architectural-model workflow.
+        self.plotter.enable_terrain_style(mouse_wheel_zooms=True, shift_pans=True)
 
         self._grid_renderer = GridRenderer()
         self._reference_axes_renderer = ReferenceAxesRenderer()
