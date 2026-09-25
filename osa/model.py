@@ -12,8 +12,8 @@ class StructuralModel(_StructuralModel):
         catalog = loader.materials()
         materials = {
             item["name"]: (
-                item["elastic_modulus_gpa"], item["shear_modulus_gpa"],
-                item["poisson_ratio"], item["density_kg_m3"],
+                item["elastic_modulus_kn_m2"], item["shear_modulus_kn_m2"],
+                item["poisson_ratio"], item["unit_weight_kn_m3"],
             )
             for item in catalog
         }

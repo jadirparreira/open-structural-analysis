@@ -5,12 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pyvista as pv
 import vtk
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 
 from osa.model import StructuralModel
 
+from .action_renderer import ActionRenderer
 from .batched_renderer import (
     BatchedMemberRenderer,
     BatchedNodeRenderer,
@@ -18,11 +19,11 @@ from .batched_renderer import (
     MemberBatch,
     NodeBatch,
 )
-from .action_renderer import ActionRenderer
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay
 from .navigation_widget import NavigationWidget
 from .reference_axes_renderer import ReferenceAxesRenderer
+from .result_renderer import ResultRenderer
 
 
 class StructureScene(QWidget):
@@ -60,6 +61,7 @@ class StructureScene(QWidget):
         self._node_renderer = BatchedNodeRenderer()
         self._rigid_bar_renderer = BatchedRigidBarRenderer()
         self._action_renderer = ActionRenderer()
+        self._result_renderer = ResultRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
@@ -82,8 +84,15 @@ class StructureScene(QWidget):
         self._action_actors: list[object] = []
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels: tuple[str, ...] = ()
+        self._result_actors: list[object] = []
+        self._result_line_widths: list[tuple[object, float]] = []
+        self._result_label_positions = np.empty((0, 3), dtype=float)
+        self._result_labels: tuple[str, ...] = ()
         self._active_load_case: str | None = None
         self._actions_visible = False
+        self._analysis_visible = False
+        self._active_analysis_combination: str | None = None
+        self._active_result_type = "Normal"
         self._action_visibility = {
             "node_forces": True,
             "node_moments": True,
@@ -190,6 +199,7 @@ class StructureScene(QWidget):
         self._add_member_batches()
         self._add_node_batches()
         self._add_actions()
+        self._add_results()
         self._add_labels()
         self._apply_representation_visibility()
         self._configure_picker()
@@ -332,6 +342,32 @@ class StructureScene(QWidget):
             self.plotter, self._model, self._active_load_case, self._action_visibility,
         )
 
+    def _add_results(self) -> None:
+        if not self._analysis_visible or self._active_analysis_combination is None:
+            self._result_actors = []
+            self._result_line_widths = []
+            self._result_label_positions = np.empty((0, 3), dtype=float)
+            self._result_labels = ()
+            return
+        result = next(
+            (
+                item for item in self._model.analysis_results
+                if item.load_reference == self._active_analysis_combination
+                and item.model_revision == self._model.revision
+            ),
+            None,
+        )
+        self._result_actors, self._result_label_positions, self._result_labels = self._result_renderer.render(
+            self.plotter, self._model, result, self._active_result_type,
+            solid_members_visible=self._solid_members_visible,
+        )
+        self._result_line_widths = []
+        if self._active_result_type.startswith("Deformação") and self._result_actors:
+            # Primeiro ator é sempre a referência indeformada tracejada.
+            self._result_line_widths.append((self._result_actors[0], 1.0))
+            if not self._solid_members_visible and len(self._result_actors) > 1:
+                self._result_line_widths.append((self._result_actors[1], 2.0))
+
     def _add_labels(self) -> None:
         self._add_reference_axis_labels()
         if self._member_batch is not None:
@@ -346,6 +382,9 @@ class StructureScene(QWidget):
             )
         self._label_overlay.set_group(
             "action", self._action_label_positions, self._action_labels, visible=True,
+        )
+        self._label_overlay.set_group(
+            "result", self._result_label_positions, self._result_labels, visible=self._analysis_visible,
         )
 
     def _add_reference_axis_labels(self) -> None:
@@ -378,9 +417,10 @@ class StructureScene(QWidget):
     def _configure_picker(self) -> None:
         self._picker.InitializePickList()
         actors = [self._node_actor, self._rigid_bar_actor]
-        if self._solid_members_visible:
+        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
+        if self._solid_members_visible and not deformation_active:
             actors.extend((self._member_face_actor, self._member_fallback_actor))
-        else:
+        elif not deformation_active:
             actors.append(self._member_line_actor)
         active = {id(actor) for actor in actors if actor is not None}
         for actor in (
@@ -668,9 +708,10 @@ class StructureScene(QWidget):
         return pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z))
 
     def _apply_representation_visibility(self) -> None:
-        solid = self._solid_members_visible
+        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
+        solid = self._solid_members_visible and not deformation_active
         if self._member_line_actor is not None:
-            self._member_line_actor.SetVisibility(not solid)
+            self._member_line_actor.SetVisibility(not solid and not deformation_active)
         if self._member_face_actor is not None:
             self._member_face_actor.SetVisibility(solid)
         if self._member_edge_actor is not None:
@@ -684,6 +725,8 @@ class StructureScene(QWidget):
             return
         self._solid_members_visible = visible
         self._apply_representation_visibility()
+        if self._analysis_visible and self._active_result_type.startswith("Deformação"):
+            self.render_model(self._model)
         self._configure_picker()
         self._sync_highlights()
         self.plotter.render()
@@ -737,6 +780,21 @@ class StructureScene(QWidget):
         if visible == self._actions_visible:
             return
         self._actions_visible = visible
+        self.render_model(self._model)
+
+    def set_analysis_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        if visible == self._analysis_visible:
+            return
+        self._analysis_visible = visible
+        self.render_model(self._model)
+
+    def set_analysis_result(self, combination: str | None, result_type: str) -> None:
+        combination = combination or None
+        if combination == self._active_analysis_combination and result_type == self._active_result_type:
+            return
+        self._active_analysis_combination = combination
+        self._active_result_type = result_type
         self.render_model(self._model)
 
     def set_action_visibility(self, kind: str, visible: bool) -> None:
@@ -980,6 +1038,8 @@ class StructureScene(QWidget):
             self._rigid_bar_actor.GetProperty().SetLineWidth(self._rigid_bar_line_width * zoom_factor)
         for actor in self._local_axis_actors:
             actor.GetProperty().SetLineWidth(self._local_axis_line_width * zoom_factor)
+        for actor, width in self._result_line_widths:
+            actor.GetProperty().SetLineWidth(width * zoom_factor)
         highlight_targets = {"selected": self._selected, "hover": self._hovered}
         for slot, actor in self._highlight_actors.items():
             if actor is not None and slot in {"selected", "hover"}:
@@ -1040,6 +1100,9 @@ class StructureScene(QWidget):
         self._action_actors = []
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels = ()
+        self._result_actors = []
+        self._result_label_positions = np.empty((0, 3), dtype=float)
+        self._result_labels = ()
         self._pick_sources.clear()
         self._highlight_actors.clear()
         self._member_batch = None

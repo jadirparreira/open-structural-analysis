@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -14,4 +15,9 @@ class AnalysisRequest:
 
 
 class AnalysisEngine(Protocol):
-    def run(self, model: StructuralModel, request: AnalysisRequest) -> list[AnalysisResult]: ...
+    def run(
+        self,
+        model: StructuralModel,
+        request: AnalysisRequest,
+        progress: Callable[[str], None] | None = None,
+    ) -> list[AnalysisResult]: ...

@@ -236,3 +236,7 @@ def test_pynite_builder_receives_calculated_area_inertias_and_torsion():
     assert section.Iy == pytest.approx(expected.i_minor_mm4 * 1e-12)
     assert section.Iz == pytest.approx(expected.i_major_mm4 * 1e-12)
     assert section.J == pytest.approx(expected.j_mm4 * 1e-12)
+    material = target.materials["Aço Estrutural"]
+    assert material.E == pytest.approx(model.materials["Aço Estrutural"][0])
+    assert material.G == pytest.approx(model.materials["Aço Estrutural"][1])
+    assert material.rho == pytest.approx(model.materials["Aço Estrutural"][3])

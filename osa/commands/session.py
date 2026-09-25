@@ -349,6 +349,12 @@ class CommandSession:
                 return CommandResponse(value, "Mezanino criado.", "success", True)
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
+        if command == "barrabieng":
+            try:
+                self._create_barrabieng()
+                return CommandResponse(value, "Barra bi-engastada criada.", "success", True)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
         if command == "portico":
             try:
                 self._create_portico()
@@ -494,6 +500,25 @@ class CommandSession:
             "Z": (ReferenceAxis("0", 0.0), ReferenceAxis("400", height)),
         })
 
+    def _create_barrabieng(self) -> None:
+        """Cria uma viga bi-engastada de referência para análises rápidas."""
+        model = self.service.model
+        model.set_selected_action_group("PP+AP+AV")
+        support = (True, True, True, True, True, True)
+        start = self.service.create_node(0.0, 0.0, 0.0)
+        end = self.service.create_node(2.0, 0.0, 0.0)
+        model.update_node_supports(start.name, support)
+        model.update_node_supports(end.name, support)
+        member = self.service.create_member(start.name, end.name)
+        model.update_bar_material(
+            member.name, "Concreto Estrutural", model.materials["Concreto Estrutural"],
+        )
+        model.update_bar_section(member.name, "Retangular")
+        model.update_member_profile(member.name, "R 200 x 400", {"b": 200.0, "h": 400.0})
+        ActionService(model).add_member_distributed_force(
+            member.name, "Z", -5.0, -5.0, "Ação permanente", "global",
+        )
+
     def _create_mezanino(self) -> None:
         """Create a three-bay, all-steel mezzanine frame (21 x 4 x 4 m)."""
         model = self.service.model
@@ -513,7 +538,10 @@ class CommandSession:
             "brace": ("BC 10.0", {"d": 10.0}),
         }
         joist_releases = (False,) * 8 + (True,) * 4
-        brace_releases = (False,) * 6 + (True,) * 6
+        # Contraventamentos articulados nas direções de flexão, mas com a
+        # rotação de torção local X contínua. Liberar também RX nas duas
+        # extremidades deixa o subbloco torsional singular no PyNite.
+        brace_releases = (False,) * 8 + (True,) * 4
         base_nodes: dict[tuple[float, float], str] = {}
         top_nodes: dict[tuple[float, float], str] = {}
         joist_x_grid = tuple(index * module_length / 3.0 for index in range(10))

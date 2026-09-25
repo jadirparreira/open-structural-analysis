@@ -302,7 +302,7 @@ def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
 
 def test_selfweight_filters_members_by_selected_material_and_lists_custom_materials():
     model, commands = session()
-    model.materials["Material leve"] = (10.0, 5.0, 0.2, 500.0)
+    model.materials["Material leve"] = (10000000.0, 5000000.0, 0.2, 4.903325)
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 4, 0, 0)
     model.add_node("N3", 8, 0, 0)
@@ -865,6 +865,32 @@ def test_unknown_command_does_not_change_the_model():
     assert not model.bars
 
 
+def test_barrabieng_creates_only_a_fixed_concrete_beam_with_one_z_load():
+    model, commands = session()
+
+    response = commands.submit("barrabieng")
+
+    assert response.level == "success"
+    assert response.model_changed
+    assert len(model.nodes) == 2
+    assert len(model.bars) == 1
+    assert len(model.actions) == 1
+    assert {(node.x, node.y, node.z) for node in model.nodes.values()} == {
+        (0.0, 0.0, 0.0), (2.0, 0.0, 0.0),
+    }
+    assert all(node.supports == (True,) * 6 for node in model.nodes.values())
+    member = next(iter(model.bars.values()))
+    assert member.material == "Concreto Estrutural"
+    assert member.section == "Retangular"
+    assert member.profile == "R 200 x 400"
+    assert member.geometry_dict() == {"b": 200.0, "h": 400.0}
+    action = next(iter(model.actions.values()))
+    assert action.target == member.name
+    assert action.kind == "member_distributed_force_Z"
+    assert action.components == (-5.0, -5.0)
+    assert action.load_case == "Ação permanente"
+
+
 def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
     model, commands = session()
 
@@ -910,11 +936,11 @@ def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
         )
     braces = profiles["BC 10.0"]
     assert all(
-        member.section == "Barra Circular"
-        and member.geometry_dict() == {"d": 10.0}
-        and member.releases == (False,) * 6 + (True,) * 6
-        for member in braces
-    )
+            member.section == "Barra Circular"
+            and member.geometry_dict() == {"d": 10.0}
+            and member.releases == (False,) * 8 + (True,) * 4
+            for member in braces
+        )
     assert all(model.nodes[member.start_node].x == model.nodes[member.end_node].x
                for member in braces)
     assert {

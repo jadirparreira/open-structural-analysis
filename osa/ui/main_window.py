@@ -1,10 +1,15 @@
 """Janela principal e composição dos componentes visuais."""
+from osa.analysis import AnalysisRequest
+from osa.analysis.pynite import PyniteAdapter
+from osa.services import AnalysisService
+
+from .analysis_panel import ProcessingPanel
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import ActionGroupDialog, CombinationsDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
-from .palettes import ActionTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
+from .palettes import ActionTopPalette, AnalysisTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
 from .property_panel import PropertyPanel
 from .section_panel import (
     ILaminadoSectionPanel,
@@ -27,6 +32,7 @@ class MainWindow(QMainWindow):
         self.section_service = SectionService(self.model)
         self.section_property_service = SectionPropertyService()
         self.project_service = ProjectService(self.model)
+        self.analysis_service = AnalysisService(self.model, PyniteAdapter())
         self.command_session = CommandSession(self.model_service)
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
@@ -62,6 +68,12 @@ class MainWindow(QMainWindow):
         self.refresh_action_palette()
         self.action_top_palette.set_actions_visible(False)
         self.action_top_palette.reposition()
+        self.selected_analysis_combination: str | None = None
+        self.selected_analysis_diagram = "Normal"
+        self.analysis_top_palette = AnalysisTopPalette(self)
+        self.refresh_analysis_palette()
+        self.analysis_top_palette.set_analysis_visible(False)
+        self.analysis_top_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -150,6 +162,7 @@ class MainWindow(QMainWindow):
         self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.processing_panel = ProcessingPanel(self)
         self.axes_panel = AxesPanel(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
@@ -169,6 +182,30 @@ class MainWindow(QMainWindow):
         self.history.reposition()
         self.refresh_scene()
 
+    def process_analysis(self) -> None:
+        """Run PyNite after the central progress card has had a chance to paint."""
+        self.action_service.ensure_default_combinations()
+        self.refresh_analysis_palette()
+        self.processing_panel.start()
+        QTimer.singleShot(0, self._run_analysis)
+
+    def _run_analysis(self) -> None:
+        try:
+            results = self.analysis_service.run(AnalysisRequest(), self._update_processing_stage)
+        # PyNite reports numerical instabilities as generic ``Exception``.
+        # Keep the failure in the processing card instead of letting a solver
+        # error terminate the desktop event loop.
+        except Exception as error:  # noqa: BLE001
+            self.processing_panel.fail(str(error))
+            return
+        self.processing_panel.succeed(len(results))
+        self.refresh_analysis_palette()
+        self.refresh_selected_property_panel(self.palette.active_group)
+
+    def _update_processing_stage(self, stage: str) -> None:
+        self.processing_panel.set_stage(stage)
+        QApplication.processEvents()
+
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
@@ -184,6 +221,7 @@ class MainWindow(QMainWindow):
         dialog = CombinationsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        self.refresh_analysis_palette()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -215,6 +253,8 @@ class MainWindow(QMainWindow):
             self.top_icon_palette.reposition()
         if hasattr(self, "action_top_palette"):
             self.action_top_palette.reposition()
+        if hasattr(self, "analysis_top_palette"):
+            self.analysis_top_palette.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -229,6 +269,8 @@ class MainWindow(QMainWindow):
             self.history.reposition()
         if hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.section_panel.reposition()
+        if hasattr(self, "processing_panel") and self.processing_panel.isVisible():
+            self.processing_panel.reposition()
 
     def toggle_section_panel(self, section: str = "", button=None) -> None:
         if section in ("", "Indefinido"):
@@ -453,6 +495,7 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
         elif response.model_changed:
             self.refresh_action_palette()
+            self.refresh_analysis_palette()
             self.refresh_scene()
 
 
@@ -519,6 +562,7 @@ class MainWindow(QMainWindow):
         self.clear_selection()
         self.current_path = None
         self.refresh_action_palette()
+        self.refresh_analysis_palette()
         self.refresh_scene()
 
     def save_model(self) -> None:
@@ -549,6 +593,7 @@ class MainWindow(QMainWindow):
                 self.clear_selection()
                 self.current_path = Path(path)
                 self.refresh_action_palette()
+                self.refresh_analysis_palette()
                 self.refresh_scene()
             except (OSError, ValueError, KeyError) as error:
                 self.show_error(f"Não foi possível abrir o modelo: {error}")
@@ -575,6 +620,31 @@ class MainWindow(QMainWindow):
         self.scene.set_active_load_case(self.selected_action_name)
         if hasattr(self, "properties"):
             self.refresh_selected_property_panel(self.palette.active_group)
+
+    def prepare_analysis_palette(self) -> None:
+        """Ensure default combinations exist before exposing the analysis controls."""
+        self.action_service.ensure_default_combinations()
+        self.refresh_analysis_palette()
+
+    def refresh_analysis_palette(self) -> None:
+        names = tuple(result.load_reference for result in self.model.analysis_results)
+        previous = self.selected_analysis_combination
+        self.analysis_top_palette.set_combinations(names, previous)
+        self.analysis_top_palette.set_analysis_ready(bool(names))
+        self.selected_analysis_combination = self.analysis_top_palette.combination_selector.currentText() or None
+        self._sync_analysis_result()
+
+    def _select_analysis_combination(self, name: str) -> None:
+        self.selected_analysis_combination = name or None
+        self._sync_analysis_result()
+
+    def _select_analysis_diagram(self, name: str) -> None:
+        self.selected_analysis_diagram = name or "Normal"
+        self._sync_analysis_result()
+
+    def _sync_analysis_result(self) -> None:
+        if hasattr(self, "scene"):
+            self.scene.set_analysis_result(self.selected_analysis_combination, self.selected_analysis_diagram)
 
     def _select_active_action(self, name: str) -> None:
         self.selected_action_name = name or None

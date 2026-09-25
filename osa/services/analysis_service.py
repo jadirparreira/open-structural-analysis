@@ -7,7 +7,7 @@ class AnalysisService:
         self.model = model
         self.engine = engine
 
-    def run(self, request: AnalysisRequest):
-        results = self.engine.run(self.model, request)
+    def run(self, request: AnalysisRequest, progress=None):
+        results = self.engine.run(self.model, request, progress=progress)
         self.model.analysis_results = list(results)
         return results

@@ -68,6 +68,16 @@ QToolButton#windowControl:pressed { background: #afb8c1; }
 QFrame#commandBar { background: rgba(246, 248, 250, 248); border: 1px solid #d0d7de; border-radius: 12px; }
 QFrame#commandHistory { background: rgba(246, 248, 250, 215); border: 1px solid #d0d7de; border-radius: 10px; }
 QFrame#propertyPanel { background: rgba(246, 248, 250, 248); border: 1px solid #d0d7de; border-radius: 14px; }
+QFrame#processingPanel { background: rgba(246, 248, 250, 252); border: 1px solid #d0d7de; border-radius: 14px; }
+QLabel#processingStatus { color: #57606a; padding: 3px 0 7px 0; }
+QLabel#processingStatus[state="success"] { color: #1a7f37; font-weight: 600; }
+QLabel#processingStatus[state="error"] { color: #cf222e; font-weight: 600; }
+QLabel#processingMarker { min-width: 20px; font-weight: 700; color: #8c959f; }
+QLabel#processingMarker[state="active"] { color: #0969da; }
+QLabel#processingMarker[state="complete"] { color: #1a7f37; }
+QLabel#processingStep { color: #8c959f; }
+QLabel#processingStep[state="active"] { color: #24292f; font-weight: 600; }
+QLabel#processingStep[state="complete"] { color: #57606a; }
 QLabel#propertyTitle { color: #24292f; font-size: 15px; font-weight: 700; }
 QLabel#propertyName { color: #57606a; font-size: 13px; padding-bottom: 5px; }
 QLabel#propertySection { color: #57606a; font-size: 12px; font-weight: 600; padding-top: 4px; }

@@ -163,7 +163,7 @@ class FloatingPalette(QFrame):
             "analysis-frame.svg",
             (
                 ("Combinações", "add-combination.svg", window.open_combinations),
-                ("Processar", "process-analysis.svg", lambda: None),
+                ("Processar", "process-analysis.svg", window.process_analysis),
             ),
         )
         self.toggle_group("Geometria")
@@ -234,8 +234,13 @@ class FloatingPalette(QFrame):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
         if hasattr(self.window, "action_top_palette"):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
+        if hasattr(self.window, "analysis_top_palette"):
+            if next_group == "Análise":
+                self.window.prepare_analysis_palette()
+            self.window.analysis_top_palette.set_analysis_visible(next_group == "Análise")
         if hasattr(self.window, "scene"):
             self.window.scene.set_actions_visible(next_group == "Ações")
+            self.window.scene.set_analysis_visible(next_group == "Análise")
         if hasattr(self.window, "refresh_selected_property_panel"):
             self.window.refresh_selected_property_panel(next_group)
 
@@ -443,6 +448,82 @@ class ActionTopPalette(QFrame):
             elif event.type() == QEvent.Type.ToolTip:
                 return True
         return super().eventFilter(watched, event)
+
+    def reposition(self) -> None:
+        margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
+        self.move((self.window().width() - self.width()) // 2, margin + 52)
+        self.raise_()
+
+
+class AnalysisTopPalette(QFrame):
+    """Barra contextual de combinação e diagrama para a seção Análise."""
+
+    diagram_options = (
+        "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
+        "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
+    )
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.setObjectName("topIconPalette")
+        self.setStyleSheet(
+            "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QComboBox { min-width: 184px; min-height: 24px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QFrame#analysisPending { min-width: 376px; min-height: 24px; border: 0; border-radius: 6px; "
+            "background: #d0d7de; }"
+            "QLabel#analysisPendingLabel { color: #57606a; padding: 0 8px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        self.selectors = QWidget(self)
+        selectors_layout = QHBoxLayout(self.selectors)
+        selectors_layout.setContentsMargins(0, 0, 0, 0)
+        selectors_layout.setSpacing(4)
+        self.combination_selector = QComboBox(self)
+        self.combination_selector.setToolTip("Combinação de carga para os diagramas")
+        self.combination_selector.setAccessibleName("Combinação de análise")
+        self.combination_selector.currentTextChanged.connect(window._select_analysis_combination)
+        self.diagram_selector = QComboBox(self)
+        self.diagram_selector.addItems(self.diagram_options)
+        self.diagram_selector.setToolTip("Tipo de diagrama a exibir")
+        self.diagram_selector.setAccessibleName("Tipo de diagrama")
+        self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)
+        selectors_layout.addWidget(self.combination_selector)
+        selectors_layout.addWidget(self.diagram_selector)
+        self.pending = QFrame(self)
+        self.pending.setObjectName("analysisPending")
+        pending_layout = QHBoxLayout(self.pending)
+        pending_layout.setContentsMargins(0, 0, 0, 0)
+        pending_label = QLabel("A estrutura não foi analisada.")
+        pending_label.setObjectName("analysisPendingLabel")
+        pending_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pending_layout.addWidget(pending_label)
+        layout.addWidget(self.selectors)
+        layout.addWidget(self.pending)
+        self.adjustSize()
+
+    def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:
+        self.combination_selector.blockSignals(True)
+        self.combination_selector.clear()
+        self.combination_selector.addItems(names)
+        index = self.combination_selector.findText(selected_name or "", Qt.MatchFlag.MatchExactly)
+        self.combination_selector.setCurrentIndex(index if index >= 0 else (0 if names else -1))
+        self.combination_selector.blockSignals(False)
+        self.adjustSize()
+
+    def set_analysis_ready(self, ready: bool) -> None:
+        self.selectors.setVisible(ready)
+        self.pending.setVisible(not ready)
+        self.adjustSize()
+
+    def set_analysis_visible(self, visible: bool) -> None:
+        self.setVisible(visible)
 
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN

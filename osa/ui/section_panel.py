@@ -622,7 +622,7 @@ class SectionPanel(QFrame):
 
     def _calculate_properties(self, geometry: dict[str, float]):
         member = self.window.model.bars.get(self._member_name)
-        density = member.material_values[3] if member is not None else 7850.0
+        density = member.material_values[3] / 9.80665e-3 if member is not None else 7850.0
         return self.window.section_property_service.calculate(self._section_family, geometry, density)
 
     def _populate_calculated_values(self, properties, enabled: bool) -> None:

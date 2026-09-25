@@ -24,6 +24,21 @@ FORMAT_V2 = "open-structural-analysis/v2"
 
 
 class ProjectSerializer:
+    @staticmethod
+    def _material_values(values: Any) -> tuple[float, float, float, float]:
+        """Normaliza materiais legados (GPa e kg/m³) para kN/m² e kN/m³."""
+        elastic_modulus, shear_modulus, poisson_ratio, unit_weight = (
+            float(value) for value in values
+        )
+        if elastic_modulus < 1e5 and shear_modulus < 1e5 and unit_weight > 100.0:
+            return (
+                elastic_modulus * 1e6,
+                shear_modulus * 1e6,
+                poisson_ratio,
+                unit_weight * 9.80665e-3,
+            )
+        return elastic_modulus, shear_modulus, poisson_ratio, unit_weight
+
     def dump(self, model: StructuralModel) -> dict[str, Any]:
         return {
             "format": FORMAT_V2,
@@ -71,7 +86,7 @@ class ProjectSerializer:
             member = Bar(
                 item["name"], item["start_node"], item["end_node"],
                 item.get("material", "Indefinido"),
-                tuple(float(value) for value in item.get("material_values", (200.0, 76.9, 0.30, 7850.0))),
+                self._material_values(item.get("material_values", (200000000.0, 76900000.0, 0.30, 76.9822025))),
                 item.get("section", ""), item.get("profile", ""),
                 tuple((str(key), float(value)) for key, value in geometry),
                 candidate._member_rotation(item.get("rotation", 0)),
@@ -102,10 +117,10 @@ class ProjectSerializer:
             materials = data.get("materials", {})
             if materials:
                 candidate.materials = {
-                    name: tuple(float(value) for value in item["values"])
+                    name: self._material_values(item["values"])
                     for name, item in materials.items()
                 }
-                candidate.material_types = {name: item.get("type", "") for name, item in materials.items()}
+            candidate.material_types = {name: item.get("type", "") for name, item in materials.items()}
             candidate.sections = {
                 str(kind): [str(section) for section in sections]
                 for kind, sections in data.get("included_sections", candidate.sections).items()

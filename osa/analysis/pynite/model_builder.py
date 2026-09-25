@@ -1,4 +1,4 @@
-"""Tradução do domínio para um modelo PyNite.
+"""Tradução do domínio para um modelo PyNite no sistema m–kN.
 
 As propriedades da seção são calculadas a partir da geometria paramétrica e
 convertidas explicitamente de mm para m na fronteira com o solver.
@@ -20,18 +20,26 @@ class ModelBuilder:
         except ImportError as error:
             raise RuntimeError("PyNiteFEA não está disponível neste ambiente.") from error
         target = FEModel3D()
+        rotationally_unconnected = self._rotationally_unconnected_nodes(source)
         for node in source.nodes.values():
             target.add_node(node.name, node.x, node.y, node.z)
-            if any(node.supports):
-                target.def_support(node.name, *node.supports)
+            supports = node.supports
+            if node.name in rotationally_unconnected:
+                # Um nó ligado somente a extremidades articuladas não possui
+                # rigidez rotacional no modelo de barras. O PyNite mantém os
+                # seis GL nodais, então esses três GL puramente cinemáticos
+                # precisam ser restringidos para a matriz global ser definida.
+                supports = (*supports[:3], True, True, True)
+            if any(supports):
+                target.def_support(node.name, *supports)
         for material_name, values in source.materials.items():
-            elastic_modulus_gpa, shear_modulus_gpa, poisson_ratio, density_kg_m3 = values
+            elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values
             target.add_material(
                 material_name,
-                elastic_modulus_gpa * 1e9,
-                shear_modulus_gpa * 1e9,
+                elastic_modulus_kn_m2,
+                shear_modulus_kn_m2,
                 poisson_ratio,
-                density_kg_m3 * 9.80665,
+                unit_weight_kn_m3,
             )
         for member in source.bars.values():
             if member.material not in source.materials:
@@ -41,7 +49,7 @@ class ModelBuilder:
             properties = self.section_properties.calculate(
                 member.section,
                 member.geometry_dict(),
-                source.materials[member.material][3],
+                source.materials[member.material][3] / 9.80665e-3,
             )
             section_name = f"section::{member.name}"
             target.add_section(
@@ -67,3 +75,16 @@ class ModelBuilder:
                     dxb, dyb, dzb, rxb, ryb, rzb,
                 )
         return target
+
+    @staticmethod
+    def _rotationally_unconnected_nodes(source: StructuralModel) -> set[str]:
+        """Return nodes whose incident members all release local RY and RZ."""
+        incident: dict[str, list[tuple[bool, bool]]] = {name: [] for name in source.nodes}
+        for member in source.bars.values():
+            # Application order is A/B by local degree of freedom.
+            incident[member.start_node].append((member.releases[8], member.releases[10]))
+            incident[member.end_node].append((member.releases[9], member.releases[11]))
+        return {
+            name for name, releases in incident.items()
+            if releases and all(release_y and release_z for release_y, release_z in releases)
+        }

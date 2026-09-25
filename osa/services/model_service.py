@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from osa.domain import StructuralModel
+
 from .section_property_service import SectionPropertyService
 
 
@@ -85,7 +86,7 @@ class ModelService:
                 properties = properties_service.calculate(
                     member.section,
                     member.geometry_dict(),
-                    member.material_values[3],
+                    member.material_values[3] / 9.80665e-3,
                 )
             except (KeyError, TypeError, ValueError):
                 missing.append(member.name)

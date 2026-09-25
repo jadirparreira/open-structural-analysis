@@ -1,3 +1,5 @@
+import math
+
 from osa.domain import (
     Action,
     ActionDefinition,
@@ -144,21 +146,40 @@ class ActionService:
             f"Carga {index}", f"member_moment_{direction.upper()}", target, (float(value),), load_case,
         ))
 
-    def add_node_force(self, target: str, direction: str, value: float, load_case: str) -> Action:
+    def add_node_force(self, target: str, direction: str, value: float, load_case: str) -> Action | None:
+        kind = f"node_force_{direction.upper()}"
+        if math.isclose(value, 0.0, abs_tol=1e-12):
+            self._remove_actions(target, kind, load_case)
+            return None
         index = 1
         while f"Carga {index}" in self.model.actions:
             index += 1
         return self.add_action(Action(
-            f"Carga {index}", f"node_force_{direction.upper()}", target, (float(value),), load_case,
+            f"Carga {index}", kind, target, (float(value),), load_case,
         ))
 
-    def add_node_moment(self, target: str, direction: str, value: float, load_case: str) -> Action:
+    def add_node_moment(self, target: str, direction: str, value: float, load_case: str) -> Action | None:
+        kind = f"node_moment_{direction.upper()}"
+        if math.isclose(value, 0.0, abs_tol=1e-12):
+            self._remove_actions(target, kind, load_case)
+            return None
         index = 1
         while f"Carga {index}" in self.model.actions:
             index += 1
         return self.add_action(Action(
-            f"Carga {index}", f"node_moment_{direction.upper()}", target, (float(value),), load_case,
+            f"Carga {index}", kind, target, (float(value),), load_case,
         ))
+
+    def _remove_actions(self, target: str, kind: str, load_case: str) -> None:
+        names = [
+            name for name, action in self.model.actions.items()
+            if action.target == target and action.kind == kind and action.load_case == load_case
+        ]
+        if not names:
+            return
+        for name in names:
+            del self.model.actions[name]
+        self.model._touch()
 
     @staticmethod
     def templates() -> dict[str, ActionGroup]:
@@ -196,3 +217,37 @@ class ActionService:
         if name in self.model.load_combinations:
             del self.model.load_combinations[name]
             self.model._touch()
+
+    def ensure_default_combinations(self) -> bool:
+        """Create the standard combinations for the default action group once."""
+        group = self.selected_group()
+        group_name = "PP+AP+AV"
+        if group is None or group.name != group_name or group_name in self.model.combination_groups_initialized:
+            return False
+        self.model.combination_groups_initialized.add(group_name)
+        if any(
+            combination.action_group in (None, group_name)
+            for combination in self.model.load_combinations.values()
+        ):
+            self.model._touch()
+            return False
+        abbreviations = tuple(action.abbreviation for action in group.actions)
+        if abbreviations != ("PP", "AP", "AV"):
+            self.model._touch()
+            return False
+        all_active = abbreviations
+        ones = tuple((abbreviation, 1.0) for abbreviation in abbreviations)
+        for combination in (
+            LoadCombination("Combinação 01", ones, ones, ones, all_active, group_name, "CAR"),
+            LoadCombination(
+                "Combinação 02",
+                (("PP", 1.25), ("AP", 1.35), ("AV", 1.50)), ones, ones,
+                all_active, group_name, "ELU",
+            ),
+            LoadCombination(
+                "Combinação 03", ones, ones,
+                (("PP", 1.0), ("AP", 1.0), ("AV", 0.60)), all_active, group_name, "ELS",
+            ),
+        ):
+            self.set_combination(combination)
+        return True

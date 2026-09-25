@@ -4,26 +4,26 @@
     {
       "name": "Aço Estrutural",
       "type": "Aço",
-      "elastic_modulus_gpa": 200.0,
-      "shear_modulus_gpa": 76.9,
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
       "poisson_ratio": 0.3,
-      "density_kg_m3": 7850.0
+      "unit_weight_kn_m3": 76.9822025
     },
     {
       "name": "Concreto Estrutural",
       "type": "Concreto",
-      "elastic_modulus_gpa": 30.0,
-      "shear_modulus_gpa": 12.5,
+      "elastic_modulus_kn_m2": 30000000.0,
+      "shear_modulus_kn_m2": 12500000.0,
       "poisson_ratio": 0.2,
-      "density_kg_m3": 2400.0
+      "unit_weight_kn_m3": 23.53596
     },
     {
       "name": "Madeira Estrutural",
       "type": "Madeira",
-      "elastic_modulus_gpa": 12.0,
-      "shear_modulus_gpa": 0.75,
+      "elastic_modulus_kn_m2": 12000000.0,
+      "shear_modulus_kn_m2": 750000.0,
       "poisson_ratio": 0.35,
-      "density_kg_m3": 500.0
+      "unit_weight_kn_m3": 4.903325
     }
   ]
 }

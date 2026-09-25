@@ -31,6 +31,30 @@ def test_v1_files_are_still_readable():
     assert model.bars["B1"].section == "W Laminado"
 
 
+def test_legacy_v2_materials_are_converted_to_kn_units_when_opened():
+    data = {
+        "format": "open-structural-analysis/v2",
+        "nodes": [
+            {"name": "N1", "x": 0, "y": 0, "z": 0},
+            {"name": "N2", "x": 1, "y": 0, "z": 0},
+        ],
+        "members": [{
+            "name": "B1", "start_node": "N1", "end_node": "N2",
+            "material_values": [200.0, 76.9, 0.3, 7850.0],
+        }],
+        "materials": {
+            "Aço legado": {"type": "Aço", "values": [200.0, 76.9, 0.3, 7850.0]},
+        },
+    }
+
+    model = StructuralModel()
+    model.load_dict(data)
+
+    expected = (200000000.0, 76900000.0, 0.3, 76.9822025)
+    assert model.materials["Aço legado"] == expected
+    assert model.bars["B1"].material_values == expected
+
+
 def test_round_trip_preserves_reference_axes(tmp_path):
     model = StructuralModel()
     model.set_reference_axes({

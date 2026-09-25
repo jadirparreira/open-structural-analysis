@@ -1,5 +1,5 @@
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidget, QTableWidgetItem
 from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidget, QTableWidgetItem
 
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
@@ -57,7 +57,7 @@ class SettingsDialog(QDialog):
                                              "QToolButton:hover { background: #eaeef2; }")
                 material_row.addWidget(add_button); material_row.addWidget(remove_button); page_layout.addLayout(material_row)
                 form = QFormLayout(); fields = []
-                labels = ("Módulo de elasticidade", "Módulo de cisalhamento", "Coeficiente de Poisson", "Densidade")
+                labels = ("Módulo de elasticidade", "Módulo de cisalhamento", "Coeficiente de Poisson", "Peso específico")
                 type_combo = QComboBox(); type_combo.addItems(["Aço", "Concreto", "Madeira"])
                 type_combo.setCurrentText(self.material_types.get(material_combo.currentText(), "Aço"))
                 type_combo.currentTextChanged.connect(
@@ -66,9 +66,17 @@ class SettingsDialog(QDialog):
                     )
                 )
                 form.addRow("Tipo de material", type_combo)
-                for label, value in zip(labels, values["Aço Estrutural"]):
-                    field = QDoubleSpinBox(); field.setDecimals(3); field.setRange(0, 1e9); field.setValue(value)
-                    field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons); form.addRow(label, field); fields.append(field)
+                units = ("kN/m²", "kN/m²", "", "kN/m³")
+                for label, unit, value in zip(labels, units, values["Aço Estrutural"]):
+                    box = QFrame(); box.setObjectName("unitInputBox")
+                    box.setStyleSheet("QFrame#unitInputBox { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } QFrame#unitInputBox QDoubleSpinBox { border: 0; background: transparent; color: #24292f; padding: 2px 9px; } QFrame#unitInputBox QLabel { color: #57606a; padding-right: 9px; }")
+                    row = QHBoxLayout(box); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(0)
+                    field = QDoubleSpinBox(); field.setDecimals(3); field.setRange(0, 1e12); field.setValue(value)
+                    field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons); field.setMinimumWidth(0)
+                    row.addWidget(field, 1)
+                    if unit:
+                        row.addWidget(QLabel(unit))
+                    form.addRow(label, box); fields.append(field)
                 for index, field in enumerate(fields):
                     field.valueChanged.connect(
                         lambda _v, idx=index: self.window.material_service.upsert(
@@ -891,35 +899,7 @@ class CombinationsDialog(QDialog):
 
     def _ensure_default_combinations(self) -> None:
         """Cria uma única vez as três combinações usuais do grupo padrão."""
-        group_name = "PP+AP+AV"
-        if self._active_group_name != group_name or group_name in self.window.model.combination_groups_initialized:
-            return
-        self.window.model.combination_groups_initialized.add(group_name)
-        if self._visible_combinations():
-            self.window.model._touch()
-            return
-        abbreviations = tuple(action.abbreviation for action in self._group_actions)
-        if abbreviations != ("PP", "AP", "AV"):
-            self.window.model._touch()
-            return
-        all_active = abbreviations
-        ones = tuple((abbreviation, 1.0) for abbreviation in abbreviations)
-        defaults = (
-            LoadCombination("Combinação 01", ones, ones, ones, all_active, group_name, "CAR"),
-            LoadCombination(
-                "Combinação 02",
-                (("PP", 1.25), ("AP", 1.35), ("AV", 1.50)), ones, ones,
-                all_active, group_name, "ELU",
-            ),
-            LoadCombination(
-                "Combinação 03", ones, ones,
-                (("PP", 1.0), ("AP", 1.0), ("AV", 0.60)), all_active, group_name, "ELS",
-            ),
-        )
-        for combination in defaults:
-            if combination.name in self.window.model.load_combinations:
-                continue
-            self.action_service.set_combination(combination)
+        self.action_service.ensure_default_combinations()
 
     def _refresh_combinations(self, selected_name: str | None = None) -> None:
         selected_name = selected_name or self._combination_name(self.combination_list.currentItem())
