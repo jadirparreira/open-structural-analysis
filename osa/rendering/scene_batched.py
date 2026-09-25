@@ -20,7 +20,7 @@ from .batched_renderer import (
     NodeBatch,
 )
 from .grid_renderer import GridRenderer
-from .label_overlay import LabelOverlay
+from .label_overlay import LabelOverlay, project_world_to_screen
 from .navigation_widget import NavigationWidget
 from .reference_axes_renderer import ReferenceAxesRenderer
 from .result_renderer import ResultRenderer
@@ -99,7 +99,6 @@ class StructureScene(QWidget):
             "member_forces": True,
             "member_moments": True,
         }
-        self._pick_sources: dict[str, tuple[str, pv.PolyData, tuple[str, ...]]] = {}
         self._highlight_actors: dict[str, object] = {}
 
         self._local_axes_visible = True
@@ -113,6 +112,7 @@ class StructureScene(QWidget):
         self._selected: tuple[str, str] | None = None
         self._tab_hover_candidates: list[tuple[str, str]] = []
         self._tab_hover_position: tuple[int, int] | None = None
+        self._pointer_position: tuple[float, float] | None = None
         self._marker_radius_current = 0.05
         self._reference_plane_mode = "XY"
         self._reference_plane_z = 0.0
@@ -120,9 +120,9 @@ class StructureScene(QWidget):
         self._zoom_reference_parallel_scale: float | None = None
         self._camera_interacting = False
 
-        self._picker = vtk.vtkCellPicker()
-        self._picker.SetTolerance(0.01)
-        self._picker.PickFromListOn()
+        self._solid_picker = vtk.vtkCellPicker()
+        self._solid_picker.SetTolerance(0.0005)
+        self._solid_picker.PickFromListOn()
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(32)
@@ -135,7 +135,9 @@ class StructureScene(QWidget):
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(24)
         self._rebuild_timer.timeout.connect(self._rebuild_scene)
-
+        self._navigation_viewport_timer = QTimer(self)
+        self._navigation_viewport_timer.setSingleShot(True)
+        self._navigation_viewport_timer.timeout.connect(self._sync_navigation_viewport)
         # CameraCubeWidget animates the vtkCamera directly, so those changes do
         # not emit the interactor's InteractionEvent.  Observe the camera itself
         # and coalesce its several modifications into the existing 16 ms label
@@ -202,7 +204,7 @@ class StructureScene(QWidget):
         self._add_results()
         self._add_labels()
         self._apply_representation_visibility()
-        self._configure_picker()
+        self._configure_solid_picker()
         self._sync_highlights()
 
         if preserve_camera and camera_state is not None:
@@ -229,16 +231,9 @@ class StructureScene(QWidget):
             batch.lines, "batch:member-lines", line_width=self._member_line_width,
             render_lines_as_tubes=True, lighting=False,
         )
-        self._register_pick_source(
-            self._member_line_actor, "batch:member-lines", "bar", batch.lines, batch.names,
-        )
         self._member_fallback_actor = self._add_colored_mesh(
             batch.fallback_lines, "batch:member-fallback", line_width=self._member_line_width,
             render_lines_as_tubes=True, lighting=False,
-        )
-        self._register_pick_source(
-            self._member_fallback_actor, "batch:member-fallback", "bar",
-            batch.fallback_lines, batch.names,
         )
         self._member_face_actor = self._add_colored_mesh(
             batch.faces, "batch:member-faces", smooth_shading=False, lighting=True,
@@ -248,9 +243,6 @@ class StructureScene(QWidget):
             prop.SetEdgeVisibility(False)
             prop.SetInterpolationToFlat()
             prop.SetSpecular(0.12)
-        self._register_pick_source(
-            self._member_face_actor, "batch:member-faces", "bar", batch.faces, batch.names,
-        )
         self._member_edge_actor = self._add_colored_mesh(
             batch.edges, "batch:member-edges", line_width=1.5, lighting=False,
         )
@@ -299,9 +291,6 @@ class StructureScene(QWidget):
             self._node_actor = self._add_colored_mesh(
                 batch.geometry, "batch:nodes", smooth_shading=True,
             )
-            self._register_pick_source(
-                self._node_actor, "batch:nodes", "node", batch.geometry, batch.names,
-            )
         if batch.supports.n_cells:
             self._support_actor = self.plotter.add_mesh(
                 batch.supports, color="#a8b0b9", edge_color="#6e7781",
@@ -323,10 +312,6 @@ class StructureScene(QWidget):
         # Rigid bars share the members' depth level. They must not receive a
         # special foreground/background offset when crossing a member or node.
         rigid_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-        self._rigid_bar_actor.SetObjectName("batch:rigid-bars")
-        self._register_pick_source(
-            self._rigid_bar_actor, "batch:rigid-bars", "rigid_bar", mesh, self._rigid_bar_names,
-        )
 
     def _add_actions(self) -> None:
         if not self._actions_visible:
@@ -406,51 +391,80 @@ class StructureScene(QWidget):
         actor.SetObjectName(name)
         return actor
 
-    def _register_pick_source(
-        self, actor, identifier: str, kind: str, mesh: pv.PolyData, names: tuple[str, ...],
-    ) -> None:
-        if actor is None:
-            return
-        actor.SetObjectName(identifier)
-        self._pick_sources[identifier] = kind, mesh, names
-
-    def _configure_picker(self) -> None:
-        self._picker.InitializePickList()
-        actors = [self._node_actor, self._rigid_bar_actor]
-        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
-        if self._solid_members_visible and not deformation_active:
-            actors.extend((self._member_face_actor, self._member_fallback_actor))
-        elif not deformation_active:
-            actors.append(self._member_line_actor)
-        active = {id(actor) for actor in actors if actor is not None}
-        for actor in (
-            self._node_actor, self._member_face_actor,
-            self._member_fallback_actor, self._member_line_actor, self._rigid_bar_actor,
-        ):
-            if actor is None:
-                continue
-            enabled = id(actor) in active
-            actor.SetPickable(enabled)
-            if enabled:
-                self._picker.AddPickList(actor)
-
     def _pick(self) -> tuple[str, str] | None:
-        x, y = self.plotter.iren.get_event_position()
-        if not self._picker.Pick(x, y, 0, self.plotter.renderer):
+        candidates = self._pick_candidates()
+        return candidates[0] if candidates else None
+
+    def _pick_candidates(self) -> list[tuple[str, str]]:
+        candidates = self._screen_pick_candidates()
+        solid = self._pick_solid_member()
+        if solid is None:
+            return candidates
+        if solid in candidates:
+            candidates.remove(solid)
+        # A node marker is deliberately more specific than a member surface
+        # at a joint. Everywhere else, the visible solid face has priority
+        # over the analytical centreline.
+        insert_at = 1 if candidates and candidates[0][0] == "node" else 0
+        candidates.insert(insert_at, solid)
+        return candidates
+
+    def _configure_solid_picker(self) -> None:
+        self._solid_picker.InitializePickList()
+        actor = self._member_face_actor
+        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
+        enabled = actor is not None and self._solid_members_visible and not deformation_active
+        if actor is not None:
+            actor.SetPickable(enabled)
+        if enabled:
+            self._solid_picker.AddPickList(actor)
+
+    @staticmethod
+    def _qt_to_vtk_position(
+        pointer: tuple[float, float],
+        widget_size: tuple[int, int],
+        render_size: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Map Qt logical pixels to the current VTK render-buffer pixels."""
+        widget_width, widget_height = widget_size
+        render_width, render_height = render_size
+        if widget_width <= 1 or widget_height <= 1:
+            return 0.0, 0.0
+        x = min(max(pointer[0], 0.0), float(widget_width - 1))
+        y = min(max(pointer[1], 0.0), float(widget_height - 1))
+        return (
+            x * float(max(render_width - 1, 0)) / float(widget_width - 1),
+            (float(widget_height - 1) - y)
+            * float(max(render_height - 1, 0)) / float(widget_height - 1),
+        )
+
+    def _pick_solid_member(self) -> tuple[str, str] | None:
+        batch = self._member_batch
+        actor = self._member_face_actor
+        if (
+            self._pointer_position is None
+            or batch is None
+            or actor is None
+            or not actor.GetVisibility()
+            or not actor.GetPickable()
+        ):
             return None
-        actor = self._picker.GetActor()
-        identifier = actor.GetObjectName() if actor is not None else None
-        source = self._pick_sources.get(identifier)
-        if source is None:
+        x, y = self._qt_to_vtk_position(
+            self._pointer_position,
+            (self.plotter.width(), self.plotter.height()),
+            tuple(self.plotter.render_window.GetSize()),
+        )
+        if not self._solid_picker.Pick(x, y, 0.0, self.plotter.renderer):
             return None
-        kind, mesh, names = source
-        cell_id = self._picker.GetCellId()
-        if cell_id < 0 or cell_id >= mesh.n_cells:
+        if self._solid_picker.GetActor() is not actor:
             return None
-        element_index = int(mesh.cell_data["element_index"][cell_id])
-        if element_index < 0 or element_index >= len(names):
+        cell_id = self._solid_picker.GetCellId()
+        if cell_id < 0 or cell_id >= batch.faces.n_cells:
             return None
-        return kind, names[element_index]
+        element_index = int(batch.faces.cell_data["element_index"][cell_id])
+        if element_index < 0 or element_index >= len(batch.names):
+            return None
+        return "bar", batch.names[element_index]
 
     @staticmethod
     def _distance_to_segment_2d(
@@ -465,50 +479,84 @@ class StructureScene(QWidget):
         projection = start + delta * fraction
         return float(np.linalg.norm(point - projection))
 
-    def _world_to_display(self, point: tuple[float, float, float]) -> tuple[np.ndarray, float]:
+    def _screen_pick_candidates(self) -> list[tuple[str, str]]:
+        """Find selectable model elements in the same Qt coordinate space as the cursor.
+
+        ``vtkCellPicker`` receives render-window pixels, while Qt reports
+        logical widget pixels.  During the creation of a frameless OpenGL
+        window those spaces may briefly diverge.  Projecting with the active
+        camera directly into the Qt widget's dimensions avoids that stale
+        viewport conversion and keeps selection attached to what is drawn.
+        """
+        if self._pointer_position is None:
+            return []
+        cursor = np.asarray(self._pointer_position, dtype=float)
         renderer = self.plotter.renderer
-        renderer.SetWorldPoint(*point, 1.0)
-        renderer.WorldToDisplay()
-        display = renderer.GetDisplayPoint()
-        return np.asarray(display[:2], dtype=float), float(display[2])
+        camera = renderer.GetActiveCamera()
+        vtk_matrix = camera.GetCompositeProjectionTransformMatrix(
+            renderer.GetTiledAspectRatio(), -1.0, 1.0,
+        )
+        matrix = np.asarray([
+            [vtk_matrix.GetElement(row, column) for column in range(4)]
+            for row in range(4)
+        ])
 
-    def _hover_candidates_near_cursor(self) -> list[tuple[str, str]]:
-        x, y = self.plotter.iren.get_event_position()
-        cursor = np.asarray((x, y), dtype=float)
-        candidates: list[tuple[float, float, tuple[str, str]]] = []
-        tolerance = 12.0
+        node_names = tuple(self._model.nodes)
+        node_positions = np.asarray([
+            (
+                self._model.nodes[name].x,
+                self._model.nodes[name].y,
+                self._model.nodes[name].z,
+            )
+            for name in node_names
+        ], dtype=float).reshape((-1, 3))
+        screen_positions, within_depth = project_world_to_screen(
+            node_positions, matrix, self.plotter.width(), self.plotter.height(),
+            clip_to_viewport=False,
+        )
+        width = float(self.plotter.width())
+        height = float(self.plotter.height())
+        on_screen = (
+            within_depth
+            & (screen_positions[:, 0] >= 0.0)
+            & (screen_positions[:, 0] <= width)
+            & (screen_positions[:, 1] >= 0.0)
+            & (screen_positions[:, 1] <= height)
+        )
+        projected_nodes = {
+            name: (screen_positions[index], bool(within_depth[index]), bool(on_screen[index]))
+            for index, name in enumerate(node_names)
+        }
 
-        for name, node in self._model.nodes.items():
-            display, depth = self._world_to_display((node.x, node.y, node.z))
+        candidates: list[tuple[float, tuple[str, str]]] = []
+        node_tolerance = 12.0
+        member_tolerance = 10.0
+        for name in node_names:
+            display, _within_depth, visible = projected_nodes[name]
+            if not visible:
+                continue
             distance = float(np.linalg.norm(cursor - display))
-            if distance <= tolerance:
-                candidates.append((distance, depth, ("node", name)))
+            if distance <= node_tolerance:
+                candidates.append((distance, ("node", name)))
 
         for kind, elements in (("bar", self._model.bars), ("rigid_bar", self._model.rigid_bars)):
             for name, element in elements.items():
-                start_node = self._model.nodes.get(element.start_node)
-                end_node = self._model.nodes.get(element.end_node)
-                if start_node is None or end_node is None:
+                start_projection = projected_nodes.get(element.start_node)
+                end_projection = projected_nodes.get(element.end_node)
+                if start_projection is None or end_projection is None:
                     continue
-                start, start_depth = self._world_to_display(
-                    (start_node.x, start_node.y, start_node.z),
-                )
-                end, end_depth = self._world_to_display(
-                    (end_node.x, end_node.y, end_node.z),
-                )
+                start, start_within_depth, _start_on_screen = start_projection
+                end, end_within_depth, _end_on_screen = end_projection
+                if not start_within_depth or not end_within_depth:
+                    continue
                 distance = self._distance_to_segment_2d(cursor, start, end)
-                if distance <= tolerance:
-                    candidates.append((distance, (start_depth + end_depth) / 2.0, (kind, name)))
+                if distance <= member_tolerance:
+                    candidates.append((distance, (kind, name)))
+        candidates.sort(key=lambda item: item[0])
+        return [candidate for _distance, candidate in candidates]
 
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        ordered = [candidate for _distance, _depth, candidate in candidates]
-        picked = self._pick()
-        if picked is not None and picked not in ordered:
-            ordered.insert(0, picked)
-        elif picked in ordered:
-            ordered.remove(picked)
-            ordered.insert(0, picked)
-        return ordered
+    def _hover_candidates_near_cursor(self) -> list[tuple[str, str]]:
+        return self._pick_candidates()
 
     def _cycle_hover(self) -> None:
         if self._camera_interacting:
@@ -533,12 +581,27 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def eventFilter(self, watched, event) -> bool:
-        if watched is self.plotter and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Tab:
-                self._cycle_hover()
-                event.accept()
-                return True
+        if watched is self.plotter and event.type() == QEvent.Type.Resize:
+            self._schedule_navigation_viewport_sync()
+        if watched is self.plotter and event.type() in (
+            QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
+        ):
+            point = event.position()
+            self._pointer_position = point.x(), point.y()
+            self._orientation_widget.set_qt_pointer_position(point.x(), point.y())
+        if (
+            watched is self.plotter
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Tab
+        ):
+            self._cycle_hover()
+            event.accept()
+            return True
         return super().eventFilter(watched, event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._schedule_navigation_viewport_sync()
 
     def _on_mouse_move(self, *_args) -> None:
         if self._camera_interacting:
@@ -727,7 +790,7 @@ class StructureScene(QWidget):
         self._apply_representation_visibility()
         if self._analysis_visible and self._active_result_type.startswith("Deformação"):
             self.render_model(self._model)
-        self._configure_picker()
+        self._configure_solid_picker()
         self._sync_highlights()
         self.plotter.render()
 
@@ -1103,7 +1166,7 @@ class StructureScene(QWidget):
         self._result_actors = []
         self._result_label_positions = np.empty((0, 3), dtype=float)
         self._result_labels = ()
-        self._pick_sources.clear()
+        self._solid_picker.InitializePickList()
         self._highlight_actors.clear()
         self._member_batch = None
         self._node_batch = None
@@ -1118,6 +1181,19 @@ class StructureScene(QWidget):
             self._orientation_widget.resize()
             self._orientation_widget.sync_from_camera()
             self._update_zoom_dependent_sizes()
+            self._schedule_navigation_viewport_sync()
+
+    def _schedule_navigation_viewport_sync(self) -> None:
+        """Wait for QtInteractor.resizeGL before sizing the VTK overlay."""
+        if not self._navigation_viewport_timer.isActive():
+            self._navigation_viewport_timer.start(0)
+
+    def _sync_navigation_viewport(self) -> None:
+        if not self.plotter.isVisible():
+            return
+        self._orientation_widget.resize()
+        self._orientation_widget.sync_from_camera()
+        self.plotter.render()
 
     def _node_marker_radius(self) -> float:
         return self._marker_radius_current

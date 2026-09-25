@@ -18,7 +18,15 @@ class NavigationWidget:
 class CameraCubeWidget:
     """A generic cube that follows the orientation of the main camera."""
 
-    _VIEWPORT = (0.0, 0.045, 0.128, 0.183)
+    # The navigation controls use fixed Qt dimensions. Keep the cube's visual
+    # footprint in the same logical-pixel system instead of scaling it with
+    # the full viewport: a normalized viewport gets much smaller and drifts
+    # into the controls when the frameless window is restored.
+    _VIEWPORT_WIDTH = 176.0
+    _VIEWPORT_HEIGHT = 110.0
+    _VIEWPORT_LEFT = 34.0
+    _VIEWPORT_BOTTOM = 46.0
+    _FALLBACK_VIEWPORT = (0.0, 0.045, 0.128, 0.183)
     _CUBE_HALF_SIZE = 1.0
     _EDGE_CHAMFER = 0.22
     _CORNER_CHAMFER = 0.80
@@ -32,15 +40,18 @@ class CameraCubeWidget:
         self._renderer = vtk.vtkRenderer()
         self._renderer.SetLayer(1)
         self._renderer.SetInteractive(False)
-        self._renderer.SetBackground(0.0, 0.0, 0.0)
-        self._renderer.SetBackgroundAlpha(0.0)
-        if hasattr(self._renderer, "EraseOff"):
-            self._renderer.EraseOff()
+        # Layer 1 is an opaque viewport. Besides placing the cube above the
+        # scene, clearing its depth buffer prevents model geometry from being
+        # composited through the cube itself.
+        self._renderer.SetBackground(1.0, 1.0, 1.0)
+        self._renderer.SetBackgroundAlpha(1.0)
+        self._renderer.SetErase(True)
+        self._renderer.SetPreserveDepthBuffer(False)
 
         if self._render_window.GetNumberOfLayers() < 2:
             self._render_window.SetNumberOfLayers(2)
         self._render_window.AddRenderer(self._renderer)
-        self._renderer.SetViewport(*self._VIEWPORT)
+        self._set_viewport()
 
         overlay_camera = vtk.vtkCamera()
         overlay_camera.SetPosition(0.12, 0.0, 8.0)
@@ -57,6 +68,7 @@ class CameraCubeWidget:
         self._hover_cell_id: int | None = None
         self._face_picker = vtk.vtkCellPicker()
         self._face_picker.SetTolerance(0.01)
+        self._qt_pointer_position: tuple[float, float] | None = None
         self._camera_animation = QTimer()
         self._camera_animation.setInterval(16)
         self._camera_animation.timeout.connect(self._animate_camera)
@@ -69,8 +81,36 @@ class CameraCubeWidget:
         self.sync_from_camera()
 
     def resize(self) -> None:
-        self._renderer.SetViewport(*self._VIEWPORT)
+        self._set_viewport()
         self._renderer.ResetCameraClippingRange()
+
+    @classmethod
+    def _viewport_for_render_size(
+        cls, render_size: tuple[int, int], device_pixel_ratio: float,
+    ) -> tuple[float, float, float, float]:
+        """Return a lower-left viewport with a fixed logical-pixel footprint."""
+        render_width, render_height = render_size
+        if render_width <= 0 or render_height <= 0:
+            return 0.0, 0.0, 1.0, 1.0
+        scale = max(float(device_pixel_ratio), 1.0)
+        width = min(cls._VIEWPORT_WIDTH * scale, float(render_width))
+        height = min(cls._VIEWPORT_HEIGHT * scale, float(render_height))
+        left = min(cls._VIEWPORT_LEFT * scale, float(render_width) - width)
+        bottom = min(cls._VIEWPORT_BOTTOM * scale, float(render_height) - height)
+        return (
+            left / float(render_width),
+            bottom / float(render_height),
+            (left + width) / float(render_width),
+            (bottom + height) / float(render_height),
+        )
+
+    def _set_viewport(self) -> None:
+        if not self.plotter.isVisible():
+            self._renderer.SetViewport(*self._FALLBACK_VIEWPORT)
+            return
+        self._renderer.SetViewport(*self._viewport_for_render_size(
+            tuple(self._render_window.GetSize()), self.plotter.devicePixelRatioF(),
+        ))
 
     def _build_cube(self) -> None:
         self._bevel_hull = self._create_beveled_cube()
@@ -129,13 +169,33 @@ class CameraCubeWidget:
         self._interactor.AddObserver("MouseMoveEvent", self._on_mouse_move, 1.0)
         self._interactor.AddObserver("LeftButtonPressEvent", self._on_left_press, 1.0)
 
+    def set_qt_pointer_position(self, x: float, y: float) -> None:
+        """Store the source Qt coordinates before VTK applies its DPI mapping."""
+        self._qt_pointer_position = float(x), float(y)
+
     def is_pointer_over(self, x: int, y: int) -> bool:
         """Return whether the pointer is over a clickable cube face."""
-        return self._pick_face_normal(x, y) is not None
+        return self._pick_face_normal(*self._picker_position(x, y)) is not None
 
     def _on_mouse_move(self, caller, _event) -> None:
         x, y = caller.GetEventPosition()
-        self._update_hover(x, y)
+        self._update_hover(*self._picker_position(x, y))
+
+    def _picker_position(self, vtk_x: int, vtk_y: int) -> tuple[float, float]:
+        """Use the Qt position normalized to the current VTK render buffer."""
+        if self._qt_pointer_position is None:
+            return float(vtk_x), float(vtk_y)
+        widget_width, widget_height = self.plotter.width(), self.plotter.height()
+        render_width, render_height = self._render_window.GetSize()
+        if widget_width <= 1 or widget_height <= 1:
+            return float(vtk_x), float(vtk_y)
+        pointer_x = min(max(self._qt_pointer_position[0], 0.0), float(widget_width - 1))
+        pointer_y = min(max(self._qt_pointer_position[1], 0.0), float(widget_height - 1))
+        return (
+            pointer_x * float(max(render_width - 1, 0)) / float(widget_width - 1),
+            (float(widget_height - 1) - pointer_y)
+            * float(max(render_height - 1, 0)) / float(widget_height - 1),
+        )
 
     def _set_navigation_style_enabled(self, enabled: bool) -> None:
         style = self._interactor.GetInteractorStyle()
@@ -240,7 +300,7 @@ class CameraCubeWidget:
 
     def _on_left_press(self, caller, _event) -> None:
         x, y = caller.GetEventPosition()
-        normal = self._pick_face_normal(x, y)
+        normal = self._pick_face_normal(*self._picker_position(x, y))
         if normal is None:
             return
         self._camera_animation.stop()

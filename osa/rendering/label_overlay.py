@@ -21,8 +21,16 @@ def project_world_to_screen(
     matrix: np.ndarray,
     width: int,
     height: int,
+    *,
+    clip_to_viewport: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Project 3D points to Qt coordinates with a vectorized clip transform."""
+    """Project 3D points to Qt coordinates with a vectorized clip transform.
+
+    With ``clip_to_viewport=False``, points outside the left/right/top/bottom
+    bounds remain valid as long as they are inside the camera's depth range.
+    This is useful for line segments that cross the viewport while both of
+    their endpoints are off-screen.
+    """
     if not len(positions):
         return np.empty((0, 2), dtype=float), np.empty(0, dtype=bool)
     homogeneous = np.column_stack((np.asarray(positions, dtype=float), np.ones(len(positions))))
@@ -31,7 +39,9 @@ def project_world_to_screen(
     valid_w = w > 1e-12
     safe_w = np.where(valid_w, w, 1.0)
     normalized = clip[:, :3] / safe_w[:, None]
-    visible = valid_w & np.all(np.abs(normalized) <= 1.0, axis=1)
+    visible = valid_w & (np.abs(normalized[:, 2]) <= 1.0)
+    if clip_to_viewport:
+        visible &= np.all(np.abs(normalized[:, :2]) <= 1.0, axis=1)
     screen = np.empty((len(positions), 2), dtype=float)
     screen[:, 0] = (normalized[:, 0] + 1.0) * float(width) / 2.0
     screen[:, 1] = (1.0 - normalized[:, 1]) * float(height) / 2.0
