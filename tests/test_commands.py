@@ -63,6 +63,156 @@ def test_member_names_are_case_insensitive():
     assert model.bars["B1"].start_node == "N1"
 
 
+def test_split_member_creates_equally_spaced_nodes_and_inherits_member_properties():
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 6, 3, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_member_rotation("B1", 35)
+    model.update_member_releases("B1", (True, False, True, False, True, False) * 2)
+    model.update_member_solid_face_offsets("B1", (0.2, -0.3))
+
+    commands.start_member_split("B1")
+    invalid = commands.submit("2.0")
+    assert invalid.level == "error"
+    assert commands.pending == "split_parts"
+
+    response = commands.submit("3")
+
+    assert response.level == "success"
+    assert response.model_changed
+    assert response.split_member_names == ("B1", "B2", "B3")
+    assert tuple(model.nodes) == ("N1", "N2", "N3", "N4")
+    assert (model.nodes["N3"].x, model.nodes["N3"].y) == pytest.approx((2.0, 1.0))
+    assert (model.nodes["N4"].x, model.nodes["N4"].y) == pytest.approx((4.0, 2.0))
+    assert tuple((bar.start_node, bar.end_node) for bar in model.bars.values()) == (
+        ("N1", "N3"), ("N3", "N4"), ("N4", "N2"),
+    )
+    assert all(model.bars[name].rotation == 35 for name in response.split_member_names)
+    assert model.bars["B1"].releases == (True, False, True, False, True, False) + (False,) * 6
+    assert model.bars["B2"].releases == (False,) * 12
+    assert model.bars["B3"].releases == (False,) * 6 + (True, False, True, False, True, False)
+    assert model.bars["B1"].solid_face_offsets == (0.2, 0.0)
+    assert model.bars["B2"].solid_face_offsets == (0.0, 0.0)
+    assert model.bars["B3"].solid_face_offsets == (0.0, -0.3)
+
+
+@pytest.mark.parametrize("value", ("1", "0", "-2", "2.0", "duas"))
+def test_split_member_accepts_only_integer_parts_greater_than_one(value):
+    model, commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    commands.start_member_split("B1")
+    response = commands.submit(value)
+
+    assert response.level == "error"
+    assert "inteiro maior que 1" in response.message
+    assert commands.pending == "split_parts"
+    assert tuple(model.bars) == ("B1",)
+
+
+def test_reverse_member_swaps_its_endpoints_without_changing_its_identity():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    member = ModelService(model).reverse_member("B1")
+
+    assert member.name == "B1"
+    assert model.bars["B1"].start_node == "N2"
+    assert model.bars["B1"].end_node == "N1"
+
+
+def test_join_members_merges_collinear_members_and_removes_the_interface_node():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 2, 0, 0)
+    model.add_node("N3", 5, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N2", "N3")
+    model.update_member_rotation("B1", 30)
+
+    joined = ModelService(model).join_members("B1", "B2")
+
+    assert joined.name == "B1"
+    assert tuple(model.bars) == ("B1",)
+    assert tuple(model.nodes) == ("N1", "N3")
+    assert model.bars["B1"].start_node == "N1"
+    assert model.bars["B1"].end_node == "N3"
+    assert model.bars["B1"].rotation == 30
+
+
+def test_join_members_rejects_members_that_are_not_collinear():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 2, 0, 0)
+    model.add_node("N3", 2, 2, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N2", "N3")
+
+    with pytest.raises(ValueError, match="colineares"):
+        ModelService(model).join_members("B1", "B2")
+
+    assert tuple(model.bars) == ("B1", "B2")
+    assert tuple(model.nodes) == ("N1", "N2", "N3")
+
+
+def test_copy_member_properties_copies_only_the_selected_member_fields():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 2, 0, 0)
+    model.add_node("N3", 4, 0, 0)
+    model.add_node("N4", 6, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N3", "N4")
+    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_section("B1", "W Laminado")
+    model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
+    model.update_member_color("B1", "#0969da")
+    model.update_member_rotation("B1", 45)
+    model.update_member_solid_face_offsets("B1", (0.15, 0.25))
+    model.update_member_releases("B1", (True, False, True, False, True, False) * 2)
+    original_target_nodes = (model.bars["B2"].start_node, model.bars["B2"].end_node)
+
+    copied = ModelService(model).copy_member_properties(
+        "B1",
+        "B2",
+        frozenset({"color", "material", "section", "rotation", "offsets", "releases"}),
+    )
+
+    source = model.bars["B1"]
+    assert copied.material == source.material
+    assert copied.material_values == source.material_values
+    assert copied.section == source.section
+    assert copied.profile == source.profile
+    assert copied.section_geometry == source.section_geometry
+    assert copied.color == source.color
+    assert copied.rotation == source.rotation
+    assert copied.solid_face_offsets == source.solid_face_offsets
+    assert copied.releases == source.releases
+    assert (copied.start_node, copied.end_node) == original_target_nodes
+
+
+def test_copy_member_properties_keeps_unselected_fields_on_the_destination():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 2, 0, 0)
+    model.add_node("N3", 4, 0, 0)
+    model.add_node("N4", 6, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N3", "N4")
+    model.update_member_color("B1", "#0969da")
+    model.update_member_rotation("B2", 135)
+
+    copied = ModelService(model).copy_member_properties("B1", "B2", frozenset({"color"}))
+
+    assert copied.color == "#0969da"
+    assert copied.rotation == 135
+
+
 def test_member_command_accepts_nodes_on_the_same_line_and_reports_missing_nodes():
     model, commands = session()
     model.add_node("N1", 0, 0, 0)

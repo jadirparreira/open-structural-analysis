@@ -262,6 +262,81 @@ class FloatingPalette(QFrame):
         self.raise_()
 
 
+class MemberPropertyCopyPanel(QFrame):
+    """Compact property picker anchored below the copy-members button."""
+
+    _options = (
+        ("color", "Cor"),
+        ("material", "Material"),
+        ("section", "Seção"),
+        ("rotation", "Rotação"),
+        ("offsets", "Deslocamento"),
+        ("releases", "Vinculações"),
+    )
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.window = window
+        self._button: QToolButton | None = None
+        self.setObjectName("memberPropertyCopyPanel")
+        self.setStyleSheet(
+            "QFrame#memberPropertyCopyPanel { background: rgba(246, 248, 250, 245); "
+            "border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QLabel#memberPropertyCopyTitle { color: #57606a; background: transparent; border: 0; "
+            "font-size: 11px; font-weight: 600; padding: 0; }"
+            "QCheckBox { color: #24292f; background: transparent; border: 0; spacing: 6px; "
+            "font-size: 11px; min-height: 22px; }"
+            "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+            "border-radius: 5px; background: #ffffff; }"
+            "QCheckBox::indicator:hover { border-color: #0969da; }"
+            "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(3)
+        title = QLabel("Copiar propriedades do membro", self)
+        title.setObjectName("memberPropertyCopyTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(title)
+        choices = QGridLayout()
+        choices.setContentsMargins(0, 0, 0, 0)
+        choices.setHorizontalSpacing(12)
+        choices.setVerticalSpacing(0)
+        self.checkboxes: dict[str, QCheckBox] = {}
+        for index, (key, label) in enumerate(self._options):
+            checkbox = QCheckBox(label, self)
+            checkbox.setAccessibleName(f"Copiar {label.casefold()}")
+            checkbox.setChecked(True)
+            self.checkboxes[key] = checkbox
+            choices.addWidget(checkbox, index // 2, index % 2)
+        layout.addLayout(choices)
+        self.adjustSize()
+        self.hide()
+
+    def begin(self, button: QToolButton) -> None:
+        self._button = button
+        for checkbox in self.checkboxes.values():
+            checkbox.setChecked(True)
+        self.adjustSize()
+        self.reposition()
+        self.show()
+        self.raise_()
+
+    def selected_properties(self) -> frozenset[str]:
+        return frozenset(
+            key for key, checkbox in self.checkboxes.items() if checkbox.isChecked()
+        )
+
+    def reposition(self) -> None:
+        if self._button is None:
+            return
+        position = self._button.mapTo(
+            self.window,
+            QPoint((self._button.width() - self.width()) // 2, self._button.height() + 10),
+        )
+        self.move(position)
+
+
 class TopIconPalette(QFrame):
     """Small floating icon palette centered above the 3D viewport."""
 
@@ -313,13 +388,6 @@ class TopIconPalette(QFrame):
             )
             layout.addWidget(button)
 
-        separator = QFrame(self)
-        separator.setFrameShape(QFrame.Shape.VLine)
-        separator.setFrameShadow(QFrame.Shadow.Plain)
-        separator.setFixedHeight(18)
-        separator.setStyleSheet("QFrame { color: #d0d7de; }")
-        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
-
         snap_button = QToolButton(self)
         snap_button.setFixedSize(24, 24)
         snap_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "magnet.svg")))
@@ -339,6 +407,89 @@ class TopIconPalette(QFrame):
         )
         layout.addWidget(snap_button)
         self.snap_button = snap_button
+
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        split_member_button = QToolButton(self)
+        split_member_button.setFixedSize(24, 24)
+        split_member_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "split-member.svg"))
+        )
+        split_member_button.setIconSize(QSize(19, 19))
+        split_member_button.setToolTip("Dividir membro")
+        split_member_button.setProperty("paletteTooltip", "Dividir membro")
+        split_member_button.setAccessibleName("Dividir membro")
+        split_member_button.clicked.connect(window.start_split_member)
+        split_member_button.installEventFilter(self)
+        split_member_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(split_member_button)
+        self.split_member_button = split_member_button
+
+        reverse_member_button = QToolButton(self)
+        reverse_member_button.setFixedSize(24, 24)
+        reverse_member_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "reverse-member.svg"))
+        )
+        reverse_member_button.setIconSize(QSize(19, 19))
+        reverse_member_button.setToolTip("Inverter membro")
+        reverse_member_button.setProperty("paletteTooltip", "Inverter membro")
+        reverse_member_button.setAccessibleName("Inverter membro")
+        reverse_member_button.clicked.connect(window.start_reverse_member)
+        reverse_member_button.installEventFilter(self)
+        reverse_member_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(reverse_member_button)
+        self.reverse_member_button = reverse_member_button
+
+        join_members_button = QToolButton(self)
+        join_members_button.setFixedSize(24, 24)
+        join_members_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "join-member-link.svg"))
+        )
+        join_members_button.setIconSize(QSize(19, 19))
+        join_members_button.setToolTip("Unir membros")
+        join_members_button.setProperty("paletteTooltip", "Unir membros")
+        join_members_button.setAccessibleName("Unir membros")
+        join_members_button.clicked.connect(window.start_join_members)
+        join_members_button.installEventFilter(self)
+        join_members_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.insertWidget(layout.indexOf(reverse_member_button), join_members_button)
+        self.join_members_button = join_members_button
+
+        copy_properties_button = QToolButton(self)
+        copy_properties_button.setFixedSize(24, 24)
+        copy_properties_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "copy-member-properties.svg"))
+        )
+        copy_properties_button.setIconSize(QSize(19, 19))
+        copy_properties_button.setToolTip("Copiar propriedades")
+        copy_properties_button.setProperty("paletteTooltip", "Copiar propriedades")
+        copy_properties_button.setAccessibleName("Copiar propriedades")
+        copy_properties_button.clicked.connect(window.start_copy_member_properties)
+        copy_properties_button.installEventFilter(self)
+        copy_properties_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(copy_properties_button)
+        self.copy_properties_button = copy_properties_button
         self.adjustSize()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from math import atan, degrees
 
@@ -59,6 +60,7 @@ class CommandResponse:
     node_moments: tuple[NodeMoment, ...] = ()
     selfweights: tuple[SelfWeight, ...] = ()
     remove_selfweight: bool = False
+    split_member_names: tuple[str, ...] = ()
 
 
 class CommandSession:
@@ -70,6 +72,7 @@ class CommandSession:
         self.load_reference: str = "global"
         self._pending_selfweights: tuple[SelfWeight, ...] = ()
         self.active_load_case: str | None = None
+        self.split_member_name: str | None = None
 
     def set_active_load_case(self, name: str | None) -> None:
         self.active_load_case = name or None
@@ -80,6 +83,16 @@ class CommandSession:
         self.load_direction = None
         self.load_reference = "global"
         self._pending_selfweights = ()
+        self.split_member_name = None
+
+    def start_member_split(self, name: str) -> None:
+        """Start the numeric prompt used by the split-member tool."""
+        resolved = self.service.resolve_member_name(name)
+        if resolved is None:
+            raise ValueError(f"Membro '{name}' não encontrado.")
+        self.cancel()
+        self.pending = "split_parts"
+        self.split_member_name = resolved
 
     def submit(self, text: str) -> CommandResponse:
         value = text.strip()
@@ -92,6 +105,33 @@ class CommandSession:
         if self.pending == "rigid_bar":
             self.pending = None
             return self._create_rigid_bar(value, value)
+        if self.pending == "split_parts":
+            if not re.fullmatch(r"[0-9]+", value):
+                return CommandResponse(
+                    value,
+                    "Informe apenas um número inteiro maior que 1.",
+                    "error",
+                )
+            parts = int(value)
+            if parts <= 1:
+                return CommandResponse(
+                    value,
+                    "Informe apenas um número inteiro maior que 1.",
+                    "error",
+                )
+            member_name = self.split_member_name
+            try:
+                _node_names, member_names = self.service.split_member(member_name or "", parts)
+            except ValueError as error:
+                return CommandResponse(value, str(error), "error")
+            self.cancel()
+            return CommandResponse(
+                value,
+                f"Membro {member_name} dividido em {parts} partes.",
+                "success",
+                True,
+                split_member_names=member_names,
+            )
         if self.pending == "load_target":
             try:
                 self.load_target = self._resolve_load_targets(value)

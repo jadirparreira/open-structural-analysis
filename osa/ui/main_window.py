@@ -9,7 +9,14 @@ from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import ActionGroupDialog, CombinationsDialog, ProgramSettingsDialog, SettingsDialog
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
-from .palettes import ActionTopPalette, AnalysisTopPalette, FloatingPalette, PaletteTooltip, TopIconPalette
+from .palettes import (
+    ActionTopPalette,
+    AnalysisTopPalette,
+    FloatingPalette,
+    MemberPropertyCopyPanel,
+    PaletteTooltip,
+    TopIconPalette,
+)
 from .property_panel import PropertyPanel
 from .section_panel import (
     ILaminadoSectionPanel,
@@ -41,6 +48,8 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self._command_mode: str | None = None
         self._member_placement_start: tuple[float, float, float] | None = None
+        self._join_member_first: str | None = None
+        self._copy_properties_reference: str | None = None
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("Open Structural Analysis")
@@ -69,6 +78,7 @@ class MainWindow(QMainWindow):
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
         self.top_icon_palette.reposition()
+        self.member_property_copy_panel = MemberPropertyCopyPanel(self)
         self.selected_action_name: str | None = None
         self.action_top_palette = ActionTopPalette(self)
         self.refresh_action_palette()
@@ -265,6 +275,8 @@ class MainWindow(QMainWindow):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
             self.top_icon_palette.reposition()
+        if hasattr(self, "member_property_copy_panel") and self.member_property_copy_panel.isVisible():
+            self.member_property_copy_panel.reposition()
         if hasattr(self, "action_top_palette"):
             self.action_top_palette.reposition()
         if hasattr(self, "analysis_top_palette"):
@@ -497,9 +509,167 @@ class MainWindow(QMainWindow):
         )
         self.command_bar.input.setFocus()
 
+    def start_split_member(self) -> None:
+        """Start the split-member flow from the geometry toolbar."""
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        if self.selected is not None and self.selected[0] == "bar":
+            self._begin_member_split(self.selected[1])
+            return
+
+        self.command_session.cancel()
+        self._command_mode = "split_member_selection"
+        self.history.append(
+            "> <b>Dividir membro</b> "
+            "<span style='color:#57606a'>(Selecione um membro)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _begin_member_split(self, member_name: str) -> None:
+        try:
+            self.command_session.start_member_split(member_name)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Dividir membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._command_mode = "split_parts"
+        self.history.append(
+            f"> <b>Dividir membro</b> <span style='color:#57606a'>"
+            f"(Informe em quantas partes o membro {escape(member_name)} será dividido; inteiro maior que 1)</span>"
+        )
+        self.command_bar.input.setFocus()
+
+    def start_reverse_member(self) -> None:
+        """Reverse the selected member or enter graphical member-selection mode."""
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        if self.selected is not None and self.selected[0] == "bar":
+            self._reverse_member(self.selected[1])
+            return
+
+        self.command_session.cancel()
+        self._command_mode = "reverse_member_selection"
+        self.history.append(
+            "> <b>Inverter membro</b> "
+            "<span style='color:#57606a'>(Selecione o membro que deseja inverter)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _reverse_member(self, member_name: str) -> None:
+        self.command_session.cancel()
+        self._command_mode = None
+        try:
+            self.model_service.reverse_member(member_name)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Inverter membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self.history.append(
+            f"> <b>Inverter membro</b> <span style='color:#57606a'>"
+            f"(Membro {escape(member_name)} invertido)</span>"
+        )
+        self.refresh_selected_property_panel(self.palette.active_group)
+        self.refresh_scene()
+
+    def start_join_members(self) -> None:
+        """Start the graphical two-member selection flow for joining members."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        self._join_member_first = (
+            self.selected[1]
+            if self.selected is not None and self.selected[0] == "bar"
+            else None
+        )
+        self._command_mode = "join_member_selection"
+        if self._join_member_first is None:
+            message = "Selecione o primeiro membro"
+        else:
+            message = "Selecione o segundo membro"
+        self.history.append(
+            "> <b>Unir membros</b> "
+            f"<span style='color:#57606a'>({message})</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _join_members(self, first_name: str, second_name: str) -> None:
+        try:
+            joined = self.model_service.join_members(first_name, second_name)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Unir membros</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._join_member_first = None
+        self._command_mode = None
+        self.history.append(
+            f"> <b>Unir membros</b> <span style='color:#57606a'>"
+            f"(Membros unidos em {escape(joined.name)})</span>"
+        )
+        self.clear_selection()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+
+    def start_copy_member_properties(self) -> None:
+        """Choose a reference member, options, then a destination member."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        self._copy_properties_reference = (
+            self.selected[1]
+            if self.selected is not None and self.selected[0] == "bar"
+            else None
+        )
+        self._command_mode = "copy_member_properties_selection"
+        self.member_property_copy_panel.begin(self.top_icon_palette.copy_properties_button)
+        message = (
+            "Selecione o membro de destino"
+            if self._copy_properties_reference is not None
+            else "Selecione o membro de referência"
+        )
+        self.history.append(
+            "> <b>Copiar propriedades</b> "
+            f"<span style='color:#57606a'>({message})</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _copy_member_properties(self, source_name: str, target_name: str) -> None:
+        properties = self.member_property_copy_panel.selected_properties()
+        try:
+            copied = self.model_service.copy_member_properties(
+                source_name, target_name, properties,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Copiar propriedades</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        if "section" in properties:
+            if copied.profile:
+                self.section_profiles[target_name] = copied.profile
+            else:
+                self.section_profiles.pop(target_name, None)
+            if copied.section_geometry:
+                self.section_geometry[target_name] = copied.geometry_dict()
+            else:
+                self.section_geometry.pop(target_name, None)
+        self._copy_properties_reference = None
+        self._command_mode = None
+        self.member_property_copy_panel.hide()
+        self.history.append(
+            f"> <b>Copiar propriedades</b> <span style='color:#57606a'>"
+            f"(Propriedades copiadas para {escape(target_name)})</span>"
+        )
+        self.refresh_selected_property_panel(self.palette.active_group)
+        self.refresh_scene()
+
     def handle_command(self, command: str) -> None:
         had_model_geometry = bool(self.model.nodes)
         command_name = command.strip().casefold().split(maxsplit=1)[0] if command.strip() else ""
+        split_source = self.command_session.split_member_name
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
         if command.strip().casefold() in {"load", "selfweight"} and self.command_session.pending is None:
@@ -514,6 +684,10 @@ class MainWindow(QMainWindow):
         elif response.level == "error":
             self.history.append(
                 f"> <b>{escaped}</b> <span style='color:#8c959f'>({escape(response.message)})</span>"
+            )
+        elif response.split_member_names:
+            self.history.append(
+                f"> <b>{escaped}</b> <span style='color:#57606a'>({escape(response.message)})</span>"
             )
         else:
             self.history.append(f"> <b>{escaped}</b>")
@@ -554,6 +728,8 @@ class MainWindow(QMainWindow):
                 )
             self.refresh_scene()
         elif response.model_changed:
+            if split_source is not None and self.selected == ("bar", split_source):
+                self.clear_selection()
             self.refresh_action_palette()
             self.refresh_analysis_palette()
             self.refresh_scene(
@@ -684,6 +860,26 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
+        if self._command_mode in {
+            "split_member_selection", "split_parts", "reverse_member_selection", "join_member_selection",
+            "copy_member_properties_selection",
+        }:
+            labels = {
+                "reverse_member_selection": "Inverter membro",
+                "join_member_selection": "Unir membros",
+                "copy_member_properties_selection": "Copiar propriedades",
+            }
+            label = labels.get(self._command_mode, "Dividir membro")
+            self.command_session.cancel()
+            self._command_mode = None
+            self._join_member_first = None
+            self._copy_properties_reference = None
+            self.member_property_copy_panel.hide()
+            self.history.append(
+                f"> <b>{label}</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode not in {
             "member_placement", "node_placement", "rigid_bar_placement",
         }:
@@ -774,7 +970,62 @@ class MainWindow(QMainWindow):
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
         self.selected = kind, name
-        self.properties.show_for(kind, name, self.palette.active_group or "Geometria")
+        if self._command_mode == "split_member_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Dividir membro</b> "
+                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                )
+            else:
+                self._begin_member_split(name)
+        elif self._command_mode == "reverse_member_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Inverter membro</b> "
+                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                )
+            else:
+                self._reverse_member(name)
+        elif self._command_mode == "join_member_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Unir membros</b> "
+                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                )
+            elif self._join_member_first is None:
+                self._join_member_first = name
+                self.history.append(
+                    "> <b>Unir membros</b> "
+                    "<span style='color:#57606a'>(Selecione o segundo membro)</span>"
+                )
+            elif name == self._join_member_first:
+                self.history.append(
+                    "> <b>Unir membros</b> "
+                    "<span style='color:#8c959f'>(Selecione um segundo membro diferente)</span>"
+                )
+            else:
+                self._join_members(self._join_member_first, name)
+        elif self._command_mode == "copy_member_properties_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Copiar propriedades</b> "
+                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                )
+            elif self._copy_properties_reference is None:
+                self._copy_properties_reference = name
+                self.history.append(
+                    "> <b>Copiar propriedades</b> "
+                    "<span style='color:#57606a'>(Selecione o membro de destino)</span>"
+                )
+            elif name == self._copy_properties_reference:
+                self.history.append(
+                    "> <b>Copiar propriedades</b> "
+                    "<span style='color:#8c959f'>(Selecione um membro de destino diferente)</span>"
+                )
+            else:
+                self._copy_member_properties(self._copy_properties_reference, name)
+        if self.selected is not None:
+            self.properties.show_for(kind, name, self.palette.active_group or "Geometria")
 
     def refresh_selected_property_panel(self, section: str | None) -> None:
         """Rebuild the open inspector when the work section changes."""
@@ -832,6 +1083,10 @@ class MainWindow(QMainWindow):
         self.command_session.cancel()
         self._command_mode = None
         self._member_placement_start = None
+        self._join_member_first = None
+        self._copy_properties_reference = None
+        if hasattr(self, "member_property_copy_panel"):
+            self.member_property_copy_panel.hide()
         self.scene.set_member_placement_mode(False)
         self.clear_selection()
         self.current_path = None
@@ -866,6 +1121,9 @@ class MainWindow(QMainWindow):
                 self.command_session.cancel()
                 self._command_mode = None
                 self._member_placement_start = None
+                self._join_member_first = None
+                self._copy_properties_reference = None
+                self.member_property_copy_panel.hide()
                 self.scene.set_member_placement_mode(False)
                 self.clear_selection()
                 self.current_path = Path(path)

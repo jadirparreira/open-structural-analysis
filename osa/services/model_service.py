@@ -29,6 +29,51 @@ class ModelService:
     def create_member(self, start_node: str, end_node: str, *, name: str | None = None):
         return self.model.add_bar(name or self.next_member_name(), start_node, end_node)
 
+    def split_member(self, name: str, parts: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Divide a member into equally sized collinear members."""
+        if isinstance(parts, bool) or not isinstance(parts, int) or parts <= 1:
+            raise ValueError("Informe um número inteiro maior que 1.")
+        member = self.model.bars.get(name)
+        if member is None:
+            raise ValueError(f"Membro '{name}' não encontrado.")
+
+        node_names: list[str] = []
+        node_index = 1
+        while len(node_names) < parts - 1:
+            candidate = f"N{node_index}"
+            node_index += 1
+            if candidate not in self.model.nodes:
+                node_names.append(candidate)
+
+        member_names: list[str] = []
+        member_index = 1
+        while len(member_names) < parts:
+            candidate = f"B{member_index}"
+            member_index += 1
+            if candidate not in self.model.bars or candidate == name:
+                member_names.append(candidate)
+        return self.model.split_bar(name, tuple(node_names), tuple(member_names))
+
+    def reverse_member(self, name: str):
+        """Swap a member's start and end nodes without changing its identity."""
+        member = self.model.bars.get(name)
+        if member is None:
+            raise ValueError(f"Membro '{name}' não encontrado.")
+        return self.model.update_bar(name, member.end_node, member.start_node)
+
+    def join_members(self, first_name: str, second_name: str):
+        """Merge two adjacent collinear members into the first selected one."""
+        return self.model.join_bars(first_name, second_name)
+
+    def copy_member_properties(
+        self,
+        source_name: str,
+        target_name: str,
+        properties: frozenset[str],
+    ):
+        """Copy a selectable subset of properties between two members."""
+        return self.model.copy_bar_properties(source_name, target_name, properties)
+
     def create_rigid_bar(self, start_node: str, end_node: str):
         return self.model.add_rigid_bar(start_node, end_node)
 

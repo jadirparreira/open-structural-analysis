@@ -168,6 +168,269 @@ class StructuralModel:
 
     remove_member = remove_bar
 
+    def split_bar(
+        self,
+        name: str,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Replace one bar with collinear segments and intermediate nodes.
+
+        ``node_names`` contains only the new internal nodes.  The generated
+        members inherit the source member's analytical properties; releases
+        and solid-face offsets remain only at the original outer ends.
+        """
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        if len(member_names) != len(node_names) + 1:
+            raise ValueError("A divisão deve criar exatamente uma parte a mais que o número de nós internos.")
+        if not node_names or not member_names:
+            raise ValueError("Informe pelo menos duas partes para dividir o membro.")
+        if len(set(node_names)) != len(node_names) or any(node in self.nodes for node in node_names):
+            raise ValueError("Não foi possível gerar nomes únicos para os nós da divisão.")
+        if len(set(member_names)) != len(member_names):
+            raise ValueError("Não foi possível gerar nomes únicos para os membros da divisão.")
+        if any(member in self.bars and member != name for member in member_names):
+            raise ValueError("Não foi possível gerar nomes únicos para os membros da divisão.")
+
+        source = self.bars[name]
+        start = self.nodes[source.start_node]
+        end = self.nodes[source.end_node]
+        coordinates = tuple(
+            (
+                start.x + (end.x - start.x) * index / len(member_names),
+                start.y + (end.y - start.y) * index / len(member_names),
+                start.z + (end.z - start.z) * index / len(member_names),
+            )
+            for index in range(1, len(member_names))
+        )
+        for coordinate in coordinates:
+            self._ensure_unique_coordinates(coordinate)
+
+        chain = (source.start_node, *node_names, source.end_node)
+        pairs = tuple(frozenset((chain[index], chain[index + 1])) for index in range(len(member_names)))
+        existing_pairs = {
+            frozenset((member.start_node, member.end_node))
+            for member in self.bars.values()
+            if member.name != name
+        }
+        if any(pair in existing_pairs for pair in pairs):
+            raise DuplicateMemberError("A divisão criaria um membro que já existe.")
+
+        new_nodes = {
+            node_name: Node(node_name, *coordinate)
+            for node_name, coordinate in zip(node_names, coordinates)
+        }
+        new_bars = {}
+        for index, member_name in enumerate(member_names):
+            releases = source.releases
+            if index > 0:
+                releases = tuple(False for _ in source.releases[:6]) + releases[6:]
+            if index < len(member_names) - 1:
+                releases = releases[:6] + tuple(False for _ in source.releases[6:])
+            offsets = (
+                source.solid_face_offsets[0] if index == 0 else 0.0,
+                source.solid_face_offsets[1] if index == len(member_names) - 1 else 0.0,
+            )
+            new_bars[member_name] = replace(
+                source,
+                name=member_name,
+                start_node=chain[index],
+                end_node=chain[index + 1],
+                releases=releases,
+                solid_face_offsets=offsets,
+            )
+
+        member_actions = tuple(
+            action for action in self.actions.values()
+            if action.target == name and action.kind.startswith("member_")
+        )
+        del self.bars[name]
+        self.nodes.update(new_nodes)
+        self.bars.update(new_bars)
+
+        # Keep existing member actions valid after the source member is gone.
+        # A distributed action is copied to every resulting segment, preserving
+        # its intensity per unit length and load case.
+        for action in member_actions:
+            self.actions.pop(action.name, None)
+            for index, member_name in enumerate(member_names):
+                action_name = action.name if index == 0 else f"{action.name} ({member_name})"
+                suffix = 2
+                while action_name in self.actions:
+                    action_name = f"{action.name} ({member_name}, {suffix})"
+                    suffix += 1
+                self.actions[action_name] = replace(action, name=action_name, target=member_name)
+        self._touch()
+        return tuple(node_names), tuple(member_names)
+
+    def join_bars(self, first_name: str, second_name: str) -> Bar:
+        """Merge two contiguous, collinear bars and remove their shared node."""
+        if first_name == second_name:
+            raise ValueError("Selecione dois membros diferentes para unir.")
+        if first_name not in self.bars or second_name not in self.bars:
+            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+
+        first = self.bars[first_name]
+        second = self.bars[second_name]
+        shared_nodes = {first.start_node, first.end_node}.intersection(
+            (second.start_node, second.end_node),
+        )
+        if len(shared_nodes) != 1:
+            raise ValueError("Os membros devem compartilhar exatamente um nó para serem unidos.")
+        interface = next(iter(shared_nodes))
+        first_outer = first.end_node if first.start_node == interface else first.start_node
+        second_outer = second.end_node if second.start_node == interface else second.start_node
+
+        connected_members = [
+            member.name for member in self.bars.values()
+            if member.name not in {first_name, second_name}
+            and interface in (member.start_node, member.end_node)
+        ]
+        connected_rigids = [
+            rigid.name for rigid in self.rigid_bars.values()
+            if interface in (rigid.start_node, rigid.end_node)
+        ]
+        if connected_members or connected_rigids:
+            connections = ", ".join((*connected_members, *connected_rigids))
+            raise ValueError(
+                f"O nó de interface pertence a outros elementos: {connections}."
+            )
+        interface_node = self.nodes[interface]
+        if any(interface_node.supports):
+            raise ValueError("O nó de interface possui apoios e não pode ser removido.")
+        if any(
+            action.target == interface and action.kind.startswith("node_")
+            for action in self.actions.values()
+        ):
+            raise ValueError("O nó de interface possui ações nodais e não pode ser removido.")
+
+        first_point = self.nodes[first_outer]
+        second_point = self.nodes[second_outer]
+        vector_a = (
+            interface_node.x - first_point.x,
+            interface_node.y - first_point.y,
+            interface_node.z - first_point.z,
+        )
+        vector_b = (
+            second_point.x - interface_node.x,
+            second_point.y - interface_node.y,
+            second_point.z - interface_node.z,
+        )
+        length_a = math.sqrt(sum(value * value for value in vector_a))
+        length_b = math.sqrt(sum(value * value for value in vector_b))
+        if length_a <= self.coordinate_tolerance or length_b <= self.coordinate_tolerance:
+            raise ValueError("Os membros devem possuir comprimento positivo para serem unidos.")
+        cross = (
+            vector_a[1] * vector_b[2] - vector_a[2] * vector_b[1],
+            vector_a[2] * vector_b[0] - vector_a[0] * vector_b[2],
+            vector_a[0] * vector_b[1] - vector_a[1] * vector_b[0],
+        )
+        cross_length = math.sqrt(sum(value * value for value in cross))
+        direction = sum(a * b for a, b in zip(vector_a, vector_b)) / (length_a * length_b)
+        if (
+            cross_length > 1e-9 * length_a * length_b
+            or direction < 1.0 - 1e-9
+        ):
+            raise ValueError("Os membros devem ser colineares e seguir na mesma direção.")
+
+        if first.start_node == interface:
+            start_node, end_node = second_outer, first_outer
+        else:
+            start_node, end_node = first_outer, second_outer
+        pair = frozenset((start_node, end_node))
+        if any(
+            member.name not in {first_name, second_name}
+            and frozenset((member.start_node, member.end_node)) == pair
+            for member in self.bars.values()
+        ):
+            raise DuplicateMemberError("Já existe um membro entre as extremidades da união.")
+
+        def endpoint_data(member: Bar, node_name: str) -> tuple[tuple[bool, ...], float]:
+            if member.start_node == node_name:
+                return member.releases[:6], member.solid_face_offsets[0]
+            return member.releases[6:], member.solid_face_offsets[1]
+
+        start_member = first if start_node == first_outer else second
+        end_member = first if end_node == first_outer else second
+        start_releases, start_offset = endpoint_data(start_member, start_node)
+        end_releases, end_offset = endpoint_data(end_member, end_node)
+        joined = replace(
+            first,
+            start_node=start_node,
+            end_node=end_node,
+            releases=start_releases + end_releases,
+            solid_face_offsets=(start_offset, end_offset),
+        )
+
+        first_action_keys = {
+            (action.kind, action.components, action.load_case)
+            for action in self.actions.values()
+            if action.target == first_name and action.kind.startswith("member_")
+        }
+        for action_name, action in tuple(self.actions.items()):
+            if action.target != second_name or not action.kind.startswith("member_"):
+                continue
+            action_key = action.kind, action.components, action.load_case
+            if action_key in first_action_keys:
+                del self.actions[action_name]
+            else:
+                self.actions[action_name] = replace(action, target=first_name)
+                first_action_keys.add(action_key)
+
+        self.bars[first_name] = joined
+        del self.bars[second_name]
+        del self.nodes[interface]
+        self._touch()
+        return joined
+
+    join_members = join_bars
+
+    def copy_bar_properties(
+        self,
+        source_name: str,
+        target_name: str,
+        properties: frozenset[str],
+    ) -> Bar:
+        """Copy the selected member properties from one bar to another."""
+        available = {
+            "color", "material", "section", "rotation", "offsets", "releases",
+        }
+        if source_name == target_name:
+            raise ValueError("Selecione membros de referência e destino diferentes.")
+        if source_name not in self.bars or target_name not in self.bars:
+            raise EntityNotFoundError("O membro de referência ou destino não foi encontrado.")
+        if not properties:
+            raise ValueError("Selecione pelo menos uma propriedade para copiar.")
+        unknown = properties.difference(available)
+        if unknown:
+            raise ValueError("Foram solicitadas propriedades de membro desconhecidas.")
+
+        source = self.bars[source_name]
+        target = self.bars[target_name]
+        changes = {}
+        if "color" in properties:
+            changes["color"] = source.color
+        if "material" in properties:
+            changes["material"] = source.material
+            changes["material_values"] = source.material_values
+        if "section" in properties:
+            changes["section"] = source.section
+            changes["profile"] = source.profile
+            changes["section_geometry"] = source.section_geometry
+        if "rotation" in properties:
+            changes["rotation"] = source.rotation
+        if "offsets" in properties:
+            changes["solid_face_offsets"] = source.solid_face_offsets
+        if "releases" in properties:
+            changes["releases"] = source.releases
+        copied = replace(target, **changes)
+        self.bars[target_name] = copied
+        self._touch()
+        return copied
+
+    copy_member_properties = copy_bar_properties
+
     def _validate_rigid_bar_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
         if start_node.casefold() == end_node.casefold():
             raise ValueError("Uma barra rígida deve conectar dois nós diferentes.")
