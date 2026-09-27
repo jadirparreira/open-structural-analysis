@@ -400,6 +400,7 @@ class TopIconPalette(QFrame):
         self._tooltip = PaletteTooltip(window)
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
+                                        ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
@@ -420,6 +421,8 @@ class TopIconPalette(QFrame):
                 button.toggled.connect(window.scene.set_grid_visible)
             elif kind == "reference-axes":
                 button.toggled.connect(window.scene.set_reference_axes_visible)
+            elif kind == "nodes":
+                button.toggled.connect(window.scene.set_nodes_visible)
             elif kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
             elif kind == "solid":

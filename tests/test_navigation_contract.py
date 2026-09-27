@@ -380,6 +380,26 @@ def test_node_placement_has_only_coordinate_fields_and_emits_one_point(qt_app):
     assert scene._manual_edit_target is None
 
 
+def test_node_visibility_toggle_is_independent_from_node_identifiers(qt_app):
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    scene = StructureScene()
+    scene.render_model(model)
+
+    assert scene._node_actor.GetVisibility()
+    assert scene._labels_visibility["node"]
+
+    scene.set_nodes_visible(False)
+    assert not scene._node_actor.GetVisibility()
+    assert scene._labels_visibility["node"]
+
+    scene.render_model(model)
+    assert not scene._node_actor.GetVisibility()
+
+    scene.set_nodes_visible(True)
+    assert scene._node_actor.GetVisibility()
+
+
 def test_tab_reaches_angle_and_manual_mouse_motion_cancels_edit(qt_app):
     scene = StructureScene()
     scene.render_model(StructuralModel())

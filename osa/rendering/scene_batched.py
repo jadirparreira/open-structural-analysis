@@ -241,6 +241,7 @@ class StructureScene(QWidget):
         self._local_axes_visible = True
         self._grid_visible = True
         self._reference_axes_visible = True
+        self._nodes_visible = True
         self._labels_visibility = {"node": True, "bar": True}
         self._solid_members_visible = True
         self._member_releases_visible = True
@@ -470,6 +471,8 @@ class StructureScene(QWidget):
             self._node_actor = self._add_colored_mesh(
                 batch.geometry, "batch:nodes", smooth_shading=True,
             )
+            if self._node_actor is not None:
+                self._node_actor.SetVisibility(self._nodes_visible)
         if batch.supports.n_cells:
             self._support_actor = self.plotter.add_mesh(
                 batch.supports, color="#a8b0b9", edge_color="#6e7781",
@@ -1737,6 +1740,7 @@ class StructureScene(QWidget):
                 mesh, color=color, style="wireframe", line_width=2,
                 lighting=False, pickable=False, reset_camera=False, render=False,
             )
+            actor.SetVisibility(self._nodes_visible)
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
 
@@ -1866,6 +1870,17 @@ class StructureScene(QWidget):
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(visible)
         self._label_overlay.set_group_visible("reference-axis", visible)
+        self.plotter.render()
+
+    def set_nodes_visible(self, visible: bool) -> None:
+        """Show or hide the node markers without changing node identifiers."""
+        self._nodes_visible = bool(visible)
+        if self._node_actor is not None:
+            self._node_actor.SetVisibility(self._nodes_visible)
+        for slot, target in (("selected", self._selected), ("hover", self._hovered)):
+            actor = self._highlight_actors.get(slot)
+            if actor is not None and target is not None and target[0] == "node":
+                actor.SetVisibility(self._nodes_visible)
         self.plotter.render()
 
     def set_member_releases_visible(self, visible: bool) -> None:
