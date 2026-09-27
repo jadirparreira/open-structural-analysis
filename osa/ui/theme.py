@@ -41,12 +41,14 @@ QPushButton#secondaryButton {
 }
 QPushButton#secondaryButton:hover { background: #eaeef2; }
 QToolButton#palettePrimary {
-    border: 1px solid #d0d7de; border-radius: 6px; padding: 0;
-    background: #ffffff; color: #24292f;
+    border: 0; border-radius: 6px; padding: 0;
+    background: #f6f8fa; color: #24292f;
 }
 QToolButton#palettePrimary:hover { background: #eaeef2; }
 QToolButton#palettePrimary:checked,
-QToolButton#palettePrimary:checked:hover { background: #eaeef2; color: #24292f; }
+QToolButton#palettePrimary:checked:hover {
+    border: 1px solid #d0d7de; background: #eaeef2; color: #24292f;
+}
 QToolButton#paletteSecondary {
     border: 0; border-radius: 7px; padding: 0;
     background: transparent; color: #57606a;

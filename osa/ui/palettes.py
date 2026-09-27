@@ -119,7 +119,7 @@ class PaletteTooltip(QLabel):
 
 
 class FloatingPalette(QFrame):
-    """Compact accordion palette overlaid on the 3D viewport."""
+    """Compact session selector overlaid on the 3D viewport."""
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -131,6 +131,23 @@ class FloatingPalette(QFrame):
                 background: rgba(246, 248, 250, 248); border: 1px solid #d0d7de;
                 border-radius: 14px;
             }
+            QToolButton#palettePrimary {
+                border: 0; border-radius: 6px; padding: 0;
+                background: transparent; color: #24292f;
+            }
+            QToolButton#palettePrimary:hover { background: #eaeef2; }
+            QToolButton#palettePrimary:checked,
+            QToolButton#palettePrimary:checked:hover {
+                border: 0; background: transparent; color: #24292f;
+            }
+            QFrame#paletteSelectionIndicator {
+                background: #eaeef2; border: 1px solid #d0d7de; border-radius: 6px;
+            }
+            QToolButton#paletteUnavailable {
+                border: 0; border-radius: 6px; padding: 0;
+                background: transparent; color: #8c959f;
+            }
+            QToolButton#paletteUnavailable:hover { background: #eaeef2; }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(7, 7, 7, 7)
@@ -140,33 +157,33 @@ class FloatingPalette(QFrame):
         self._sections: dict[str, QWidget] = {}
         self._expanded: str | None = None
         self._tooltip = PaletteTooltip(window)
+        self._selection_indicator = QFrame(self)
+        self._selection_indicator.setObjectName("paletteSelectionIndicator")
+        self._selection_indicator.setFixedSize(38, 38)
+        self._selection_indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._selection_animation = QPropertyAnimation(self._selection_indicator, b"geometry", self)
+        self._selection_animation.setDuration(180)
+        self._selection_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._selection_indicator.hide()
         self._add_group(
             "Geometria",
             "geometry-vector-square.svg",
-            (
-                ("Configurar eixos", "axis-configuration.svg", window.toggle_axes_panel),
-                ("Adicionar nó", "node-circle.svg", window.start_node_placement),
-                ("Adicionar barra rígida", "rigid-member.svg", window.start_rigid_bar_placement),
-                ("Adicionar membro", "member-spline.svg", window.start_member_placement),
-            ),
+            (),
         )
         self._add_group(
             "Ações",
-            "actions-bookmark.svg",
-            (
-                ("Grupo de ações", "group-actions.svg", window.open_action_groups),
-                ("Adicionar ação", "add-action.svg", window.start_load_command),
-            ),
+            "actions-anvil.svg",
+            (),
         )
         self._add_group(
             "Análise",
-            "analysis-frame.svg",
-            (
-                ("Combinações", "add-combination.svg", window.open_combinations),
-                ("Processar", "process-analysis.svg", window.process_analysis),
-            ),
+            "analysis-cpu.svg",
+            (),
         )
-        self.toggle_group("Geometria")
+        self._add_unavailable_button("Verificação", "verification-book-check.svg")
+        self._add_unavailable_button("Documentação", "documentation-scroll.svg")
+        self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
+        self.toggle_group("Geometria", animate=False)
 
     def _add_group(
         self,
@@ -183,6 +200,10 @@ class FloatingPalette(QFrame):
         primary.setCheckable(True)
         primary.clicked.connect(lambda _checked=False, group=name: self.toggle_group(group))
         self._layout.addWidget(primary, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._primary_buttons[name] = primary
+        if not items:
+            return
+
         section = QWidget(self)
         section_layout = QVBoxLayout(section)
         section_layout.setContentsMargins(0, 0, 0, 3)
@@ -199,8 +220,21 @@ class FloatingPalette(QFrame):
             section_layout.addWidget(button)
         section.hide()
         self._layout.addWidget(section)
-        self._primary_buttons[name] = primary
         self._sections[name] = section
+
+    def _add_unavailable_button(self, name: str, icon_filename: str) -> None:
+        button = QToolButton(self)
+        button.setObjectName("paletteUnavailable")
+        button.setFixedSize(38, 38)
+        icon_path = Path(__file__).parents[1] / "resources" / "icons" / icon_filename
+        source_icon = QIcon(str(icon_path))
+        button.setIcon(QIcon(source_icon.pixmap(QSize(22, 22), QIcon.Mode.Disabled)))
+        button.setIconSize(QSize(22, 22))
+        tooltip = f"{name}<br><span style='font-size: 10px;'>(em desenvolvimento)</span>"
+        self._configure_tooltip(button, tooltip)
+        button.setAccessibleName(f"{name} (em desenvolvimento)")
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
 
     def _configure_tooltip(self, button: QToolButton, text: str) -> None:
         """Register the label for the custom tooltip and block Qt's default one."""
@@ -219,17 +253,19 @@ class FloatingPalette(QFrame):
                 return True
         return super().eventFilter(watched, event)
 
-    def toggle_group(self, name: str) -> None:
-        next_group = None if self._expanded == name else name
+    def toggle_group(self, name: str, *, animate: bool = True) -> None:
+        next_group = name
         self._tooltip.dismiss()
-        for group, section in self._sections.items():
+        for group, button in self._primary_buttons.items():
             expanded = group == next_group
-            section.setVisible(expanded)
-            button = self._primary_buttons[group]
             button.setChecked(expanded)
+            section = self._sections.get(group)
+            if section is not None:
+                section.setVisible(expanded)
         self._expanded = next_group
         self._layout.activate()
         self.setFixedHeight(self.sizeHint().height())
+        self._move_selection_indicator(next_group, animate=animate)
         if hasattr(self.window, "top_icon_palette"):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
         if hasattr(self.window, "action_top_palette"):
@@ -243,6 +279,21 @@ class FloatingPalette(QFrame):
             self.window.scene.set_analysis_visible(next_group == "Análise")
         if hasattr(self.window, "refresh_selected_property_panel"):
             self.window.refresh_selected_property_panel(next_group)
+
+    def _move_selection_indicator(self, name: str, *, animate: bool) -> None:
+        button = self._primary_buttons.get(name)
+        if button is None:
+            return
+        target = QRect(button.geometry())
+        self._selection_animation.stop()
+        if not animate or not self._selection_indicator.isVisible():
+            self._selection_indicator.setGeometry(target)
+            self._selection_indicator.show()
+            self._selection_indicator.lower()
+            return
+        self._selection_animation.setStartValue(self._selection_indicator.geometry())
+        self._selection_animation.setEndValue(target)
+        self._selection_animation.start()
 
     @property
     def active_group(self) -> str | None:
@@ -415,6 +466,44 @@ class TopIconPalette(QFrame):
         separator.setStyleSheet("QFrame { color: #d0d7de; }")
         layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        configure_axes_button = QToolButton(self)
+        configure_axes_button.setFixedSize(24, 24)
+        configure_axes_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"))
+        )
+        configure_axes_button.setIconSize(QSize(19, 19))
+        configure_axes_button.setToolTip("Configurar eixos")
+        configure_axes_button.setProperty("paletteTooltip", "Configurar eixos")
+        configure_axes_button.setAccessibleName("Configurar eixos")
+        configure_axes_button.clicked.connect(window.toggle_axes_panel)
+        configure_axes_button.installEventFilter(self)
+        configure_axes_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(configure_axes_button)
+        self.configure_axes_button = configure_axes_button
+
+        add_member_button = QToolButton(self)
+        add_member_button.setFixedSize(24, 24)
+        add_member_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "member-spline.svg"))
+        )
+        add_member_button.setIconSize(QSize(19, 19))
+        add_member_button.setToolTip("Adicionar membro")
+        add_member_button.setProperty("paletteTooltip", "Adicionar membro")
+        add_member_button.setAccessibleName("Adicionar membro")
+        add_member_button.clicked.connect(window.start_member_placement)
+        add_member_button.installEventFilter(self)
+        add_member_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(add_member_button)
+        self.add_member_button = add_member_button
+
         split_member_button = QToolButton(self)
         split_member_button.setFixedSize(24, 24)
         split_member_button.setIcon(
@@ -471,6 +560,25 @@ class TopIconPalette(QFrame):
         )
         layout.insertWidget(layout.indexOf(reverse_member_button), join_members_button)
         self.join_members_button = join_members_button
+
+        rigid_member_button = QToolButton(self)
+        rigid_member_button.setFixedSize(24, 24)
+        rigid_member_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rigid-member.svg"))
+        )
+        rigid_member_button.setIconSize(QSize(19, 19))
+        rigid_member_button.setToolTip("Adicionar barra rígida")
+        rigid_member_button.setProperty("paletteTooltip", "Adicionar barra rígida")
+        rigid_member_button.setAccessibleName("Adicionar barra rígida")
+        rigid_member_button.clicked.connect(window.start_rigid_bar_placement)
+        rigid_member_button.installEventFilter(self)
+        rigid_member_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.insertWidget(layout.indexOf(join_members_button) + 1, rigid_member_button)
+        self.rigid_member_button = rigid_member_button
 
         copy_properties_button = QToolButton(self)
         copy_properties_button.setFixedSize(24, 24)
@@ -589,6 +697,41 @@ class ActionTopPalette(QFrame):
             )
             button.installEventFilter(self)
             layout.addWidget(button)
+
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        group_actions_button = QToolButton(self)
+        group_actions_button.setFixedSize(24, 24)
+        group_actions_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "group-actions.svg"))
+        )
+        group_actions_button.setIconSize(QSize(19, 19))
+        group_actions_button.setToolTip("Grupo de ações")
+        group_actions_button.setProperty("paletteTooltip", "Grupo de ações")
+        group_actions_button.setAccessibleName("Grupo de ações")
+        group_actions_button.clicked.connect(window.open_action_groups)
+        group_actions_button.installEventFilter(self)
+        layout.addWidget(group_actions_button)
+        self.group_actions_button = group_actions_button
+
+        add_action_button = QToolButton(self)
+        add_action_button.setFixedSize(24, 24)
+        add_action_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-action.svg"))
+        )
+        add_action_button.setIconSize(QSize(19, 19))
+        add_action_button.setToolTip("Adicionar ação")
+        add_action_button.setProperty("paletteTooltip", "Adicionar ação")
+        add_action_button.setAccessibleName("Adicionar ação")
+        add_action_button.clicked.connect(window.start_load_command)
+        add_action_button.installEventFilter(self)
+        layout.addWidget(add_action_button)
+        self.add_action_button = add_action_button
         self.adjustSize()
 
     def set_actions(
@@ -655,10 +798,14 @@ class AnalysisTopPalette(QFrame):
             "QFrame#analysisPending { min-width: 376px; min-height: 24px; border: 0; border-radius: 6px; "
             "background: #d0d7de; }"
             "QLabel#analysisPendingLabel { color: #57606a; padding: 0 8px; }"
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
+        self._tooltip = PaletteTooltip(window)
         self.selectors = QWidget(self)
         selectors_layout = QHBoxLayout(self.selectors)
         selectors_layout.setContentsMargins(0, 0, 0, 0)
@@ -684,6 +831,41 @@ class AnalysisTopPalette(QFrame):
         pending_layout.addWidget(pending_label)
         layout.addWidget(self.selectors)
         layout.addWidget(self.pending)
+
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        combinations_button = QToolButton(self)
+        combinations_button.setFixedSize(24, 24)
+        combinations_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-combination.svg"))
+        )
+        combinations_button.setIconSize(QSize(19, 19))
+        combinations_button.setToolTip("Configurar combinações")
+        combinations_button.setProperty("paletteTooltip", "Configurar combinações")
+        combinations_button.setAccessibleName("Configurar combinações")
+        combinations_button.clicked.connect(window.open_combinations)
+        combinations_button.installEventFilter(self)
+        layout.addWidget(combinations_button)
+        self.combinations_button = combinations_button
+
+        process_button = QToolButton(self)
+        process_button.setFixedSize(24, 24)
+        process_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "process-analysis.svg"))
+        )
+        process_button.setIconSize(QSize(19, 19))
+        process_button.setToolTip("Processar estrutura")
+        process_button.setProperty("paletteTooltip", "Processar estrutura")
+        process_button.setAccessibleName("Processar estrutura")
+        process_button.clicked.connect(window.process_analysis)
+        process_button.installEventFilter(self)
+        layout.addWidget(process_button)
+        self.process_button = process_button
         self.adjustSize()
 
     def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:
@@ -701,7 +883,19 @@ class AnalysisTopPalette(QFrame):
         self.adjustSize()
 
     def set_analysis_visible(self, visible: bool) -> None:
+        if not visible:
+            self._tooltip.dismiss()
         self.setVisible(visible)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(watched, QToolButton):
+            if event.type() == QEvent.Type.Enter:
+                self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._tooltip.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
 
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
