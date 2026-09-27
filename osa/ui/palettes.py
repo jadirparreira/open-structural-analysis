@@ -400,10 +400,10 @@ class TopIconPalette(QFrame):
         self._tooltip = PaletteTooltip(window)
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
-                                        ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
+                                        ("node-circle.svg", "Nós", "nodes"),
                                         ("box.svg", "Seções sólidas", "solid"),
                                         ("release.svg", "Vinculações dos membros", "releases"),
                                         ("support-3d.svg", "Apoios dos nós", "supports")):
