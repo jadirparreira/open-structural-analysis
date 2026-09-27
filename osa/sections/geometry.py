@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from math import atan2, ceil, cos, pi, radians, sin, sqrt
 
 from .contours import (
@@ -352,7 +353,33 @@ def _normalize_loop(loop: Loop) -> Loop:
     return tuple(points)
 
 
+@lru_cache(maxsize=2048)
+def _section_shape_cached(
+    family: str,
+    geometry_items: tuple[tuple[str, float], ...],
+    arc_steps: int,
+) -> SectionShape | None:
+    return _section_shape_uncached(family, dict(geometry_items), arc_steps=arc_steps)
+
+
 def section_shape(
+    family: str,
+    geometry: dict[str, float],
+    *,
+    arc_steps: int = 12,
+) -> SectionShape | None:
+    """Resolve a member section into centered, closed 2D loops.
+
+    Section geometry is immutable for a given family, dimensions and sampling
+    level.  Caching this normalization avoids reparsing the same catalogued
+    profile hundreds of times when a large model is rebuilt or displayed in a
+    result mode.
+    """
+    items = tuple(sorted((str(key), float(value)) for key, value in geometry.items()))
+    return _section_shape_cached(str(family), items, int(arc_steps))
+
+
+def _section_shape_uncached(
     family: str,
     geometry: dict[str, float],
     *,

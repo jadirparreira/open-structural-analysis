@@ -400,6 +400,30 @@ def test_node_visibility_toggle_is_independent_from_node_identifiers(qt_app):
     assert scene._node_actor.GetVisibility()
 
 
+def test_action_palette_does_not_rebuild_structural_geometry(qt_app, monkeypatch):
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 5.0, 0.0, 0.0)
+    model.add_bar("B1", "N1", "N2")
+    scene = StructureScene()
+    scene.render_model(model)
+
+    calls = 0
+    original_build = scene._member_renderer.build
+
+    def counted_build(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(scene._member_renderer, "build", counted_build)
+    scene.set_actions_visible(True)
+    scene.set_actions_visible(False)
+    scene.set_actions_visible(True)
+
+    assert calls == 0
+
+
 def test_tab_reaches_angle_and_manual_mouse_motion_cancels_edit(qt_app):
     scene = StructureScene()
     scene.render_model(StructuralModel())

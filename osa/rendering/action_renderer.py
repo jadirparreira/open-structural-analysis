@@ -9,7 +9,12 @@ from .local_axes_renderer import LocalAxesRenderer
 
 
 class ActionRenderer:
-    """Renderiza forças distribuídas como faixas translúcidas sobre as barras."""
+    """Renderiza ações em poucas malhas agrupadas.
+
+    A aparência das ações continua sendo a mesma, mas a geometria é acumulada
+    antes de chegar ao VTK. Isso evita um ator por seta, faixa ou símbolo de
+    momento em modelos com muitas ações.
+    """
 
     COLOR = "#cf222e"
     LOCAL_COLOR = "#0969da"
@@ -27,6 +32,8 @@ class ActionRenderer:
         visibility: dict[str, bool] | None = None,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         actors: list[object] = []
+        face_batches: dict[str, tuple[list[np.ndarray], list[int]]] = {}
+        line_batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]] = {}
         label_positions: list[np.ndarray] = []
         labels: list[str] = []
         visibility = visibility or {}
@@ -102,10 +109,10 @@ class ActionRenderer:
             initial, final = action.components
             tangent = member_vector / length
             if np.isclose(abs(np.dot(tangent, force_direction)), 1.0, atol=1e-9):
-                axial_actors, axial_positions, axial_labels = self._render_axial_force(
+                points, lines, axial_positions, axial_labels = self._render_axial_force(
                     plotter, start, end, tangent, force_direction, initial, final, force_color,
                 )
-                actors.extend(axial_actors)
+                self._append_lines(line_batches, (force_color, 2.0), points, lines)
                 label_positions.extend(axial_positions)
                 labels.extend(axial_labels)
                 continue
@@ -124,20 +131,12 @@ class ActionRenderer:
             top_start = start + initial_offset
             top_end = end + final_offset
             vertices = np.array((start, end, top_end, top_start))
-            face = pv.PolyData(vertices, faces=np.array((4, 0, 1, 2, 3)))
-            outline = pv.PolyData(
-                vertices,
-                # A linha 0-1 coincidiria com a barra, portanto é omitida.
-                lines=np.array((2, 1, 2, 2, 2, 3, 2, 3, 0)),
+            self._append_face(face_batches, force_color, vertices)
+            # A linha 0-1 coincidiria com a barra, portanto é omitida.
+            self._append_lines(
+                line_batches, (force_color, 2.0), vertices,
+                (2, 1, 2, 2, 2, 3, 2, 3, 0),
             )
-            actors.append(plotter.add_mesh(
-                face, color=force_color, opacity=0.5, lighting=False, pickable=False,
-                reset_camera=False, render=False,
-            ))
-            actors.append(plotter.add_mesh(
-                outline, color=force_color, line_width=2, lighting=False, pickable=False,
-                reset_camera=False, render=False,
-            ))
 
             if np.isclose(initial, final):
                 outward = self._outward_vector(initial_offset, force_direction, reference_sign)
@@ -174,9 +173,10 @@ class ActionRenderer:
             node_position = np.array((node.x, node.y, node.z), dtype=float)
             arrow_length = self._force_height(force, maximum_intensity)
             line_start = node_position - force_direction * arrow_length
-            actors.append(self._add_node_force_arrow(
+            points, lines = self._add_node_force_arrow(
                 plotter, line_start, node_position, force_direction, arrow_length,
-            ))
+            )
+            self._append_lines(line_batches, (self.COLOR, 3.0), points, lines)
             label_positions.append(line_start - force_direction * self.LABEL_CLEARANCE)
             labels.append(self._format_node_force(force))
 
@@ -202,10 +202,11 @@ class ActionRenderer:
                 )
             ]
             for center in centers:
-                actors.append(self._add_moment_symbol(
+                points, lines = self._add_moment_symbol(
                     plotter, center, axis, plane_u, plane_v, float(action.components[0]), radius,
                     self.MOMENT_COLOR,
-                ))
+                )
+                self._append_lines(line_batches, (self.MOMENT_COLOR, 3.0), points, lines)
             label_positions.append(centers[len(centers) // 2] + plane_u * (radius * 1.35))
             labels.append(self._format_moment(action.components[0]))
 
@@ -217,14 +218,60 @@ class ActionRenderer:
                 continue
             axis, plane_u, plane_v = self._moment_plane(global_basis, direction)
             center = np.array((node.x, node.y, node.z), dtype=float)
-            actors.append(self._add_moment_symbol(
+            points, lines = self._add_moment_symbol(
                 plotter, center, axis, plane_u, plane_v, float(action.components[0]),
                 self.MOMENT_RADIUS, self.COLOR,
-            ))
+            )
+            self._append_lines(line_batches, (self.COLOR, 3.0), points, lines)
             label_positions.append(center + plane_u * (self.MOMENT_RADIUS * 1.35))
             labels.append(self._format_node_moment(action.components[0]))
 
+        for color, (points, faces) in face_batches.items():
+            if not points:
+                continue
+            mesh = pv.PolyData(np.asarray(points), faces=np.asarray(faces, dtype=np.int64))
+            actors.append(plotter.add_mesh(
+                mesh, color=color, opacity=0.5, lighting=False, pickable=False,
+                reset_camera=False, render=False,
+            ))
+        for (color, line_width), (points, lines) in line_batches.items():
+            if not points:
+                continue
+            mesh = pv.PolyData(np.asarray(points), lines=np.asarray(lines, dtype=np.int64))
+            actors.append(plotter.add_mesh(
+                mesh, color=color, line_width=line_width, lighting=False, pickable=False,
+                reset_camera=False, render=False, render_lines_as_tubes=True,
+            ))
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+
+    @staticmethod
+    def _append_face(
+        batches: dict[str, tuple[list[np.ndarray], list[int]]],
+        color: str,
+        points: np.ndarray,
+    ) -> None:
+        point_batch, face_batch = batches.setdefault(color, ([], []))
+        offset = len(point_batch)
+        point_batch.extend(points)
+        face_batch.extend((len(points), *range(offset, offset + len(points))))
+
+    @staticmethod
+    def _append_lines(
+        batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]],
+        key: tuple[str, float],
+        points: np.ndarray,
+        lines: tuple[int, ...] | list[int] | np.ndarray,
+    ) -> None:
+        point_batch, line_batch = batches.setdefault(key, ([], []))
+        offset = len(point_batch)
+        point_batch.extend(points)
+        values = np.asarray(lines, dtype=np.int64).copy()
+        cursor = 0
+        while cursor < len(values):
+            count = int(values[cursor])
+            values[cursor + 1:cursor + 1 + count] += offset
+            cursor += count + 1
+        line_batch.extend(values.tolist())
 
     @staticmethod
     def _force_height(value: float, maximum_intensity: float) -> float:
@@ -267,7 +314,7 @@ class ActionRenderer:
         value: float,
         radius: float,
         color: str,
-    ):
+    ) -> tuple[np.ndarray, np.ndarray]:
         orientation = -1.0 if value > 0 else 1.0
         angles = np.linspace(0.0, orientation * np.pi * 1.55, 25)
         arc = np.asarray([
@@ -284,10 +331,7 @@ class ActionRenderer:
         points = np.vstack((arc, back + side, back - side, tip))
         last = len(arc)
         lines = [len(arc), *range(len(arc)), 2, last, last + 2, 2, last + 1, last + 2]
-        return plotter.add_mesh(
-            pv.PolyData(points, lines=np.asarray(lines)), color=color,
-            line_width=3, lighting=False, pickable=False, reset_camera=False, render=False,
-        )
+        return points, np.asarray(lines, dtype=np.int64)
 
     @staticmethod
     def _moment_plane(
@@ -308,17 +352,14 @@ class ActionRenderer:
         node_position: np.ndarray,
         force_direction: np.ndarray,
         arrow_length: float,
-    ):
+    ) -> tuple[np.ndarray, np.ndarray]:
         chevron_size = arrow_length * 0.18
         chevron_normal = self._perpendicular_to(force_direction)
         arm_a = node_position - force_direction * chevron_size + chevron_normal * chevron_size * 0.55
         arm_b = node_position - force_direction * chevron_size - chevron_normal * chevron_size * 0.55
         points = np.asarray((line_start, node_position, arm_a, arm_b))
         lines = np.asarray((2, 0, 1, 2, 2, 1, 2, 3, 1))
-        return plotter.add_mesh(
-            pv.PolyData(points, lines=lines), color=self.COLOR, line_width=3,
-            lighting=False, pickable=False, reset_camera=False, render=False,
-        )
+        return points, lines
 
     @staticmethod
     def _outward_vector(offset: np.ndarray, direction: np.ndarray, reference_sign: float) -> np.ndarray:
@@ -337,7 +378,7 @@ class ActionRenderer:
         initial: float,
         final: float,
         color: str,
-    ) -> tuple[list[object], list[np.ndarray], list[str]]:
+    ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray], list[str]]:
         """Desenha a carga axial sobre a barra, com uma extensão de 1 unidade."""
         member_vector = end - start
         length = float(np.linalg.norm(member_vector))
@@ -372,11 +413,6 @@ class ActionRenderer:
             first_index = len(points)
             points.extend((arm_a, arm_b, tip))
             lines.extend((2, first_index, first_index + 2, 2, first_index + 1, first_index + 2))
-        actor = plotter.add_mesh(
-            pv.PolyData(np.asarray(points), lines=np.asarray(lines)),
-            color=color, line_width=2, lighting=False, pickable=False,
-            reset_camera=False, render=False,
-        )
         if np.isclose(initial, final):
             positions = [tail_end - load_direction * self.LABEL_CLEARANCE]
             labels = [self._format_force(initial)]
@@ -386,7 +422,7 @@ class ActionRenderer:
                 tail_end - load_direction * (self.LABEL_CLEARANCE + 0.28),
             ]
             labels = [self._format_force(initial), self._format_force(final)]
-        return [actor], positions, labels
+        return np.asarray(points), np.asarray(lines, dtype=np.int64), positions, labels
 
     @staticmethod
     def _perpendicular_to(vector: np.ndarray) -> np.ndarray:

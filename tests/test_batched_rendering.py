@@ -2,8 +2,10 @@ import numpy as np
 
 from osa.commands import CommandSession
 from osa.model import StructuralModel
+from osa.rendering.action_renderer import ActionRenderer
 from osa.rendering.batched_renderer import BatchedMemberRenderer, BatchedNodeRenderer
 from osa.services import ModelService
+from osa.services.action_service import ActionService
 
 
 def warehouse_model():
@@ -39,3 +41,28 @@ def test_node_batch_keeps_spherical_markers_and_pick_identity():
     assert np.all(batch.geometry.cell_data["rgb"] == 0)
     assert batch.supports.n_cells == 10
     assert batch.label_positions.shape == (408, 3)
+
+
+def test_action_renderer_groups_repeated_action_geometry_into_few_actors():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **options):
+            self.meshes.append((mesh, options))
+            return object()
+
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 5.0, 0.0, 0.0)
+    model.add_bar("B1", "N1", "N2")
+    actions = ActionService(model)
+    actions.add_member_distributed_force("B1", "Z", 5.0, 5.0, "Caso")
+    actions.add_member_moment("B1", "Y", 2.0, "Caso")
+
+    plotter = Plotter()
+    actors, _positions, labels = ActionRenderer().render(plotter, model, "Caso")
+
+    assert len(actors) == len(plotter.meshes) == 3
+    assert len(labels) == 2
+    assert max(mesh.n_cells for mesh, _options in plotter.meshes) > 1

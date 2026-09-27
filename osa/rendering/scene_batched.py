@@ -201,6 +201,8 @@ class StructureScene(QWidget):
         self._model = StructuralModel()
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
+        self._base_geometry_cache_key: tuple[int, int, float] | None = None
+        self._base_geometry_cache: tuple[MemberBatch, NodeBatch, tuple[str, ...], pv.PolyData] | None = None
         self._rigid_bar_names: tuple[str, ...] = ()
         self._rigid_bar_mesh: pv.PolyData | None = None
 
@@ -230,6 +232,8 @@ class StructureScene(QWidget):
         self._analysis_visible = False
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
+        self._action_layer_key: tuple[object, ...] | None = None
+        self._result_layer_key: tuple[object, ...] | None = None
         self._action_visibility = {
             "node_forces": True,
             "node_moments": True,
@@ -364,9 +368,17 @@ class StructureScene(QWidget):
             self._marker_radius_current = self._marker_radius(positions)
             self._marker_radius_locked = True
 
-        self._member_batch = self._member_renderer.build(model, self._marker_radius_current)
-        self._node_batch = self._node_renderer.build(model, self._node_marker_radius())
-        self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_bar_renderer.build(model)
+        node_radius = self._node_marker_radius()
+        cache_key = (id(model), model.revision, round(float(self._marker_radius_current), 12))
+        if cache_key != self._base_geometry_cache_key or self._base_geometry_cache is None:
+            member_batch = self._member_renderer.build(model, self._marker_radius_current)
+            node_batch = self._node_renderer.build(model, node_radius)
+            rigid_bar_names, rigid_bar_mesh = self._rigid_bar_renderer.build(model)
+            self._base_geometry_cache_key = cache_key
+            self._base_geometry_cache = member_batch, node_batch, rigid_bar_names, rigid_bar_mesh
+        self._member_batch, self._node_batch, self._rigid_bar_names, self._rigid_bar_mesh = (
+            self._base_geometry_cache
+        )
         self._add_rigid_bar_batch()
         self._add_member_batches()
         self._add_node_batches()
@@ -497,6 +509,7 @@ class StructureScene(QWidget):
 
     def _add_actions(self) -> None:
         if not self._actions_visible:
+            self._action_layer_key = None
             self._action_actors = []
             self._action_label_positions = np.empty((0, 3), dtype=float)
             self._action_labels = ()
@@ -508,9 +521,54 @@ class StructureScene(QWidget):
         ) = self._action_renderer.render(
             self.plotter, self._model, self._active_load_case, self._action_visibility,
         )
+        self._action_layer_key = (
+            id(self._model), self._model.revision, self._active_load_case,
+            tuple(sorted(self._action_visibility.items())),
+        )
+
+    def _remove_actors(self, actors: list[object]) -> None:
+        """Remove an overlay without touching the structural scene."""
+        renderer = self.plotter.renderer
+        for actor in actors:
+            if actor is not None:
+                renderer.RemoveActor(actor)
+
+    def _clear_action_layer(self) -> None:
+        self._remove_actors(self._action_actors)
+        self._action_layer_key = None
+        self._action_actors = []
+        self._action_label_positions = np.empty((0, 3), dtype=float)
+        self._action_labels = ()
+        self._label_overlay.set_group(
+            "action", self._action_label_positions, (), visible=False, deduplicate=True,
+        )
+
+    def _clear_result_layer(self) -> None:
+        self._remove_actors(self._result_actors)
+        self._result_layer_key = None
+        self._result_actors = []
+        self._result_line_widths = []
+        self._result_label_positions = np.empty((0, 3), dtype=float)
+        self._result_labels = ()
+        self._label_overlay.set_group(
+            "result", self._result_label_positions, (), visible=False, deduplicate=True,
+        )
+
+    def _refresh_action_layer(self) -> None:
+        """Refresh only action geometry and labels."""
+        self._clear_action_layer()
+        if self._actions_visible:
+            self._add_actions()
+            self._label_overlay.set_group(
+                "action", self._action_label_positions, self._action_labels,
+                visible=True, deduplicate=True,
+            )
+        self._sync_labels()
+        self.plotter.render()
 
     def _add_results(self) -> None:
         if not self._analysis_visible or self._active_analysis_combination is None:
+            self._result_layer_key = None
             self._result_actors = []
             self._result_line_widths = []
             self._result_label_positions = np.empty((0, 3), dtype=float)
@@ -528,12 +586,30 @@ class StructureScene(QWidget):
             self.plotter, self._model, result, self._active_result_type,
             solid_members_visible=self._solid_members_visible,
         )
+        self._result_layer_key = (
+            id(self._model), self._model.revision, self._active_analysis_combination,
+            self._active_result_type, self._solid_members_visible,
+        )
         self._result_line_widths = []
         if self._active_result_type.startswith("Deformação") and self._result_actors:
             # Primeiro ator é sempre a referência indeformada tracejada.
             self._result_line_widths.append((self._result_actors[0], 1.0))
             if not self._solid_members_visible and len(self._result_actors) > 1:
                 self._result_line_widths.append((self._result_actors[1], 2.0))
+
+    def _refresh_result_layer(self) -> None:
+        """Refresh only the selected analysis overlay and its labels."""
+        self._clear_result_layer()
+        if self._analysis_visible:
+            self._add_results()
+            self._label_overlay.set_group(
+                "result", self._result_label_positions, self._result_labels,
+                visible=True, deduplicate=True,
+            )
+        self._apply_representation_visibility()
+        self._update_zoom_dependent_sizes()
+        self._sync_labels()
+        self.plotter.render()
 
     def _add_labels(self) -> None:
         self._add_reference_axis_labels()
@@ -548,10 +624,12 @@ class StructureScene(QWidget):
                 visible=self._labels_visibility["node"],
             )
         self._label_overlay.set_group(
-            "action", self._action_label_positions, self._action_labels, visible=True,
+            "action", self._action_label_positions, self._action_labels,
+            visible=True, deduplicate=True,
         )
         self._label_overlay.set_group(
-            "result", self._result_label_positions, self._result_labels, visible=self._analysis_visible,
+            "result", self._result_label_positions, self._result_labels,
+            visible=self._analysis_visible, deduplicate=True,
         )
 
     def _add_reference_axis_labels(self) -> None:
@@ -1840,7 +1918,8 @@ class StructureScene(QWidget):
         self._solid_members_visible = visible
         self._apply_representation_visibility()
         if self._analysis_visible and self._active_result_type.startswith("Deformação"):
-            self.render_model(self._model)
+            self._refresh_result_layer()
+            return
         self._configure_solid_picker()
         self._sync_highlights()
         self.plotter.render()
@@ -1901,7 +1980,10 @@ class StructureScene(QWidget):
         if name == self._active_load_case:
             return
         self._active_load_case = name
-        self.render_model(self._model)
+        if self._actions_visible:
+            self._refresh_action_layer()
+        else:
+            self._action_layer_key = None
 
     def set_actions_visible(self, visible: bool) -> None:
         """Exibe ações somente quando a seção Ações estiver ativa."""
@@ -1909,14 +1991,48 @@ class StructureScene(QWidget):
         if visible == self._actions_visible:
             return
         self._actions_visible = visible
-        self.render_model(self._model)
+        current_key = (
+            id(self._model), self._model.revision, self._active_load_case,
+            tuple(sorted(self._action_visibility.items())),
+        )
+        if not visible and self._action_actors:
+            for actor in self._action_actors:
+                actor.SetVisibility(False)
+            self._label_overlay.set_group_visible("action", False)
+            self.plotter.render()
+            return
+        if visible and self._action_layer_key == current_key:
+            for actor in self._action_actors:
+                actor.SetVisibility(True)
+            self._label_overlay.set_group_visible("action", True)
+            self.plotter.render()
+            return
+        self._refresh_action_layer()
 
     def set_analysis_visible(self, visible: bool) -> None:
         visible = bool(visible)
         if visible == self._analysis_visible:
             return
         self._analysis_visible = visible
-        self.render_model(self._model)
+        current_key = (
+            id(self._model), self._model.revision, self._active_analysis_combination,
+            self._active_result_type, self._solid_members_visible,
+        )
+        if not visible and self._result_actors:
+            for actor in self._result_actors:
+                actor.SetVisibility(False)
+            self._label_overlay.set_group_visible("result", False)
+            self._apply_representation_visibility()
+            self.plotter.render()
+            return
+        if visible and self._result_layer_key == current_key:
+            for actor in self._result_actors:
+                actor.SetVisibility(True)
+            self._label_overlay.set_group_visible("result", True)
+            self._apply_representation_visibility()
+            self.plotter.render()
+            return
+        self._refresh_result_layer()
 
     def set_analysis_result(self, combination: str | None, result_type: str) -> None:
         combination = combination or None
@@ -1924,7 +2040,10 @@ class StructureScene(QWidget):
             return
         self._active_analysis_combination = combination
         self._active_result_type = result_type
-        self.render_model(self._model)
+        if self._analysis_visible:
+            self._refresh_result_layer()
+        else:
+            self._result_layer_key = None
 
     def set_action_visibility(self, kind: str, visible: bool) -> None:
         """Liga ou desliga uma das quatro categorias de ações renderizadas."""
@@ -1934,7 +2053,10 @@ class StructureScene(QWidget):
         if self._action_visibility[kind] == visible:
             return
         self._action_visibility[kind] = visible
-        self.render_model(self._model)
+        if self._actions_visible:
+            self._refresh_action_layer()
+        else:
+            self._action_layer_key = None
 
     def previous_reference_plane(self) -> None:
         self._step_reference_plane(-1)
@@ -2251,9 +2373,11 @@ class StructureScene(QWidget):
         self._release_actor = None
         self._local_axis_actors = []
         self._action_actors = []
+        self._action_layer_key = None
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels = ()
         self._result_actors = []
+        self._result_layer_key = None
         self._result_label_positions = np.empty((0, 3), dtype=float)
         self._result_labels = ()
         self._solid_picker.InitializePickList()

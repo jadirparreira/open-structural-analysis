@@ -1,9 +1,14 @@
 """Janela principal e composição dos componentes visuais."""
+import copy
+
+from PySide6.QtCore import QThread
+
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.services import AnalysisService
 
 from .analysis_panel import ProcessingPanel
+from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
@@ -49,6 +54,9 @@ class MainWindow(QMainWindow):
         self.section_property_service = SectionPropertyService()
         self.project_service = ProjectService(self.model)
         self.analysis_service = AnalysisService(self.model, PyniteAdapter())
+        self._analysis_thread: QThread | None = None
+        self._analysis_worker: AnalysisWorker | None = None
+        self._analysis_revision: int | None = None
         self.command_session = CommandSession(self.model_service)
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
@@ -207,24 +215,49 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
 
     def process_analysis(self) -> None:
-        """Run PyNite after the central progress card has had a chance to paint."""
+        """Run PyNite in the background after the progress card is painted."""
+        if self._analysis_thread is not None and self._analysis_thread.isRunning():
+            return
         self.action_service.ensure_default_combinations()
         self.refresh_analysis_palette()
         self.processing_panel.start()
-        QTimer.singleShot(0, self._run_analysis)
+        self._analysis_revision = self.model.revision
+        snapshot = copy.deepcopy(self.model)
+        thread = QThread(self)
+        worker = AnalysisWorker(snapshot, AnalysisRequest())
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._update_processing_stage)
+        worker.finished.connect(self._analysis_finished)
+        worker.failed.connect(self._analysis_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._analysis_thread_finished)
+        self._analysis_thread = thread
+        self._analysis_worker = worker
+        thread.start()
 
-    def _run_analysis(self) -> None:
-        try:
-            results = self.analysis_service.run(AnalysisRequest(), self._update_processing_stage)
-        # PyNite reports numerical instabilities as generic ``Exception``.
-        # Keep the failure in the processing card instead of letting a solver
-        # error terminate the desktop event loop.
-        except Exception as error:  # noqa: BLE001
-            self.processing_panel.fail(str(error))
+    def _analysis_finished(self, results: object) -> None:
+        if self._analysis_revision != self.model.revision:
+            self.processing_panel.fail(
+                "O modelo foi alterado durante a análise. Execute o processamento novamente."
+            )
             return
-        self.processing_panel.succeed(len(results))
+        self.model.analysis_results = list(results)
+        self.processing_panel.succeed(len(self.model.analysis_results))
         self.refresh_analysis_palette()
         self.refresh_selected_property_panel(self.palette.active_group)
+
+    def _analysis_failed(self, message: str) -> None:
+        self.processing_panel.fail(message)
+
+    def _analysis_thread_finished(self) -> None:
+        thread = self._analysis_thread
+        self._analysis_worker = None
+        self._analysis_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _update_processing_stage(self, stage: str) -> None:
         self.processing_panel.set_stage(stage)

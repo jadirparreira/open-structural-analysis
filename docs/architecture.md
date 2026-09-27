@@ -26,6 +26,10 @@ rendering -----------------> domain (somente leitura)
 `osa/model.py` e `osa/scene.py` são fachadas de compatibilidade para imports da
 versão 0.1. Elas não contêm regras ou renderização próprias.
 
+As decisões de desempenho e redução adaptativa da cena estão registradas em
+[Diretrizes de desempenho gráfico](diretrizes-desempenho-grafico.md). Alterações
+em renderização, cena ou overlays devem seguir esse documento.
+
 ## Unidades
 
 As coordenadas continuam usando a unidade definida pelo projeto. Os catálogos

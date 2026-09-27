@@ -21,11 +21,20 @@ class ResultMapper:
         for name, member in source.members.items():
             length = member.L()
             positions = np.linspace(0.0, length, 21)
+            samples = [
+                self._member_sample(member, float(position), load_reference)
+                for position in positions
+            ]
+            # The first and last samples are exactly the member endpoints.
+            # Reusing them avoids querying PyNite for the same nine result
+            # components a second time for every member and combination.
+            start = {key: value for key, value in samples[0].items() if key != "x"}
+            end = {key: value for key, value in samples[-1].items() if key != "x"}
             member_results[name] = {
                 "length": float(length),
-                "start": self._member_end_result(member, 0.0, load_reference),
-                "end": self._member_end_result(member, length, load_reference),
-                "samples": [self._member_sample(member, float(position), load_reference) for position in positions],
+                "start": start,
+                "end": end,
+                "samples": samples,
             }
         return AnalysisResult(model_revision, load_reference, node_results, member_results)
 

@@ -68,6 +68,13 @@ class ResultRenderer:
             else 0.0
         )
         actors: list[object] = []
+        face_batches: dict[str, tuple[list[np.ndarray], list[int]]] = {
+            self.POSITIVE_COLOR: ([], []), self.NEGATIVE_COLOR: ([], []),
+        }
+        line_batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]] = {
+            (self.POSITIVE_COLOR, 2.5): ([], []),
+            (self.NEGATIVE_COLOR, 2.5): ([], []),
+        }
         label_positions: list[np.ndarray] = []
         labels: list[str] = []
         for name, samples in samples_by_member.items():
@@ -106,29 +113,57 @@ class ResultRenderer:
             if diagram == "Normal" and np.all(values == values[0]):
                 color = self.NEGATIVE_COLOR if representative_value < 0.0 else self.POSITIVE_COLOR
                 vertices = np.vstack((baseline, curve[::-1]))
-                count = len(baseline)
-                face = pv.PolyData(vertices, faces=np.asarray((2 * count, *range(2 * count))))
-                actors.append(plotter.add_mesh(
-                    face, color=color, opacity=0.30, lighting=False, pickable=False,
-                    reset_camera=False, render=False,
-                ))
+                self._append_face(face_batches, color, vertices)
                 # O contorno contínuo inclui as laterais nas duas extremidades,
                 # deixando explícito o fechamento da faixa de esforço.
                 outline_points = np.vstack((baseline, curve[::-1], baseline[0]))
-                outline_count = len(outline_points)
-                line = pv.PolyData(outline_points, lines=np.asarray((outline_count, *range(outline_count))))
-                actors.append(plotter.add_mesh(
-                    line, color=color, line_width=2.5, lighting=False, pickable=False,
-                    reset_camera=False, render=False, render_lines_as_tubes=True,
-                ))
+                self._append_polyline(line_batches, (color, 2.5), outline_points)
             else:
-                actors.extend(self._render_shear_geometry(plotter, baseline, curve, values))
+                self._render_shear_geometry(face_batches, line_batches, baseline, curve, values)
             positions, member_labels = self._member_result_labels(
                 values, geometry_values, baseline, curve, local_x, diagram_axis, unit,
             )
             label_positions.extend(positions)
             labels.extend(member_labels)
+        for color, (points, faces) in face_batches.items():
+            if not points:
+                continue
+            face = pv.PolyData(np.asarray(points), faces=np.asarray(faces, dtype=np.int64))
+            actors.append(plotter.add_mesh(
+                face, color=color, opacity=0.30, lighting=False, pickable=False,
+                reset_camera=False, render=False,
+            ))
+        for (color, line_width), (points, lines) in line_batches.items():
+            if not points:
+                continue
+            line = pv.PolyData(np.asarray(points), lines=np.asarray(lines, dtype=np.int64))
+            actors.append(plotter.add_mesh(
+                line, color=color, line_width=line_width, lighting=False, pickable=False,
+                reset_camera=False, render=False, render_lines_as_tubes=True,
+            ))
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+
+    @staticmethod
+    def _append_face(
+        batches: dict[str, tuple[list[np.ndarray], list[int]]],
+        color: str,
+        points: np.ndarray,
+    ) -> None:
+        point_batch, face_batch = batches.setdefault(color, ([], []))
+        offset = len(point_batch)
+        point_batch.extend(points)
+        face_batch.extend((len(points), *range(offset, offset + len(points))))
+
+    @staticmethod
+    def _append_polyline(
+        batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]],
+        key: tuple[str, float],
+        points: np.ndarray,
+    ) -> None:
+        point_batch, line_batch = batches.setdefault(key, ([], []))
+        offset = len(point_batch)
+        point_batch.extend(points)
+        line_batch.extend((len(points), *range(offset, offset + len(points))))
 
     def _member_result_labels(
         self, values, geometry_values, baseline, curve, local_x, diagram_axis, unit: str,
@@ -375,12 +410,15 @@ class ResultRenderer:
             pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
         )]
 
-    def _render_shear_geometry(self, plotter, baseline, curve, values: np.ndarray) -> list[object]:
-        """Agrupa os trechos por cor, evitando milhares de atores VTK."""
-        batches = {
-            self.POSITIVE_COLOR: {"face_points": [], "faces": [], "line_points": [], "lines": []},
-            self.NEGATIVE_COLOR: {"face_points": [], "faces": [], "line_points": [], "lines": []},
-        }
+    def _render_shear_geometry(
+        self,
+        face_batches: dict[str, tuple[list[np.ndarray], list[int]]],
+        line_batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]],
+        baseline,
+        curve,
+        values: np.ndarray,
+    ) -> None:
+        """Acumula os trechos por cor, evitando atores por membro."""
         for index, (value_a, value_b) in enumerate(pairwise(values)):
             if value_a == 0.0 and value_b == 0.0:
                 continue
@@ -389,47 +427,26 @@ class ResultRenderer:
             if value_a * value_b < 0.0:
                 ratio = abs(value_a) / (abs(value_a) + abs(value_b))
                 crossing = baseline_a + (baseline_b - baseline_a) * ratio
-                self._append_shear_face(batches, (baseline_a, crossing, curve_a), value_a)
-                self._append_shear_face(batches, (crossing, baseline_b, curve_b), value_b)
-                self._append_shear_line(batches, (curve_a, crossing), value_a)
-                self._append_shear_line(batches, (crossing, curve_b), value_b)
+                self._append_shear_face(face_batches, (baseline_a, crossing, curve_a), value_a)
+                self._append_shear_face(face_batches, (crossing, baseline_b, curve_b), value_b)
+                self._append_shear_line(line_batches, (curve_a, crossing), value_a)
+                self._append_shear_line(line_batches, (crossing, curve_b), value_b)
             else:
                 result_value = value_a or value_b
-                self._append_shear_face(batches, (baseline_a, baseline_b, curve_b, curve_a), result_value)
-                self._append_shear_line(batches, (curve_a, curve_b), result_value)
+                self._append_shear_face(face_batches, (baseline_a, baseline_b, curve_b, curve_a), result_value)
+                self._append_shear_line(line_batches, (curve_a, curve_b), result_value)
         for baseline_point, curve_point, value in (
             (baseline[0], curve[0], values[0]),
             (baseline[-1], curve[-1], values[-1]),
         ):
             if value != 0.0:
-                self._append_shear_line(batches, (baseline_point, curve_point), value)
-        actors: list[object] = []
-        for color, batch in batches.items():
-            if batch["face_points"]:
-                face = pv.PolyData(np.asarray(batch["face_points"]), faces=np.asarray(batch["faces"]))
-                actors.append(plotter.add_mesh(
-                    face, color=color, opacity=0.30, lighting=False, pickable=False,
-                    reset_camera=False, render=False,
-                ))
-            if batch["line_points"]:
-                line = pv.PolyData(np.asarray(batch["line_points"]), lines=np.asarray(batch["lines"]))
-                actors.append(plotter.add_mesh(
-                    line, color=color, line_width=2.5, lighting=False, pickable=False,
-                    reset_camera=False, render=False, render_lines_as_tubes=True,
-                ))
-        return actors
+                self._append_shear_line(line_batches, (baseline_point, curve_point), value)
 
     def _append_shear_face(self, batches, points, value: float) -> None:
-        batch = batches[self._result_color(value)]
-        offset = len(batch["face_points"])
-        batch["face_points"].extend(points)
-        batch["faces"].extend((len(points), *range(offset, offset + len(points))))
+        self._append_face(batches, self._result_color(value), np.asarray(points))
 
     def _append_shear_line(self, batches, points, value: float) -> None:
-        batch = batches[self._result_color(value)]
-        offset = len(batch["line_points"])
-        batch["line_points"].extend(points)
-        batch["lines"].extend((len(points), *range(offset, offset + len(points))))
+        self._append_polyline(batches, (self._result_color(value), 2.5), np.asarray(points))
 
     def _result_color(self, value: float) -> str:
         return self.NEGATIVE_COLOR if value < 0.0 else self.POSITIVE_COLOR

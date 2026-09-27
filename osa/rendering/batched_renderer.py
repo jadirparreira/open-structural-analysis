@@ -141,8 +141,16 @@ class BatchedMemberRenderer:
         names = tuple(model.bars)
         line_segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
         fallback_segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
-        face_parts: list[pv.PolyData] = []
-        edge_parts: list[pv.PolyData] = []
+        face_points: list[np.ndarray] = []
+        face_cells: list[int] = []
+        face_indices: list[int] = []
+        face_colors: list[np.ndarray] = []
+        edge_points: list[np.ndarray] = []
+        edge_cells: list[int] = []
+        edge_indices: list[int] = []
+        edge_colors: list[np.ndarray] = []
+        face_point_count = 0
+        edge_point_count = 0
         axis_segments: tuple[list, list, list] = ([], [], [])
         release_polylines: list[np.ndarray] = []
         outlines: dict[str, pv.PolyData] = {}
@@ -201,15 +209,31 @@ class BatchedMemberRenderer:
                 fallback_segments.append((start, end, element_index, color))
                 continue
 
-            face.cell_data["element_index"] = np.full(face.n_cells, element_index, dtype=np.int32)
-            face.cell_data["rgb"] = np.tile(color, (face.n_cells, 1))
-            edge.cell_data["element_index"] = np.full(edge.n_cells, element_index, dtype=np.int32)
-            edge.cell_data["rgb"] = np.tile(_rgb(member.color, 0.65), (edge.n_cells, 1))
-            face_parts.append(face)
-            edge_parts.append(edge)
+            face_offset = face_point_count
+            face_points.append(face.points)
+            self._append_cells(face_cells, face.faces, face_offset)
+            face_indices.extend([element_index] * face.n_cells)
+            face_colors.extend([color] * face.n_cells)
+            face_point_count += len(face.points)
+
+            edge_offset = edge_point_count
+            edge_points.append(edge.points)
+            self._append_cells(edge_cells, edge.lines, edge_offset)
+            edge_indices.extend([element_index] * edge.n_cells)
+            edge_colors.extend([_rgb(member.color, 0.65)] * edge.n_cells)
+            edge_point_count += len(edge.points)
             outlines[member_name] = edge
 
-        faces = _merge(face_parts)
+        faces = (
+            pv.PolyData(
+                np.vstack(face_points),
+                faces=np.asarray(face_cells, dtype=np.int64),
+            )
+            if face_points else _empty_mesh()
+        )
+        if faces.n_cells:
+            faces.cell_data["element_index"] = np.asarray(face_indices, dtype=np.int32)
+            faces.cell_data["rgb"] = np.asarray(face_colors, dtype=np.uint8)
         if faces.n_cells:
             faces = faces.compute_normals(
                 cell_normals=True,
@@ -219,17 +243,37 @@ class BatchedMemberRenderer:
                 auto_orient_normals=True,
                 inplace=False,
             )
+        edges = (
+            pv.PolyData(
+                np.vstack(edge_points),
+                lines=np.asarray(edge_cells, dtype=np.int64),
+            )
+            if edge_points else _empty_mesh()
+        )
+        if edges.n_cells:
+            edges.cell_data["element_index"] = np.asarray(edge_indices, dtype=np.int32)
+            edges.cell_data["rgb"] = np.asarray(edge_colors, dtype=np.uint8)
         return MemberBatch(
             names=names,
             lines=_line_mesh(line_segments),
             fallback_lines=_line_mesh(fallback_segments),
             faces=faces,
-            edges=_merge(edge_parts),
+            edges=edges,
             axes=tuple(_line_mesh(segments) for segments in axis_segments),  # type: ignore[arg-type]
             releases=_polyline_mesh(release_polylines),
             outlines=outlines,
             label_positions=label_positions,
         )
+
+    @staticmethod
+    def _append_cells(destination: list[int], encoded: np.ndarray, offset: int) -> None:
+        values = np.asarray(encoded, dtype=np.int64)
+        cursor = 0
+        while cursor < len(values):
+            count = int(values[cursor])
+            destination.append(count)
+            destination.extend((values[cursor + 1:cursor + 1 + count] + offset).tolist())
+            cursor += count + 1
 
     @staticmethod
     def _append_release_polylines(
@@ -269,27 +313,39 @@ class BatchedNodeRenderer:
             theta_resolution=20,
             phi_resolution=12,
         )
-        node_parts: list[pv.PolyData] = []
         support_parts: list[pv.PolyData] = []
-        label_positions = np.empty((len(names), 3), dtype=float)
+        positions = np.asarray(
+            [(model.nodes[name].x, model.nodes[name].y, model.nodes[name].z) for name in names],
+            dtype=float,
+        )
+        label_positions = positions + (0.0, 0.0, radius * 2.2)
         source_normals = sphere.point_data.get("Normals")
 
-        for element_index, node_name in enumerate(names):
-            node = model.nodes[node_name]
-            position = np.asarray((node.x, node.y, node.z), dtype=float)
-            geometry = pv.PolyData(sphere.points + position, faces=sphere.faces)
-            if source_normals is not None:
-                geometry.point_data["Normals"] = source_normals
-            geometry.cell_data["element_index"] = np.full(
-                geometry.n_cells, element_index, dtype=np.int32,
+        if len(names):
+            source_points = np.asarray(sphere.points, dtype=float)
+            node_points = (source_points[None, :, :] + positions[:, None, :]).reshape(-1, 3)
+            source_faces = np.asarray(sphere.faces, dtype=np.int64).reshape(-1, 4)
+            face_count = len(source_faces)
+            face_offsets = np.repeat(
+                np.arange(len(names), dtype=np.int64) * len(source_points), face_count,
             )
-            node_parts.append(geometry)
-            label_positions[element_index] = position + (0.0, 0.0, radius * 2.2)
+            faces = np.tile(source_faces, (len(names), 1))
+            faces[:, 1:] += face_offsets[:, None]
+            geometry = pv.PolyData(node_points, faces=faces.ravel())
+            geometry.cell_data["element_index"] = np.repeat(
+                np.arange(len(names), dtype=np.int32), face_count,
+            )
+            if source_normals is not None:
+                geometry.point_data["Normals"] = np.tile(source_normals, (len(names), 1))
+        else:
+            geometry = _empty_mesh()
+
+        for node_name in names:
+            node = model.nodes[node_name]
             support = self._support_mesh(node, radius)
             if support is not None:
                 support_parts.append(support)
 
-        geometry = _merge(node_parts)
         if geometry.n_cells:
             geometry.cell_data["rgb"] = np.tile(
                 _rgb("#000000"), (geometry.n_cells, 1),

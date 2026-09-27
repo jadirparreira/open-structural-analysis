@@ -52,9 +52,12 @@ def project_world_to_screen(
 class _LabelGroup:
     positions: np.ndarray
     labels: tuple[QStaticText, ...]
+    sizes: tuple[object, ...]
     screen: np.ndarray
     on_screen: np.ndarray
+    draw_indices: np.ndarray
     visible: bool
+    deduplicate: bool
 
 
 class LabelOverlay(QWidget):
@@ -83,6 +86,7 @@ class LabelOverlay(QWidget):
         labels: tuple[str, ...],
         *,
         visible: bool,
+        deduplicate: bool = False,
     ) -> None:
         static_labels = []
         for label in labels:
@@ -93,9 +97,12 @@ class LabelOverlay(QWidget):
         self._groups[kind] = _LabelGroup(
             positions=np.asarray(positions, dtype=float),
             labels=tuple(static_labels),
+            sizes=tuple(text.size() for text in static_labels),
             screen=np.empty((count, 2), dtype=float),
             on_screen=np.zeros(count, dtype=bool),
+            draw_indices=np.arange(count, dtype=np.int64),
             visible=bool(visible),
+            deduplicate=bool(deduplicate),
         )
 
     def clear(self) -> None:
@@ -124,8 +131,41 @@ class LabelOverlay(QWidget):
             group.screen, group.on_screen = project_world_to_screen(
                 group.positions, matrix, self.width(), self.height(),
             )
+            group.draw_indices = self._visible_indices(group)
         self.raise_()
         self.update()
+
+    @staticmethod
+    def _visible_indices(group: _LabelGroup) -> np.ndarray:
+        """Cull only crowded action/result labels in screen space.
+
+        Structural identifiers keep their previous behavior.  Auxiliary
+        labels are culled only after the overlay becomes dense, preserving the
+        most useful labels while preventing a quadratic-looking paint cost and
+        unreadable text clouds.
+        """
+        indices = np.flatnonzero(group.on_screen)
+        if not group.deduplicate or len(indices) <= 160:
+            return indices
+        occupied: set[tuple[int, int]] = set()
+        selected: list[int] = []
+        for index in indices:
+            point = group.screen[index]
+            size = group.sizes[index]
+            left = int((point[0] - size.width() / 2.0) // 28)
+            right = int((point[0] + size.width() / 2.0) // 28)
+            top = int((point[1] - size.height() / 2.0) // 18)
+            bottom = int((point[1] + size.height() / 2.0) // 18)
+            cells = {
+                (column, row)
+                for column in range(left, right + 1)
+                for row in range(top, bottom + 1)
+            }
+            if cells & occupied:
+                continue
+            occupied.update(cells)
+            selected.append(int(index))
+        return np.asarray(selected, dtype=np.int64)
 
     def paintEvent(self, event) -> None:
         del event
@@ -136,10 +176,10 @@ class LabelOverlay(QWidget):
         for group in self._groups.values():
             if not group.visible:
                 continue
-            for text, point, on_screen in zip(group.labels, group.screen, group.on_screen):
-                if not on_screen:
-                    continue
-                size = text.size()
+            for index in group.draw_indices:
+                text = group.labels[index]
+                point = group.screen[index]
+                size = group.sizes[index]
                 painter.drawStaticText(
                     QPointF(point[0] - size.width() / 2.0, point[1] - size.height() / 2.0),
                     text,
