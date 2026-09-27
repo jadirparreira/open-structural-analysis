@@ -1172,6 +1172,7 @@ class MainWindow(QMainWindow):
     def _select_analysis_combination(self, name: str) -> None:
         self.selected_analysis_combination = name or None
         self._sync_analysis_result()
+        self.refresh_selected_property_panel(self.palette.active_group)
 
     def _select_analysis_diagram(self, name: str) -> None:
         self.selected_analysis_diagram = name or "Normal"

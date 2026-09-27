@@ -98,12 +98,18 @@ class PropertyPanel(QFrame):
         self._member_action_switch_indicator: QFrame | None = None
         self._member_action_switch_buttons: dict[str, QToolButton] = {}
         self._member_action_switch_animation: QPropertyAnimation | None = None
+        self._analysis_result_view = "A"
+        self._analysis_switch_indicator: QFrame | None = None
+        self._analysis_switch_buttons: dict[str, QToolButton] = {}
+        self._analysis_switch_animation: QPropertyAnimation | None = None
         self._identity_row = identity_row
         self.delete_button.setEnabled(False)
         self.hide()
 
     def show_for(self, kind: str, name: str, section: str = "Geometria") -> None:
         """Show the inspector content that belongs to the open work section."""
+        if self._selected != (kind, name):
+            self._analysis_result_view = "A"
         self._selected = kind, name
         self._clear_form()
         self.coordinates_title.hide()
@@ -337,8 +343,9 @@ class PropertyPanel(QFrame):
         # Recalculate after the previous form's deferred widgets are removed;
         # this is important when switching directly between selected elements.
         self.layout.activate()
+        self.setMinimumHeight(0)
         self.adjustSize()
-        self.setMinimumHeight(self.sizeHint().height())
+        self.resize(self.width(), self.sizeHint().height())
         self.reposition()
         self.show(); self.raise_()
         QTimer.singleShot(0, self._refresh_size)
@@ -982,25 +989,36 @@ class PropertyPanel(QFrame):
         self.window.refresh_scene()
 
     def _show_analysis(self, kind: str, name: str) -> None:
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
         title = QLabel("Resultados")
         title.setObjectName("propertySection")
-        self._add_context_widget(title)
+        header_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addStretch(1)
+        if kind == "bar":
+            header_layout.addWidget(self._analysis_result_switch(), 0, Qt.AlignmentFlag.AlignVCenter)
+        self._add_context_widget(header)
         results = [
             result for result in self.window.model.analysis_results
             if result.model_revision == self.window.model.revision
         ]
         if not results:
-            message = QLabel("Nenhum resultado disponível. Processe o modelo para consultar a análise.")
+            target = "no nó" if kind == "node" else "no membro"
+            message = QLabel(f"Nenhum resultado disponível. Processe o modelo para consultar os resultados {target}.")
             message.setWordWrap(True)
             self._add_context_widget(message)
             return
+
+        selected_reference = getattr(self.window, "selected_analysis_combination", None)
+        result = next(
+            (item for item in results if item.load_reference == selected_reference),
+            results[0] if selected_reference is None else None,
+        )
         data_key = "node_results" if kind == "node" else "member_results"
-        element_results = [
-            (result.load_reference, getattr(result, data_key).get(name))
-            for result in results
-            if getattr(result, data_key).get(name) is not None
-        ]
-        if not element_results:
+        values = getattr(result, data_key).get(name) if result is not None else None
+        if values is None:
             if kind == "node":
                 message = QLabel("Não há resultados para este nó.")
             else:
@@ -1009,17 +1027,281 @@ class PropertyPanel(QFrame):
             message.setWordWrap(True)
             self._add_context_widget(message)
             return
-        for reference, values in element_results:
-            label = QLabel(f"{reference}: {values}")
-            label.setWordWrap(True)
-            self._add_context_widget(label)
+
+        if kind == "node":
+            self._show_node_analysis_values(values)
+        else:
+            self._show_member_analysis_values(values)
+
+    def _analysis_result_switch(self) -> QFrame:
+        switch = QFrame()
+        switch.setObjectName("analysisResultSwitch")
+        switch.setFixedSize(112, 30)
+        switch.setStyleSheet(
+            "QFrame#analysisResultSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        indicator = QFrame(switch)
+        indicator.setObjectName("analysisResultIndicator")
+        indicator.setStyleSheet(
+            "QFrame#analysisResultIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        self._analysis_switch_indicator = indicator
+        layout = QHBoxLayout(switch)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        buttons = QButtonGroup(switch)
+        buttons.setExclusive(True)
+        for view, label, width, accessible_name in (
+            ("A", "A", 32, "Exibir resultados do extremo A"),
+            ("MAX", "MAX", 42, "Exibir resultados máximos"),
+            ("B", "B", 32, "Exibir resultados do extremo B"),
+        ):
+            button = QToolButton(switch)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(width, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(view == self._analysis_result_view)
+            button.setAccessibleName(accessible_name)
+            button.clicked.connect(
+                lambda checked=False, selected_view=view: self._set_analysis_result_view(selected_view)
+            )
+            buttons.addButton(button)
+            layout.addWidget(button)
+            self._analysis_switch_buttons[view] = button
+        indicator.setGeometry(self._analysis_switch_indicator_geometry())
+        indicator.lower()
+        self._update_analysis_switch_text()
+        return switch
+
+    def _analysis_switch_indicator_geometry(self) -> QRect:
+        return {
+            "A": QRect(4, 5, 30, 20),
+            "MAX": QRect(34, 5, 42, 20),
+            "B": QRect(76, 5, 30, 20),
+        }[self._analysis_result_view]
+
+    def _update_analysis_switch_text(self) -> None:
+        for view, button in self._analysis_switch_buttons.items():
+            color = "#ffffff" if view == self._analysis_result_view else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _set_analysis_result_view(self, view: str) -> None:
+        if view == self._analysis_result_view or view not in {"A", "MAX", "B"}:
+            return
+        if not self._selected or self._selected[0] != "bar":
+            return
+        self._analysis_result_view = view
+        if self._analysis_switch_animation is not None:
+            self._analysis_switch_animation.stop()
+        indicator = self._analysis_switch_indicator
+        if indicator is not None:
+            animation = QPropertyAnimation(indicator, b"geometry", indicator)
+            animation.setDuration(160)
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            animation.setStartValue(indicator.geometry())
+            animation.setEndValue(self._analysis_switch_indicator_geometry())
+            self._analysis_switch_animation = animation
+            animation.start()
+        self._update_analysis_switch_text()
+        self.show_for(self._selected[0], self._selected[1], "Análise")
+
+    def _show_node_analysis_values(self, values: dict) -> None:
+        """Render all nodal result components with their analysis units."""
+        self._add_analysis_value_group(
+            "Deslocamentos",
+            values,
+            (
+                ("DX", "X", "m"), ("DY", "Y", "m"), ("DZ", "Z", "m"),
+            ),
+        )
+        self._add_analysis_value_group(
+            "Rotações",
+            values,
+            (
+                ("RX", "X", "rad"), ("RY", "Y", "rad"), ("RZ", "Z", "rad"),
+            ),
+        )
+        self._add_analysis_value_group(
+            "Reações",
+            values,
+            (
+                ("RXN_FX", "Força X", "kN"),
+                ("RXN_FY", "Força Y", "kN"),
+                ("RXN_FZ", "Força Z", "kN"),
+                ("RXN_MX", "Momento X", "kN·m"),
+                ("RXN_MY", "Momento Y", "kN·m"),
+                ("RXN_MZ", "Momento Z", "kN·m"),
+            ),
+        )
+
+    def _show_member_analysis_values(self, values: dict) -> None:
+        """Render the selected member view for the active combination."""
+        fields = self._member_analysis_fields()
+        if self._analysis_result_view == "MAX":
+            samples = values.get("samples") or tuple(
+                endpoint for endpoint in (values.get("start"), values.get("end"))
+                if isinstance(endpoint, dict)
+            )
+            samples = tuple(self._member_analysis_display_values(sample) for sample in samples)
+            positive, negative = self._member_analysis_extrema(samples, fields)
+            self._add_analysis_extrema_values(positive, negative, fields)
+            return
+
+        endpoint = "start" if self._analysis_result_view == "A" else "end"
+        endpoint_values = values.get(endpoint)
+        if isinstance(endpoint_values, dict):
+            self._add_analysis_value_group(
+                None,
+                self._member_analysis_display_values(endpoint_values),
+                fields,
+            )
+
+    @staticmethod
+    def _member_analysis_display_values(values: dict) -> dict:
+        """Convert PyNite bending signs to the convention used by the application."""
+        displayed = dict(values)
+        for key in ("moment_y", "moment_z"):
+            if key not in displayed:
+                continue
+            try:
+                displayed[key] = -float(displayed[key])
+            except (TypeError, ValueError):
+                continue
+        return displayed
+
+    @staticmethod
+    def _member_analysis_fields() -> tuple[tuple[str, str, str], ...]:
+        return (
+            ("axial", "Normal", "kN"),
+            ("shear_y", "Cortante Y", "kN"),
+            ("shear_z", "Cortante Z", "kN"),
+            ("moment_y", "Fletor Y", "kN·m"),
+            ("moment_z", "Fletor Z", "kN·m"),
+            ("torque", "Torsor", "kN·m"),
+            ("deflection_x", "Deformação X", "m"),
+            ("deflection_y", "Deformação Y", "m"),
+            ("deflection_z", "Deformação Z", "m"),
+        )
+
+    @staticmethod
+    def _member_analysis_extrema(
+        samples, fields: tuple[tuple[str, str, str], ...],
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        positive: dict[str, float] = {}
+        negative: dict[str, float] = {}
+        for key, _label, _unit in fields:
+            numbers = []
+            for sample in samples:
+                if not isinstance(sample, dict) or key not in sample:
+                    continue
+                try:
+                    numbers.append(float(sample[key]))
+                except (TypeError, ValueError):
+                    continue
+            positive[key] = max((number for number in numbers if number > 0.0), default=0.0)
+            negative[key] = min((number for number in numbers if number < 0.0), default=0.0)
+        return positive, negative
+
+    def _add_analysis_value_group(
+        self, title: str | None, values: dict, fields: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        if title is not None:
+            heading = QLabel(title)
+            heading.setObjectName("propertySection")
+            self._add_context_widget(heading)
+        self._add_analysis_value_rows(values, fields)
+
+    def _add_analysis_value_rows(
+        self, values: dict, fields: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        for key, label, unit in fields:
+            if key in values:
+                self._add_analysis_value_row(label, values[key], unit)
+
+    def _add_analysis_extrema_values(
+        self,
+        positive: dict[str, float],
+        negative: dict[str, float],
+        fields: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        """Show positive and negative extrema side by side to keep the panel compact."""
+        values = QWidget()
+        grid = QGridLayout(values)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(self.layout.spacing())
+
+        positive_header = QLabel("Máx. +")
+        negative_header = QLabel("Máx. −")
+        for column, header in ((1, positive_header), (2, negative_header)):
+            header.setObjectName("propertySection")
+            header.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(header, 0, column)
+        for row, (key, label, unit) in enumerate(fields, start=1):
+            name = QLabel(label)
+            name.setObjectName("propertySection")
+            grid.addWidget(name, row, 0)
+
+            positive_value = QLabel(self._format_analysis_number(positive.get(key, 0.0)))
+            positive_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(positive_value, row, 1)
+
+            negative_value = QLabel(self._format_analysis_number(negative.get(key, 0.0)))
+            negative_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(negative_value, row, 2)
+
+            unit_label = QLabel(unit)
+            unit_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(unit_label, row, 3)
+        grid.setColumnStretch(0, 1)
+        self._add_context_widget(values)
+
+    def _add_analysis_value_row(self, label: str, value, unit: str) -> None:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        name = QLabel(label)
+        name.setObjectName("propertySection")
+        row_layout.addWidget(name, 1)
+        formatted = QLabel(self._format_analysis_value(value, unit))
+        formatted.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row_layout.addWidget(formatted)
+        self._add_context_widget(row)
+
+    @staticmethod
+    def _format_analysis_value(value, unit: str) -> str:
+        """Format solver values in the same compact, locale-aware style as diagrams."""
+        return f"{PropertyPanel._format_analysis_number(value)} {unit}"
+
+    @staticmethod
+    def _format_analysis_number(value) -> str:
+        """Format a result number without a unit for compact multi-column layouts."""
+        try:
+            rounded = round(float(value), 3)
+        except (TypeError, ValueError):
+            return "—"
+        if rounded == 0.0:
+            rounded = 0.0
+        return f"{rounded:.3f}".rstrip("0").rstrip(".").replace(".", ",")
 
     def _refresh_size(self) -> None:
         if self.isVisible():
             self.layout.activate()
             self.setMinimumHeight(0)
             self.adjustSize()
-            self.setMinimumHeight(self.sizeHint().height())
+            self.resize(self.width(), self.sizeHint().height())
             self.reposition()
 
     def _clear_form(self) -> None:
@@ -1091,6 +1373,11 @@ class PropertyPanel(QFrame):
         self._member_action_switch_animation = None
         self._member_action_switch_indicator = None
         self._member_action_switch_buttons.clear()
+        if self._analysis_switch_animation is not None:
+            self._analysis_switch_animation.stop()
+        self._analysis_switch_animation = None
+        self._analysis_switch_indicator = None
+        self._analysis_switch_buttons.clear()
         self._node_action_inputs.clear()
         for widget in self._context_widgets:
             self.layout.removeWidget(widget)
