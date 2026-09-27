@@ -10,6 +10,56 @@ from .profile_selector import ProfileComboBox
 PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
 
 
+class UnsavedChangesDialog(QDialog):
+    """Confirma o destino das alterações usando o visual dos diálogos compactos."""
+
+    SAVE = "save"
+    DISCARD = "discard"
+    CANCEL = "cancel"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.choice = self.CANCEL
+        self.setWindowTitle("Alterações não salvas")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(350, 175)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QPushButton { min-height: 34px; padding: 4px 16px; border: 0; border-radius: 6px; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("Alterações não salvas")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        hint = QLabel("Deseja salvar o modelo atual?")
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 8, 0, 0)
+        buttons.addStretch()
+        cancel_button = QPushButton("Cancelar")
+        discard_button = QPushButton("Descartar")
+        save_button = QPushButton("Salvar")
+        for button in (cancel_button, discard_button, save_button):
+            button.setIcon(QIcon())
+            buttons.addWidget(button)
+        cancel_button.clicked.connect(lambda: self._finish(self.CANCEL))
+        discard_button.clicked.connect(lambda: self._finish(self.DISCARD))
+        save_button.clicked.connect(lambda: self._finish(self.SAVE))
+        layout.addLayout(buttons)
+
+    def _finish(self, choice: str) -> None:
+        self.choice = choice
+        self.accept()
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)

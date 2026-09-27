@@ -7,7 +7,13 @@ from .analysis_panel import ProcessingPanel
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
-from .dialogs import ActionGroupDialog, CombinationsDialog, ProgramSettingsDialog, SettingsDialog
+from .dialogs import (
+    ActionGroupDialog,
+    CombinationsDialog,
+    ProgramSettingsDialog,
+    SettingsDialog,
+    UnsavedChangesDialog,
+)
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -31,6 +37,7 @@ from .window_frame import TitleBar, WindowFrame
 
 class MainWindow(QMainWindow):
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
+    _project_file_filter = "Modelo OSA (*.osa)"
 
     def __init__(self) -> None:
         super().__init__()
@@ -46,6 +53,7 @@ class MainWindow(QMainWindow):
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
         self.current_path: Path | None = None
+        self._saved_revision = self.model.revision
         self._command_mode: str | None = None
         self._member_placement_start: tuple[float, float, float] | None = None
         self._join_member_first: str | None = None
@@ -1076,6 +1084,8 @@ class MainWindow(QMainWindow):
 
 
     def new_model(self) -> None:
+        if not self._confirm_pending_changes():
+            return
         self.axes_panel.discard()
         self.model.clear()
         self.section_profiles.clear()
@@ -1090,24 +1100,44 @@ class MainWindow(QMainWindow):
         self.scene.set_member_placement_mode(False)
         self.clear_selection()
         self.current_path = None
+        self._saved_revision = self.model.revision
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.refresh_scene(fit_camera=True)
 
     def save_model(self) -> None:
-        path = str(self.current_path) if self.current_path else ""
+        if self.current_path is None:
+            self.save_model_as()
+            return
+        self._save_model_to(self.current_path)
+
+    def save_model_as(self) -> None:
+        """Escolhe um novo caminho e salva o modelo nesse arquivo."""
+        suggested_name = self.current_path.name if self.current_path else "modelo.osa"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar modelo como", suggested_name, self._project_file_filter,
+        )
         if not path:
-            path, _ = QFileDialog.getSaveFileName(self, "Salvar modelo", "modelo.osa.json", "Modelo OSA (*.osa.json)")
-        if path:
-            try:
-                self.project_service.save(path)
-                self.current_path = Path(path)
-            except OSError as error:
-                self.show_error(f"Não foi possível salvar o arquivo: {error}")
+            return
+        selected_path = Path(path)
+        if selected_path.suffix.casefold() != ".osa":
+            selected_path = selected_path.with_suffix(".osa")
+        self._save_model_to(selected_path)
+
+    def _save_model_to(self, path: str | Path) -> None:
+        try:
+            self.project_service.save(path)
+            self.current_path = Path(path)
+            self._saved_revision = self.model.revision
+        except OSError as error:
+            self.show_error(f"Não foi possível salvar o arquivo: {error}")
 
     def open_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", "Modelo OSA (*.osa.json);;JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._project_file_filter)
         if path:
+            if Path(path).suffix.casefold() != ".osa":
+                self.show_error("Selecione um arquivo de modelo com extensão .osa.")
+                return
             try:
                 self.axes_panel.discard()
                 self.project_service.load(path)
@@ -1127,11 +1157,34 @@ class MainWindow(QMainWindow):
                 self.scene.set_member_placement_mode(False)
                 self.clear_selection()
                 self.current_path = Path(path)
+                self._saved_revision = self.model.revision
                 self.refresh_action_palette()
                 self.refresh_analysis_palette()
                 self.refresh_scene(fit_camera=True)
             except (OSError, ValueError, KeyError) as error:
                 self.show_error(f"Não foi possível abrir o modelo: {error}")
+
+    def _has_unsaved_changes(self) -> bool:
+        return self.model.revision != self._saved_revision
+
+    def _confirm_pending_changes(self) -> bool:
+        """Pergunta como tratar alterações antes de substituir ou fechar o modelo."""
+        if not self._has_unsaved_changes():
+            return True
+
+        dialog = UnsavedChangesDialog(self)
+        dialog.exec()
+
+        if dialog.choice == UnsavedChangesDialog.SAVE:
+            self.save_model()
+            return not self._has_unsaved_changes()
+        return dialog.choice == UnsavedChangesDialog.DISCARD
+
+    def closeEvent(self, event) -> None:
+        if self._confirm_pending_changes():
+            event.accept()
+        else:
+            event.ignore()
 
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
         self.scene.render_model(self.model, preserve_camera=not fit_camera)
