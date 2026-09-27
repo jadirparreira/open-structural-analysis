@@ -41,8 +41,6 @@ class TitleBar(QFrame):
         edit_menu = QMenu(edit_menu_button)
         edit_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         edit_menu.addAction("Desfazer"); edit_menu.addAction("Refazer")
-        edit_menu.addSeparator(); edit_menu.addAction("Recortar")
-        edit_menu.addAction("Copiar"); edit_menu.addAction("Colar")
         edit_menu.addSeparator()
         properties_action = edit_menu.addAction("Propriedades")
         properties_action.triggered.connect(window.open_settings)
