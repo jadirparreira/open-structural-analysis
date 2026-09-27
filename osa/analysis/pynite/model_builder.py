@@ -7,7 +7,7 @@ convertidas explicitamente de mm para m na fronteira com o solver.
 from __future__ import annotations
 
 from osa.domain import StructuralModel
-from osa.services import SectionPropertyService
+from osa.services import SectionPropertyService, calculate_rigid_bar_properties
 
 
 class ModelBuilder:
@@ -74,6 +74,39 @@ class ModelBuilder:
                     member.name, dxa, dya, dza, rxa, rya, rza,
                     dxb, dyb, dzb, rxb, ryb, rzb,
                 )
+        for rigid in source.rigid_bars.values():
+            properties = calculate_rigid_bar_properties(source, rigid)
+            if properties is None:
+                raise ValueError(
+                    f"A barra rígida '{rigid.name}' não possui um membro conectado "
+                    "com material e seção válidos."
+                )
+            material_name = f"rigid_material::{rigid.name}"
+            section_name = f"rigid_section::{rigid.name}"
+            # PyNite does not receive EA/EI/GJ directly. The equivalent rigid
+            # link is therefore a finite frame member built from one coherent
+            # material/section pair, with zero density so it has no self-weight.
+            target.add_material(
+                material_name,
+                properties.elastic_modulus_kn_m2,
+                properties.shear_modulus_kn_m2,
+                properties.poisson_ratio,
+                0.0,
+            )
+            target.add_section(
+                section_name,
+                properties.area_m2,
+                properties.iy_m4,
+                properties.iz_m4,
+                properties.j_m4,
+            )
+            target.add_member(
+                rigid.name,
+                rigid.start_node,
+                rigid.end_node,
+                material_name,
+                section_name,
+            )
         return target
 
     @staticmethod
@@ -84,6 +117,9 @@ class ModelBuilder:
             # Application order is A/B by local degree of freedom.
             incident[member.start_node].append((member.releases[8], member.releases[10]))
             incident[member.end_node].append((member.releases[9], member.releases[11]))
+        for rigid in source.rigid_bars.values():
+            incident[rigid.start_node].append((False, False))
+            incident[rigid.end_node].append((False, False))
         return {
             name for name, releases in incident.items()
             if releases and all(release_y and release_z for release_y, release_z in releases)

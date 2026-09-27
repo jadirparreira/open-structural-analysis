@@ -4,6 +4,7 @@ from osa.analysis.pynite.model_builder import ModelBuilder
 from osa.model import StructuralModel
 from osa.sections import calculate_section_properties
 from osa.sections.contours import contour_points, polygon_properties
+from osa.services.rigid_bar_stiffness_service import RIGID_LINK_STIFFNESS_FACTOR
 
 
 def test_w_profile_is_calculated_from_the_reference_contour():
@@ -240,3 +241,34 @@ def test_pynite_builder_receives_calculated_area_inertias_and_torsion():
     assert material.E == pytest.approx(model.materials["Aço Estrutural"][0])
     assert material.G == pytest.approx(model.materials["Aço Estrutural"][1])
     assert material.rho == pytest.approx(model.materials["Aço Estrutural"][3])
+
+
+def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 3, 0, 0)
+    model.add_node("N3", 3, 2, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_section("B1", "W Laminado")
+    geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
+    model.update_member_profile("B1", "W 200 x 15.0", geometry)
+    rigid = model.add_rigid_bar("N2", "N3")
+
+    target = ModelBuilder().build(model)
+    expected = calculate_section_properties("W Laminado", geometry, 7850)
+    rigid_section = target.sections[f"rigid_section::{rigid.name}"]
+    rigid_material = target.materials[f"rigid_material::{rigid.name}"]
+
+    assert rigid_section.A == pytest.approx(expected.area_mm2 * 1e-6)
+    assert rigid_section.Iy == pytest.approx(expected.i_minor_mm4 * 1e-12)
+    assert rigid_section.Iz == pytest.approx(expected.i_major_mm4 * 1e-12)
+    assert rigid_section.J == pytest.approx(expected.j_mm4 * 1e-12)
+    assert rigid_material.E == pytest.approx(
+        model.materials["Aço Estrutural"][0] * RIGID_LINK_STIFFNESS_FACTOR
+    )
+    assert rigid_material.G == pytest.approx(
+        model.materials["Aço Estrutural"][1] * RIGID_LINK_STIFFNESS_FACTOR
+    )
+    assert rigid_material.rho == pytest.approx(0.0)
+    assert rigid.name in target.members

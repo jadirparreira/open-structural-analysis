@@ -6,6 +6,7 @@ from PySide6.QtGui import QRegularExpressionValidator
 from .color_palette import HoneycombColorPalette
 from .common import *
 from .window_frame import WindowFrame
+from osa.services import calculate_rigid_bar_stiffness
 
 
 class PropertyPanel(QFrame):
@@ -127,7 +128,13 @@ class PropertyPanel(QFrame):
         if kind == "bar":
             self._set_member_color_button(self.window.model.bars[name].color)
 
-        if section == "Ações":
+        # A rigid bar is an idealized connection, not a physical member.  Its
+        # inspector is therefore informational and must be the same in every
+        # work section; in particular, it must not expose editable endpoints
+        # or action/result controls.
+        if kind == "rigid_bar":
+            self._show_rigid_bar_properties(name)
+        elif section == "Ações":
             self._show_actions(kind, name, select_available_reference=True)
         elif section == "Análise":
             self._show_analysis(kind, name)
@@ -172,8 +179,6 @@ class PropertyPanel(QFrame):
                 row.addWidget(value)
                 supports_layout.addLayout(row)
             self.layout.insertWidget(6, supports)
-        elif kind == "rigid_bar":
-            self._show_rigid_bar_geometry(name)
         else:
             bar = self.window.model.bars[name]
             nodes = list(self.window.model.nodes)
@@ -400,40 +405,71 @@ class PropertyPanel(QFrame):
             offsets_layout.setColumnStretch(column * 2 + 1, 1)
         self.layout.addWidget(offsets_widget)
 
-    def _show_rigid_bar_geometry(self, name: str) -> None:
-        rigid = self.window.model.rigid_bars[name]
-        nodes = list(self.window.model.nodes)
-        self.layout.insertWidget(3, self.nodes_title)
-        self.nodes_title.show()
-        start, end = QComboBox(), QComboBox()
-        start.addItems(nodes); end.addItems(nodes)
-        for combo in (start, end):
-            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            combo.view().setMinimumHeight(min(5, len(nodes)) * 28 + 2)
-            combo.view().setMaximumHeight(min(5, len(nodes)) * 28 + 2)
-        start.setCurrentText(rigid.start_node); end.setCurrentText(rigid.end_node)
-        start.currentTextChanged.connect(self._rigid_bar_changed)
-        end.currentTextChanged.connect(self._rigid_bar_changed)
-        self.fields.extend((start, end))
-        start_label = QLabel("A")
-        start_label.setObjectName("propertySection")
-        end_label = QLabel("B")
-        end_label.setObjectName("propertySection")
-        endpoints = QWidget()
-        endpoint_grid = QGridLayout(endpoints)
-        endpoint_grid.setContentsMargins(0, 0, 0, 0)
-        endpoint_grid.setHorizontalSpacing(8)
-        endpoint_grid.addWidget(start_label, 0, 0)
-        endpoint_grid.addWidget(start, 0, 1)
-        endpoint_grid.addWidget(end_label, 0, 2)
-        endpoint_grid.addWidget(end, 0, 3)
-        endpoint_grid.setColumnStretch(1, 1)
-        endpoint_grid.setColumnStretch(3, 1)
-        self.form.addRow(endpoints)
-        note = QLabel("Elemento idealizado sem seção volumétrica.")
-        note.setWordWrap(True)
-        note.setObjectName("propertySection")
-        self._add_context_widget(note)
+    def _show_rigid_bar_properties(self, name: str) -> None:
+        """Render only the calculated rigid-link stiffnesses."""
+        title = QLabel("Propriedades mecânicas")
+        title.setObjectName("propertySection")
+        title.setToolTip(
+            "Rigidezes equivalentes finitas: 10⁴ vezes a maior rigidez dos membros conectados."
+        )
+        self._add_context_widget(title)
+
+        rigidities = calculate_rigid_bar_stiffness(
+            self.window.model,
+            self.window.model.rigid_bars[name],
+        )
+        properties = (
+            ("EA", "Rigidez axial", rigidities.axial_ea_kn, "kN"),
+            ("EIy", "Rigidez à flexão no eixo local y", rigidities.bending_eiy_kn_m2, "kN·m²"),
+            ("EIz", "Rigidez à flexão no eixo local z", rigidities.bending_eiz_kn_m2, "kN·m²"),
+            ("GJ", "Rigidez à torção", rigidities.torsional_gj_kn_m2, "kN·m²"),
+        ) if rigidities is not None else ()
+        values = QWidget()
+        values_layout = QFormLayout(values)
+        values_layout.setContentsMargins(0, 0, 0, 0)
+        values_layout.setSpacing(7)
+        for symbol, tooltip, value, unit in properties:
+            label_widget = QLabel(symbol)
+            label_widget.setObjectName("propertySection")
+            label_widget.setToolTip(tooltip)
+            value_widget = self._stiffness_value_box(self._format_stiffness(value), unit)
+            value_widget.setToolTip(tooltip)
+            value_widget.setAccessibleName(f"{tooltip} da barra rígida ({symbol})")
+            values_layout.addRow(label_widget, value_widget)
+        if rigidities is None:
+            unavailable = QLabel(
+                "Defina material e seção em pelo menos um membro conectado para calcular as rigidezes."
+            )
+            unavailable.setWordWrap(True)
+            unavailable.setObjectName("propertySection")
+            values_layout.addRow(unavailable)
+        self._add_context_widget(values)
+
+    @staticmethod
+    def _stiffness_value_box(value: str, unit: str) -> QFrame:
+        box = QFrame()
+        box.setObjectName("unitValueBox")
+        box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; } "
+            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; "
+            "color: #57606a; padding: 2px 9px; } "
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+        )
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        field = QLineEdit(value)
+        field.setReadOnly(True)
+        field.setObjectName("unitValue")
+        field.setMinimumWidth(0)
+        row.addWidget(field, 1)
+        row.addWidget(QLabel(unit))
+        return box
+
+    @staticmethod
+    def _format_stiffness(value: float) -> str:
+        return f"{value:.3e}".replace(".", ",", 1)
 
     def _add_context_widget(self, widget: QWidget) -> None:
         """Append a widget that is exclusive to a non-geometry inspector."""
