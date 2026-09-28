@@ -104,6 +104,19 @@ class StructuralModel:
         self._touch()
         return node
 
+    def update_node_support_stiffness(self, name: str, stiffness: tuple[float, ...]) -> Node:
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        if len(stiffness) != 6:
+            raise ValueError("Informe seis rigidezes de mola para o nó.")
+        values = tuple(float(value) for value in stiffness)
+        if any(not math.isfinite(value) or value < 0.0 for value in values):
+            raise ValueError("As rigidezes de mola devem ser números não negativos.")
+        node = replace(self.nodes[name], support_stiffness=values)
+        self.nodes[name] = node
+        self._touch()
+        return node
+
     def set_reference_axes(self, axes: dict[str, tuple[ReferenceAxis, ...]]) -> None:
         """Replace the named reference axes after validating their per-direction identity."""
         normalized: dict[str, tuple[ReferenceAxis, ...]] = {}

@@ -9,6 +9,14 @@ from .window_frame import WindowFrame
 from osa.services import calculate_rigid_bar_stiffness
 
 
+class CompactDoubleSpinBox(QDoubleSpinBox):
+    """Spinbox numérica que não exibe zeros decimais desnecessários."""
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+
 class PropertyPanel(QFrame):
     """Floating inspector for the currently selected node or bar."""
 
@@ -74,6 +82,7 @@ class PropertyPanel(QFrame):
         self.fields: list[QDoubleSpinBox | QComboBox] = []
         self._coordinates_widget: QWidget | None = None
         self._supports_widget: QWidget | None = None
+        self._support_stiffness_inputs: list[QDoubleSpinBox] = []
         self._rotation_box: QFrame | None = None
         self._rotation_input: QLineEdit | None = None
         self._solid_offsets_widget: QWidget | None = None
@@ -143,21 +152,23 @@ class PropertyPanel(QFrame):
             self.layout.insertWidget(3, self.coordinates_title)
             self.coordinates_title.show()
             for axis, value in zip(("X", "Y", "Z"), (node.x, node.y, node.z)):
-                field = QDoubleSpinBox()
+                field = CompactDoubleSpinBox()
                 field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
                 field.setRange(-1_000_000.0, 1_000_000.0)
                 field.setDecimals(3)
                 field.setSingleStep(0.1)
                 field.setValue(value)
+                field.setAccessibleName(f"Coordenada {axis} (m)")
                 field.valueChanged.connect(lambda _value, axis=axis: self._node_changed(axis))
                 self.fields.append(field)
                 axis_label = QLabel(axis)
                 axis_label.setObjectName("propertySection")
-                self.form.addRow(axis_label, field)
+                self.form.addRow(axis_label, self._editable_unit_box(field, "m"))
             self.layout.insertWidget(5, self.supports_title)
             self.supports_title.show()
             supports = QWidget()
             self._supports_widget = supports
+            self._support_stiffness_inputs.clear()
             supports_layout = QVBoxLayout(supports)
             supports_layout.setContentsMargins(0, 0, 0, 0)
             supports_layout.setSpacing(4)
@@ -165,18 +176,24 @@ class PropertyPanel(QFrame):
                 checkbox = QCheckBox(label)
                 checkbox.setChecked(node.supports[index])
                 checkbox.stateChanged.connect(lambda _state, idx=index: self._support_changed(idx))
-                value = QDoubleSpinBox()
+                value = CompactDoubleSpinBox()
                 value.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
                 value.setDecimals(3)
                 value.setRange(0.0, 1_000_000.0)
                 value.setSpecialValueText("")
-                value.setValue(0.0)
-                value.setFixedWidth(112)
+                value.setValue(node.support_stiffness[index])
+                # These values are spring stiffnesses, not DOF values:
+                # force/length for translations and moment/radian for rotations.
+                unit = "kN/m" if index < 3 else "kN·m/rad"
+                value.setAccessibleName(f"{label} ({unit})")
+                value_box = self._editable_unit_box(value, unit)
+                value.valueChanged.connect(lambda _value: self._support_stiffness_changed())
+                self._support_stiffness_inputs.append(value)
                 row = QHBoxLayout()
                 row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(8)
                 row.addWidget(checkbox)
-                row.addStretch(1)
-                row.addWidget(value)
+                row.addWidget(value_box, 1)
                 supports_layout.addLayout(row)
             self.layout.insertWidget(6, supports)
         else:
@@ -573,6 +590,24 @@ class PropertyPanel(QFrame):
             row_layout.addWidget(field_label)
             row_layout.addWidget(value_box, 1)
             self._add_context_widget(row)
+
+    @staticmethod
+    def _editable_unit_box(field: QDoubleSpinBox, unit: str) -> QFrame:
+        box = QFrame()
+        box.setObjectName("unitValueBox")
+        box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox QDoubleSpinBox { border: 0; background: transparent; "
+            "color: #57606a; padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+        )
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(field, 1)
+        layout.addWidget(QLabel(unit))
+        return box
 
     @staticmethod
     def _action_unit_box(unit: str) -> QFrame:
@@ -1350,6 +1385,7 @@ class PropertyPanel(QFrame):
             self.layout.removeWidget(self._supports_widget)
             self._supports_widget.deleteLater()
             self._supports_widget = None
+        self._support_stiffness_inputs.clear()
         if self._rotation_box is not None:
             self.layout.removeWidget(self._rotation_box)
             self._rotation_box.deleteLater()
@@ -1435,6 +1471,12 @@ class PropertyPanel(QFrame):
         if len(values) == 6:
             self.window.model_service.update_supports(self._selected[1], tuple(values))
             self.window.refresh_node_visual(self._selected[1])
+
+    def _support_stiffness_changed(self) -> None:
+        if not self._selected or self._selected[0] != "node" or len(self._support_stiffness_inputs) != 6:
+            return
+        values = tuple(field.value() for field in self._support_stiffness_inputs)
+        self.window.model_service.update_support_stiffness(self._selected[1], values)
 
     def _bar_changed(self) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self.fields) != 2: return

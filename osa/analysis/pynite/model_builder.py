@@ -23,15 +23,28 @@ class ModelBuilder:
         rotationally_unconnected = self._rotationally_unconnected_nodes(source)
         for node in source.nodes.values():
             target.add_node(node.name, node.x, node.y, node.z)
-            supports = node.supports
+            supports = list(node.supports)
+            stiffness = node.support_stiffness
             if node.name in rotationally_unconnected:
                 # Um nó ligado somente a extremidades articuladas não possui
                 # rigidez rotacional no modelo de barras. O PyNite mantém os
                 # seis GL nodais, então esses três GL puramente cinemáticos
-                # precisam ser restringidos para a matriz global ser definida.
-                supports = (*supports[:3], True, True, True)
-            if any(supports):
-                target.def_support(node.name, *supports)
+                # precisam ser restringidos para a matriz global ser definida,
+                # exceto quando o usuário já informou uma mola rotacional.
+                for index in range(3, 6):
+                    if stiffness[index] <= 0.0 and not supports[index]:
+                        supports[index] = True
+
+            fixed_supports = [
+                supports[index] and stiffness[index] <= 0.0
+                for index in range(6)
+            ]
+            if any(fixed_supports):
+                target.def_support(node.name, *fixed_supports)
+
+            for index, dof in enumerate(("DX", "DY", "DZ", "RX", "RY", "RZ")):
+                if supports[index] and stiffness[index] > 0.0:
+                    target.def_support_spring(node.name, dof, stiffness[index])
         for material_name, values in source.materials.items():
             elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values
             target.add_material(

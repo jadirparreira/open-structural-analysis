@@ -35,6 +35,8 @@ class Node:
     y: float
     z: float
     supports: tuple[bool, bool, bool, bool, bool, bool] = (False,) * 6
+    # Translational stiffnesses use kN/m; rotational stiffnesses use kN·m/rad.
+    support_stiffness: tuple[float, float, float, float, float, float] = (0.0,) * 6
 
     @property
     def support(self) -> Support:

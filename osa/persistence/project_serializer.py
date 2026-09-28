@@ -73,6 +73,7 @@ class ProjectSerializer:
             node = Node(
                 item["name"], float(item["x"]), float(item["y"]), float(item["z"]),
                 tuple(bool(value) for value in item.get("supports", (False,) * 6)),
+                tuple(float(value) for value in item.get("support_stiffness", (0.0,) * 6)),
             )
             candidate._ensure_unique_coordinates((node.x, node.y, node.z))
             candidate.nodes[node.name] = node

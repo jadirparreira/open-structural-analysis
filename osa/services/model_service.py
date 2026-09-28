@@ -86,6 +86,9 @@ class ModelService:
     def update_supports(self, name: str, supports: tuple[bool, ...]):
         return self.model.update_node_supports(name, supports)
 
+    def update_support_stiffness(self, name: str, stiffness: tuple[float, ...]):
+        return self.model.update_node_support_stiffness(name, stiffness)
+
     def update_member_nodes(self, name: str, start_node: str, end_node: str):
         return self.model.update_bar(name, start_node, end_node)
 
