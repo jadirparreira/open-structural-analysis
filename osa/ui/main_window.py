@@ -15,7 +15,9 @@ from .common import *
 from .dialogs import (
     ActionGroupDialog,
     CombinationsDialog,
+    ErrorDialog,
     ProgramSettingsDialog,
+    SelfweightDialog,
     SettingsDialog,
     UnsavedChangesDialog,
 )
@@ -549,6 +551,62 @@ class MainWindow(QMainWindow):
             "> <b>load</b> <span style='color:#57606a'>(Informe a identidade do nó ou do membro.)</span>"
         )
         self.command_bar.input.setFocus()
+
+    def start_selfweight_command(self) -> None:
+        """Open the material picker and apply selfweight to the active action."""
+        self.command_session.cancel()
+        self._command_mode = None
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        load_case = self.selected_action_name or ""
+
+        # Keep the command's existing toggle behavior: clicking while the
+        # active action already contains selfweight removes those loads.
+        if self.action_service.has_selfweight(load_case):
+            self.action_service.remove_selfweight(load_case)
+            self.history.append(
+                "> <b>Aplicar peso próprio</b> "
+                "<span style='color:#57606a'>(Pesos próprios removidos; ação liberada.)</span>"
+            )
+            self.refresh_action_palette()
+            self.refresh_scene()
+            return
+
+        if not self.model.bars:
+            self.show_error("Não há membros no modelo para aplicar o peso próprio.")
+            return
+        if not self.model.materials:
+            self.show_error("Não há materiais cadastrados para aplicar o peso próprio.")
+            return
+
+        dialog = SelfweightDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        weights: list[tuple[str, float]] = []
+        try:
+            for material in dialog.selected_materials:
+                weights.extend(self.model_service.member_selfweights(material))
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+
+        if not weights:
+            self.show_error(
+                "Não há membros associados aos materiais selecionados "
+                "para aplicar o peso próprio."
+            )
+            return
+
+        self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
+        materials = ", ".join(dialog.selected_materials)
+        self.history.append(
+            "> <b>Adicionar peso próprio</b> "
+            f"<span style='color:#57606a'>(Materiais: {escape(materials)})</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_scene()
 
     def start_split_member(self) -> None:
         """Start the split-member flow from the geometry toolbar."""
@@ -1302,4 +1360,6 @@ class MainWindow(QMainWindow):
         self.scene.update_rigid_bar_name(old_name, new_name)
 
     def show_error(self, message: str) -> None:
-        QMessageBox.warning(self, "Dados inválidos", message)
+        dialog = ErrorDialog(message, self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()

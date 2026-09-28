@@ -60,6 +60,158 @@ class UnsavedChangesDialog(QDialog):
         self.accept()
 
 
+class SelfweightDialog(QDialog):
+    """Seleciona os materiais considerados no lançamento do peso próprio."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.window = parent
+        self.selected_materials: tuple[str, ...] = ()
+        self._material_checkboxes: dict[str, QCheckBox] = {}
+        materials = tuple(parent.model.materials) if parent is not None else ()
+
+        self.setWindowTitle("Aplicar peso próprio")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedWidth(380)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-weight: 600; }"
+            "QLabel#hint { color: #57606a; }"
+            "QCheckBox { color: #57606a; spacing: 8px; min-height: 30px; }"
+            "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+            "border-radius: 5px; background: #ffffff; }"
+            "QCheckBox::indicator:hover { border-color: #0969da; }"
+            "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QPushButton#primaryButton { min-height: 34px; padding: 4px 16px; border: 0; "
+            "border-radius: 7px; background: #0969da; color: #ffffff; font-weight: 700; }"
+            "QPushButton#primaryButton:hover { background: #0550ae; }"
+            "QPushButton#primaryButton:disabled { background: #d0d7de; color: #8c959f; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 4, 8, 4)
+        title = QLabel("Aplicar peso próprio")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(16, 14, 16, 16)
+        content.setSpacing(8)
+        hint = QLabel("Selecione os materiais que receberão o peso próprio:")
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        content.addWidget(hint)
+
+        for material in materials:
+            checkbox = QCheckBox(material)
+            checkbox.setAccessibleName(f"Material {material}")
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._update_apply_state)
+            self._material_checkboxes[material] = checkbox
+            content.addWidget(checkbox)
+
+        if not materials:
+            empty = QLabel("Não há materiais cadastrados.")
+            empty.setObjectName("hint")
+            content.addWidget(empty)
+
+        content.addStretch(1)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        cancel_button = QPushButton("Cancelar")
+        cancel_button.setObjectName("secondaryButton")
+        cancel_button.setAutoDefault(False)
+        cancel_button.clicked.connect(self.reject)
+        self.apply_button = QPushButton("Aplicar")
+        self.apply_button.setObjectName("primaryButton")
+        self.apply_button.setDefault(True)
+        self.apply_button.clicked.connect(self._apply)
+        footer.addWidget(cancel_button)
+        footer.addWidget(self.apply_button)
+        content.addLayout(footer)
+        outer.addLayout(content, 1)
+        self._update_apply_state()
+
+    def _selected_material_names(self) -> tuple[str, ...]:
+        return tuple(
+            material for material, checkbox in self._material_checkboxes.items()
+            if checkbox.isChecked()
+        )
+
+    def _update_apply_state(self, _checked: bool = False) -> None:
+        self.apply_button.setEnabled(bool(self._selected_material_names()))
+
+    def _apply(self) -> None:
+        self.selected_materials = self._selected_material_names()
+        if self.selected_materials:
+            self.accept()
+
+
+class ErrorDialog(QDialog):
+    """Mensagem de erro com a mesma moldura visual dos demais modais."""
+
+    def __init__(self, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Dados inválidos")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedWidth(420)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-weight: 600; }"
+            "QLabel#dialogMessage { color: #57606a; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 4, 8, 4)
+        title = QLabel("Dados inválidos")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(16, 14, 16, 16)
+        content.setSpacing(12)
+        message_label = QLabel(message)
+        message_label.setObjectName("dialogMessage")
+        message_label.setWordWrap(True)
+        content.addWidget(message_label)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("secondaryButton")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        content.addLayout(footer)
+        outer.addLayout(content, 1)
+        self.adjustSize()
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)

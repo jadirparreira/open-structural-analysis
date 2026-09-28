@@ -680,6 +680,7 @@ class ActionTopPalette(QFrame):
         self.action_selector.setAccessibleName("Ação ativa")
         self.action_selector.currentTextChanged.connect(window._select_active_action)
         layout.addWidget(self.action_selector)
+
         for filename, tooltip, kind in (
             ("node-force.svg", "Forças nos nós", "node_forces"),
             ("node-moment.svg", "Momentos nos nós", "node_moments"),
@@ -735,6 +736,21 @@ class ActionTopPalette(QFrame):
         add_action_button.installEventFilter(self)
         layout.addWidget(add_action_button)
         self.add_action_button = add_action_button
+
+        # Botão de aplicação do peso próprio.
+        self.selfweight_button = QToolButton(self)
+        self.selfweight_button.setObjectName("selfweightButton")
+        self.selfweight_button.setFixedSize(24, 24)
+        self.selfweight_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "selfweight.svg"
+        )))
+        self.selfweight_button.setIconSize(QSize(19, 19))
+        self.selfweight_button.setToolTip("Aplicar peso próprio")
+        self.selfweight_button.setProperty("paletteTooltip", "Aplicar peso próprio")
+        self.selfweight_button.setAccessibleName("Aplicar peso próprio")
+        self.selfweight_button.clicked.connect(window.start_selfweight_command)
+        self.selfweight_button.installEventFilter(self)
+        layout.addWidget(self.selfweight_button)
         self.adjustSize()
 
     def set_actions(
