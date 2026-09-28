@@ -19,6 +19,12 @@ from .local_axes_renderer import LocalAxesRenderer
 from .solid_member_renderer import SolidMemberRenderer
 
 
+def has_semirigid_member_end(member, endpoint: str) -> bool:
+    """Return whether one member end has an active rotational semirigidity."""
+    positions = (0, 2, 4) if endpoint == "start" else (1, 3, 5)
+    return any(0 < member.rotation_flexibility_percent[index] < 100 for index in positions)
+
+
 def _empty_mesh() -> pv.PolyData:
     return pv.PolyData()
 

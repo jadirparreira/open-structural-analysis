@@ -3,7 +3,11 @@ import numpy as np
 from osa.commands import CommandSession
 from osa.model import StructuralModel
 from osa.rendering.action_renderer import ActionRenderer
-from osa.rendering.batched_renderer import BatchedMemberRenderer, BatchedNodeRenderer
+from osa.rendering.batched_renderer import (
+    BatchedMemberRenderer,
+    BatchedNodeRenderer,
+    has_semirigid_member_end,
+)
 from osa.services import ModelService
 from osa.services.action_service import ActionService
 
@@ -41,6 +45,24 @@ def test_node_batch_keeps_spherical_markers_and_pick_identity():
     assert np.all(batch.geometry.cell_data["rgb"] == 0)
     assert batch.supports.n_cells == 10
     assert batch.label_positions.shape == (408, 3)
+
+
+def test_semirigid_indicator_requires_active_rotation_at_the_member_end():
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 5.0, 0.0, 0.0)
+    model.add_bar("B1", "N1", "N2")
+
+    assert not has_semirigid_member_end(model.bars["B1"], "start")
+    assert not has_semirigid_member_end(model.bars["B1"], "end")
+
+    model.update_member_rotation_flexibility_percent("B1", (15, 0, 0, 0, 0, 0))
+    assert has_semirigid_member_end(model.bars["B1"], "start")
+    assert not has_semirigid_member_end(model.bars["B1"], "end")
+
+    model.update_member_rotation_flexibility_percent("B1", (0, 0, 0, 0, 0, 25))
+    assert not has_semirigid_member_end(model.bars["B1"], "start")
+    assert has_semirigid_member_end(model.bars["B1"], "end")
 
 
 def test_action_renderer_groups_repeated_action_geometry_into_few_actors():

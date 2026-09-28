@@ -400,6 +400,20 @@ def test_node_visibility_toggle_is_independent_from_node_identifiers(qt_app):
     assert scene._node_actor.GetVisibility()
 
 
+def test_semirigid_visibility_toggle_is_independent_from_member_releases(qt_app):
+    scene = StructureScene()
+    scene.render_model(StructuralModel())
+
+    assert scene._elastic_support_overlay._visible
+    scene.set_member_releases_visible(False)
+    assert scene._elastic_support_overlay._visible
+
+    scene.set_semirigid_links_visible(False)
+    assert not scene._elastic_support_overlay._visible
+    scene.set_semirigid_links_visible(True)
+    assert scene._elastic_support_overlay._visible
+
+
 def test_action_palette_does_not_rebuild_structural_geometry(qt_app, monkeypatch):
     model = StructuralModel()
     model.add_node("N1", 0.0, 0.0, 0.0)

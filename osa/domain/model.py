@@ -6,7 +6,15 @@ import math
 from dataclasses import replace
 
 from .entities import (
-    Action, ActionDefinition, ActionGroup, AnalysisResult, Bar, LoadCase, LoadCombination, Node, ReferenceAxis,
+    Action,
+    ActionDefinition,
+    ActionGroup,
+    AnalysisResult,
+    Bar,
+    LoadCase,
+    LoadCombination,
+    Node,
+    ReferenceAxis,
     RigidBar,
 )
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
@@ -237,10 +245,19 @@ class StructuralModel:
         new_bars = {}
         for index, member_name in enumerate(member_names):
             releases = source.releases
+            rotation_percent = source.rotation_flexibility_percent
             if index > 0:
                 releases = tuple(False for _ in source.releases[:6]) + releases[6:]
+                rotation_percent = tuple(
+                    0 if position in (0, 2, 4) else value
+                    for position, value in enumerate(rotation_percent)
+                )
             if index < len(member_names) - 1:
                 releases = releases[:6] + tuple(False for _ in source.releases[6:])
+                rotation_percent = tuple(
+                    0 if position in (1, 3, 5) else value
+                    for position, value in enumerate(rotation_percent)
+                )
             offsets = (
                 source.solid_face_offsets[0] if index == 0 else 0.0,
                 source.solid_face_offsets[1] if index == len(member_names) - 1 else 0.0,
@@ -252,6 +269,7 @@ class StructuralModel:
                 end_node=chain[index + 1],
                 releases=releases,
                 solid_face_offsets=offsets,
+                rotation_flexibility_percent=rotation_percent,
             )
 
         member_actions = tuple(
@@ -437,6 +455,7 @@ class StructuralModel:
             changes["solid_face_offsets"] = source.solid_face_offsets
         if "releases" in properties:
             changes["releases"] = source.releases
+            changes["rotation_flexibility_percent"] = source.rotation_flexibility_percent
         copied = replace(target, **changes)
         self.bars[target_name] = copied
         self._touch()
@@ -524,7 +543,35 @@ class StructuralModel:
     def update_member_releases(self, name: str, releases: tuple[bool, ...]) -> Bar:
         if name not in self.bars:
             raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
-        self.bars[name] = replace(self.bars[name], releases=self._member_releases(releases))
+        normalized = self._member_releases(releases)
+        current_percent = self.bars[name].rotation_flexibility_percent
+        rotation_percent = tuple(
+            0 if normalized[index] else min(99, current_percent[position])
+            for position, index in enumerate((6, 7, 8, 9, 10, 11))
+        )
+        self.bars[name] = replace(
+            self.bars[name],
+            releases=normalized,
+            rotation_flexibility_percent=rotation_percent,
+        )
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _member_rotation_flexibility_percent(values: tuple[int, ...]) -> tuple[int, ...]:
+        if len(values) != 6:
+            raise ValueError("Os percentuais de flexibilização devem possuir seis valores.")
+        normalized = tuple(values)
+        if any(isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 99
+               for value in normalized):
+            raise ValueError("Os percentuais de flexibilização devem ser inteiros entre 0 e 99.")
+        return normalized
+
+    def update_member_rotation_flexibility_percent(self, name: str, percent: tuple[int, ...]) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        values = self._member_rotation_flexibility_percent(percent)
+        self.bars[name] = replace(self.bars[name], rotation_flexibility_percent=values)
         self._touch()
         return self.bars[name]
 

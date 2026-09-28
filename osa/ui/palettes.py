@@ -406,6 +406,7 @@ class TopIconPalette(QFrame):
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("box.svg", "Seções sólidas", "solid"),
                                         ("release.svg", "Vinculações dos membros", "releases"),
+                                        ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
                                         ("support-3d.svg", "Apoios dos nós", "supports")):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
@@ -429,6 +430,8 @@ class TopIconPalette(QFrame):
                 button.toggled.connect(window.scene.set_solid_members_visible)
             elif kind == "releases":
                 button.toggled.connect(window.scene.set_member_releases_visible)
+            elif kind == "semirigid":
+                button.toggled.connect(window.scene.set_semirigid_links_visible)
             elif kind == "supports":
                 button.toggled.connect(window.scene.set_node_supports_visible)
             else:

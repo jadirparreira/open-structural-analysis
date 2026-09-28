@@ -67,6 +67,10 @@ class Member:
     # Distâncias visuais, em metros, entre os nós analíticos e as faces
     # sólidas nas extremidades A e B. Não participam do modelo do solver.
     solid_face_offsets: tuple[float, float] = (0.0, 0.0)
+    # Percentuais de flexibilização das rotações locais Rxa/Rxb, Rya/Ryb e
+    # Rza/Rzb. Zero indica vínculo rígido; de 1% a 99% reduz a rigidez efetiva
+    # por uma mola rotacional equivalente; 100% libera a rotação.
+    rotation_flexibility_percent: tuple[int, int, int, int, int, int] = (0,) * 6
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

@@ -3,10 +3,11 @@ from math import isfinite
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
 
+from osa.services import calculate_rigid_bar_stiffness
+
 from .color_palette import HoneycombColorPalette
 from .common import *
 from .window_frame import WindowFrame
-from osa.services import calculate_rigid_bar_stiffness
 
 
 class CompactDoubleSpinBox(QDoubleSpinBox):
@@ -91,6 +92,7 @@ class PropertyPanel(QFrame):
         self._releases_header: QWidget | None = None
         self._release_stack: QStackedWidget | None = None
         self._release_boxes: list[QCheckBox] = []
+        self._release_rotation_percent_inputs: dict[int, QLineEdit] = {}
         self._release_end = "A"
         self._release_switch_indicator: QFrame | None = None
         self._release_switch_buttons: dict[str, QToolButton] = {}
@@ -329,21 +331,56 @@ class PropertyPanel(QFrame):
             )
             endpoint_indices = {"A": (0, 6, 2, 8, 4, 10), "B": (1, 7, 3, 9, 5, 11)}
             self._release_stack = QStackedWidget()
+            self._release_rotation_percent_inputs.clear()
             for endpoint in ("A", "B"):
                 endpoint_widget = QWidget()
                 endpoint_layout = QGridLayout(endpoint_widget)
                 endpoint_layout.setContentsMargins(0, 0, 0, 0)
-                endpoint_layout.setHorizontalSpacing(12)
+                endpoint_layout.setHorizontalSpacing(8)
                 endpoint_layout.setVerticalSpacing(self.layout.spacing())
-                for position, index in enumerate(endpoint_indices[endpoint]):
-                    label = release_labels[index]
-                    checkbox = QCheckBox(label)
-                    checkbox.setToolTip(release_tooltips[label])
-                    checkbox.setStyleSheet(checkbox_style)
-                    checkbox.setChecked(bar.releases[index])
-                    checkbox.stateChanged.connect(self._releases_changed)
-                    release_boxes[index] = checkbox
-                    endpoint_layout.addWidget(checkbox, position // 2, position % 2)
+                endpoint_layout.setColumnStretch(0, 3)
+                endpoint_layout.setColumnStretch(1, 3)
+                endpoint_layout.setColumnStretch(2, 4)
+                indices = endpoint_indices[endpoint]
+                for position in range(3):
+                    translation_index = indices[position * 2]
+                    rotation_index = indices[position * 2 + 1]
+                    translation_label = release_labels[translation_index]
+                    translation_checkbox = QCheckBox(translation_label)
+                    translation_checkbox.setToolTip(release_tooltips[translation_label])
+                    translation_checkbox.setStyleSheet(checkbox_style)
+                    translation_checkbox.setChecked(not bar.releases[translation_index])
+                    translation_checkbox.stateChanged.connect(self._releases_changed)
+                    release_boxes[translation_index] = translation_checkbox
+                    endpoint_layout.addWidget(translation_checkbox, position, 0)
+
+                    rotation_label = release_labels[rotation_index]
+                    rotation_checkbox = QCheckBox(rotation_label)
+                    rotation_checkbox.setToolTip(release_tooltips[rotation_label])
+                    rotation_checkbox.setStyleSheet(checkbox_style)
+                    rotation_checkbox.setChecked(not bar.releases[rotation_index])
+                    rotation_checkbox.stateChanged.connect(self._releases_changed)
+                    release_boxes[rotation_index] = rotation_checkbox
+                    endpoint_layout.addWidget(rotation_checkbox, position, 1)
+
+                    percent = QLineEdit()
+                    percent.setObjectName("unitValue")
+                    percent.setMinimumWidth(0)
+                    percent.setValidator(QRegularExpressionValidator(
+                        QRegularExpression(r"\d*"), percent
+                    ))
+                    stored_percent = bar.rotation_flexibility_percent[
+                        (rotation_index - 6) if rotation_index < 12 else 0
+                    ]
+                    percent.setText(str(stored_percent) if not bar.releases[rotation_index] else "")
+                    percent.setEnabled(not bar.releases[rotation_index])
+                    percent.setAccessibleName(f"{rotation_label} (%)")
+                    percent_box = self._percentage_unit_box(percent)
+                    percent.editingFinished.connect(
+                        lambda idx=rotation_index: self._release_rotation_percent_changed(idx)
+                    )
+                    self._release_rotation_percent_inputs[rotation_index] = percent
+                    endpoint_layout.addWidget(percent_box, position, 2)
                 self._release_stack.addWidget(endpoint_widget)
             self._release_boxes = [box for box in release_boxes if box is not None]
             self._release_stack.setCurrentIndex(0)
@@ -607,6 +644,24 @@ class PropertyPanel(QFrame):
         layout.setSpacing(0)
         layout.addWidget(field, 1)
         layout.addWidget(QLabel(unit))
+        return box
+
+    @staticmethod
+    def _percentage_unit_box(field: QLineEdit) -> QFrame:
+        box = QFrame()
+        box.setObjectName("unitValueBox")
+        box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; "
+            "color: #57606a; padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+        )
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(field, 1)
+        layout.addWidget(QLabel("%"))
         return box
 
     @staticmethod
@@ -1402,6 +1457,7 @@ class PropertyPanel(QFrame):
             self._releases_widget = None
             self._release_stack = None
             self._release_boxes.clear()
+            self._release_rotation_percent_inputs.clear()
         if self._releases_header is not None:
             header = self._releases_header
             self.layout.removeWidget(header)
@@ -1637,9 +1693,57 @@ class PropertyPanel(QFrame):
     def _releases_changed(self, _state: int) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self._release_boxes) != 12:
             return
-        releases = tuple(checkbox.isChecked() for checkbox in self._release_boxes)
+        releases = tuple(not checkbox.isChecked() for checkbox in self._release_boxes)
+        for index, percent in self._release_rotation_percent_inputs.items():
+            checkbox = self._release_boxes[index]
+            if checkbox.isChecked():
+                percent.setEnabled(True)
+                if not percent.text().strip():
+                    with QSignalBlocker(percent):
+                        percent.setText("0")
+            else:
+                with QSignalBlocker(percent):
+                    percent.setText("")
+                percent.setEnabled(False)
         self.window.model_service.update_member_releases(self._selected[1], releases)
+        self._update_release_rotation_percent()
         self.window.refresh_member_releases(self._selected[1])
+
+    def _release_rotation_percent_changed(self, index: int) -> None:
+        if not self._selected or self._selected[0] != "bar":
+            return
+        percent = self._release_rotation_percent_inputs.get(index)
+        if percent is None or not 0 <= index < len(self._release_boxes):
+            return
+        try:
+            value = int(percent.text() or "0")
+        except ValueError:
+            value = 0
+        checkbox = self._release_boxes[index]
+        if value >= 100:
+            with QSignalBlocker(checkbox):
+                checkbox.setChecked(False)
+            with QSignalBlocker(percent):
+                percent.setText("")
+            percent.setEnabled(False)
+            self._releases_changed(0)
+        else:
+            value = max(value, 0)
+            with QSignalBlocker(percent):
+                percent.setText(str(value))
+            self._update_release_rotation_percent()
+            self.window.refresh_member_releases(self._selected[1])
+
+    def _update_release_rotation_percent(self) -> None:
+        if not self._selected or len(self._release_rotation_percent_inputs) != 6:
+            return
+        values = tuple(
+            min(99, max(0, int(self._release_rotation_percent_inputs[index].text() or "0")))
+            for index in (6, 7, 8, 9, 10, 11)
+        )
+        self.window.model_service.update_member_rotation_flexibility_percent(
+            self._selected[1], values
+        )
 
     def _material_selected(self, material: str) -> None:
         # A section profile belongs to a material catalog. Changing material

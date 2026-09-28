@@ -84,6 +84,16 @@ class ProjectSerializer:
             geometry = item.get("section_geometry", ())
             if isinstance(geometry, dict):
                 geometry = tuple(geometry.items())
+            releases = candidate._member_releases(
+                tuple(bool(value) for value in item.get("releases", (False,) * 12))
+            )
+            raw_rotation_percent = item.get("rotation_flexibility_percent")
+            if raw_rotation_percent is None:
+                rotation_percent = (0,) * 6
+            else:
+                rotation_percent = candidate._member_rotation_flexibility_percent(
+                    tuple(0 if int(value) >= 100 else int(value) for value in raw_rotation_percent)
+                )
             member = Bar(
                 item["name"], item["start_node"], item["end_node"],
                 item.get("material", "Indefinido"),
@@ -91,11 +101,12 @@ class ProjectSerializer:
                 item.get("section", ""), item.get("profile", ""),
                 tuple((str(key), float(value)) for key, value in geometry),
                 candidate._member_rotation(item.get("rotation", 0)),
-                candidate._member_releases(tuple(bool(value) for value in item.get("releases", (False,) * 12))),
+                releases,
                 candidate._member_color(item.get("color", "#6e7781")),
                 candidate._member_solid_face_offsets(
                     tuple(float(value) for value in item.get("solid_face_offsets", (0.0, 0.0)))
                 ),
+                rotation_flexibility_percent=rotation_percent,
             )
             candidate.bars[member.name] = member
 

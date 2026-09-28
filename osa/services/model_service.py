@@ -110,6 +110,9 @@ class ModelService:
     def update_member_releases(self, name: str, releases: tuple[bool, ...]):
         return self.model.update_member_releases(name, releases)
 
+    def update_member_rotation_flexibility_percent(self, name: str, percent: tuple[int, ...]):
+        return self.model.update_member_rotation_flexibility_percent(name, percent)
+
     def update_member_solid_face_offsets(self, name: str, offsets: tuple[float, ...]):
         return self.model.update_member_solid_face_offsets(name, offsets)
 

@@ -23,6 +23,7 @@ from .batched_renderer import (
     MemberBatch,
     NodeBatch,
 )
+from .elastic_support_overlay import ElasticSupportOverlay
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
 from .navigation_widget import NavigationWidget
@@ -128,6 +129,7 @@ class StructureScene(QWidget):
         self._action_renderer = ActionRenderer()
         self._result_renderer = ResultRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
+        self._elastic_support_overlay = ElasticSupportOverlay(self.plotter)
         self._coordinate_readout = QFrame(self.plotter)
         self._coordinate_readout.setObjectName("coordinateReadout")
         self._coordinate_readout.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -249,6 +251,7 @@ class StructureScene(QWidget):
         self._labels_visibility = {"node": True, "bar": True}
         self._solid_members_visible = True
         self._member_releases_visible = True
+        self._semirigid_links_visible = True
         self._node_supports_visible = True
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
@@ -350,6 +353,7 @@ class StructureScene(QWidget):
         if not model.nodes:
             self._marker_radius_locked = False
             self._label_overlay.clear()
+            self._elastic_support_overlay.set_members((), (), 0.0)
             self._add_reference_axis_labels()
             if preserve_camera and camera_state is not None:
                 self._restore_camera(camera_state)
@@ -379,6 +383,7 @@ class StructureScene(QWidget):
         self._member_batch, self._node_batch, self._rigid_bar_names, self._rigid_bar_mesh = (
             self._base_geometry_cache
         )
+        self._elastic_support_overlay.set_members(model.bars.values(), model.nodes.values(), node_radius)
         self._add_rigid_bar_batch()
         self._add_member_batches()
         self._add_node_batches()
@@ -1968,6 +1973,11 @@ class StructureScene(QWidget):
             self._release_actor.SetVisibility(visible)
         self.plotter.render()
 
+    def set_semirigid_links_visible(self, visible: bool) -> None:
+        self._semirigid_links_visible = bool(visible)
+        self._elastic_support_overlay.set_visible(visible)
+        self.plotter.render()
+
     def set_node_supports_visible(self, visible: bool) -> None:
         self._node_supports_visible = bool(visible)
         if self._support_actor is not None:
@@ -2253,6 +2263,7 @@ class StructureScene(QWidget):
 
     def _sync_labels(self) -> None:
         self._label_overlay.sync(self.plotter.renderer)
+        self._elastic_support_overlay.sync(self.plotter.renderer)
         if hasattr(self, "_coordinate_readout"):
             self._update_coordinate_readout()
             if self._member_preview_start is not None:
@@ -2391,6 +2402,7 @@ class StructureScene(QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_orientation_widget"):
             self._label_overlay.resize_to_parent()
+            self._elastic_support_overlay.resize_to_parent()
             self._sync_labels()
             self._orientation_widget.resize()
             self._orientation_widget.sync_from_camera()

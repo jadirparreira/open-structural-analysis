@@ -9,6 +9,7 @@ from .combination_builder import CombinationBuilder
 from .load_case_builder import LoadCaseBuilder
 from .model_builder import ModelBuilder
 from .result_mapper import ResultMapper
+from .semirigid import install_semirigid_connections
 
 
 class PyniteAdapter:
@@ -36,6 +37,7 @@ class PyniteAdapter:
         load_cases = self.load_cases.apply(target, model)
         self._notify(progress, "combinations")
         available_references = self.combinations.apply(target, model, load_cases)
+        install_semirigid_connections(target, model)
         self._notify(progress, "solve")
         target.analyze()
         references = request.load_combinations or available_references

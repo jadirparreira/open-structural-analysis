@@ -7,6 +7,7 @@ def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
     model.add_node("N1", 0, 0, 0); model.add_node("N2", 1, 0, 0)
     model.update_node_supports("N1", (True, True, True, False, False, False))
     model.add_bar("B1", "N1", "N2")
+    model.update_member_rotation_flexibility_percent("B1", (10, 20, 30, 40, 50, 60))
     model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 150 x 13.0", {"d": 148, "bf": 100})
@@ -14,6 +15,7 @@ def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
     model.save(path)
     restored = StructuralModel(); restored.load(path)
     assert restored.nodes["N1"].supports == model.nodes["N1"].supports
+    assert restored.bars["B1"].rotation_flexibility_percent == (10, 20, 30, 40, 50, 60)
     assert restored.bars["B1"] == model.bars["B1"]
 
 

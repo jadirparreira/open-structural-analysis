@@ -79,10 +79,13 @@ class ModelBuilder:
                 member.name, member.start_node, member.end_node, member.material,
                 section_name, rotation=member.rotation,
             )
-            if any(member.releases):
+            releases = list(member.releases)
+            for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
+                releases[index] = releases[index] or percent >= 100
+            if any(releases):
                 # The application exposes the pair-by-pair order (a/b), while
                 # PyNite groups all six local DOFs by member end.
-                dxa, dxb, dya, dyb, dza, dzb, rxa, rxb, rya, ryb, rza, rzb = member.releases
+                dxa, dxb, dya, dyb, dza, dzb, rxa, rxb, rya, ryb, rza, rzb = releases
                 target.def_releases(
                     member.name, dxa, dya, dza, rxa, rya, rza,
                     dxb, dyb, dzb, rxb, ryb, rzb,
