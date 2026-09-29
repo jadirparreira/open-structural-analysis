@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._member_placement_start: tuple[float, float, float] | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
+        self._member_direction_normalization_enabled = False
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("Open Structural Analysis")
@@ -95,6 +96,9 @@ class MainWindow(QMainWindow):
         self.palette = FloatingPalette(self)
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
+        self.top_icon_palette.set_member_direction_normalization_enabled(
+            self._member_direction_normalization_enabled
+        )
         self.top_icon_palette.reposition()
         self.member_property_copy_panel = MemberPropertyCopyPanel(self)
         self.selected_action_name: str | None = None
@@ -274,6 +278,27 @@ class MainWindow(QMainWindow):
         dialog = ProgramSettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+
+    @property
+    def member_direction_normalization_enabled(self) -> bool:
+        return self._member_direction_normalization_enabled
+
+    def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
+        """Toggle canonical member orientation and synchronize the geometry tool."""
+        enabled = bool(enabled)
+        self._member_direction_normalization_enabled = enabled
+        self.top_icon_palette.set_member_direction_normalization_enabled(enabled)
+        if not enabled:
+            return
+        changed = self.normalize_member_directions_if_enabled()
+        if changed:
+            self.refresh_selected_property_panel(self.palette.active_group)
+            self.refresh_scene()
+
+    def normalize_member_directions_if_enabled(self) -> tuple[str, ...]:
+        if not self._member_direction_normalization_enabled:
+            return ()
+        return self.model_service.normalize_member_directions()
 
     def open_action_groups(self) -> None:
         dialog = ActionGroupDialog(self)
@@ -641,6 +666,8 @@ class MainWindow(QMainWindow):
 
     def start_reverse_member(self) -> None:
         """Reverse the selected member or enter graphical member-selection mode."""
+        if self.member_direction_normalization_enabled:
+            return
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
         if self.selected is not None and self.selected[0] == "bar":
@@ -656,6 +683,8 @@ class MainWindow(QMainWindow):
         self.scene.plotter.setFocus()
 
     def _reverse_member(self, member_name: str) -> None:
+        if self.member_direction_normalization_enabled:
+            return
         self.command_session.cancel()
         self._command_mode = None
         try:
@@ -701,6 +730,7 @@ class MainWindow(QMainWindow):
                 f"> <b>Unir membros</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
+        self.normalize_member_directions_if_enabled()
         self._join_member_first = None
         self._command_mode = None
         self.history.append(
@@ -829,6 +859,7 @@ class MainWindow(QMainWindow):
         elif response.model_changed:
             if split_source is not None and self.selected == ("bar", split_source):
                 self.clear_selection()
+            self.normalize_member_directions_if_enabled()
             self.refresh_action_palette()
             self.refresh_analysis_palette()
             self.refresh_scene(
@@ -1021,6 +1052,7 @@ class MainWindow(QMainWindow):
                 created_nodes.append(end_name)
             member_name = self.model_service.next_member_name()
             self.model_service.create_member(start_name, end_name, name=member_name)
+            self.normalize_member_directions_if_enabled()
         except ValueError:
             for node_name in reversed(created_nodes):
                 self.model_service.remove_node(node_name)
@@ -1232,6 +1264,7 @@ class MainWindow(QMainWindow):
             try:
                 self.axes_panel.discard()
                 self.project_service.load(path)
+                self.normalize_member_directions_if_enabled()
                 self.section_profiles = {
                     name: member.profile for name, member in self.model.bars.items() if member.profile
                 }

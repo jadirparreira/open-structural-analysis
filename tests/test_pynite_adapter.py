@@ -257,6 +257,50 @@ def test_bending_labels_are_placed_outside_the_drawn_curve():
     assert positions[1][2] < -0.25
 
 
+def test_bending_labels_keep_both_relevant_member_end_values():
+    positions, labels = ResultRenderer()._member_result_labels(
+        np.asarray((-1.567, 2.273, -1.567)),
+        np.asarray((-1.567, 2.273, -1.567)),
+        np.asarray(((0, 0, 0), (1, 0, 0), (2, 0, 0))),
+        np.asarray(((0, 0, -0.2), (1, 0, 0.3), (2, 0, -0.2))),
+        np.asarray((1, 0, 0)), np.asarray((0, 0, 1)), "kN·m",
+        include_endpoints=True,
+    )
+
+    assert labels == ["-1,567 kN·m", "2,273 kN·m", "-1,567 kN·m"]
+    assert [position[0] for position in positions] == pytest.approx([0.2, 1.0, 1.8])
+
+
+def test_result_labels_merge_equal_bending_values_at_a_shared_node():
+    class Plotter:
+        def add_mesh(self, *_args, **_options):
+            return object()
+
+    model = StructuralModel()
+    model.nodes = {
+        "N1": Node("N1", 0, 0, 0),
+        "N2": Node("N2", 1, 0, 0),
+        "N3": Node("N3", 2, 0, 0),
+    }
+    model.bars = {
+        "B1": Bar("B1", "N1", "N2"),
+        "B2": Bar("B2", "N2", "N3"),
+    }
+    result = AnalysisResult(0, "Combinação", member_results={
+        name: {"samples": (
+            {"x": 0, "moment_y": 1},
+            {"x": 0.5, "moment_y": -2},
+            {"x": 1, "moment_y": 1},
+        )}
+        for name in ("B1", "B2")
+    })
+
+    _actors, positions, labels = ResultRenderer().render(Plotter(), model, result, "Fletor Y")
+
+    assert labels == ("-1 kN·m", "2 kN·m", "-1 kN·m", "2 kN·m", "-1 kN·m")
+    assert positions[:, 0] == pytest.approx((0.1, 0.5, 1.0, 1.5, 1.9))
+
+
 def test_deformation_draws_an_amplified_deformed_member_centerline():
     class Plotter:
         def __init__(self):

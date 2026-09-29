@@ -126,6 +126,25 @@ def test_reverse_member_swaps_its_endpoints_without_changing_its_identity():
     assert model.bars["B1"].end_node == "N1"
 
 
+def test_normalize_member_directions_uses_the_first_different_global_coordinate():
+    model, _commands = session()
+    model.add_node("N1", 4, 0, 0)
+    model.add_node("N2", 0, 0, 0)
+    model.add_node("N3", 0, 5, 0)
+    model.add_node("N4", 0, 0, 7)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N3", "N4")
+    model.add_bar("B3", "N2", "N3")
+
+    service = ModelService(model)
+
+    assert service.normalize_member_directions() == ("B1", "B2")
+    assert (model.bars["B1"].start_node, model.bars["B1"].end_node) == ("N2", "N1")
+    assert (model.bars["B2"].start_node, model.bars["B2"].end_node) == ("N4", "N3")
+    assert (model.bars["B3"].start_node, model.bars["B3"].end_node) == ("N2", "N3")
+    assert service.normalize_member_directions() == ()
+
+
 def test_join_members_merges_collinear_members_and_removes_the_interface_node():
     model, _commands = session()
     model.add_node("N1", 0, 0, 0)

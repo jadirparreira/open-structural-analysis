@@ -459,6 +459,7 @@ class ProgramSettingsDialog(QDialog):
         categories.setSpacing(8)
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
+        categories.addItem("Membros")
         pages = QStackedWidget()
         snaps_page = QWidget()
         page_layout = QVBoxLayout(snaps_page)
@@ -501,6 +502,39 @@ class ProgramSettingsDialog(QDialog):
         close_row.addWidget(close_button)
         page_layout.addLayout(close_row)
         pages.addWidget(snaps_page)
+
+        members_page = QWidget()
+        members_layout = QVBoxLayout(members_page)
+        members_layout.addSpacing(10)
+        members_hint = QLabel(
+            "Membros com direções diferentes podem posicionar resultados de análise incorretamente."
+        )
+        members_hint.setObjectName("hint")
+        members_hint.setWordWrap(True)
+        members_layout.addWidget(members_hint)
+        members_layout.addSpacing(8)
+        self._member_direction_checkbox = QCheckBox(
+            "Normalizar direção dos membros automaticamente"
+        )
+        self._member_direction_checkbox.setAccessibleName(
+            "Normalizar direção dos membros automaticamente"
+        )
+        self._member_direction_checkbox.setChecked(
+            self.window.member_direction_normalization_enabled
+        )
+        self._member_direction_checkbox.toggled.connect(
+            self.window.set_member_direction_normalization_enabled
+        )
+        members_layout.addWidget(self._member_direction_checkbox)
+        members_layout.addStretch(1)
+        members_close_button = QPushButton("Fechar")
+        members_close_button.setObjectName("closeProperties")
+        members_close_button.clicked.connect(self.accept)
+        members_close_row = QHBoxLayout()
+        members_close_row.addStretch()
+        members_close_row.addWidget(members_close_button)
+        members_layout.addLayout(members_close_row)
+        pages.addWidget(members_page)
         categories.currentRowChanged.connect(pages.setCurrentIndex)
         categories.setCurrentRow(0)
         layout.addWidget(categories)

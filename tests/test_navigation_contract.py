@@ -63,7 +63,7 @@ def test_model_refresh_and_reference_planes_preserve_camera_pose(qt_app):
     scene.render_model(_sample_model())
     _assert_same_pose(before, _camera_pose(scene))
     assert scene.plotter.camera_set
-    assert scene.plotter.iren.style.GetClassName() == "vtkInteractorStyleTerrain"
+    assert scene.plotter.iren.style.GetClassName() == "vtkInteractorStyleUser"
 
     scene.set_reference_plane_mode("XZ")
     _assert_same_pose(before, _camera_pose(scene))
@@ -82,6 +82,40 @@ def test_wheel_zoom_changes_scale_without_reframing(qt_app):
         assert np.allclose(before_value, after_value)
     assert after[3] < before[3]
     assert scene.plotter.camera_set
+
+
+def test_horizontal_orbit_keeps_global_z_after_any_cube_orientation(qt_app, monkeypatch):
+    scene = StructureScene()
+    scene.plotter.render_window.SetSize(800, 600)
+    monkeypatch.setattr(scene._orientation_widget, "is_pointer_over", lambda *_args: False)
+    monkeypatch.setattr(scene._orientation_widget._camera_animation, "isActive", lambda: False)
+    interactor = scene.plotter.iren.interactor
+    camera = scene.plotter.renderer.GetActiveCamera()
+
+    # An oblique (corner) view must preserve Z during a horizontal orbit.
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+    camera.SetPosition(10.0, 10.0, 10.0)
+    camera.SetViewUp(0.0, 0.0, 1.0)
+    interactor.SetEventInformation(400, 300, 0, 0, "a", 0, None)
+    interactor.InvokeEvent("LeftButtonPressEvent")
+    interactor.SetEventInformation(500, 300, 0, 0, "a", 0, None)
+    interactor.InvokeEvent("MouseMoveEvent")
+    interactor.InvokeEvent("LeftButtonReleaseEvent")
+    assert np.isclose(camera.GetPosition()[2], 10.0)
+    assert np.allclose(camera.GetViewUp(), (0.0, 0.0, 1.0))
+
+    # At the XY view's pole, rotating around Z is represented by the screen
+    # heading, not by moving the camera around another horizontal axis.
+    camera.SetPosition(0.0, 0.0, 10.0)
+    camera.SetViewUp(0.0, 1.0, 0.0)
+    interactor.SetEventInformation(400, 300, 0, 0, "a", 0, None)
+    interactor.InvokeEvent("LeftButtonPressEvent")
+    interactor.SetEventInformation(500, 300, 0, 0, "a", 0, None)
+    interactor.InvokeEvent("MouseMoveEvent")
+    interactor.InvokeEvent("LeftButtonReleaseEvent")
+    assert np.allclose(camera.GetPosition(), (0.0, 0.0, 10.0))
+    assert np.isclose(camera.GetViewUp()[2], 0.0)
+    assert not np.allclose(camera.GetViewUp(), (0.0, 1.0, 0.0))
 
 
 def test_hidden_construction_plane_is_not_a_snap_target(qt_app, monkeypatch):

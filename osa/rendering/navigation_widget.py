@@ -306,7 +306,6 @@ class CameraCubeWidget:
         self._camera_animation.stop()
         self._set_navigation_style_enabled(False)
         self._orient_camera_to_normal(normal)
-        QTimer.singleShot(0, lambda: self._set_navigation_style_enabled(True))
 
     def _orient_camera_to_normal(self, normal: np.ndarray) -> None:
         camera = self._parent_renderer.GetActiveCamera()

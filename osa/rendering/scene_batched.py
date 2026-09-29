@@ -276,6 +276,8 @@ class StructureScene(QWidget):
         self._marker_radius_locked = False
         self._zoom_reference_parallel_scale: float | None = None
         self._camera_interacting = False
+        self._camera_drag_mode: str | None = None
+        self._camera_drag_last_position: tuple[int, int] | None = None
         self._camera_initialized = False
         self._manual_edit_target: np.ndarray | None = None
         self._manual_edit_index: int | None = None
@@ -311,11 +313,39 @@ class StructureScene(QWidget):
         )
 
         self.plotter.iren.add_observer("MouseMoveEvent", self._on_mouse_move)
-        # Selection is observed before the camera style.  Member placement is
-        # finalized on mouse release in the Qt event filter, so a drag can
-        # still use the normal Revit-like terrain orbit.
+        # Selection is observed before the camera controls. Member placement
+        # is finalized on mouse release, so a drag still orbits normally.
         self._left_click_observer_id = self.plotter.iren.interactor.AddObserver(
             "LeftButtonPressEvent", self._on_left_click, 1.0,
+        )
+        self._navigation_observer_ids = (
+            self.plotter.iren.interactor.AddObserver(
+                "LeftButtonPressEvent", self._on_navigation_left_press, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "LeftButtonReleaseEvent", self._on_navigation_button_release, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "MiddleButtonPressEvent", self._on_navigation_middle_press, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "MiddleButtonReleaseEvent", self._on_navigation_button_release, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "RightButtonPressEvent", self._on_navigation_right_press, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "RightButtonReleaseEvent", self._on_navigation_button_release, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "MouseMoveEvent", self._on_navigation_mouse_move, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "MouseWheelForwardEvent", self._on_navigation_wheel, 1.5,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "MouseWheelBackwardEvent", self._on_navigation_wheel, 1.5,
+            ),
         )
         self.plotter.iren.add_observer("InteractionEvent", self._on_interaction)
         self.plotter.iren.add_observer("EndInteractionEvent", self._on_interaction_end)
@@ -892,13 +922,16 @@ class StructureScene(QWidget):
                 and not over_navigation_cube
             ):
                 # Keep a normal click for placement, but let VTK receive the
-                # press.  If the pointer moves, Terrain handles it as an orbit
-                # exactly as it does outside the drawing tool.
+                # press. If the pointer moves, the same orbit used outside
+                # the drawing tool takes over.
                 self._member_placement_press = point.x(), point.y()
             elif (
                 event.type() == QEvent.Type.MouseButtonRelease
                 and event.button() == Qt.MouseButton.LeftButton
             ):
+                # Ensure a release that occurs outside the OpenGL viewport
+                # also ends an active camera gesture.
+                QTimer.singleShot(0, self._finish_camera_drag)
                 press_position = self._member_placement_press
                 self._member_placement_press = None
                 if (
@@ -2240,8 +2273,218 @@ class StructureScene(QWidget):
         )
 
     def _apply_revit_navigation_style(self) -> None:
-        """Install the Revit-like terrain camera controls for this interactor."""
-        self.plotter.enable_terrain_style(mouse_wheel_zooms=True, shift_pans=True)
+        """Install explicit world-up navigation, independent of camera pose."""
+        # Terrain treats the camera's ViewUp as its azimuth axis. That is
+        # unsuitable after selecting the XY face or a corner of the cube,
+        # because ViewUp then changes with the clicked face. A user style has
+        # no built-in camera motion; the interactor callbacks below own every
+        # navigation gesture and can keep horizontal rotation on global Z.
+        self.plotter.iren.style = vtk.vtkInteractorStyleUser()
+
+    @staticmethod
+    def _rotate_camera_vector(
+        vector: np.ndarray, axis: np.ndarray, angle_degrees: float,
+    ) -> np.ndarray:
+        """Rotate a camera offset around a unit axis using Rodrigues' formula."""
+        axis_length = float(np.linalg.norm(axis))
+        if axis_length <= 1e-12 or abs(float(angle_degrees)) <= 1e-12:
+            return vector.copy()
+        unit_axis = axis / axis_length
+        angle = np.deg2rad(float(angle_degrees))
+        cosine = float(np.cos(angle))
+        sine = float(np.sin(angle))
+        return (
+            vector * cosine
+            + np.cross(unit_axis, vector) * sine
+            + unit_axis * float(np.dot(unit_axis, vector)) * (1.0 - cosine)
+        )
+
+    def _begin_revit_orbit(self, x: float, y: float) -> None:
+        """Start a world-up orbit from the current cursor position."""
+        if self._camera_drag_mode is not None:
+            return
+        if self._orientation_widget.is_pointer_over(x, y):
+            return
+        if self._orientation_widget._camera_animation.isActive():
+            return
+
+        self._camera_drag_mode = "orbit"
+        self._camera_drag_last_position = int(x), int(y)
+        self._on_interaction()
+
+    def _begin_camera_drag(self, mode: str, x: float, y: float) -> None:
+        if self._camera_drag_mode is not None:
+            return
+        self._camera_drag_mode = mode
+        self._camera_drag_last_position = int(x), int(y)
+        self._on_interaction()
+
+    def _on_navigation_left_press(self, caller, _event) -> None:
+        """Start an orbit, or pan when Shift is held."""
+        x, y = caller.GetEventPosition()
+        if self._orientation_widget.is_pointer_over(x, y):
+            return
+        if self._orientation_widget._camera_animation.isActive():
+            return
+        if caller.GetShiftKey():
+            self._begin_camera_drag("pan", x, y)
+            return
+        self._begin_revit_orbit(x, y)
+
+    def _on_navigation_middle_press(self, caller, _event) -> None:
+        x, y = caller.GetEventPosition()
+        self._begin_camera_drag("pan", x, y)
+
+    def _on_navigation_right_press(self, caller, _event) -> None:
+        x, y = caller.GetEventPosition()
+        self._begin_camera_drag("dolly", x, y)
+
+    def _on_revit_orbit_move(self, x: int, y: int) -> None:
+        """Apply azimuth around global Z and elevation around camera right."""
+        if self._camera_drag_mode != "orbit" or self._camera_drag_last_position is None:
+            return
+
+        last_x, last_y = self._camera_drag_last_position
+        self._camera_drag_last_position = int(x), int(y)
+        dx = float(x) - float(last_x)
+        dy = float(y) - float(last_y)
+        if abs(dx) <= 1e-12 and abs(dy) <= 1e-12:
+            return
+
+        render_width, render_height = self.plotter.render_window.GetSize()
+        if render_width <= 0 or render_height <= 0:
+            return
+        azimuth = -dx / float(render_width) * 180.0
+        elevation = -dy / float(render_height) * 180.0
+
+        camera = self.plotter.renderer.GetActiveCamera()
+        focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
+        offset = np.asarray(camera.GetPosition(), dtype=float) - focal_point
+        distance = float(np.linalg.norm(offset))
+        if distance <= 1e-12:
+            return
+
+        world_up = np.asarray((0.0, 0.0, 1.0), dtype=float)
+        current_up = np.asarray(camera.GetViewUp(), dtype=float)
+        was_at_pole = float(np.linalg.norm(np.cross(world_up, offset))) <= 1e-8
+        offset = self._rotate_camera_vector(offset, world_up, azimuth)
+        if was_at_pole:
+            current_up = self._rotate_camera_vector(current_up, world_up, azimuth)
+
+        direction = -offset / max(float(np.linalg.norm(offset)), 1e-12)
+        elevation_axis = np.cross(world_up, direction)
+        if float(np.linalg.norm(elevation_axis)) <= 1e-8:
+            # At the top/bottom pole, use the current screen heading as the
+            # elevation hinge. This keeps the view usable without replacing
+            # the exact top/bottom orientation with an artificial tilt.
+            horizontal_up = current_up.copy()
+            horizontal_up[2] = 0.0
+            if float(np.linalg.norm(horizontal_up)) <= 1e-8:
+                horizontal_up = np.asarray((0.0, 1.0, 0.0), dtype=float)
+            elevation_axis = np.cross(horizontal_up, direction)
+        offset = self._rotate_camera_vector(offset, elevation_axis, elevation)
+
+        camera.SetPosition(*(focal_point + offset))
+        at_pole = float(np.linalg.norm(np.cross(world_up, offset))) <= 1e-8
+        if at_pole:
+            current_up[2] = 0.0
+            up_length = float(np.linalg.norm(current_up))
+            if up_length <= 1e-8:
+                current_up = np.asarray((0.0, 1.0, 0.0), dtype=float)
+            else:
+                current_up /= up_length
+            camera.SetViewUp(*current_up)
+        else:
+            # Keep the azimuth reference on structural vertical Z for every
+            # oblique view, even when the cube selected a corner.
+            camera.SetViewUp(*world_up)
+
+        self.plotter.reset_camera_clipping_range()
+        self._orientation_widget.sync_from_camera()
+        self._schedule_label_sync()
+        self.plotter.render()
+
+    def _on_navigation_mouse_move(self, caller, _event) -> None:
+        if self._camera_drag_mode is None:
+            return
+        x, y = caller.GetEventPosition()
+        if self._camera_drag_mode == "orbit":
+            self._on_revit_orbit_move(x, y)
+        elif self._camera_drag_mode == "pan":
+            self._pan_camera(x, y)
+        else:
+            self._dolly_camera(y)
+
+    def _pan_camera(self, x: int, y: int) -> None:
+        if self._camera_drag_last_position is None:
+            return
+        last_x, last_y = self._camera_drag_last_position
+        self._camera_drag_last_position = int(x), int(y)
+        renderer = self.plotter.renderer
+        camera = renderer.GetActiveCamera()
+        focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
+        renderer.SetWorldPoint(*focal_point, 1.0)
+        renderer.WorldToDisplay()
+        depth = float(renderer.GetDisplayPoint()[2])
+        current = self._display_to_world(renderer, x, y, depth)
+        previous = self._display_to_world(renderer, last_x, last_y, depth)
+        if current is None or previous is None:
+            return
+        movement = previous - current
+        camera.SetPosition(*(np.asarray(camera.GetPosition(), dtype=float) + movement))
+        camera.SetFocalPoint(*(focal_point + movement))
+        self.plotter.reset_camera_clipping_range()
+        self._orientation_widget.sync_from_camera()
+        self._schedule_label_sync()
+        self.plotter.render()
+
+    def _dolly_camera(self, y: int) -> None:
+        if self._camera_drag_last_position is None:
+            return
+        _last_x, last_y = self._camera_drag_last_position
+        self._camera_drag_last_position = self._camera_drag_last_position[0], int(y)
+        center_y = float(self.plotter.renderer.GetCenter()[1])
+        if abs(center_y) <= 1e-12:
+            return
+        factor = 1.1 ** (10.0 * (float(y) - float(last_y)) / center_y)
+        camera = self.plotter.renderer.GetActiveCamera()
+        if camera.GetParallelProjection():
+            camera.SetParallelScale(camera.GetParallelScale() / factor)
+        else:
+            focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
+            position = np.asarray(camera.GetPosition(), dtype=float)
+            camera.SetPosition(*(focal_point + (position - focal_point) / factor))
+        self.plotter.reset_camera_clipping_range()
+        self._orientation_widget.sync_from_camera()
+        self._schedule_label_sync()
+        self.plotter.render()
+
+    def _on_navigation_wheel(self, _caller, event) -> None:
+        if self._camera_drag_mode is not None:
+            return
+        factor = 1.0 / 1.05 if event == "MouseWheelForwardEvent" else 1.05
+        camera = self.plotter.renderer.GetActiveCamera()
+        if camera.GetParallelProjection():
+            camera.SetParallelScale(camera.GetParallelScale() * factor)
+        else:
+            focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
+            position = np.asarray(camera.GetPosition(), dtype=float)
+            camera.SetPosition(*(focal_point + (position - focal_point) * factor))
+        self.plotter.reset_camera_clipping_range()
+        self._update_zoom_dependent_sizes()
+        self._schedule_label_sync()
+        self.plotter.render()
+
+    def _on_navigation_button_release(self, _caller, _event) -> None:
+        self._finish_camera_drag()
+
+    def _finish_camera_drag(self) -> None:
+        """Stop an orbit, pan or dolly gesture."""
+        if self._camera_drag_mode is None:
+            return
+        self._camera_drag_mode = None
+        self._camera_drag_last_position = None
+        self._on_interaction_end()
 
     def _on_interaction(self, *_args) -> None:
         self._camera_interacting = True

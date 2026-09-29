@@ -1539,7 +1539,9 @@ class PropertyPanel(QFrame):
         start, end = (field.currentText() for field in self.fields if isinstance(field, QComboBox))
         try:
             self.window.model_service.update_member_nodes(self._selected[1], start, end)
+            self.window.normalize_member_directions_if_enabled()
             self.window.refresh_scene()
+            self.show_for("bar", self._selected[1], self.window.palette.active_group or "Geometria")
         except ValueError:
             pass
 

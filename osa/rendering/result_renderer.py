@@ -77,6 +77,7 @@ class ResultRenderer:
         }
         label_positions: list[np.ndarray] = []
         labels: list[str] = []
+        endpoint_nodes: list[str | None] = []
         for name, samples in samples_by_member.items():
             member = model.bars.get(name)
             if member is None or len(samples) < 2:
@@ -100,11 +101,13 @@ class ResultRenderer:
             representative_value = float(values[np.argmax(np.abs(values))])
             center = len(values) // 2
             extreme = int(np.argmax(np.abs(values)))
+            include_endpoints = diagram in {"Fletor Y", "Fletor Z"}
             # Mesmo sem faixa, o rótulo informa explicitamente que o esforço
             # naquela barra é nulo após o arredondamento de apresentação.
             if np.all(values == 0.0):
                 label_positions.append(baseline[center] + diagram_axis * 0.10)
                 labels.append(self._format_value(values[extreme], unit))
+                endpoint_nodes.append(None)
                 continue
             # O eixo analítico é a linha de referência do diagrama. A faixa
             # se projeta integralmente para um lado, tal como os diagramas de
@@ -122,9 +125,17 @@ class ResultRenderer:
                 self._render_shear_geometry(face_batches, line_batches, baseline, curve, values)
             positions, member_labels = self._member_result_labels(
                 values, geometry_values, baseline, curve, local_x, diagram_axis, unit,
+                include_endpoints=include_endpoints,
             )
             label_positions.extend(positions)
             labels.extend(member_labels)
+            endpoint_nodes.extend(
+                member.start_node if index == 0 else member.end_node if index == len(values) - 1 else None
+                for index in self._member_result_label_indices(values, include_endpoints=include_endpoints)
+            )
+        label_positions, labels = self._merge_shared_endpoint_labels(
+            label_positions, labels, endpoint_nodes,
+        )
         for color, (points, faces) in face_batches.items():
             if not points:
                 continue
@@ -167,17 +178,18 @@ class ResultRenderer:
 
     def _member_result_labels(
         self, values, geometry_values, baseline, curve, local_x, diagram_axis, unit: str,
+        *, include_endpoints: bool = False,
     ) -> tuple[list[np.ndarray], list[str]]:
-        """Centraliza valores uniformes e evidencia mínimo/máximo nos demais."""
-        if np.all(values == values[0]):
-            center = len(values) // 2
+        """Centraliza valores uniformes e evidencia os pontos relevantes."""
+        indices = self._member_result_label_indices(values, include_endpoints=include_endpoints)
+        if len(indices) == 1:
+            center = indices[0]
             position = curve[center] + diagram_axis * (0.10 if geometry_values[center] >= 0.0 else -0.10)
             return (
                 [self._clamp_label_position(position, baseline, local_x)],
                 [self._format_value(values[center], unit)],
             )
 
-        indices = (int(np.argmin(values)), int(np.argmax(values)))
         positions = [
             curve[index] + diagram_axis * (0.12 if geometry_values[index] >= 0.0 else -0.12)
             for index in indices
@@ -190,11 +202,46 @@ class ResultRenderer:
         positions = [self._clamp_label_position(position, baseline, local_x) for position in positions]
         return (
             positions,
-            [
-                self._format_value(values[indices[0]], unit),
-                self._format_value(values[indices[1]], unit),
-            ],
+            [self._format_value(values[index], unit) for index in indices],
         )
+
+    @staticmethod
+    def _member_result_label_indices(values, *, include_endpoints: bool) -> list[int]:
+        if np.all(values == values[0]):
+            return [len(values) // 2]
+        indices = [int(np.argmin(values)), int(np.argmax(values))]
+        if include_endpoints:
+            # Em flexão, os valores nas extremidades representam os momentos
+            # nodais e continuam relevantes mesmo quando não são o mínimo ou
+            # máximo exclusivo da amostra.
+            indices.extend((0, len(values) - 1))
+            return sorted(set(indices))
+        return list(dict.fromkeys(indices))
+
+    @staticmethod
+    def _merge_shared_endpoint_labels(
+        positions: list[np.ndarray], labels: list[str], endpoint_nodes: list[str | None],
+    ) -> tuple[list[np.ndarray], list[str]]:
+        """Merge equal labels generated at the same connected node."""
+        groups: dict[tuple[str, str], list[int]] = {}
+        for index, (label, node) in enumerate(zip(labels, endpoint_nodes)):
+            if node is not None:
+                groups.setdefault((node, label), []).append(index)
+
+        merged_positions = list(positions)
+        removed: set[int] = set()
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            first = indices[0]
+            merged_positions[first] = np.mean(
+                [merged_positions[index] for index in indices], axis=0,
+            )
+            removed.update(indices[1:])
+
+        kept_positions = [position for index, position in enumerate(merged_positions) if index not in removed]
+        kept_labels = [label for index, label in enumerate(labels) if index not in removed]
+        return kept_positions, kept_labels
 
     @staticmethod
     def _clamp_label_position(position, baseline, local_x) -> np.ndarray:

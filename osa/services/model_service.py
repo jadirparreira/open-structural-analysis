@@ -61,6 +61,32 @@ class ModelService:
             raise ValueError(f"Membro '{name}' não encontrado.")
         return self.model.update_bar(name, member.end_node, member.start_node)
 
+    def normalize_member_directions(self) -> tuple[str, ...]:
+        """Orient members toward the positive global coordinate direction.
+
+        The first coordinate that differs between the member's endpoints
+        (X, then Y, then Z) defines its canonical direction.  This keeps the
+        local x axis deterministic even when members were created in different
+        click orders.
+        """
+        reversed_members: list[str] = []
+        tolerance = self.model.coordinate_tolerance
+        for name, member in tuple(self.model.bars.items()):
+            start = self.model.nodes[member.start_node]
+            end = self.model.nodes[member.end_node]
+            start_coordinates = (start.x, start.y, start.z)
+            end_coordinates = (end.x, end.y, end.z)
+            should_reverse = False
+            for start_value, end_value in zip(start_coordinates, end_coordinates):
+                difference = end_value - start_value
+                if abs(difference) > tolerance:
+                    should_reverse = difference < 0.0
+                    break
+            if should_reverse:
+                self.reverse_member(name)
+                reversed_members.append(name)
+        return tuple(reversed_members)
+
     def join_members(self, first_name: str, second_name: str):
         """Merge two adjacent collinear members into the first selected one."""
         return self.model.join_bars(first_name, second_name)

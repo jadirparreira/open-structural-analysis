@@ -621,6 +621,10 @@ class TopIconPalette(QFrame):
             self._tooltip.dismiss()
         self.setVisible(visible)
 
+    def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
+        """Disable manual reversal while automatic normalization is active."""
+        self.reverse_member_button.setEnabled(not enabled)
+
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
         self.move((self.window().width() - self.width()) // 2, margin + 52)
