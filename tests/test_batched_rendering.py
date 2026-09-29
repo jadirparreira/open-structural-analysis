@@ -1,6 +1,7 @@
 import numpy as np
 
 from osa.commands import CommandSession
+from osa.domain import Action
 from osa.model import StructuralModel
 from osa.rendering.action_renderer import ActionRenderer
 from osa.rendering.batched_renderer import (
@@ -88,3 +89,62 @@ def test_action_renderer_groups_repeated_action_geometry_into_few_actors():
     assert len(actors) == len(plotter.meshes) == 3
     assert len(labels) == 2
     assert max(mesh.n_cells for mesh, _options in plotter.meshes) > 1
+
+
+def test_action_renderer_omits_zero_actions_and_their_identifiers():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **options):
+            self.meshes.append((mesh, options))
+            return object()
+
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 5.0, 0.0, 0.0)
+    model.add_bar("B1", "N1", "N2")
+    model.actions.update({
+        "Carga zero distribuída": Action(
+            "Carga zero distribuída", "member_distributed_force_Z", "B1", (0.0, 0.0), "Caso",
+        ),
+        "Momento zero": Action(
+            "Momento zero", "member_moment_Y", "B1", (0.0,), "Caso",
+        ),
+        "Força nodal zero": Action(
+            "Força nodal zero", "node_force_Z", "N1", (0.0,), "Caso",
+        ),
+        "Momento nodal zero": Action(
+            "Momento nodal zero", "node_moment_X", "N1", (0.0,), "Caso",
+        ),
+    })
+
+    plotter = Plotter()
+    actors, positions, labels = ActionRenderer().render(plotter, model, "Caso")
+
+    assert actors == []
+    assert plotter.meshes == []
+    assert positions.shape == (0, 3)
+    assert labels == ()
+
+
+def test_action_renderer_keeps_distributed_actions_with_one_zero_endpoint():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **options):
+            self.meshes.append((mesh, options))
+            return object()
+
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 5.0, 0.0, 0.0)
+    model.add_bar("B1", "N1", "N2")
+    model.actions["Carga variável"] = Action(
+        "Carga variável", "member_distributed_force_Z", "B1", (0.0, 5.0), "Caso",
+    )
+
+    _actors, _positions, labels = ActionRenderer().render(Plotter(), model, "Caso")
+
+    assert labels == ("0 kN/m", "5 kN/m")

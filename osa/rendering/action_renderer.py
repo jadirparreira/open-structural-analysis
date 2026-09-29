@@ -39,7 +39,8 @@ class ActionRenderer:
         visibility = visibility or {}
         visible_actions = [
             action for action in model.actions.values()
-            if active_load_case is None or action.load_case == active_load_case
+            if (active_load_case is None or action.load_case == active_load_case)
+            and self._has_nonzero_component(action.components)
         ]
         distributed_actions = [
             action for action in visible_actions
@@ -242,7 +243,19 @@ class ActionRenderer:
                 mesh, color=color, line_width=line_width, lighting=False, pickable=False,
                 reset_camera=False, render=False, render_lines_as_tubes=True,
             ))
-        return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+        return actors, np.asarray(label_positions, dtype=float).reshape((-1, 3)), tuple(labels)
+
+    @staticmethod
+    def _has_nonzero_component(components: tuple[float, ...]) -> bool:
+        """Keep only actions that can contribute visible geometry or labels.
+
+        This culling happens before action classification and batching, so a
+        zero action does not allocate VTK points, enter intensity scaling, or
+        reach the label overlay.  Exact zero is intentional here: very small
+        but nonzero actions remain inspectable instead of being silently
+        discarded by a visual tolerance.
+        """
+        return any(float(component) != 0.0 for component in components)
 
     @staticmethod
     def _append_face(
