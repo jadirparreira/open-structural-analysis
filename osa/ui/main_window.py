@@ -46,6 +46,13 @@ from .window_frame import TitleBar, WindowFrame
 class MainWindow(QMainWindow):
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
+    _interface_commands = frozenset({
+        "member", "split", "reverse", "join", "rigid", "copy", "axes",
+        "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
+        "action", "load", "selfweight", "combinations", "analyze", "grid",
+        "referenceaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
+        "solids", "releases", "semirigid", "supports", "snap",
+    })
 
     def __init__(self) -> None:
         super().__init__()
@@ -776,7 +783,85 @@ class MainWindow(QMainWindow):
         self.refresh_selected_property_panel(self.palette.active_group)
         self.refresh_scene()
 
+    def _handle_interface_command(self, command: str) -> bool:
+        """Dispatch one-word commands that mirror visible interface buttons."""
+        text = command.strip()
+        parts = text.split()
+        name = parts[0].casefold() if parts else ""
+        if name not in self._interface_commands:
+            return False
+        if len(parts) != 1:
+            self.history.append(
+                f"> <b>{escape(text)}</b> "
+                "<span style='color:#8c959f'>(Este comando não aceita argumentos.)</span>"
+            )
+            return True
+
+        geometry_visibility = {
+            "grid": "grid",
+            "referenceaxes": "reference-axes",
+            "nodelabels": "node",
+            "memberlabels": "bar",
+            "localaxes": "axes",
+            "nodes": "nodes",
+            "solids": "solid",
+            "releases": "releases",
+            "semirigid": "semirigid",
+            "supports": "supports",
+        }
+        action_visibility = {
+            "nodeforce": "node_forces",
+            "nodemoment": "node_moments",
+            "memberforce": "member_forces",
+            "membermoment": "member_moments",
+        }
+        command_label = escape(name.upper())
+
+        if name in geometry_visibility:
+            self.palette.show_group("Geometria")
+            self.top_icon_palette.toggle_visibility_command(geometry_visibility[name])
+            self.history.append(f"> <b>{command_label}</b>")
+            return True
+
+        if name == "snap":
+            self.palette.show_group("Geometria")
+            self.top_icon_palette.toggle_snap_command()
+            self.history.append(f"> <b>{command_label}</b>")
+            return True
+
+        if name in action_visibility:
+            self.palette.show_group("Ações")
+            self.action_top_palette.toggle_action_visibility_command(action_visibility[name])
+            self.history.append(f"> <b>{command_label}</b>")
+            return True
+
+        callbacks = {
+            "member": ("Geometria", self.start_member_placement),
+            "split": ("Geometria", self.start_split_member),
+            "reverse": ("Geometria", self.start_reverse_member),
+            "join": ("Geometria", self.start_join_members),
+            "rigid": ("Geometria", self.start_rigid_bar_placement),
+            "copy": ("Geometria", self.start_copy_member_properties),
+            "axes": ("Geometria", self.toggle_axes_panel),
+            "group": ("Ações", self.open_action_groups),
+            "action": ("Ações", self.start_load_command),
+            "load": ("Ações", self.start_load_command),
+            "selfweight": ("Ações", self.start_selfweight_command),
+            "combinations": ("Análise", self.open_combinations),
+            "analyze": ("Análise", self.process_analysis),
+        }
+        target = callbacks.get(name)
+        if target is None:
+            return False
+        self.palette.show_group(target[0])
+        target[1]()
+        if name in {"axes", "group", "combinations", "analyze"}:
+            self.history.append(f"> <b>{command_label}</b>")
+        return True
+
     def handle_command(self, command: str) -> None:
+        if self._handle_interface_command(command):
+            return
         had_model_geometry = bool(self.model.nodes)
         command_name = command.strip().casefold().split(maxsplit=1)[0] if command.strip() else ""
         split_source = self.command_session.split_member_name

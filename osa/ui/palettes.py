@@ -2,6 +2,11 @@ from .common import *
 from .window_frame import WindowFrame
 
 
+def _command_tooltip(label: str, command: str) -> str:
+    """Show the button label and its one-word text command on separate lines."""
+    return f"{label}<br><span style='font-size: 10px;'>{command}</span>"
+
+
 class PaletteTooltip(QLabel):
     """Tooltip compacto que fica ancorado ao lado do botão da paleta."""
 
@@ -398,6 +403,7 @@ class TopIconPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
+        self._visibility_buttons: dict[str, QToolButton] = {}
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
@@ -412,8 +418,21 @@ class TopIconPalette(QFrame):
             button.setFixedSize(24, 24)
             button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
             button.setIconSize(QSize(19, 19))
-            button.setToolTip(tooltip)
-            button.setProperty("paletteTooltip", tooltip)
+            command = {
+                "grid": "GRID",
+                "reference-axes": "REFERENCEAXES",
+                "node": "NODELABELS",
+                "bar": "MEMBERLABELS",
+                "axes": "LOCALAXES",
+                "nodes": "NODES",
+                "solid": "SOLIDS",
+                "releases": "RELEASES",
+                "semirigid": "SEMIRIGID",
+                "supports": "SUPPORTS",
+            }[kind]
+            palette_tooltip = _command_tooltip(tooltip, command)
+            button.setToolTip(palette_tooltip)
+            button.setProperty("paletteTooltip", palette_tooltip)
             button.setAccessibleName(tooltip)
             button.installEventFilter(self)
             button.setCheckable(True)
@@ -444,13 +463,15 @@ class TopIconPalette(QFrame):
                 "QToolButton:pressed { background: #afb8c1; }"
             )
             layout.addWidget(button)
+            self._visibility_buttons[kind] = button
 
         snap_button = QToolButton(self)
         snap_button.setFixedSize(24, 24)
         snap_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "magnet.svg")))
         snap_button.setIconSize(QSize(19, 19))
-        snap_button.setToolTip("Snap")
-        snap_button.setProperty("paletteTooltip", "Snap")
+        snap_tooltip = _command_tooltip("Snap", "SNAP")
+        snap_button.setToolTip(snap_tooltip)
+        snap_button.setProperty("paletteTooltip", snap_tooltip)
         snap_button.setAccessibleName("Snap")
         snap_button.setCheckable(True)
         snap_button.setChecked(True)
@@ -478,8 +499,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"))
         )
         configure_axes_button.setIconSize(QSize(19, 19))
-        configure_axes_button.setToolTip("Configurar eixos")
-        configure_axes_button.setProperty("paletteTooltip", "Configurar eixos")
+        configure_axes_tooltip = _command_tooltip("Configurar eixos", "AXES")
+        configure_axes_button.setToolTip(configure_axes_tooltip)
+        configure_axes_button.setProperty("paletteTooltip", configure_axes_tooltip)
         configure_axes_button.setAccessibleName("Configurar eixos")
         configure_axes_button.clicked.connect(window.toggle_axes_panel)
         configure_axes_button.installEventFilter(self)
@@ -497,8 +519,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "member-spline.svg"))
         )
         add_member_button.setIconSize(QSize(19, 19))
-        add_member_button.setToolTip("Adicionar membro")
-        add_member_button.setProperty("paletteTooltip", "Adicionar membro")
+        add_member_tooltip = _command_tooltip("Adicionar membro", "MEMBER")
+        add_member_button.setToolTip(add_member_tooltip)
+        add_member_button.setProperty("paletteTooltip", add_member_tooltip)
         add_member_button.setAccessibleName("Adicionar membro")
         add_member_button.clicked.connect(window.start_member_placement)
         add_member_button.installEventFilter(self)
@@ -516,8 +539,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "split-member.svg"))
         )
         split_member_button.setIconSize(QSize(19, 19))
-        split_member_button.setToolTip("Dividir membro")
-        split_member_button.setProperty("paletteTooltip", "Dividir membro")
+        split_member_tooltip = _command_tooltip("Dividir membro", "SPLIT")
+        split_member_button.setToolTip(split_member_tooltip)
+        split_member_button.setProperty("paletteTooltip", split_member_tooltip)
         split_member_button.setAccessibleName("Dividir membro")
         split_member_button.clicked.connect(window.start_split_member)
         split_member_button.installEventFilter(self)
@@ -535,8 +559,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "reverse-member.svg"))
         )
         reverse_member_button.setIconSize(QSize(19, 19))
-        reverse_member_button.setToolTip("Inverter membro")
-        reverse_member_button.setProperty("paletteTooltip", "Inverter membro")
+        reverse_member_tooltip = _command_tooltip("Inverter membro", "REVERSE")
+        reverse_member_button.setToolTip(reverse_member_tooltip)
+        reverse_member_button.setProperty("paletteTooltip", reverse_member_tooltip)
         reverse_member_button.setAccessibleName("Inverter membro")
         reverse_member_button.clicked.connect(window.start_reverse_member)
         reverse_member_button.installEventFilter(self)
@@ -554,8 +579,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "join-member-link.svg"))
         )
         join_members_button.setIconSize(QSize(19, 19))
-        join_members_button.setToolTip("Unir membros")
-        join_members_button.setProperty("paletteTooltip", "Unir membros")
+        join_members_tooltip = _command_tooltip("Unir membros", "JOIN")
+        join_members_button.setToolTip(join_members_tooltip)
+        join_members_button.setProperty("paletteTooltip", join_members_tooltip)
         join_members_button.setAccessibleName("Unir membros")
         join_members_button.clicked.connect(window.start_join_members)
         join_members_button.installEventFilter(self)
@@ -573,8 +599,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rigid-member.svg"))
         )
         rigid_member_button.setIconSize(QSize(19, 19))
-        rigid_member_button.setToolTip("Adicionar barra rígida")
-        rigid_member_button.setProperty("paletteTooltip", "Adicionar barra rígida")
+        rigid_member_tooltip = _command_tooltip("Adicionar barra rígida", "RIGID")
+        rigid_member_button.setToolTip(rigid_member_tooltip)
+        rigid_member_button.setProperty("paletteTooltip", rigid_member_tooltip)
         rigid_member_button.setAccessibleName("Adicionar barra rígida")
         rigid_member_button.clicked.connect(window.start_rigid_bar_placement)
         rigid_member_button.installEventFilter(self)
@@ -592,8 +619,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "copy-member-properties.svg"))
         )
         copy_properties_button.setIconSize(QSize(19, 19))
-        copy_properties_button.setToolTip("Copiar propriedades")
-        copy_properties_button.setProperty("paletteTooltip", "Copiar propriedades")
+        copy_properties_tooltip = _command_tooltip("Copiar propriedades", "COPY")
+        copy_properties_button.setToolTip(copy_properties_tooltip)
+        copy_properties_button.setProperty("paletteTooltip", copy_properties_tooltip)
         copy_properties_button.setAccessibleName("Copiar propriedades")
         copy_properties_button.clicked.connect(window.start_copy_member_properties)
         copy_properties_button.installEventFilter(self)
@@ -605,6 +633,14 @@ class TopIconPalette(QFrame):
         layout.addWidget(copy_properties_button)
         self.copy_properties_button = copy_properties_button
         self.adjustSize()
+
+    def toggle_visibility_command(self, kind: str) -> None:
+        button = self._visibility_buttons.get(kind)
+        if button is not None:
+            button.setChecked(not button.isChecked())
+
+    def toggle_snap_command(self) -> None:
+        self.snap_button.setChecked(not self.snap_button.isChecked())
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if isinstance(watched, QToolButton):
@@ -688,6 +724,7 @@ class ActionTopPalette(QFrame):
         self.action_selector.currentTextChanged.connect(window._select_active_action)
         layout.addWidget(self.action_selector)
 
+        self._action_visibility_buttons: dict[str, QToolButton] = {}
         for filename, tooltip, kind in (
             ("node-force.svg", "Forças nos nós", "node_forces"),
             ("node-moment.svg", "Momentos nos nós", "node_moments"),
@@ -698,8 +735,15 @@ class ActionTopPalette(QFrame):
             button.setFixedSize(24, 24)
             button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
             button.setIconSize(QSize(19, 19))
-            button.setToolTip(tooltip)
-            button.setProperty("paletteTooltip", tooltip)
+            command = {
+                "node_forces": "NODEFORCE",
+                "node_moments": "NODEMOMENT",
+                "member_forces": "MEMBERFORCE",
+                "member_moments": "MEMBERMOMENT",
+            }[kind]
+            palette_tooltip = _command_tooltip(tooltip, command)
+            button.setToolTip(palette_tooltip)
+            button.setProperty("paletteTooltip", palette_tooltip)
             button.setAccessibleName(tooltip)
             button.setCheckable(True)
             button.setChecked(True)
@@ -708,6 +752,7 @@ class ActionTopPalette(QFrame):
             )
             button.installEventFilter(self)
             layout.addWidget(button)
+            self._action_visibility_buttons[kind] = button
 
         separator = QFrame(self)
         separator.setFrameShape(QFrame.Shape.VLine)
@@ -722,8 +767,9 @@ class ActionTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "group-actions.svg"))
         )
         group_actions_button.setIconSize(QSize(19, 19))
-        group_actions_button.setToolTip("Grupo de ações")
-        group_actions_button.setProperty("paletteTooltip", "Grupo de ações")
+        group_actions_tooltip = _command_tooltip("Grupo de ações", "GROUP")
+        group_actions_button.setToolTip(group_actions_tooltip)
+        group_actions_button.setProperty("paletteTooltip", group_actions_tooltip)
         group_actions_button.setAccessibleName("Grupo de ações")
         group_actions_button.clicked.connect(window.open_action_groups)
         group_actions_button.installEventFilter(self)
@@ -736,8 +782,9 @@ class ActionTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-action.svg"))
         )
         add_action_button.setIconSize(QSize(19, 19))
-        add_action_button.setToolTip("Adicionar ação")
-        add_action_button.setProperty("paletteTooltip", "Adicionar ação")
+        add_action_tooltip = _command_tooltip("Adicionar ação", "ACTION")
+        add_action_button.setToolTip(add_action_tooltip)
+        add_action_button.setProperty("paletteTooltip", add_action_tooltip)
         add_action_button.setAccessibleName("Adicionar ação")
         add_action_button.clicked.connect(window.start_load_command)
         add_action_button.installEventFilter(self)
@@ -752,13 +799,19 @@ class ActionTopPalette(QFrame):
             Path(__file__).parents[1] / "resources" / "icons" / "selfweight.svg"
         )))
         self.selfweight_button.setIconSize(QSize(19, 19))
-        self.selfweight_button.setToolTip("Aplicar peso próprio")
-        self.selfweight_button.setProperty("paletteTooltip", "Aplicar peso próprio")
+        selfweight_tooltip = _command_tooltip("Aplicar peso próprio", "SELFWEIGHT")
+        self.selfweight_button.setToolTip(selfweight_tooltip)
+        self.selfweight_button.setProperty("paletteTooltip", selfweight_tooltip)
         self.selfweight_button.setAccessibleName("Aplicar peso próprio")
         self.selfweight_button.clicked.connect(window.start_selfweight_command)
         self.selfweight_button.installEventFilter(self)
         layout.addWidget(self.selfweight_button)
         self.adjustSize()
+
+    def toggle_action_visibility_command(self, kind: str) -> None:
+        button = self._action_visibility_buttons.get(kind)
+        if button is not None:
+            button.setChecked(not button.isChecked())
 
     def set_actions(
         self,
@@ -871,8 +924,9 @@ class AnalysisTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-combination.svg"))
         )
         combinations_button.setIconSize(QSize(19, 19))
-        combinations_button.setToolTip("Configurar combinações")
-        combinations_button.setProperty("paletteTooltip", "Configurar combinações")
+        combinations_tooltip = _command_tooltip("Configurar combinações", "COMBINATIONS")
+        combinations_button.setToolTip(combinations_tooltip)
+        combinations_button.setProperty("paletteTooltip", combinations_tooltip)
         combinations_button.setAccessibleName("Configurar combinações")
         combinations_button.clicked.connect(window.open_combinations)
         combinations_button.installEventFilter(self)
@@ -885,8 +939,9 @@ class AnalysisTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "process-analysis.svg"))
         )
         process_button.setIconSize(QSize(19, 19))
-        process_button.setToolTip("Processar estrutura")
-        process_button.setProperty("paletteTooltip", "Processar estrutura")
+        process_tooltip = _command_tooltip("Processar estrutura", "ANALYZE")
+        process_button.setToolTip(process_tooltip)
+        process_button.setProperty("paletteTooltip", process_tooltip)
         process_button.setAccessibleName("Processar estrutura")
         process_button.clicked.connect(window.process_analysis)
         process_button.installEventFilter(self)
