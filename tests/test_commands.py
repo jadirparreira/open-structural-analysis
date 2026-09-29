@@ -27,40 +27,17 @@ def test_action_force_drawing_keeps_nonzero_sizes_between_point_one_and_one():
     assert ActionRenderer._force_height(0.0, 10.0) == pytest.approx(0.0)
 
 
-def test_node_command_flow():
-    model, commands = session()
-    assert commands.submit("node").message == "Informe as coordenadas do nó em X,Y,Z"
-    response = commands.submit("0,5,8")
-    assert response.model_changed
-    assert (model.nodes["N1"].x, model.nodes["N1"].y, model.nodes["N1"].z) == (0, 5, 8)
-
-
-def test_node_command_accepts_coordinates_on_the_same_line():
+@pytest.mark.parametrize("command", ["node", "node 0,5,8", "member N1,N2", "rigid N1,N2"])
+def test_geometry_commands_are_not_available_as_text_commands(command):
     model, commands = session()
 
-    response = commands.submit("node 0,5,8")
-
-    assert response.model_changed
-    assert response.message == "Nó criado."
-    assert (model.nodes["N1"].x, model.nodes["N1"].y, model.nodes["N1"].z) == (0, 5, 8)
-
-
-def test_node_command_reports_invalid_inline_coordinates():
-    model, commands = session()
-
-    response = commands.submit("node 0,5")
+    response = commands.submit(command)
 
     assert response.level == "error"
-    assert response.message == "Informe as coordenadas no formato X,Y,Z."
+    assert response.message == "Não é um comando válido"
     assert not model.nodes
-
-
-def test_member_names_are_case_insensitive():
-    model, commands = session()
-    model.add_node("N1", 0, 0, 0); model.add_node("N2", 1, 0, 0)
-    commands.submit("member")
-    assert commands.submit("n1,N2").model_changed
-    assert model.bars["B1"].start_node == "N1"
+    assert not model.bars
+    assert not model.rigid_bars
 
 
 def test_split_member_creates_equally_spaced_nodes_and_inherits_member_properties():
@@ -230,35 +207,6 @@ def test_copy_member_properties_keeps_unselected_fields_on_the_destination():
 
     assert copied.color == "#0969da"
     assert copied.rotation == 135
-
-
-def test_member_command_accepts_nodes_on_the_same_line_and_reports_missing_nodes():
-    model, commands = session()
-    model.add_node("N1", 0, 0, 0)
-    model.add_node("N2", 1, 0, 0)
-
-    response = commands.submit("member n1,n2")
-
-    assert response.model_changed
-    assert model.bars["B1"].start_node == "N1"
-    assert model.bars["B1"].end_node == "N2"
-
-    invalid = commands.submit("member n1,n99")
-    assert invalid.level == "error"
-    assert invalid.message == "Não existe o nó informado: n99."
-    assert len(model.bars) == 1
-
-
-def test_rigid_bar_command_creates_pair_named_element():
-    model, commands = session()
-    model.add_node("N1", 0, 0, 0)
-    model.add_node("N2", 1, 0, 0)
-
-    response = commands.submit("rigid n1,n2")
-
-    assert response.model_changed
-    assert response.message == "Barra rígida N1-N2 criada."
-    assert tuple(model.rigid_bars) == ("N1-N2",)
 
 
 def test_portico_command_creates_a_concrete_four_column_portal_with_offset_rigid_connections():

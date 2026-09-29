@@ -9,7 +9,7 @@ from math import atan, degrees
 from osa.domain import ReferenceAxis
 from osa.services import ActionService, ModelService
 
-from .parser import parse_coordinates, parse_distributed_force, parse_load_value, parse_member_nodes
+from .parser import parse_distributed_force, parse_load_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,15 +96,6 @@ class CommandSession:
 
     def submit(self, text: str) -> CommandResponse:
         value = text.strip()
-        if self.pending == "node":
-            self.pending = None
-            return self._create_node(value, value)
-        if self.pending == "member":
-            self.pending = None
-            return self._create_member(value, value)
-        if self.pending == "rigid_bar":
-            self.pending = None
-            return self._create_rigid_bar(value, value)
         if self.pending == "split_parts":
             if not re.fullmatch(r"[0-9]+", value):
                 return CommandResponse(
@@ -322,24 +313,7 @@ class CommandSession:
                 f"Todos os pesos da ação atual serão apagados e substituídos pelo peso próprio dos elementos de {scope}. Confirma? (Sim/Não)",
             )
 
-        parts = value.split(maxsplit=1)
-        command = parts[0].casefold() if parts else ""
-        arguments = parts[1].strip() if len(parts) == 2 else ""
-        if command == "node":
-            if arguments:
-                return self._create_node(value, arguments)
-            self.pending = "node"
-            return CommandResponse(value, "Informe as coordenadas do nó em X,Y,Z")
-        if command == "member":
-            if arguments:
-                return self._create_member(value, arguments)
-            self.pending = "member"
-            return CommandResponse(value, "Informe o nó inicial e final A,B")
-        if command in {"rigid", "rigidbar", "rigid_bar", "barrarigida"}:
-            if arguments:
-                return self._create_rigid_bar(value, arguments)
-            self.pending = "rigid_bar"
-            return CommandResponse(value, "Informe o nó inicial e final A,B")
+        command = value.split(maxsplit=1)[0].casefold() if value else ""
         if command == "load":
             if self.active_load_case and any(
                 action.load_case == self.active_load_case
@@ -402,44 +376,6 @@ class CommandSession:
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
         return CommandResponse(value, "Não é um comando válido", "error")
-
-    def _create_node(self, command: str, coordinates_text: str) -> CommandResponse:
-        try:
-            coordinates = parse_coordinates(coordinates_text)
-            self.service.create_node(*coordinates)
-            return CommandResponse(command, "Nó criado.", "success", True)
-        except ValueError as error:
-            return CommandResponse(command, str(error), "error")
-
-    def _create_member(self, command: str, nodes_text: str) -> CommandResponse:
-        try:
-            start, end = parse_member_nodes(nodes_text)
-            resolved_start = self.service.resolve_node_name(start)
-            resolved_end = self.service.resolve_node_name(end)
-            missing = [
-                node for node, resolved in ((start, resolved_start), (end, resolved_end)) if not resolved
-            ]
-            if missing:
-                raise ValueError(f"Não existe o nó informado: {', '.join(missing)}.")
-            self.service.create_member(resolved_start, resolved_end)
-            return CommandResponse(command, "Membro criado.", "success", True)
-        except ValueError as error:
-            return CommandResponse(command, str(error), "error")
-
-    def _create_rigid_bar(self, command: str, nodes_text: str) -> CommandResponse:
-        try:
-            start, end = parse_member_nodes(nodes_text)
-            resolved_start = self.service.resolve_node_name(start)
-            resolved_end = self.service.resolve_node_name(end)
-            missing = [
-                node for node, resolved in ((start, resolved_start), (end, resolved_end)) if not resolved
-            ]
-            if missing:
-                raise ValueError(f"Não existe o nó informado: {', '.join(missing)}.")
-            rigid = self.service.create_rigid_bar(resolved_start, resolved_end)
-            return CommandResponse(command, f"Barra rígida {rigid.name} criada.", "success", True)
-        except ValueError as error:
-            return CommandResponse(command, str(error), "error")
 
     def _resolve_load_targets(self, value: str) -> tuple[str, tuple[str, ...]]:
         identifiers = [identifier.strip() for identifier in value.split(",")]

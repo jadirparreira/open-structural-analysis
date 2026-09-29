@@ -1,3 +1,5 @@
+import math
+
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidget, QTableWidgetItem
 
@@ -158,6 +160,315 @@ class SelfweightDialog(QDialog):
         self.selected_materials = self._selected_material_names()
         if self.selected_materials:
             self.accept()
+
+
+class ActionDialog(QDialog):
+    """Configure an action before selecting its nodes or members graphically."""
+
+    _field_labels = ("FX", "FY", "FZ", "MX", "MY", "MZ")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.target_kind = "node"
+        self.reference = "global"
+        self._fields: dict[str, QLineEdit] = {}
+        self._unit_labels: dict[str, QLabel] = {}
+        self._value_boxes: dict[str, QFrame] = {}
+        self._reference_buttons: dict[str, QToolButton] = {}
+        self._reference_group: QButtonGroup | None = None
+        self._reference_indicator: QFrame | None = None
+        self._reference_switch_animation: QPropertyAnimation | None = None
+
+        self.setWindowTitle("Adicionar ação")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedWidth(390)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-weight: 600; }"
+            "QLabel#sectionLabel { color: #57606a; font-size: 12px; font-weight: 600; }"
+            "QLabel#hint { color: #57606a; }"
+            "QRadioButton { color: #57606a; spacing: 7px; }"
+            "QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid #d0d7de; "
+            "border-radius: 8px; background: #ffffff; }"
+            "QRadioButton::indicator:hover { border-color: #0969da; }"
+            "QRadioButton::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QFrame#referenceSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+            "QToolButton#referenceButton { border: 0; border-radius: 12px; padding: 0; "
+            "background: transparent; font-size: 12px; font-weight: 600; }"
+            "QToolButton#referenceButton:hover { background: transparent; }"
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox[disabledValue=\"true\"] { background: #eaeef2; "
+            "border-color: #d0d7de; }"
+            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; "
+            "padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+            "QPushButton#primaryButton { min-height: 34px; padding: 4px 16px; border: 0; "
+            "border-radius: 7px; background: #0969da; color: #ffffff; font-weight: 700; }"
+            "QPushButton#primaryButton:hover { background: #0550ae; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
+            "QPushButton#primaryButton:disabled { background: #d0d7de; color: #8c959f; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 4, 8, 4)
+        title = QLabel("Adicionar ação")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(16, 14, 16, 16)
+        content.setSpacing(10)
+
+        target_row = QHBoxLayout()
+        target_row.setContentsMargins(0, 0, 0, 0)
+        target_row.setSpacing(20)
+        self.node_button = QRadioButton("Nó")
+        self.member_button = QRadioButton("Membro")
+        self.node_button.setAccessibleName("Lançar ação em nós")
+        self.member_button.setAccessibleName("Lançar ação em membros")
+        self.node_button.setChecked(True)
+        self.node_button.toggled.connect(self._target_changed)
+        self.member_button.toggled.connect(self._target_changed)
+        target_row.addWidget(self.node_button)
+        target_row.addWidget(self.member_button)
+        target_row.addStretch(1)
+        content.addLayout(target_row)
+
+        reference_row = QHBoxLayout()
+        reference_row.setContentsMargins(0, 0, 0, 0)
+        reference_row.setSpacing(8)
+        reference_title = QLabel("Referência")
+        reference_title.setObjectName("sectionLabel")
+        reference_row.addWidget(reference_title)
+        self.reference_switch = QFrame()
+        self.reference_switch.setObjectName("referenceSwitch")
+        reference_row.addWidget(self.reference_switch)
+        reference_row.addStretch(1)
+        content.addLayout(reference_row)
+
+        self.values_layout = QVBoxLayout()
+        self.values_layout.setContentsMargins(0, 0, 0, 0)
+        self.values_layout.setSpacing(6)
+        for label in self._field_labels:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            field_label = QLabel(label)
+            field_label.setObjectName("sectionLabel")
+            field_label.setFixedWidth(28)
+            unit = "kN" if label.startswith("F") and self.target_kind == "node" else "kNm"
+            value_box = QFrame()
+            value_box.setObjectName("unitValueBox")
+            value_layout = QHBoxLayout(value_box)
+            value_layout.setContentsMargins(0, 0, 0, 0)
+            value_layout.setSpacing(0)
+            field = QLineEdit()
+            field.setObjectName("unitValue")
+            field.setPlaceholderText("—")
+            field.setAccessibleName(f"{label} ({unit})")
+            value_layout.addWidget(field, 1)
+            unit_label = QLabel(unit)
+            unit_label.setObjectName(f"unit_{label}")
+            value_layout.addWidget(unit_label)
+            row.addWidget(field_label)
+            row.addWidget(value_box, 1)
+            self.values_layout.addLayout(row)
+            self._fields[label] = field
+            self._unit_labels[label] = unit_label
+            self._value_boxes[label] = value_box
+        content.addLayout(self.values_layout)
+
+        self.error_label = QLabel()
+        self.error_label.setObjectName("hint")
+        self.error_label.setStyleSheet("color: #cf222e;")
+        self.error_label.setWordWrap(True)
+        self.error_label.hide()
+        content.addWidget(self.error_label)
+
+        content.addStretch(1)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel_button = QPushButton("Cancelar")
+        cancel_button.setObjectName("secondaryButton")
+        cancel_button.setAutoDefault(False)
+        cancel_button.clicked.connect(self.reject)
+        launch_button = QPushButton("Lançar")
+        launch_button.setObjectName("primaryButton")
+        launch_button.setDefault(True)
+        launch_button.clicked.connect(self._launch)
+        footer.addWidget(cancel_button)
+        footer.addWidget(launch_button)
+        content.addLayout(footer)
+        outer.addLayout(content, 1)
+        self.launch_button = launch_button
+
+        self._set_reference_options(("global",))
+
+    def _target_changed(self, checked: bool) -> None:
+        if not checked:
+            return
+        self.target_kind = "node" if self.node_button.isChecked() else "bar"
+        options = ("global",) if self.target_kind == "node" else ("global", "local")
+        if self.reference not in options:
+            self.reference = options[0]
+        self._set_reference_options(options)
+        force_unit = "kN" if self.target_kind == "node" else "kN/m"
+        moment_unit = "kNm" if self.target_kind == "node" else "kNm/m"
+        for label in self._fields:
+            self._unit_labels[label].setText(force_unit if label.startswith("F") else moment_unit)
+        self._update_field_editability()
+
+    def _set_reference_options(self, options: tuple[str, ...]) -> None:
+        layout = self.reference_switch.layout()
+        if layout is None:
+            layout = QHBoxLayout(self.reference_switch)
+            layout.setContentsMargins(3, 3, 3, 3)
+            layout.setSpacing(0)
+        else:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+        self._reference_buttons.clear()
+        self._reference_group = QButtonGroup(self.reference_switch)
+        self._reference_group.setExclusive(True)
+        width = 62 if len(options) == 1 else 98
+        self.reference_switch.setFixedSize(width, 30)
+        if self._reference_indicator is None:
+            self._reference_indicator = QFrame(self.reference_switch)
+            self._reference_indicator.setObjectName("referenceIndicator")
+            self._reference_indicator.setStyleSheet(
+                "QFrame#referenceIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+            )
+        button_width = 54 if len(options) == 1 else 46
+        for reference in options:
+            button = QToolButton(self.reference_switch)
+            button.setObjectName("referenceButton")
+            button.setText(reference.capitalize())
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(button_width, 24)
+            button.setChecked(reference == self.reference)
+            button.clicked.connect(
+                lambda checked=False, selected=reference: self._set_reference(selected)
+            )
+            self._reference_group.addButton(button)
+            self._reference_buttons[reference] = button
+            layout.addWidget(button)
+        self._reference_indicator.setGeometry(self._reference_indicator_geometry(options))
+        self._reference_indicator.lower()
+        self._update_reference_switch_text()
+
+    def _reference_indicator_geometry(self, options: tuple[str, ...] | None = None) -> QRect:
+        active_options = options or tuple(self._reference_buttons)
+        if len(active_options) == 1:
+            return QRect(4, 5, 54, 20)
+        return QRect(4, 5, 44, 20) if self.reference == "global" else QRect(51, 5, 42, 20)
+
+    def _update_reference_switch_text(self) -> None:
+        for reference, button in self._reference_buttons.items():
+            color = "#ffffff" if reference == self.reference else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _set_reference(self, reference: str) -> None:
+        if reference == self.reference:
+            return
+        self.reference = reference
+        self._update_field_editability()
+        self._update_reference_switch_text()
+        self._animate_reference_switch()
+
+    def _animate_reference_switch(self) -> None:
+        indicator = self._reference_indicator
+        if indicator is None:
+            return
+        if self._reference_switch_animation is not None:
+            self._reference_switch_animation.stop()
+        animation = QPropertyAnimation(indicator, b"geometry", indicator)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(indicator.geometry())
+        animation.setEndValue(self._reference_indicator_geometry())
+        self._reference_switch_animation = animation
+        animation.start()
+
+    def _update_field_editability(self) -> None:
+        member_global = self.target_kind == "bar" and self.reference == "global"
+        for label, field in self._fields.items():
+            disabled = member_global and label.startswith("M")
+            field.setReadOnly(disabled)
+            field.setEnabled(not disabled)
+            value_box = self._value_boxes[label]
+            value_box.setProperty("disabledValue", disabled)
+            value_box.style().unpolish(value_box)
+            value_box.style().polish(value_box)
+            if disabled:
+                self._unit_labels[label].clear()
+                field.setPlaceholderText("")
+            else:
+                self._unit_labels[label].setText(
+                    "kN" if label.startswith("F") and self.target_kind == "node"
+                    else "kN/m" if label.startswith("F")
+                    else "kNm" if self.target_kind == "node"
+                    else "kNm/m"
+                )
+                field.setPlaceholderText("—")
+
+    def _launch(self) -> None:
+        values: dict[str, tuple[float, ...]] = {}
+        for label, field in self._fields.items():
+            if not field.isEnabled():
+                continue
+            raw = field.text().strip()
+            if not raw:
+                continue
+            parts = [part.strip() for part in raw.split(";")]
+            if self.target_kind == "node" or label.startswith("M"):
+                if len(parts) != 1:
+                    self._show_error(f"Informe apenas um valor para {label}.")
+                    return
+            elif len(parts) not in (1, 2):
+                self._show_error(f"Informe {label} como valor ou inicial;final.")
+                return
+            try:
+                parsed = tuple(float(part.replace(",", ".")) for part in parts)
+            except ValueError:
+                self._show_error(f"Informe valores numéricos para {label}.")
+                return
+            if not all(math.isfinite(value) for value in parsed):
+                self._show_error(f"Informe valores finitos para {label}.")
+                return
+            values[label] = parsed
+        if not values:
+            self._show_error("Informe pelo menos uma componente da ação.")
+            return
+        self._launch_data = self.target_kind, self.reference, values
+        self.accept()
+
+    def _show_error(self, message: str) -> None:
+        self.error_label.setText(message)
+        self.error_label.show()
+
+    def launch_data(self) -> tuple[str, str, dict[str, tuple[float, ...]]]:
+        return self._launch_data
 
 
 class ErrorDialog(QDialog):

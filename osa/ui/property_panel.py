@@ -106,6 +106,8 @@ class PropertyPanel(QFrame):
         self._context_widgets: list[QWidget] = []
         self._member_action_reference = "global"
         self._member_action_inputs: dict[str, QLineEdit] = {}
+        self._member_action_units: dict[str, QLabel] = {}
+        self._member_action_boxes: dict[str, QFrame] = {}
         self._node_action_inputs: dict[str, QLineEdit] = {}
         self._member_action_switch_indicator: QFrame | None = None
         self._member_action_switch_buttons: dict[str, QToolButton] = {}
@@ -756,6 +758,8 @@ class PropertyPanel(QFrame):
         if select_available_reference:
             self._member_action_reference = self._member_action_reference_for(name, load_case)
         self._member_action_inputs.clear()
+        self._member_action_units.clear()
+        self._member_action_boxes.clear()
 
         header = QWidget()
         header_layout = QHBoxLayout(header)
@@ -783,6 +787,8 @@ class PropertyPanel(QFrame):
             value_box.setStyleSheet(
                 "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
                 "border-radius: 6px; background: #ffffff; }"
+                "QFrame#unitValueBox[disabledValue=\"true\"] { background: #eaeef2; "
+                "border-color: #d0d7de; }"
                 "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; "
                 "padding: 2px 9px; }"
                 "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
@@ -795,16 +801,23 @@ class PropertyPanel(QFrame):
             editable = not selfweight_locked and (
                 self._member_action_reference == "local" or label.startswith("F")
             )
+            global_moment = self._member_action_reference == "global" and label.startswith("M")
             field.setReadOnly(not editable)
             field.setMinimumWidth(0)
-            field.setPlaceholderText("—")
+            field.setPlaceholderText("" if global_moment else "—")
             field.setAccessibleName(f"{label} ({unit})")
             field.editingFinished.connect(
                 lambda field=field, action_label=label: self._member_action_changed(action_label, field)
             )
             self._member_action_inputs[label] = field
+            unit_label = QLabel("" if global_moment else unit)
+            self._member_action_units[label] = unit_label
+            self._member_action_boxes[label] = value_box
+            value_box.setProperty("disabledValue", global_moment)
+            value_box.style().unpolish(value_box)
+            value_box.style().polish(value_box)
             value_layout.addWidget(field, 1)
-            value_layout.addWidget(QLabel(unit))
+            value_layout.addWidget(unit_label)
             row_layout.addWidget(field_label)
             row_layout.addWidget(value_box, 1)
             self._add_context_widget(row)
@@ -1048,11 +1061,19 @@ class PropertyPanel(QFrame):
         fields = self._member_action_fields(self._selected[1], self.window.selected_action_name)
         for label, value, _unit in fields:
             if input_field := self._member_action_inputs.get(label):
+                global_moment = self._member_action_reference == "global" and label.startswith("M")
                 input_field.setReadOnly(
                     self._is_selfweight_locked(self.window.selected_action_name)
                     or not (self._member_action_reference == "local" or label.startswith("F"))
                 )
+                input_field.setPlaceholderText("" if global_moment else "—")
                 input_field.setText(value)
+                if unit_label := self._member_action_units.get(label):
+                    unit_label.setText("" if global_moment else _unit)
+                if value_box := self._member_action_boxes.get(label):
+                    value_box.setProperty("disabledValue", global_moment)
+                    value_box.style().unpolish(value_box)
+                    value_box.style().polish(value_box)
 
     def _member_action_changed(self, label: str, field: QLineEdit) -> None:
         """Persist a member load typed into the contextual action inspector."""
@@ -1512,6 +1533,8 @@ class PropertyPanel(QFrame):
             widget.deleteLater()
         self._context_widgets.clear()
         self._member_action_inputs.clear()
+        self._member_action_units.clear()
+        self._member_action_boxes.clear()
 
     def _node_changed(self, axis: str) -> None:
         if not self._selected or self._selected[0] != "node": return

@@ -13,6 +13,7 @@ from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
+    ActionDialog,
     ActionGroupDialog,
     CombinationsDialog,
     ErrorDialog,
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self._member_placement_start: tuple[float, float, float] | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
+        self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = False
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -495,27 +497,6 @@ class MainWindow(QMainWindow):
         self.axes_panel.show()
         self.axes_panel.raise_()
 
-
-    def start_node_command(self) -> None:
-        self.command_session.pending = "node"
-        self._command_mode = "node"  # compatibilidade com extensões existentes
-        self._member_placement_start = None
-        self.scene.set_member_placement_mode(False)
-        self.history.append(
-            "> <b>node</b> <span style='color:#57606a'>(Informe as coordenadas do nó em X,Y,Z)</span>"
-        )
-        self.command_bar.input.setFocus()
-
-    def start_member_command(self) -> None:
-        self.command_session.pending = "member"
-        self._command_mode = "member"
-        self._member_placement_start = None
-        self.scene.set_member_placement_mode(False)
-        self.history.append(
-            "> <b>member</b> <span style='color:#57606a'>(Informe o nó inicial e final A,B)</span>"
-        )
-        self.command_bar.input.setFocus()
-
     def start_member_placement(self) -> None:
         """Start the graphical member-placement flow from the geometry palette."""
         self.command_session.cancel()
@@ -550,32 +531,32 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
-    def start_rigid_bar_command(self) -> None:
-        self.command_session.pending = "rigid_bar"
-        self._command_mode = "rigid_bar"
-        self._member_placement_start = None
-        self.scene.set_member_placement_mode(False)
-        self.history.append(
-            "> <b>rigid</b> <span style='color:#57606a'>(Informe o nó inicial e final A,B)</span>"
-        )
-        self.command_bar.input.setFocus()
-
     def start_load_command(self) -> None:
+        """Open the graphical action launcher instead of the text command flow."""
+        load_case = self.selected_action_name or ""
+        if not load_case:
+            self.show_error("Selecione uma ação ativa antes de lançar um carregamento.")
+            return
+        if self.action_service.has_selfweight(load_case):
+            self.show_error("A ação atual está restrita apenas a cargas de peso próprio.")
+            return
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
-        if self.action_service.has_selfweight(self.selected_action_name or ""):
-            self.history.append(
-                "> <b>load</b> <span style='color:#8c959f'>(A ação atual está restrita apenas a cargas de peso próprio.)</span>"
-            )
-            self.command_bar.input.setFocus()
+        self.command_session.cancel()
+        self._command_mode = None
+        self._pending_action_launch = None
+        dialog = ActionDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.command_session.pending = "load_target"
-        self.command_session.load_target = None
-        self._command_mode = "load_target"
+        self._pending_action_launch = dialog.launch_data()
+        target_label = "nós" if self._pending_action_launch[0] == "node" else "membros"
+        self._command_mode = "action_selection"
         self.history.append(
-            "> <b>load</b> <span style='color:#57606a'>(Informe a identidade do nó ou do membro.)</span>"
+            "> <b>Adicionar ação</b> "
+            f"<span style='color:#57606a'>(Selecione {target_label}; pressione Esc para encerrar)</span>"
         )
-        self.command_bar.input.setFocus()
+        self.scene.plotter.setFocus()
 
     def start_selfweight_command(self) -> None:
         """Open the material picker and apply selfweight to the active action."""
@@ -990,6 +971,14 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
+        if self._command_mode == "action_selection":
+            self._pending_action_launch = None
+            self._command_mode = None
+            self.history.append(
+                "> <b>Adicionar ação</b> "
+                "<span style='color:#8c959f'>(Lançamento cancelado)</span>"
+            )
+            return
         if self._command_mode in {
             "split_member_selection", "split_parts", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection",
@@ -1098,9 +1087,72 @@ class MainWindow(QMainWindow):
         return None
 
 
+    def _apply_pending_action(self, kind: str, name: str) -> None:
+        launch = self._pending_action_launch
+        if launch is None:
+            return
+        target_kind, reference, values = launch
+        if kind != target_kind:
+            expected = "nó" if target_kind == "node" else "membro"
+            self.history.append(
+                "> <b>Adicionar ação</b> "
+                f"<span style='color:#8c959f'>(Selecione apenas {expected})</span>"
+            )
+            return
+        load_case = self.selected_action_name or ""
+        if not load_case:
+            self.cancel_member_placement()
+            self.show_error("Selecione uma ação ativa antes de lançar um carregamento.")
+            return
+        if self.action_service.has_selfweight(load_case):
+            self.cancel_member_placement()
+            self.show_error("A ação atual está restrita apenas a cargas de peso próprio.")
+            return
+
+        try:
+            if target_kind == "node":
+                for label, components in values.items():
+                    axis = label[-1]
+                    value = components[0]
+                    if label.startswith("F"):
+                        self.action_service.add_node_force(name, axis, value, load_case)
+                    else:
+                        self.action_service.add_node_moment(name, axis, value, load_case)
+            else:
+                for label, components in values.items():
+                    axis = label[-1]
+                    if label.startswith("F"):
+                        initial, final = (
+                            components if len(components) == 2
+                            else (components[0], components[0])
+                        )
+                        self.action_service.add_member_distributed_force(
+                            name, axis, initial, final, load_case, reference,
+                        )
+                    elif reference == "local":
+                        self.action_service.add_member_moment(
+                            name, axis, components[0], load_case,
+                        )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar ação</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        self.history.append(
+            f"> <b>Adicionar ação</b> <span style='color:#57606a'>"
+            f"(Ação lançada em {escape(name)})</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_scene()
+
+
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
         self.selected = kind, name
+        if self._command_mode == "action_selection":
+            self._apply_pending_action(kind, name)
+            return
         if self._command_mode == "split_member_selection":
             if kind != "bar":
                 self.history.append(
@@ -1218,6 +1270,7 @@ class MainWindow(QMainWindow):
         self._member_placement_start = None
         self._join_member_first = None
         self._copy_properties_reference = None
+        self._pending_action_launch = None
         if hasattr(self, "member_property_copy_panel"):
             self.member_property_copy_panel.hide()
         self.scene.set_member_placement_mode(False)
@@ -1277,6 +1330,7 @@ class MainWindow(QMainWindow):
                 self._member_placement_start = None
                 self._join_member_first = None
                 self._copy_properties_reference = None
+                self._pending_action_launch = None
                 self.member_property_copy_panel.hide()
                 self.scene.set_member_placement_mode(False)
                 self.clear_selection()
