@@ -17,6 +17,7 @@ from osa.sections import section_shape
 
 from .local_axes_renderer import LocalAxesRenderer
 from .solid_member_renderer import SolidMemberRenderer
+from .support_renderer import build_support_mesh
 
 
 def has_semirigid_member_end(member, endpoint: str) -> bool:
@@ -365,21 +366,5 @@ class BatchedNodeRenderer:
 
     @staticmethod
     def _support_mesh(node, radius: float) -> pv.PolyData | None:
-        if node.supports == (True, True, True, True, True, True):
-            side = radius * 2.4
-            return pv.Cube(
-                center=(node.x, node.y, node.z - side / 2.0),
-                x_length=side,
-                y_length=side,
-                z_length=side,
-            )
-        if node.supports == (True, True, True, False, False, False):
-            height, half = radius * 4.0, radius * 1.5
-            return pv.Pyramid(points=[
-                (node.x - half, node.y - half, node.z - height),
-                (node.x + half, node.y - half, node.z - height),
-                (node.x + half, node.y + half, node.z - height),
-                (node.x - half, node.y + half, node.z - height),
-                (node.x, node.y, node.z),
-            ])
-        return None
+        del radius
+        return build_support_mesh(node)

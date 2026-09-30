@@ -1,3 +1,5 @@
+from itertools import product
+
 import pyvista as pv
 import vtk
 
@@ -8,11 +10,7 @@ from .support_renderer import SupportRenderer
 class NodeRenderer:
     AURA_RADIUS_FACTOR = 1.25
 
-    supported_patterns = frozenset({
-        (False, False, False, False, False, False),
-        (True, True, True, False, False, False),
-        (True, True, True, True, True, True),
-    })
+    supported_patterns = frozenset(product((False, True), repeat=6))
 
     def __init__(self, support_renderer=None, label_renderer=None) -> None:
         self.supports = support_renderer or SupportRenderer()
