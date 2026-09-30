@@ -1832,7 +1832,10 @@ class StructureScene(QWidget):
         if target is None:
             return
         kind, name = target
-        if kind == "node" and slot == "hover":
+        # Nodes are already part of the batched marker mesh.  Highlighting a
+        # node should therefore only update that marker's color; creating a
+        # second actor here makes the selected node appear as a larger sphere.
+        if kind == "node":
             self._set_node_highlight_color(name, color)
             return
         if kind in {"bar", "rigid_bar"}:

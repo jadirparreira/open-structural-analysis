@@ -434,6 +434,24 @@ def test_node_visibility_toggle_is_independent_from_node_identifiers(qt_app):
     assert scene._node_actor.GetVisibility()
 
 
+def test_selected_node_changes_marker_color_without_creating_highlight_actor(qt_app):
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    scene = StructureScene()
+    scene.render_model(model)
+
+    scene._selected = ("node", "N1")
+    scene._hovered = ("node", "N1")
+    scene._sync_highlights()
+
+    node_index = scene._node_batch.names.index("N1")
+    colors = scene._node_batch.geometry.cell_data["rgb"]
+    element_indices = scene._node_batch.geometry.cell_data["element_index"]
+    assert np.all(colors[element_indices == node_index] == np.asarray((9, 105, 218)))
+    assert "selected" not in scene._highlight_actors
+    assert "hover" not in scene._highlight_actors
+
+
 def test_semirigid_visibility_toggle_is_independent_from_member_releases(qt_app):
     scene = StructureScene()
     scene.render_model(StructuralModel())
