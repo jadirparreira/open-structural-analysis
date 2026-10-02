@@ -69,9 +69,7 @@ class PropertyPanel(QFrame):
         self.coordinates_title.setObjectName("propertySection")
         self.nodes_title = QLabel("Nós")
         self.nodes_title.setObjectName("propertySection")
-        self.rotation_title = QLabel("Rotação")
-        self.rotation_title.setObjectName("propertySection")
-        self.solid_offsets_title = QLabel("Deslocamento")
+        self.solid_offsets_title = QLabel("Posicionamento")
         self.solid_offsets_title.setObjectName("propertySection")
         self.releases_title = QLabel("Vinculações")
         self.releases_title.setObjectName("propertySection")
@@ -84,10 +82,9 @@ class PropertyPanel(QFrame):
         self._coordinates_widget: QWidget | None = None
         self._supports_widget: QWidget | None = None
         self._support_stiffness_inputs: list[QDoubleSpinBox] = []
-        self._rotation_box: QFrame | None = None
-        self._rotation_input: QLineEdit | None = None
         self._solid_offsets_widget: QWidget | None = None
-        self._solid_offset_inputs: dict[str, QLineEdit] = {}
+        self._positioning_status: QLineEdit | None = None
+        self._displacement_settings_button: QToolButton | None = None
         self._releases_widget: QWidget | None = None
         self._releases_header: QWidget | None = None
         self._release_stack: QStackedWidget | None = None
@@ -128,7 +125,6 @@ class PropertyPanel(QFrame):
         self._clear_form()
         self.coordinates_title.hide()
         self.nodes_title.hide()
-        self.rotation_title.hide()
         self.solid_offsets_title.hide()
         self.releases_title.hide()
         self.supports_title.hide()
@@ -279,30 +275,6 @@ class PropertyPanel(QFrame):
                 self.window.section_profiles.get(name, "") or "Indefinido"
             )
             self.layout.addWidget(section_profile_display)
-            rotation_box = QFrame()
-            rotation_box.setObjectName("unitValueBox")
-            rotation_box.setStyleSheet(
-                "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } "
-                "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; padding: 2px 9px; } "
-                "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
-            )
-            rotation_row = QHBoxLayout(rotation_box)
-            rotation_row.setContentsMargins(0, 0, 0, 0)
-            rotation_row.setSpacing(0)
-            rotation_input = QLineEdit()
-            rotation_input.setObjectName("unitValue")
-            rotation_input.setValidator(
-                QRegularExpressionValidator(QRegularExpression(r"[+-]?\d*"), rotation_input)
-            )
-            rotation_input.setText(str(bar.rotation))
-            rotation_input.editingFinished.connect(self._rotation_changed)
-            rotation_row.addWidget(rotation_input, 1)
-            rotation_row.addWidget(QLabel("°"))
-            self._rotation_box = rotation_box
-            self._rotation_input = rotation_input
-            self.layout.addWidget(self.rotation_title)
-            self.rotation_title.show()
-            self.layout.addWidget(rotation_box)
             self._show_member_solid_offsets(bar)
             release_labels = (
                 "Dxa", "Dxb", "Dya", "Dyb", "Dza", "Dzb",
@@ -412,54 +384,53 @@ class PropertyPanel(QFrame):
         QTimer.singleShot(0, self._refresh_size)
 
     def _show_member_solid_offsets(self, bar) -> None:
-        """Show visual-only offsets used to position solid member faces."""
-        self._solid_offset_inputs.clear()
+        """Show the entry point for visual member-face displacements."""
         offsets = getattr(bar, "solid_face_offsets", (0.0, 0.0))
         self.layout.addWidget(self.solid_offsets_title)
         self.solid_offsets_title.show()
-        offsets_widget = QWidget()
-        offsets_layout = QGridLayout(offsets_widget)
-        offsets_layout.setContentsMargins(0, 0, 0, 0)
-        offsets_layout.setHorizontalSpacing(8)
-        offsets_layout.setVerticalSpacing(self.layout.spacing())
-        self._solid_offsets_widget = offsets_widget
-        for column, (endpoint_index, endpoint) in enumerate(((0, "A"), (1, "B"))):
-            endpoint_label = QLabel(endpoint)
-            endpoint_label.setObjectName("propertySection")
-            box = QFrame()
-            box.setObjectName("unitValueBox")
-            box.setStyleSheet(
-                "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
-                "border-radius: 6px; background: #ffffff; } "
-                "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; "
-                "color: #57606a; padding: 2px 9px; } "
-                "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
-            )
-            box_layout = QHBoxLayout(box)
-            box_layout.setContentsMargins(0, 0, 0, 0)
-            box_layout.setSpacing(0)
-            field = QLineEdit()
-            field.setObjectName("unitValue")
-            field.setMinimumWidth(0)
-            field.setValidator(QRegularExpressionValidator(
-                QRegularExpression(r"[+-]?\d*(?:[.,]\d{0,2})?"), field
-            ))
-            field.setText(
-                self._format_solid_offset(float(offsets[endpoint_index]))
-                if len(offsets) == 2 else "0"
-            )
-            field.setToolTip("Positivo aumenta e negativo reduz o comprimento da extremidade")
-            field.setAccessibleName(f"Deslocamento da face sólida no extremo {endpoint}")
-            field.editingFinished.connect(
-                lambda selected_endpoint=endpoint: self._solid_offset_changed(selected_endpoint)
-            )
-            self._solid_offset_inputs[endpoint] = field
-            box_layout.addWidget(field, 1)
-            box_layout.addWidget(QLabel("mm"))
-            offsets_layout.addWidget(endpoint_label, 0, column * 2)
-            offsets_layout.addWidget(box, 0, column * 2 + 1)
-            offsets_layout.setColumnStretch(column * 2 + 1, 1)
-        self.layout.addWidget(offsets_widget)
+        offset_row = QWidget()
+        offset_layout = QHBoxLayout(offset_row)
+        offset_layout.setContentsMargins(0, 0, 0, 0)
+        offset_layout.setSpacing(6)
+
+        status = QLineEdit()
+        status.setReadOnly(True)
+        status.setObjectName("identityDisplay")
+        status.setText("Definido" if any(float(value) != 0.0 for value in offsets) else "Indefinido")
+        status.setAccessibleName("Estado do posicionamento")
+        offset_layout.addWidget(status, 1)
+
+        configure_button = QToolButton()
+        configure_button.setFixedSize(34, 34)
+        configure_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "move.svg"))
+        )
+        configure_button.setIconSize(QSize(18, 18))
+        configure_button.setToolTip("Configurar posicionamento")
+        configure_button.setAccessibleName("Configurar posicionamento")
+        configure_button.setCheckable(True)
+        configure_button.clicked.connect(
+            lambda _checked=False, button=configure_button: self.window.toggle_displacement_panel(button)
+        )
+        configure_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        offset_layout.addWidget(configure_button)
+
+        self._displacement_settings_button = configure_button
+        self._positioning_status = status
+        self._solid_offsets_widget = offset_row
+        self.layout.addWidget(offset_row)
+
+    def update_positioning_status(self, member_name: str) -> None:
+        """Synchronize the compact positioning summary after an offset change."""
+        if self._selected != ("bar", member_name) or self._positioning_status is None:
+            return
+        offsets = getattr(self.window.model.bars[member_name], "solid_face_offsets", (0.0, 0.0))
+        self._positioning_status.setText(
+            "Definido" if any(float(value) != 0.0 for value in offsets) else "Indefinido"
+        )
 
     def _show_rigid_bar_properties(self, name: str) -> None:
         """Render only the calculated rigid-link stiffnesses."""
@@ -1453,6 +1424,9 @@ class PropertyPanel(QFrame):
 
     def _clear_form(self) -> None:
         self._clear_context_widgets()
+        if self._displacement_settings_button is not None:
+            self.window.close_displacement_panel(self._displacement_settings_button)
+            self._displacement_settings_button = None
         if self._coordinates_widget is not None:
             self.layout.removeWidget(self._coordinates_widget)
             self._coordinates_widget.deleteLater()
@@ -1462,16 +1436,11 @@ class PropertyPanel(QFrame):
             self._supports_widget.deleteLater()
             self._supports_widget = None
         self._support_stiffness_inputs.clear()
-        if self._rotation_box is not None:
-            self.layout.removeWidget(self._rotation_box)
-            self._rotation_box.deleteLater()
-            self._rotation_box = None
-            self._rotation_input = None
         if self._solid_offsets_widget is not None:
             self.layout.removeWidget(self._solid_offsets_widget)
             self._solid_offsets_widget.deleteLater()
             self._solid_offsets_widget = None
-            self._solid_offset_inputs.clear()
+            self._positioning_status = None
         if self._releases_widget is not None:
             self.layout.removeWidget(self._releases_widget)
             self._releases_widget.deleteLater()
@@ -1508,7 +1477,6 @@ class PropertyPanel(QFrame):
             self._section_container.deleteLater(); self._section_container = None
         self.layout.removeWidget(self.coordinates_title)
         self.layout.removeWidget(self.nodes_title)
-        self.layout.removeWidget(self.rotation_title)
         self.layout.removeWidget(self.solid_offsets_title)
         self.layout.removeWidget(self.supports_title)
         while self.form.count():
@@ -1582,67 +1550,6 @@ class PropertyPanel(QFrame):
         self.window.selected = self._selected
         self.window.refresh_rigid_bar_name(old_name, rigid.name)
         self.show_for("rigid_bar", rigid.name, self.window.palette.active_group or "Geometria")
-
-    def _rotation_changed(self) -> None:
-        if not self._selected or self._selected[0] != "bar" or self._rotation_input is None:
-            return
-        value = self._rotation_input.text().strip()
-        if not value:
-            self._rotation_input.setText(str(self.window.model.bars[self._selected[1]].rotation))
-            return
-        try:
-            member = self.window.model_service.update_member_rotation(self._selected[1], int(value))
-        except ValueError:
-            self._rotation_input.setText(str(self.window.model.bars[self._selected[1]].rotation))
-            return
-        self._rotation_input.setText(str(member.rotation))
-        self.window.refresh_member_rotation(self._selected[1])
-
-    @staticmethod
-    def _format_solid_offset(value: float) -> str:
-        if abs(value) < 0.000005:
-            value = 0.0
-        formatted = f"{value * 1000.0:.2f}".rstrip("0").rstrip(".")
-        return formatted or "0"
-
-    def _solid_offset_changed(self, endpoint: str) -> None:
-        if not self._selected or self._selected[0] != "bar":
-            return
-        member = self.window.model.bars.get(self._selected[1])
-        field = self._solid_offset_inputs.get(endpoint)
-        if member is None or field is None or endpoint not in {"A", "B"}:
-            return
-        try:
-            value_mm = float(field.text().strip().replace(",", "."))
-            if not isfinite(value_mm):
-                raise ValueError
-        except ValueError:
-            self._update_solid_offset_inputs()
-            return
-        offsets = list(getattr(member, "solid_face_offsets", (0.0, 0.0)))
-        offsets[0 if endpoint == "A" else 1] = value_mm / 1000.0
-        try:
-            updated = self.window.model_service.update_member_solid_face_offsets(
-                member.name, tuple(offsets)
-            )
-        except ValueError:
-            self._update_solid_offset_inputs()
-            return
-        field.setText(self._format_solid_offset(updated.solid_face_offsets[0 if endpoint == "A" else 1]))
-        self.window.refresh_member_geometry(member.name)
-
-    def _update_solid_offset_inputs(self) -> None:
-        if not self._selected or self._selected[0] != "bar":
-            return
-        member = self.window.model.bars.get(self._selected[1])
-        if member is None:
-            return
-        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
-        for index, endpoint in enumerate(("A", "B")):
-            field = self._solid_offset_inputs.get(endpoint)
-            if field is None or len(offsets) != 2:
-                continue
-            field.setText(self._format_solid_offset(offsets[index]))
 
     def _toggle_color_palette(self) -> None:
         if not self._selected or self._selected[0] != "bar":

@@ -22,6 +22,7 @@ from .dialogs import (
     SettingsDialog,
     UnsavedChangesDialog,
 )
+from .displacement_panel import DisplacementPanel
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
         self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.displacement_panel = DisplacementPanel(self)
         self.processing_panel = ProcessingPanel(self)
         self.axes_panel = AxesPanel(self)
         self.section_panels = {
@@ -384,6 +386,8 @@ class MainWindow(QMainWindow):
             self.history.reposition()
         if hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.section_panel.reposition()
+        if hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
+            self.displacement_panel.reposition()
         if hasattr(self, "processing_panel") and self.processing_panel.isVisible():
             self.processing_panel.reposition()
 
@@ -397,6 +401,21 @@ class MainWindow(QMainWindow):
             if button is not None: button.setChecked(False)
         else:
             self.show_section_panel(section, button)
+
+    def toggle_displacement_panel(self, button=None) -> None:
+        """Show or hide the selected member's positioning editor."""
+        if self.displacement_panel.isVisible():
+            self.close_displacement_panel(button)
+            return
+        self.properties.close_color_palette()
+        self.close_section_panel(self.properties._section_settings_button)
+        member_name = self.selected[1] if self.selected and self.selected[0] == "bar" else ""
+        self.displacement_panel.configure_for(member_name)
+        self.displacement_panel.reposition()
+        self.displacement_panel.show()
+        self.displacement_panel.raise_()
+        if button is not None:
+            button.setChecked(True)
 
     def _reposition_navigation_button(self) -> None:
         margin = 0 if self.isMaximized() else WindowFrame.MARGIN
@@ -484,6 +503,12 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(False)
 
+    def close_displacement_panel(self, button=None) -> None:
+        """Hide the displacement editor and restore its trigger state."""
+        self.displacement_panel.hide()
+        if button is not None:
+            button.setChecked(False)
+
     def show_section_panel(self, section: str, button=None) -> None:
         """Show the geometry panel that corresponds to a section family."""
         panel = self.section_panels.get(section)
@@ -492,6 +517,7 @@ class MainWindow(QMainWindow):
                 button.setChecked(False)
             return
         self.properties.close_color_palette()
+        self.close_displacement_panel(self.properties._displacement_settings_button)
         for candidate in self.section_panels.values():
             candidate.hide()
         self.section_panel = panel
@@ -1454,6 +1480,8 @@ class MainWindow(QMainWindow):
         """Rebuild the open inspector when the work section changes."""
         if section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.close_section_panel()
+        if section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
+            self.close_displacement_panel()
         if self.selected is not None and hasattr(self, "properties"):
             self.properties.show_for(*self.selected, section or "Geometria")
 
@@ -1461,6 +1489,7 @@ class MainWindow(QMainWindow):
         self.selected = None
         self.properties.hide()
         self.section_panel.hide()
+        self.displacement_panel.hide()
         self.axes_panel.hide()
         if self._command_mode == "copy_elements_selection":
             self.scene.set_selection_highlight(self._copy_elements_selection)
