@@ -68,11 +68,14 @@ class ModelBuilder:
             target.add_section(
                 section_name,
                 properties.area_mm2 * 1e-6,
-                properties.i_minor_mm4 * 1e-12,
+                # In PyNite, the local-z displacement bends about local y.
+                # The section geometry used by OSA has its major inertia about
+                # y for the usual b x h orientation, so Iy must receive the
+                # major inertia and Iz the minor one.
                 properties.i_major_mm4 * 1e-12,
+                properties.i_minor_mm4 * 1e-12,
                 properties.j_mm4 * 1e-12,
             )
-            # O eixo local y do PyNite recebe a inércia menor e z a maior.
             # Perfis não simétricos são inicializados pelos eixos principais;
             # a rotação escolhida pelo usuário é aplicada ao eixo local x.
             target.add_member(

@@ -29,10 +29,29 @@ def test_member_rotation_flexibility_changes_the_pynite_response():
     }
 
     assert abs(displacements[0]) < abs(displacements[50]) < abs(displacements[99])
-    assert displacements[50] == pytest.approx(-0.0466666667)
+    assert displacements[50] == pytest.approx(-0.0116666667)
+
+
+@pytest.mark.parametrize(
+    ("rotation", "expected_y", "expected_z"),
+    ((0, 0.0, -0.0066666667), (90, 0.0, -0.0266666667)),
+)
+def test_member_deflections_are_reported_in_global_axes(rotation, expected_y, expected_z):
+    result = _cantilever_tip_result(rotation=rotation)
+    node = result.node_results["N2"]
+    member_end = result.member_results["B1"]["end"]
+
+    assert node["DY"] == pytest.approx(expected_y)
+    assert node["DZ"] == pytest.approx(expected_z)
+    assert member_end["deflection_y"] == pytest.approx(expected_y)
+    assert member_end["deflection_z"] == pytest.approx(expected_z)
 
 
 def _cantilever_tip_displacement(percent: int) -> float:
+    return _cantilever_tip_result(percent=percent).node_results["N2"]["DZ"]
+
+
+def _cantilever_tip_result(percent: int = 0, rotation: int = 0):
     model = StructuralModel()
     model.add_node("N1", 0.0, 0.0, 0.0)
     model.add_node("N2", 4.0, 0.0, 0.0)
@@ -43,9 +62,9 @@ def _cantilever_tip_displacement(percent: int) -> float:
     model.update_bar_material("B1", material, model.materials[material])
     model.update_bar_section("B1", "Retangular")
     model.update_member_profile("B1", "Retangular", {"b": 200.0, "h": 400.0})
+    model.update_member_rotation("B1", rotation)
     # Rya is the local bending rotation at end A in the persisted A/B order.
     model.update_member_rotation_flexibility_percent("B1", (0, 0, percent, 0, 0, 0))
     ActionService(model).add_node_force("N2", "Z", -10.0, "Caso")
 
-    result = PyniteAdapter().run(model, AnalysisRequest())[0]
-    return result.node_results["N2"]["DZ"]
+    return PyniteAdapter().run(model, AnalysisRequest())[0]

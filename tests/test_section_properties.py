@@ -234,8 +234,8 @@ def test_pynite_builder_receives_calculated_area_inertias_and_torsion():
     section = target.sections["section::B1"]
 
     assert section.A == pytest.approx(expected.area_mm2 * 1e-6)
-    assert section.Iy == pytest.approx(expected.i_minor_mm4 * 1e-12)
-    assert section.Iz == pytest.approx(expected.i_major_mm4 * 1e-12)
+    assert section.Iy == pytest.approx(expected.i_major_mm4 * 1e-12)
+    assert section.Iz == pytest.approx(expected.i_minor_mm4 * 1e-12)
     assert section.J == pytest.approx(expected.j_mm4 * 1e-12)
     material = target.materials["Aço Estrutural"]
     assert material.E == pytest.approx(model.materials["Aço Estrutural"][0])
@@ -261,8 +261,8 @@ def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
     rigid_material = target.materials[f"rigid_material::{rigid.name}"]
 
     assert rigid_section.A == pytest.approx(expected.area_mm2 * 1e-6)
-    assert rigid_section.Iy == pytest.approx(expected.i_minor_mm4 * 1e-12)
-    assert rigid_section.Iz == pytest.approx(expected.i_major_mm4 * 1e-12)
+    assert rigid_section.Iy == pytest.approx(expected.i_major_mm4 * 1e-12)
+    assert rigid_section.Iz == pytest.approx(expected.i_minor_mm4 * 1e-12)
     assert rigid_section.J == pytest.approx(expected.j_mm4 * 1e-12)
     assert rigid_material.E == pytest.approx(
         model.materials["Aço Estrutural"][0] * RIGID_LINK_STIFFNESS_FACTOR

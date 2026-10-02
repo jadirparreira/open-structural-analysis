@@ -137,7 +137,7 @@ def _member_properties(
         shear_modulus,
         poisson_ratio,
         properties.area_mm2 * 1e-6,
-        properties.i_minor_mm4 * 1e-12,
         properties.i_major_mm4 * 1e-12,
+        properties.i_minor_mm4 * 1e-12,
         properties.j_mm4 * 1e-12,
     )

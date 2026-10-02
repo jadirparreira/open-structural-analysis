@@ -40,6 +40,7 @@ class ResultMapper:
 
     @staticmethod
     def _member_end_result(member, position: float, load_reference: str) -> dict[str, float]:
+        deflections = ResultMapper._global_deflections(member, position, load_reference)
         return {
             "axial": float(member.axial(position, load_reference)),
             "shear_y": float(member.shear("Fy", position, load_reference)),
@@ -47,13 +48,12 @@ class ResultMapper:
             "moment_y": float(member.moment("My", position, load_reference)),
             "moment_z": float(member.moment("Mz", position, load_reference)),
             "torque": float(member.torque(position, load_reference)),
-            "deflection_x": float(member.deflection("dx", position, load_reference)),
-            "deflection_y": float(member.deflection("dy", position, load_reference)),
-            "deflection_z": float(member.deflection("dz", position, load_reference)),
+            **deflections,
         }
 
     @staticmethod
     def _member_sample(member, position: float, load_reference: str) -> dict[str, float]:
+        deflections = ResultMapper._global_deflections(member, position, load_reference)
         return {
             "x": position,
             "axial": float(member.axial(position, load_reference)),
@@ -62,7 +62,26 @@ class ResultMapper:
             "moment_y": float(member.moment("My", position, load_reference)),
             "moment_z": float(member.moment("Mz", position, load_reference)),
             "torque": float(member.torque(position, load_reference)),
-            "deflection_x": float(member.deflection("dx", position, load_reference)),
-            "deflection_y": float(member.deflection("dy", position, load_reference)),
-            "deflection_z": float(member.deflection("dz", position, load_reference)),
+            **deflections,
+        }
+
+    @staticmethod
+    def _global_deflections(member, position: float, load_reference: str) -> dict[str, float]:
+        """Return the member displacement components in global XYZ axes.
+
+        PyNite's member ``deflection`` API returns local x/y/z components.
+        Its transformation matrix maps global vectors to local vectors, so
+        the transpose maps the sampled local displacement back to global XYZ.
+        """
+        local = np.array((
+            member.deflection("dx", position, load_reference),
+            member.deflection("dy", position, load_reference),
+            member.deflection("dz", position, load_reference),
+        ), dtype=float)
+        local_from_global = np.asarray(member.T()[:3, :3], dtype=float)
+        global_displacement = local_from_global.T @ local
+        return {
+            "deflection_x": float(global_displacement[0]),
+            "deflection_y": float(global_displacement[1]),
+            "deflection_z": float(global_displacement[2]),
         }

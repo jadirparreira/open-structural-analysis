@@ -308,9 +308,10 @@ class ResultRenderer:
                 displacement_y = float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0
                 displacement_z = float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0
                 reported_displacements.append((displacement_x, displacement_y, displacement_z))
-                visual_displacement = (
-                    local_x * displacement_x + local_y * displacement_y + local_z * displacement_z
-                ) * scale
+                # Member displacement results are already expressed in global
+                # XYZ by ResultMapper. Do not project them through the local
+                # basis again; that would rotate them a second time.
+                visual_displacement = np.array((displacement_x, displacement_y, displacement_z)) * scale
                 visual_displacements.append(visual_displacement)
                 deformed.append(
                     start
