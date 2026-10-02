@@ -100,6 +100,15 @@ class ModelService:
         """Copy a selectable subset of properties between two members."""
         return self.model.copy_bar_properties(source_name, target_name, properties)
 
+    def copy_elements(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes and members to a translated position."""
+        return self.model.copy_elements(node_names, member_names, offset)
+
     def create_rigid_bar(self, start_node: str, end_node: str):
         return self.model.add_rigid_bar(start_node, end_node)
 

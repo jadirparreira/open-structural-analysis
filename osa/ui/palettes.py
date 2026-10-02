@@ -619,7 +619,7 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "copy-member-properties.svg"))
         )
         copy_properties_button.setIconSize(QSize(19, 19))
-        copy_properties_tooltip = _command_tooltip("Copiar propriedades", "COPY")
+        copy_properties_tooltip = _command_tooltip("Copiar propriedades", "CPROP")
         copy_properties_button.setToolTip(copy_properties_tooltip)
         copy_properties_button.setProperty("paletteTooltip", copy_properties_tooltip)
         copy_properties_button.setAccessibleName("Copiar propriedades")
@@ -632,6 +632,26 @@ class TopIconPalette(QFrame):
         )
         layout.addWidget(copy_properties_button)
         self.copy_properties_button = copy_properties_button
+
+        copy_elements_button = QToolButton(self)
+        copy_elements_button.setFixedSize(24, 24)
+        copy_elements_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "copy.svg"))
+        )
+        copy_elements_button.setIconSize(QSize(19, 19))
+        copy_elements_tooltip = _command_tooltip("Copiar elementos", "COPY")
+        copy_elements_button.setToolTip(copy_elements_tooltip)
+        copy_elements_button.setProperty("paletteTooltip", copy_elements_tooltip)
+        copy_elements_button.setAccessibleName("Copiar elementos")
+        copy_elements_button.clicked.connect(window.start_copy_elements)
+        copy_elements_button.installEventFilter(self)
+        copy_elements_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.insertWidget(layout.indexOf(copy_properties_button), copy_elements_button)
+        self.copy_elements_button = copy_elements_button
         self.adjustSize()
 
     def toggle_visibility_command(self, kind: str) -> None:

@@ -209,6 +209,43 @@ def test_copy_member_properties_keeps_unselected_fields_on_the_destination():
     assert copied.rotation == 135
 
 
+def test_copy_elements_translates_members_and_creates_unselected_endpoint_nodes():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.update_member_color("B1", "#0969da")
+    model.update_member_rotation("B1", 25)
+
+    copied_nodes, copied_members = ModelService(model).copy_elements(
+        (), ("B1",), (0, 0, 4),
+    )
+
+    assert copied_nodes == ("N3", "N4")
+    assert copied_members == ("B2",)
+    copied = model.bars["B2"]
+    assert (model.nodes[copied.start_node].x, model.nodes[copied.start_node].z) == (0, 4)
+    assert (model.nodes[copied.end_node].x, model.nodes[copied.end_node].z) == (4, 4)
+    assert copied.color == "#0969da"
+    assert copied.rotation == 25
+
+
+def test_copy_elements_reuses_existing_nodes_and_skips_duplicate_members():
+    model, _commands = session()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+
+    copied_nodes, copied_members = ModelService(model).copy_elements(
+        ("N1", "N2"), ("B1",), (0, 0, 0),
+    )
+
+    assert copied_nodes == ()
+    assert copied_members == ()
+    assert tuple(model.nodes) == ("N1", "N2")
+    assert tuple(model.bars) == ("B1",)
+
+
 def test_portico_command_creates_a_concrete_four_column_portal_with_offset_rigid_connections():
     model, commands = session()
 

@@ -100,6 +100,7 @@ class StructuralModel:
         if connected:
             raise ValueError(f"O nó '{name}' pertence às barras: {', '.join(connected)}. Remova-as primeiro.")
         del self.nodes[name]
+        self._remove_actions_for_target(name)
         self._touch()
 
     def update_node_supports(self, name: str, supports: tuple[bool, ...]) -> Node:
@@ -184,8 +185,11 @@ class StructuralModel:
     update_member = update_bar
 
     def remove_bar(self, name: str) -> None:
-        if self.bars.pop(name, None) is not None:
-            self._touch()
+        if name not in self.bars:
+            return
+        del self.bars[name]
+        self._remove_actions_for_target(name)
+        self._touch()
 
     remove_member = remove_bar
 
@@ -463,6 +467,117 @@ class StructuralModel:
 
     copy_member_properties = copy_bar_properties
 
+    def copy_elements(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes and members by translating them by ``offset``.
+
+        Existing nodes at the destination coordinates are reused.  Members
+        whose endpoint pair already exists are skipped, which makes copying
+        onto an existing position idempotent.
+        """
+        selected_nodes = tuple(dict.fromkeys(node_names))
+        selected_members = tuple(dict.fromkeys(member_names))
+        if not selected_nodes and not selected_members:
+            raise ValueError("Selecione pelo menos um nó ou membro para copiar.")
+        if any(name not in self.nodes for name in selected_nodes):
+            raise EntityNotFoundError("Um dos nós selecionados não foi encontrado.")
+        if any(name not in self.bars for name in selected_members):
+            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+
+        try:
+            translation = tuple(float(value) for value in offset)
+        except (TypeError, ValueError) as error:
+            raise ValueError("O deslocamento da cópia é inválido.") from error
+        if len(translation) != 3 or not all(math.isfinite(value) for value in translation):
+            raise ValueError("O deslocamento da cópia deve possuir três números finitos.")
+        dx, dy, dz = translation
+
+        source_node_names = list(selected_nodes)
+        for member_name in selected_members:
+            member = self.bars[member_name]
+            for node_name in (member.start_node, member.end_node):
+                if node_name not in source_node_names:
+                    source_node_names.append(node_name)
+
+        def translated_coordinates(node: Node) -> tuple[float, float, float]:
+            return node.x + dx, node.y + dy, node.z + dz
+
+        def same_coordinates(first: tuple[float, float, float], second: tuple[float, float, float]) -> bool:
+            return all(
+                math.isclose(a, b, abs_tol=self.coordinate_tolerance, rel_tol=0.0)
+                for a, b in zip(first, second)
+            )
+
+        new_nodes: dict[str, Node] = {}
+        node_map: dict[str, str] = {}
+        next_node_index = 1
+        for source_name in source_node_names:
+            source = self.nodes[source_name]
+            coordinates = translated_coordinates(source)
+            existing_name = next(
+                (
+                    name for name, node in self.nodes.items()
+                    if same_coordinates(coordinates, (node.x, node.y, node.z))
+                ),
+                None,
+            )
+            if existing_name is None:
+                existing_name = next(
+                    (
+                        name for name, node in new_nodes.items()
+                        if same_coordinates(coordinates, (node.x, node.y, node.z))
+                    ),
+                    None,
+                )
+            if existing_name is None:
+                while f"N{next_node_index}" in self.nodes or f"N{next_node_index}" in new_nodes:
+                    next_node_index += 1
+                existing_name = f"N{next_node_index}"
+                next_node_index += 1
+                new_nodes[existing_name] = replace(
+                    source if source_name in selected_nodes else Node(existing_name, *coordinates),
+                    name=existing_name,
+                    x=coordinates[0],
+                    y=coordinates[1],
+                    z=coordinates[2],
+                )
+            node_map[source_name] = existing_name
+
+        existing_pairs = {
+            frozenset((member.start_node, member.end_node))
+            for member in self.bars.values()
+        }
+        new_bars: dict[str, Bar] = {}
+        next_member_index = 1
+        for source_name in selected_members:
+            source = self.bars[source_name]
+            start_node = node_map[source.start_node]
+            end_node = node_map[source.end_node]
+            pair = frozenset((start_node, end_node))
+            if pair in existing_pairs:
+                continue
+            while f"B{next_member_index}" in self.bars or f"B{next_member_index}" in new_bars:
+                next_member_index += 1
+            member_name = f"B{next_member_index}"
+            next_member_index += 1
+            new_bars[member_name] = replace(
+                source,
+                name=member_name,
+                start_node=start_node,
+                end_node=end_node,
+            )
+            existing_pairs.add(pair)
+
+        if new_nodes or new_bars:
+            self.nodes.update(new_nodes)
+            self.bars.update(new_bars)
+            self._touch()
+        return tuple(new_nodes), tuple(new_bars)
+
     def _validate_rigid_bar_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
         if start_node.casefold() == end_node.casefold():
             raise ValueError("Uma barra rígida deve conectar dois nós diferentes.")
@@ -500,8 +615,30 @@ class StructuralModel:
         return rigid
 
     def remove_rigid_bar(self, name: str) -> None:
-        if self.rigid_bars.pop(name, None) is not None:
-            self._touch()
+        if name not in self.rigid_bars:
+            return
+        del self.rigid_bars[name]
+        self._remove_actions_for_target(name)
+        self._touch()
+
+    def remove_orphaned_actions(self) -> tuple[str, ...]:
+        """Remove actions whose target no longer exists in the model."""
+        valid_targets = set(self.nodes) | set(self.bars) | set(self.rigid_bars)
+        orphaned = tuple(
+            name for name, action in self.actions.items()
+            if action.target not in valid_targets
+        )
+        if not orphaned:
+            return ()
+        for name in orphaned:
+            del self.actions[name]
+        self._touch()
+        return orphaned
+
+    def _remove_actions_for_target(self, target: str) -> None:
+        for name, action in tuple(self.actions.items()):
+            if action.target == target:
+                del self.actions[name]
 
     def update_bar_material(self, name: str, material: str, values: tuple[float, float, float, float]) -> Bar:
         self.bars[name] = replace(self.bars[name], material=material, material_values=tuple(values))

@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
-        "member", "split", "reverse", "join", "rigid", "copy", "axes",
+        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
         "referenceaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
@@ -76,6 +76,8 @@ class MainWindow(QMainWindow):
         self._member_placement_start: tuple[float, float, float] | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
+        self._copy_elements_selection: list[tuple[str, str]] = []
+        self._copy_elements_reference: tuple[float, float, float] | None = None
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = False
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
@@ -98,9 +100,11 @@ class MainWindow(QMainWindow):
         self.selected: tuple[str, str] | None = None
         self.scene.element_clicked.connect(self.select_element)
         self.scene.empty_clicked.connect(self.clear_selection)
+        self.scene.enter_pressed.connect(self._confirm_copy_elements)
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
         self._make_shortcuts()
         self.palette = FloatingPalette(self)
         self.palette.reposition()
@@ -233,6 +237,14 @@ class MainWindow(QMainWindow):
         """Run PyNite in the background after the progress card is painted."""
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
+        orphaned_actions = self.model.remove_orphaned_actions()
+        if orphaned_actions:
+            self.history.append(
+                "> <b>Processamento estrutural</b> "
+                f"<span style='color:#57606a'>({len(orphaned_actions)} ação(ões) órfã(s) removida(s))</span>"
+            )
+            self.refresh_action_palette()
+            self.refresh_scene()
         self.action_service.ensure_default_combinations()
         self.refresh_analysis_palette()
         self.processing_panel.start()
@@ -731,10 +743,13 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
 
     def start_copy_member_properties(self) -> None:
-        """Choose a reference member, options, then a destination member."""
+        """Choose a reference member and then any number of destination members."""
         self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
+        self._copy_elements_selection = []
+        self._copy_elements_reference = None
+        self.scene.set_selection_highlight(())
         self._copy_properties_reference = (
             self.selected[1]
             if self.selected is not None and self.selected[0] == "bar"
@@ -773,14 +788,114 @@ class MainWindow(QMainWindow):
                 self.section_geometry[target_name] = copied.geometry_dict()
             else:
                 self.section_geometry.pop(target_name, None)
-        self._copy_properties_reference = None
-        self._command_mode = None
-        self.member_property_copy_panel.hide()
         self.history.append(
             f"> <b>Copiar propriedades</b> <span style='color:#57606a'>"
-            f"(Propriedades copiadas para {escape(target_name)})</span>"
+            f"(Propriedades copiadas para {escape(target_name)}; "
+            "selecione outro destino ou pressione ESC)</span>"
         )
         self.refresh_selected_property_panel(self.palette.active_group)
+        self.refresh_scene()
+
+    def start_copy_elements(self) -> None:
+        """Start selecting nodes and members for a translated copy."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._copy_elements_selection = []
+        self._copy_elements_reference = None
+        self._copy_properties_reference = None
+        self.member_property_copy_panel.hide()
+        self._command_mode = "copy_elements_selection"
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_selection_highlight(())
+        self.clear_selection()
+        self.history.append(
+            "> <b>Copiar</b> <span style='color:#57606a'>"
+            "(Selecione nós e membros; pressione ENTER para confirmar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _confirm_copy_elements(self) -> None:
+        """Confirm the element set and begin the two-point copy placement."""
+        if self._command_mode != "copy_elements_selection":
+            return
+        if not self._copy_elements_selection:
+            self.history.append(
+                "> <b>Copiar</b> <span style='color:#8c959f'>"
+                "(Selecione pelo menos um nó ou membro)</span>"
+            )
+            return
+        self._copy_elements_reference = None
+        self._command_mode = "copy_elements_reference_placement"
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            "> <b>Copiar</b> <span style='color:#57606a'>"
+            "(Selecione a posição de referência)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _handle_copy_placement_point(self, point: object) -> None:
+        """Collect the reference/destination points and copy the selection."""
+        if self._command_mode == "copy_elements_reference_placement":
+            self._copy_elements_reference = tuple(float(value) for value in point)
+            self._command_mode = "copy_elements_destination_placement"
+            self.scene.set_member_preview_start(self._copy_elements_reference)
+            self.history.append(
+                "> <b>Copiar</b> <span style='color:#57606a'>"
+                "(Selecione a posição de destino)</span>"
+            )
+            return
+        if self._command_mode != "copy_elements_destination_placement":
+            return
+        reference = self._copy_elements_reference
+        if reference is None:
+            return
+        destination = tuple(float(value) for value in point)
+        offset = tuple(
+            destination[index] - reference[index]
+            for index in range(3)
+        )
+        node_names = tuple(
+            name for kind, name in self._copy_elements_selection if kind == "node"
+        )
+        member_names = tuple(
+            name for kind, name in self._copy_elements_selection if kind == "bar"
+        )
+        try:
+            copied_nodes, copied_members = self.model_service.copy_elements(
+                node_names, member_names, offset,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Copiar</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        for member_name in copied_members:
+            copied_member = self.model.bars[member_name]
+            if copied_member.profile:
+                self.section_profiles[member_name] = copied_member.profile
+            if copied_member.section_geometry:
+                self.section_geometry[member_name] = copied_member.geometry_dict()
+
+        self._copy_elements_selection = []
+        self._copy_elements_reference = None
+        self._command_mode = None
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_selection_highlight(())
+        self.clear_selection()
+        if copied_nodes or copied_members:
+            self.history.append(
+                "> <b>Copiar</b> <span style='color:#57606a'>"
+                f"({len(copied_nodes)} nó(s) e {len(copied_members)} membro(s) criado(s))</span>"
+            )
+        else:
+            self.history.append(
+                "> <b>Copiar</b> <span style='color:#57606a'>"
+                "(Nenhum elemento novo: os elementos já existiam na posição de destino)</span>"
+            )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
         self.refresh_scene()
 
     def _handle_interface_command(self, command: str) -> bool:
@@ -841,7 +956,8 @@ class MainWindow(QMainWindow):
             "reverse": ("Geometria", self.start_reverse_member),
             "join": ("Geometria", self.start_join_members),
             "rigid": ("Geometria", self.start_rigid_bar_placement),
-            "copy": ("Geometria", self.start_copy_member_properties),
+            "copy": ("Geometria", self.start_copy_elements),
+            "cprop": ("Geometria", self.start_copy_member_properties),
             "axes": ("Geometria", self.toggle_axes_panel),
             "group": ("Ações", self.open_action_groups),
             "action": ("Ações", self.start_load_command),
@@ -1066,19 +1182,31 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode in {
             "split_member_selection", "split_parts", "reverse_member_selection", "join_member_selection",
-            "copy_member_properties_selection",
+            "copy_member_properties_selection", "copy_elements_selection",
+            "copy_elements_reference_placement", "copy_elements_destination_placement",
         }:
             labels = {
                 "reverse_member_selection": "Inverter membro",
                 "join_member_selection": "Unir membros",
                 "copy_member_properties_selection": "Copiar propriedades",
+                "copy_elements_selection": "Copiar",
+                "copy_elements_reference_placement": "Copiar",
+                "copy_elements_destination_placement": "Copiar",
             }
+            copy_elements_active = self._command_mode.startswith("copy_elements_")
             label = labels.get(self._command_mode, "Dividir membro")
             self.command_session.cancel()
             self._command_mode = None
             self._join_member_first = None
             self._copy_properties_reference = None
+            self._copy_elements_selection = []
+            self._copy_elements_reference = None
             self.member_property_copy_panel.hide()
+            if copy_elements_active:
+                self.scene.set_member_preview_start(None)
+                self.scene.set_member_placement_mode(False)
+                self.scene.set_selection_highlight(())
+                self.clear_selection()
             self.history.append(
                 f"> <b>{label}</b> "
                 "<span style='color:#8c959f'>(Operação cancelada)</span>"
@@ -1273,6 +1401,33 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._join_members(self._join_member_first, name)
+        elif self._command_mode == "copy_elements_selection":
+            if kind not in {"node", "bar"}:
+                self.scene.set_selection_highlight(self._copy_elements_selection)
+                self.history.append(
+                    "> <b>Copiar</b> "
+                    "<span style='color:#8c959f'>(Selecione apenas nós ou membros)</span>"
+                )
+            else:
+                target = kind, name
+                if target in self._copy_elements_selection:
+                    self._copy_elements_selection.remove(target)
+                    action = "removido da seleção"
+                else:
+                    self._copy_elements_selection.append(target)
+                    action = "adicionado à seleção"
+                self.scene.set_selection_highlight(self._copy_elements_selection)
+                if self._copy_elements_selection:
+                    self.selected = self._copy_elements_selection[-1]
+                else:
+                    self.selected = None
+                    self.properties.hide()
+                self.history.append(
+                    f"> <b>Copiar</b> <span style='color:#57606a'>"
+                    f"({escape(kind)} {escape(name)} {action}; "
+                    f"{len(self._copy_elements_selection)} selecionado(s))</span>"
+                )
+            return
         elif self._command_mode == "copy_member_properties_selection":
             if kind != "bar":
                 self.history.append(
@@ -1307,6 +1462,8 @@ class MainWindow(QMainWindow):
         self.properties.hide()
         self.section_panel.hide()
         self.axes_panel.hide()
+        if self._command_mode == "copy_elements_selection":
+            self.scene.set_selection_highlight(self._copy_elements_selection)
 
     def delete_selected(self) -> None:
         """Delete the selected element without rebuilding unrelated actors."""
@@ -1355,10 +1512,13 @@ class MainWindow(QMainWindow):
         self._member_placement_start = None
         self._join_member_first = None
         self._copy_properties_reference = None
+        self._copy_elements_selection = []
+        self._copy_elements_reference = None
         self._pending_action_launch = None
         if hasattr(self, "member_property_copy_panel"):
             self.member_property_copy_panel.hide()
         self.scene.set_member_placement_mode(False)
+        self.scene.set_selection_highlight(())
         self.clear_selection()
         self.current_path = None
         self._saved_revision = self.model.revision
@@ -1415,9 +1575,12 @@ class MainWindow(QMainWindow):
                 self._member_placement_start = None
                 self._join_member_first = None
                 self._copy_properties_reference = None
+                self._copy_elements_selection = []
+                self._copy_elements_reference = None
                 self._pending_action_launch = None
                 self.member_property_copy_panel.hide()
                 self.scene.set_member_placement_mode(False)
+                self.scene.set_selection_highlight(())
                 self.clear_selection()
                 self.current_path = Path(path)
                 self._saved_revision = self.model.revision

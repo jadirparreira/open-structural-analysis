@@ -88,6 +88,7 @@ class StructureScene(QWidget):
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
     placement_point_clicked = Signal(object)
+    enter_pressed = Signal()
     # The wireframe member and local-axis strokes are intentionally separate:
     # they may be tuned independently while remaining visually lightweight.
     _member_line_width = 1.5
@@ -255,6 +256,7 @@ class StructureScene(QWidget):
         self._node_supports_visible = True
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
+        self._selected_elements: tuple[tuple[str, str], ...] = ()
         self._tab_hover_candidates: list[tuple[str, str]] = []
         self._tab_hover_position: tuple[int, int] | None = None
         self._pointer_position: tuple[float, float] | None = None
@@ -903,6 +905,15 @@ class StructureScene(QWidget):
             self._emit_member_placement_point()
             event.accept()
             return True
+        if (
+            watched is self.plotter
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and not self._placement_active()
+        ):
+            self.enter_pressed.emit()
+            event.accept()
+            return True
         if watched is self.plotter and event.type() in (
             QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
             QEvent.Type.MouseButtonRelease,
@@ -997,6 +1008,18 @@ class StructureScene(QWidget):
         self._member_placement_mode = bool(active)
         self._node_placement_mode = False
         self._set_point_placement_mode(active)
+
+    def set_selection_highlight(self, elements: object) -> None:
+        """Show one or more selected elements in the viewport."""
+        normalized: list[tuple[str, str]] = []
+        for element in elements:
+            target = str(element[0]), str(element[1])
+            if target not in normalized:
+                normalized.append(target)
+        self._selected_elements = tuple(normalized)
+        self._selected = self._selected_elements[-1] if self._selected_elements else None
+        self._sync_highlights()
+        self.plotter.render()
 
     def set_node_placement_mode(self, active: bool) -> None:
         """Enable the single-click graphical node-placement flow."""
@@ -1529,6 +1552,7 @@ class StructureScene(QWidget):
             else self._pick()
         )
         self._selected = picked
+        self._selected_elements = () if picked is None else (picked,)
         self._sync_highlights()
         self.plotter.render()
         if picked is None:
@@ -1818,8 +1842,16 @@ class StructureScene(QWidget):
 
     def _sync_highlights(self) -> None:
         self._reset_node_highlight_colors()
-        self._replace_highlight("selected", self._selected, "#0969da")
-        hover = None if self._hovered == self._selected else self._hovered
+        for slot in tuple(slot for slot in self._highlight_actors if slot.startswith("selected")):
+            self._replace_highlight(slot, None, "#0969da")
+        selected_elements = self._selected_elements or (
+            (self._selected,) if self._selected is not None else ()
+        )
+        for index, target in enumerate(selected_elements):
+            slot = "selected" if len(selected_elements) == 1 else f"selected:{index}"
+            self._replace_highlight(slot, target, "#0969da")
+        selected_targets = set(selected_elements)
+        hover = None if self._hovered in selected_targets else self._hovered
         hover_color = "#4b5563" if hover is not None and hover[0] == "node" else "#24292f"
         self._replace_highlight("hover", hover, hover_color)
 
@@ -1919,7 +1951,7 @@ class StructureScene(QWidget):
             width = float(reference_actor.GetProperty().GetLineWidth())
         padding = (
             self._selected_highlight_padding
-            if slot == "selected" else self._hover_highlight_padding
+            if slot.startswith("selected") else self._hover_highlight_padding
         )
         return max(1.0, width + padding)
 
@@ -1997,7 +2029,17 @@ class StructureScene(QWidget):
         self._nodes_visible = bool(visible)
         if self._node_actor is not None:
             self._node_actor.SetVisibility(self._nodes_visible)
-        for slot, target in (("selected", self._selected), ("hover", self._hovered)):
+        selected_elements = self._selected_elements or (
+            (self._selected,) if self._selected is not None else ()
+        )
+        selected_slots = tuple(
+            (
+                "selected" if len(selected_elements) == 1 else f"selected:{index}",
+                target,
+            )
+            for index, target in enumerate(selected_elements)
+        )
+        for slot, target in (*selected_slots, ("hover", self._hovered)):
             actor = self._highlight_actors.get(slot)
             if actor is not None and target is not None and target[0] == "node":
                 actor.SetVisibility(self._nodes_visible)
@@ -2202,6 +2244,10 @@ class StructureScene(QWidget):
         """Refresh a renamed rigid bar without losing its scene selection."""
         if self._selected == ("rigid_bar", old_name):
             self._selected = "rigid_bar", new_name
+        self._selected_elements = tuple(
+            ("rigid_bar", new_name) if target == ("rigid_bar", old_name) else target
+            for target in self._selected_elements
+        )
         if self._hovered == ("rigid_bar", old_name):
             self._hovered = "rigid_bar", new_name
         self.render_model(self._model)
@@ -2217,6 +2263,9 @@ class StructureScene(QWidget):
         target = kind, name
         if self._selected == target:
             self._selected = None
+        self._selected_elements = tuple(
+            element for element in self._selected_elements if element != target
+        )
         if self._hovered == target:
             self._hovered = None
         self.render_model(self._model)
@@ -2573,9 +2622,16 @@ class StructureScene(QWidget):
             actor.GetProperty().SetLineWidth(self._local_axis_line_width * zoom_factor)
         for actor, width in self._result_line_widths:
             actor.GetProperty().SetLineWidth(width * zoom_factor)
-        highlight_targets = {"selected": self._selected, "hover": self._hovered}
+        selected_elements = self._selected_elements or (
+            (self._selected,) if self._selected is not None else ()
+        )
+        selected_slots = {
+            ("selected" if len(selected_elements) == 1 else f"selected:{index}"): target
+            for index, target in enumerate(selected_elements)
+        }
+        highlight_targets = {**selected_slots, "hover": self._hovered}
         for slot, actor in self._highlight_actors.items():
-            if actor is not None and slot in {"selected", "hover"}:
+            if actor is not None and (slot.startswith("selected") or slot == "hover"):
                 target = highlight_targets.get(slot)
                 kind = target[0] if target is not None else "bar"
                 actor.GetProperty().SetLineWidth(self._highlight_line_width(slot, kind))
@@ -2603,16 +2659,21 @@ class StructureScene(QWidget):
         camera.SetParallelScale(parallel_scale)
 
     def _validate_selection(self) -> None:
-        if self._selected is None:
-            return
-        kind, name = self._selected
-        collection = (
-            self._model.nodes if kind == "node"
-            else self._model.bars if kind == "bar"
-            else self._model.rigid_bars
+        def is_valid(target: tuple[str, str]) -> bool:
+            kind, name = target
+            collection = (
+                self._model.nodes if kind == "node"
+                else self._model.bars if kind == "bar" else self._model.rigid_bars
+            )
+            return name in collection
+
+        selected_elements = self._selected_elements or (
+            (self._selected,) if self._selected is not None else ()
         )
-        if name not in collection:
-            self._selected = None
+        self._selected_elements = tuple(
+            target for target in selected_elements if is_valid(target)
+        )
+        self._selected = self._selected_elements[-1] if self._selected_elements else None
 
     def _clear_actor_references(self) -> None:
         self._grid_actor = None

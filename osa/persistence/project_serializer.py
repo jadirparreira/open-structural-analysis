@@ -144,6 +144,7 @@ class ProjectSerializer:
                 )
                 for item in data.get("actions", ())
             }
+            candidate.remove_orphaned_actions()
             candidate.action_groups = {
                 item["name"]: ActionGroup(
                     item["name"], tuple(

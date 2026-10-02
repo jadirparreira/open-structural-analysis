@@ -1,5 +1,6 @@
 import pytest
 
+from osa.domain import Action
 from osa.model import StructuralModel
 
 
@@ -22,6 +23,33 @@ def test_node_with_bar_cannot_be_removed():
     model.add_bar("B1", "N1", "N2")
     with pytest.raises(ValueError, match="Remova-as primeiro"):
         model.remove_node("N1")
+
+
+def test_removing_member_also_removes_actions_targeting_it():
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.actions["Carga 1"] = Action(
+        "Carga 1", "member_distributed_force_selfweight_Z", "B1", (-1.0, -1.0), "Peso próprio",
+    )
+
+    model.remove_bar("B1")
+
+    assert "B1" not in model.bars
+    assert not model.actions
+
+
+def test_orphaned_actions_can_be_removed_from_legacy_models():
+    model = StructuralModel()
+    model.actions["Carga 1"] = Action(
+        "Carga 1", "member_distributed_force_selfweight_Z", "B99", (-1.0, -1.0), "Peso próprio",
+    )
+
+    removed = model.remove_orphaned_actions()
+
+    assert removed == ("Carga 1",)
+    assert not model.actions
 
 
 def test_bar_requires_distinct_existing_nodes():
