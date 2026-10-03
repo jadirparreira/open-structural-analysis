@@ -106,6 +106,9 @@ class ProjectSerializer:
                 candidate._member_solid_face_offsets(
                     tuple(float(value) for value in item.get("solid_face_offsets", (0.0, 0.0)))
                 ),
+                candidate._member_solid_section_offsets(
+                    tuple(float(value) for value in item.get("solid_section_offsets", (0.0, 0.0)))
+                ),
                 rotation_flexibility_percent=rotation_percent,
             )
             candidate.bars[member.name] = member

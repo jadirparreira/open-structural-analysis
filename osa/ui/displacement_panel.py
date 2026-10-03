@@ -5,6 +5,8 @@ from math import isfinite
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator, QTransform
 
+from osa.sections import section_shape
+
 from .common import *
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton, VerticalArrowButton
 
@@ -40,16 +42,20 @@ class DisplacementPanel(QFrame):
         down = VerticalArrowButton(controls, point_down=True)
         left = LeftArrowButton(controls)
         right = RightArrowButton(controls)
-        for control, rotation_degrees, position in (
-            (up, -90, "superior"),
-            (down, 90, "inferior"),
-            (left, 180, "esquerdo"),
-            (right, 0, "direito"),
+        for control, rotation_degrees, position, delta in (
+            (up, -90, "superior", (0.0, 0.001)),
+            (down, 90, "inferior", (0.0, -0.001)),
+            (left, 180, "esquerdo", (-0.001, 0.0)),
+            (right, 0, "direito", (0.001, 0.0)),
         ):
             control.setProperty("controlBackground", "#ffffff")
             control.setIcon(self._rotated_icon("chevron-right.svg", rotation_degrees))
             control.setIconSize(QSize(18, 18))
             control.setAccessibleName(f"Controle externo {position} de posicionamento")
+            control.clicked.connect(
+                lambda _checked=False, adjustment=delta:
+                self._fine_adjustment_requested(*adjustment)
+            )
         grid.addWidget(up, 0, 2, Qt.AlignmentFlag.AlignCenter)
         grid.addWidget(left, 2, 0, Qt.AlignmentFlag.AlignCenter)
         grid.addWidget(right, 2, 4, Qt.AlignmentFlag.AlignCenter)
@@ -70,6 +76,7 @@ class DisplacementPanel(QFrame):
             corner.setProperty("controlBackground", "#ffffff")
             grid.addWidget(corner, row, column, Qt.AlignmentFlag.AlignCenter)
 
+        self._position_buttons: dict[str, QToolButton] = {}
         for row, column, rotation_degrees, position in (
             (1, 1, -45, "noroeste"),
             (1, 2, 0, "superior"),
@@ -81,9 +88,17 @@ class DisplacementPanel(QFrame):
             (3, 3, 135, "sudeste"),
         ):
             button = self._square_control(controls)
+            button.setCheckable(True)
             button.setIcon(self._positioning_icon(rotation_degrees))
             button.setIconSize(QSize(18, 18))
             button.setAccessibleName(f"Controle {position} de posicionamento")
+            button.clicked.connect(
+                lambda _checked=False, selected_position=position:
+                self._position_requested(selected_position)
+            )
+            self._position_buttons[position] = button
+            if position == "superior":
+                self.top_center_button = button
             grid.addWidget(button, row, column, Qt.AlignmentFlag.AlignCenter)
 
         center = QToolButton(controls)
@@ -91,10 +106,13 @@ class DisplacementPanel(QFrame):
         center.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "dot.svg")))
         center.setIconSize(QSize(18, 18))
         center.setAccessibleName("Ponto central de posicionamento")
+        center.setCheckable(True)
+        center.clicked.connect(self._center_requested)
+        self.center_button = center
         center.setStyleSheet(
             "QToolButton { border: 1px solid #d0d7de; border-radius: 17px; padding: 0; "
             "background: #ffffff; }"
-            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
             "QToolButton:pressed { background: #d0d7de; }"
         )
         grid.addWidget(center, 2, 2, Qt.AlignmentFlag.AlignCenter)
@@ -110,26 +128,15 @@ class DisplacementPanel(QFrame):
         layout.addSpacing(10)
 
         values = QWidget()
-        values_grid = QGridLayout(values)
-        values_grid.setContentsMargins(0, 0, 0, 0)
-        values_grid.setHorizontalSpacing(8)
-        values_grid.setVerticalSpacing(5)
-        values_grid.setColumnStretch(0, 1)
-        values_grid.setColumnStretch(1, 1)
+        values_layout = QVBoxLayout(values)
+        values_layout.setContentsMargins(0, 0, 0, 0)
+        values_layout.setSpacing(5)
         self._solid_offset_inputs: dict[str, QLineEdit] = {}
+        self._position_parameter_inputs: dict[str, QLineEdit] = {}
 
-        position_title = QLabel("Posição")
-        position_title.setObjectName("propertySection")
-        values_grid.addWidget(position_title, 0, 0)
         rotation_title = QLabel("Rotação")
         rotation_title.setObjectName("propertySection")
-        values_grid.addWidget(rotation_title, 0, 1)
-
-        self.position_input = QLineEdit()
-        self.position_input.setReadOnly(True)
-        self.position_input.setObjectName("identityDisplay")
-        self.position_input.setAccessibleName("Estado do posicionamento")
-        values_grid.addWidget(self.position_input, 1, 0)
+        values_layout.addWidget(rotation_title)
 
         rotation_box = QFrame()
         rotation_box.setObjectName("unitValueBox")
@@ -141,6 +148,7 @@ class DisplacementPanel(QFrame):
         rotation_row = QHBoxLayout(rotation_box)
         rotation_row.setContentsMargins(0, 0, 0, 0)
         rotation_row.setSpacing(0)
+        rotation_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.rotation_input = QLineEdit()
         self.rotation_input.setObjectName("unitValue")
         self.rotation_input.setValidator(
@@ -150,16 +158,42 @@ class DisplacementPanel(QFrame):
         self.rotation_input.editingFinished.connect(self._rotation_changed)
         rotation_row.addWidget(self.rotation_input, 1)
         rotation_row.addWidget(QLabel("°"))
-        values_grid.addWidget(rotation_box, 1, 1)
+        rotation_and_buttons = QHBoxLayout()
+        rotation_and_buttons.setContentsMargins(0, 0, 0, 0)
+        rotation_and_buttons.setSpacing(8)
+        rotation_and_buttons.addWidget(rotation_box, 1)
 
+        future_buttons = QWidget(values)
+        future_buttons_layout = QHBoxLayout(future_buttons)
+        future_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        future_buttons_layout.setSpacing(8)
+        future_buttons_layout.addStretch()
+        for icon_name, label in (
+            ("rotate-cw.svg", "Rotacionar 45 graus"),
+        ):
+            button = self._square_control(future_buttons)
+            button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_name)))
+            button.setIconSize(QSize(18, 18))
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(self._rotate_45_requested)
+            self.rotate_45_button = button
+            future_buttons_layout.addWidget(button)
+        future_buttons_layout.addStretch()
+        rotation_and_buttons.addWidget(future_buttons)
+        values_layout.addLayout(rotation_and_buttons)
+
+        endpoint_grid = QGridLayout()
+        endpoint_grid.setContentsMargins(0, 0, 0, 0)
+        endpoint_grid.setHorizontalSpacing(8)
+        endpoint_grid.setVerticalSpacing(5)
+        endpoint_grid.setColumnStretch(0, 1)
+        endpoint_grid.setColumnStretch(1, 1)
         for column, endpoint in enumerate(("A", "B")):
             endpoint_title = QLabel(endpoint)
             endpoint_title.setObjectName("propertySection")
-            values_grid.addWidget(endpoint_title, 2, column)
+            endpoint_grid.addWidget(endpoint_title, 0, column)
             field_box, field = self._offset_input(values)
-            field.setToolTip(
-                "Positivo aumenta e negativo reduz o comprimento da extremidade"
-            )
             field.setAccessibleName(
                 f"Deslocamento da face sólida no extremo {endpoint} (mm)"
             )
@@ -167,7 +201,28 @@ class DisplacementPanel(QFrame):
                 lambda selected_endpoint=endpoint: self._solid_offset_changed(selected_endpoint)
             )
             self._solid_offset_inputs[endpoint] = field
-            values_grid.addWidget(field_box, 3, column)
+            endpoint_grid.addWidget(field_box, 1, column)
+        values_layout.addLayout(endpoint_grid)
+
+        parameter_grid = QGridLayout()
+        parameter_grid.setContentsMargins(0, 0, 0, 0)
+        parameter_grid.setHorizontalSpacing(8)
+        parameter_grid.setVerticalSpacing(5)
+        parameter_grid.setColumnStretch(0, 1)
+        parameter_grid.setColumnStretch(1, 1)
+        for column, parameter in enumerate(("Y", "Z")):
+            parameter_title = QLabel(parameter)
+            parameter_title.setObjectName("propertySection")
+            parameter_grid.addWidget(parameter_title, 0, column)
+            field_box, field = self._offset_input(values)
+            field.setAccessibleName(f"Parâmetro {parameter} de posicionamento (mm)")
+            field.editingFinished.connect(
+                lambda selected_parameter=parameter:
+                self._section_offset_changed(selected_parameter)
+            )
+            self._position_parameter_inputs[parameter] = field
+            parameter_grid.addWidget(field_box, 1, column)
+        values_layout.addLayout(parameter_grid)
 
         layout.addWidget(values)
         layout.addStretch()
@@ -182,7 +237,7 @@ class DisplacementPanel(QFrame):
         button.setStyleSheet(
             "QToolButton { border: 1px solid #d0d7de; border-radius: 7px; padding: 0; "
             "background: #ffffff; }"
-            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
             "QToolButton:pressed { background: #d0d7de; }"
         )
         return button
@@ -249,17 +304,22 @@ class DisplacementPanel(QFrame):
         self._member_name = member_name
         member = self.window.model.bars.get(member_name)
         self.rotation_input.setEnabled(member is not None)
-        self.position_input.setEnabled(member is not None)
+        self.center_button.setEnabled(member is not None)
         self.rotation_input.setText(str(member.rotation) if member is not None else "")
         if member is None:
-            self.position_input.clear()
             for field in self._solid_offset_inputs.values():
+                field.clear()
+                field.setEnabled(False)
+            for field in self._position_parameter_inputs.values():
                 field.clear()
                 field.setEnabled(False)
         else:
             for field in self._solid_offset_inputs.values():
                 field.setEnabled(True)
-            self._update_position_input(member)
+            for field in self._position_parameter_inputs.values():
+                field.setEnabled(True)
+            self._update_section_offset_inputs(member)
+            self._update_position_buttons(member)
             self._update_solid_offset_inputs()
         self.layout().activate()
         self.adjustSize()
@@ -282,6 +342,105 @@ class DisplacementPanel(QFrame):
             return
         self.rotation_input.setText(str(member.rotation))
         self.window.refresh_member_rotation(self._member_name)
+
+    def _rotate_45_requested(self, _checked: bool = False) -> None:
+        """Increase the analytical member rotation by 45 degrees."""
+        member = self.window.model.bars.get(self._member_name)
+        if member is None:
+            return
+        try:
+            member = self.window.model_service.update_member_rotation(
+                self._member_name, member.rotation + 45
+            )
+        except ValueError:
+            return
+        self.rotation_input.setText(str(member.rotation))
+        self.window.refresh_member_rotation(self._member_name)
+
+    def _center_requested(self, _checked: bool) -> None:
+        """Select the member's original geometric-center position."""
+        member = self.window.model.bars.get(self._member_name)
+        if member is None:
+            return
+        try:
+            member = self.window.model_service.update_member_solid_section_offsets(
+                self._member_name, (0.0, 0.0)
+            )
+        except ValueError:
+            return
+        self._update_section_offset_inputs(member)
+        self._update_position_buttons(member)
+        self.window.refresh_member_geometry(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
+
+    def _position_requested(self, position: str) -> None:
+        """Align the requested solid-section face or corner with the line."""
+        member = self.window.model.bars.get(self._member_name)
+        if member is None:
+            return
+        offsets = self._position_offsets(member, position)
+        if offsets is None:
+            return
+        try:
+            member = self.window.model_service.update_member_solid_section_offsets(
+                self._member_name, offsets
+            )
+        except ValueError:
+            return
+        self._update_section_offset_inputs(member)
+        self._update_position_buttons(member)
+        self.window.refresh_member_geometry(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
+
+    def _fine_adjustment_requested(self, delta_y: float, delta_z: float) -> None:
+        """Move the solid section by one millimetre in local Y/Z."""
+        member = self.window.model.bars.get(self._member_name)
+        if member is None:
+            return
+        offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
+        if len(offsets) != 2:
+            offsets = [0.0, 0.0]
+        offsets[0] += delta_y
+        offsets[1] += delta_z
+        try:
+            member = self.window.model_service.update_member_solid_section_offsets(
+                self._member_name, tuple(offsets)
+            )
+        except ValueError:
+            return
+        self._update_section_offset_inputs(member)
+        self._update_position_buttons(member)
+        self.window.refresh_member_geometry(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
+
+    def _section_offset_changed(self, parameter: str) -> None:
+        """Apply a direct Y/Z value entered in millimetres."""
+        member = self.window.model.bars.get(self._member_name)
+        field = self._position_parameter_inputs.get(parameter)
+        if member is None or field is None or parameter not in {"Y", "Z"}:
+            return
+        try:
+            value_mm = float(field.text().strip().replace(",", "."))
+            if not isfinite(value_mm):
+                raise ValueError
+        except ValueError:
+            self._update_section_offset_inputs(member)
+            return
+        offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
+        if len(offsets) != 2:
+            offsets = [0.0, 0.0]
+        offsets[0 if parameter == "Y" else 1] = value_mm / 1000.0
+        try:
+            member = self.window.model_service.update_member_solid_section_offsets(
+                self._member_name, tuple(offsets)
+            )
+        except ValueError:
+            self._update_section_offset_inputs(member)
+            return
+        self._update_section_offset_inputs(member)
+        self._update_position_buttons(member)
+        self.window.refresh_member_geometry(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
 
     @staticmethod
     def _format_solid_offset(value: float) -> str:
@@ -314,7 +473,7 @@ class DisplacementPanel(QFrame):
         field.setText(
             self._format_solid_offset(member.solid_face_offsets[0 if endpoint == "A" else 1])
         )
-        self._update_position_input(member)
+        self._update_position_buttons(member)
         self.window.properties.update_positioning_status(self._member_name)
         self.window.refresh_member_geometry(self._member_name)
 
@@ -329,8 +488,65 @@ class DisplacementPanel(QFrame):
             field = self._solid_offset_inputs[endpoint]
             field.setText(self._format_solid_offset(offsets[index]))
 
-    def _update_position_input(self, member) -> None:
-        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
-        self.position_input.setText(
-            "Definido" if any(float(value) != 0.0 for value in offsets) else "Indefinido"
+    def _update_position_buttons(self, member) -> None:
+        section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+        centered = len(section_offsets) == 2 and all(
+            abs(float(value)) <= 1e-12 for value in section_offsets
         )
+        with QSignalBlocker(self.center_button):
+            self.center_button.setChecked(centered)
+        for position, button in self._position_buttons.items():
+            offsets = self._position_offsets(member, position)
+            active = offsets is not None and len(section_offsets) == 2 and all(
+                abs(float(current) - float(expected)) <= 1e-12
+                for current, expected in zip(section_offsets, offsets)
+            )
+            with QSignalBlocker(button):
+                button.setChecked(active)
+
+    @staticmethod
+    def _position_offsets(member, position: str) -> tuple[float, float] | None:
+        try:
+            shape = section_shape(member.section, member.geometry_dict())
+        except (KeyError, TypeError, ValueError):
+            return None
+        if shape is None:
+            return None
+        min_y, max_y, min_z, max_z = shape.bounds
+        horizontal = {
+            "esquerdo": -float(min_y),
+            "direito": -float(max_y),
+        }
+        vertical = {
+            "superior": -float(max_z),
+            "inferior": -float(min_z),
+        }
+        if position == "superior":
+            return 0.0, vertical[position] * 1e-3
+        if position == "inferior":
+            return 0.0, vertical[position] * 1e-3
+        if position == "esquerdo":
+            return horizontal[position] * 1e-3, 0.0
+        if position == "direito":
+            return horizontal[position] * 1e-3, 0.0
+        diagonal = {
+            "noroeste": ("esquerdo", "superior"),
+            "nordeste": ("direito", "superior"),
+            "sudoeste": ("esquerdo", "inferior"),
+            "sudeste": ("direito", "inferior"),
+        }
+        horizontal_position, vertical_position = diagonal.get(position, ("", ""))
+        if not horizontal_position:
+            return None
+        return (
+            horizontal[horizontal_position] * 1e-3,
+            vertical[vertical_position] * 1e-3,
+        )
+
+    def _update_section_offset_inputs(self, member) -> None:
+        offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+        if len(offsets) != 2:
+            return
+        for value, parameter in zip(offsets, ("Y", "Z")):
+            field = self._position_parameter_inputs[parameter]
+            field.setText(self._format_solid_offset(float(value)))

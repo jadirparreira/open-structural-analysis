@@ -398,7 +398,7 @@ class CommandSession:
         return targets[0][0], names
 
     def _create_portico(self) -> None:
-        """Create a one-storey concrete portal with offset top beams."""
+        """Create a one-storey concrete portal without auxiliary rigid links."""
         model = self.service.model
         span = 4.0
         height = 4.0
@@ -408,12 +408,13 @@ class CommandSession:
         member_color = "#6e7781"
         column_top_nodes: dict[tuple[float, float], str] = {}
 
-        def configure_member(name: str, solid_face_offsets: tuple[float, float] = (0.0, 0.0)) -> None:
+        def configure_member(name: str) -> None:
             model.update_bar_material(name, "Concreto Estrutural", model.materials["Concreto Estrutural"])
             model.update_bar_section(name, "Retangular")
             model.update_member_profile(name, "R 200 x 400", geometry)
             model.update_member_color(name, member_color)
-            model.update_member_solid_face_offsets(name, solid_face_offsets)
+            model.update_member_solid_face_offsets(name, (0.0, 0.0))
+            model.update_member_solid_section_offsets(name, (0.0, 0.0))
 
         # Quatro pilares nos vértices de uma malha de 4 x 4 m, terminando no
         # nível das vigas em z=3,8 m.
@@ -423,52 +424,19 @@ class CommandSession:
             model.update_node_supports(base.name, supports)
             column_top_nodes[(x, y)] = column_top.name
             lower_column = self.service.create_member(base.name, column_top.name)
-            configure_member(lower_column.name, (0.0, 0.2))
+            configure_member(lower_column.name)
 
-        # As vigas paralelas ao eixo X ficam deslocadas 100 mm em Y, enquanto
-        # as vigas paralelas ao eixo Y terminam 200 mm para dentro do pórtico.
-        # Todas ficam no nível de z=3,8 m, junto aos nós dos pilares e às
-        # ligações rígidas.
-        x_beam_nodes = {
-            (0.0, 0.0): self.service.create_node(0.0, -0.1, beam_height).name,
-            (span, 0.0): self.service.create_node(span, -0.1, beam_height).name,
-            (span, span): self.service.create_node(span, span + 0.1, beam_height).name,
-            (0.0, span): self.service.create_node(0.0, span + 0.1, beam_height).name,
-        }
-        y_beam_nodes = {
-            (span, 0.0): self.service.create_node(span, 0.2, beam_height).name,
-            (span, span): self.service.create_node(span, span - 0.2, beam_height).name,
-            (0.0, span): self.service.create_node(0.0, span - 0.2, beam_height).name,
-            (0.0, 0.0): self.service.create_node(0.0, 0.2, beam_height).name,
-        }
-
-        # Quatro vigas no perímetro superior.
+        # Quatro vigas no perímetro superior, ligadas diretamente aos nós dos
+        # pilares. Não são necessários nós auxiliares nem barras rígidas.
         perimeter = (
-            (x_beam_nodes[(0.0, 0.0)], x_beam_nodes[(span, 0.0)]),
-            (y_beam_nodes[(span, 0.0)], y_beam_nodes[(span, span)]),
-            (x_beam_nodes[(span, span)], x_beam_nodes[(0.0, span)]),
-            (y_beam_nodes[(0.0, span)], y_beam_nodes[(0.0, 0.0)]),
+            (column_top_nodes[(0.0, 0.0)], column_top_nodes[(span, 0.0)]),
+            (column_top_nodes[(span, 0.0)], column_top_nodes[(span, span)]),
+            (column_top_nodes[(span, span)], column_top_nodes[(0.0, span)]),
+            (column_top_nodes[(0.0, span)], column_top_nodes[(0.0, 0.0)]),
         )
-        for index, (start, end) in enumerate(perimeter):
+        for start, end in perimeter:
             beam = self.service.create_member(start, end)
-            # Os membros 1 e 3 do perímetro são paralelos ao eixo X.
-            offsets = (-0.1, -0.1) if index in (0, 2) else (0.0, 0.0)
-            configure_member(beam.name, offsets)
-
-        # Cada pilar recebe as duas extremidades de vigas que chegam ao seu
-        # vértice por meio de barras rígidas.
-        rigid_connections = (
-            (column_top_nodes[(0.0, 0.0)], x_beam_nodes[(0.0, 0.0)]),
-            (column_top_nodes[(0.0, 0.0)], y_beam_nodes[(0.0, 0.0)]),
-            (column_top_nodes[(span, 0.0)], x_beam_nodes[(span, 0.0)]),
-            (column_top_nodes[(span, 0.0)], y_beam_nodes[(span, 0.0)]),
-            (column_top_nodes[(span, span)], x_beam_nodes[(span, span)]),
-            (column_top_nodes[(span, span)], y_beam_nodes[(span, span)]),
-            (column_top_nodes[(0.0, span)], x_beam_nodes[(0.0, span)]),
-            (column_top_nodes[(0.0, span)], y_beam_nodes[(0.0, span)]),
-        )
-        for start, end in rigid_connections:
-            self.service.create_rigid_bar(start, end)
+            configure_member(beam.name)
 
         self.service.set_reference_axes({
             "X": (ReferenceAxis("A", 0.0), ReferenceAxis("B", span)),

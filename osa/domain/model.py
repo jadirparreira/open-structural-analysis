@@ -457,6 +457,7 @@ class StructuralModel:
             changes["rotation"] = source.rotation
         if "offsets" in properties:
             changes["solid_face_offsets"] = source.solid_face_offsets
+            changes["solid_section_offsets"] = source.solid_section_offsets
         if "releases" in properties:
             changes["releases"] = source.releases
             changes["rotation_flexibility_percent"] = source.rotation_flexibility_percent
@@ -726,6 +727,27 @@ class StructuralModel:
             raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
         self.bars[name] = replace(
             self.bars[name], solid_face_offsets=self._member_solid_face_offsets(offsets),
+        )
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _member_solid_section_offsets(values: tuple[float, ...]) -> tuple[float, float]:
+        if len(values) != 2:
+            raise ValueError("Os deslocamentos da seção sólida devem possuir dois valores.")
+        offsets = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) for value in offsets):
+            raise ValueError("Os deslocamentos da seção sólida devem ser números finitos.")
+        return offsets  # type: ignore[return-value]
+
+    def update_member_solid_section_offsets(
+        self, name: str, offsets: tuple[float, ...],
+    ) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        self.bars[name] = replace(
+            self.bars[name],
+            solid_section_offsets=self._member_solid_section_offsets(offsets),
         )
         self._touch()
         return self.bars[name]

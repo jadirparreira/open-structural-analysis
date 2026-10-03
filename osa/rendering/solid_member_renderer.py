@@ -91,6 +91,10 @@ class SolidMemberRenderer:
         if basis is None:
             return False
         x_axis, y_axis, z_axis = basis
+        base_basis = LocalAxesRenderer.basis(start, end, rotation=0)
+        if base_basis is None:
+            return False
+        _base_x, base_y_axis, base_z_axis = base_basis
         start_point = np.asarray((start.x, start.y, start.z), dtype=float)
         end_point = np.asarray((end.x, end.y, end.z), dtype=float)
         if member is not None:
@@ -100,6 +104,12 @@ class SolidMemberRenderer:
                 candidate_end = end_point + x_axis * float(offsets[1])
                 if float(np.dot(candidate_end - candidate_start, x_axis)) > 1e-9:
                     start_point, end_point = candidate_start, candidate_end
+            section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+            if len(section_offsets) == 2:
+                start_point += (
+                    base_y_axis * float(section_offsets[0])
+                    + base_z_axis * float(section_offsets[1])
+                )
         length = float(np.linalg.norm(end_point - start_point))
         matrix = vtk.vtkMatrix4x4()
         matrix.Identity()

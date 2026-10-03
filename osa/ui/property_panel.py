@@ -386,6 +386,7 @@ class PropertyPanel(QFrame):
     def _show_member_solid_offsets(self, bar) -> None:
         """Show the entry point for visual member-face displacements."""
         offsets = getattr(bar, "solid_face_offsets", (0.0, 0.0))
+        section_offsets = getattr(bar, "solid_section_offsets", (0.0, 0.0))
         self.layout.addWidget(self.solid_offsets_title)
         self.solid_offsets_title.show()
         offset_row = QWidget()
@@ -396,7 +397,11 @@ class PropertyPanel(QFrame):
         status = QLineEdit()
         status.setReadOnly(True)
         status.setObjectName("identityDisplay")
-        status.setText("Definido" if any(float(value) != 0.0 for value in offsets) else "Indefinido")
+        status.setText(
+            "Definido"
+            if any(float(value) != 0.0 for value in (*offsets, *section_offsets))
+            else "Indefinido"
+        )
         status.setAccessibleName("Estado do posicionamento")
         offset_layout.addWidget(status, 1)
 
@@ -427,9 +432,13 @@ class PropertyPanel(QFrame):
         """Synchronize the compact positioning summary after an offset change."""
         if self._selected != ("bar", member_name) or self._positioning_status is None:
             return
-        offsets = getattr(self.window.model.bars[member_name], "solid_face_offsets", (0.0, 0.0))
+        member = self.window.model.bars[member_name]
+        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+        section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
         self._positioning_status.setText(
-            "Definido" if any(float(value) != 0.0 for value in offsets) else "Indefinido"
+            "Definido"
+            if any(float(value) != 0.0 for value in (*offsets, *section_offsets))
+            else "Indefinido"
         )
 
     def _show_rigid_bar_properties(self, name: str) -> None:

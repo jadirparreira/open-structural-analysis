@@ -179,6 +179,11 @@ class BatchedMemberRenderer:
                 fallback_segments.append((start, end, element_index, color))
                 continue
             local_x, local_y, local_z = basis
+            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
+            if base_basis is None:
+                fallback_segments.append((start, end, element_index, color))
+                continue
+            _base_x, base_local_y, base_local_z = base_basis
             length = float(np.linalg.norm(delta))
             axis_scale = min(max(length * 0.2, 0.15), 1.0)
             midpoint = (start + end) / 2.0
@@ -202,6 +207,13 @@ class BatchedMemberRenderer:
                 candidate_end = end + local_x * float(offsets[1])
                 if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
                     solid_start, solid_end = candidate_start, candidate_end
+            section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+            solid_origin = solid_start.copy()
+            if len(section_offsets) == 2:
+                solid_origin += (
+                    base_local_y * float(section_offsets[0])
+                    + base_local_z * float(section_offsets[1])
+                )
             solid_delta = solid_end - solid_start
 
             try:
@@ -210,8 +222,8 @@ class BatchedMemberRenderer:
                     raise ValueError("Seção incompleta.")
                 face_source = self.solids._mesh_for(shape)
                 edge_source = self.solids._edge_mesh_for(shape)
-                face = _transformed_mesh(face_source, solid_start, solid_delta, local_y, local_z)
-                edge = _transformed_mesh(edge_source, solid_start, solid_delta, local_y, local_z)
+                face = _transformed_mesh(face_source, solid_origin, solid_delta, local_y, local_z)
+                edge = _transformed_mesh(edge_source, solid_origin, solid_delta, local_y, local_z)
             except (KeyError, TypeError, ValueError):
                 fallback_segments.append((start, end, element_index, color))
                 continue
