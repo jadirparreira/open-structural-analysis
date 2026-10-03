@@ -385,8 +385,6 @@ class PropertyPanel(QFrame):
 
     def _show_member_solid_offsets(self, bar) -> None:
         """Show the entry point for visual member-face displacements."""
-        offsets = getattr(bar, "solid_face_offsets", (0.0, 0.0))
-        section_offsets = getattr(bar, "solid_section_offsets", (0.0, 0.0))
         self.layout.addWidget(self.solid_offsets_title)
         self.solid_offsets_title.show()
         offset_row = QWidget()
@@ -397,12 +395,8 @@ class PropertyPanel(QFrame):
         status = QLineEdit()
         status.setReadOnly(True)
         status.setObjectName("identityDisplay")
-        status.setText(
-            "Definido"
-            if any(float(value) != 0.0 for value in (*offsets, *section_offsets))
-            else "Indefinido"
-        )
-        status.setAccessibleName("Estado do posicionamento")
+        status.setText(self._positioning_summary(bar))
+        status.setAccessibleName("Identificação do posicionamento")
         offset_layout.addWidget(status, 1)
 
         configure_button = QToolButton()
@@ -433,13 +427,35 @@ class PropertyPanel(QFrame):
         if self._selected != ("bar", member_name) or self._positioning_status is None:
             return
         member = self.window.model.bars[member_name]
-        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+        self._positioning_status.setText(self._positioning_summary(member))
+
+    @staticmethod
+    def _positioning_summary(member) -> str:
+        """Build the compact positioning identification shown beside the button."""
+        face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        self._positioning_status.setText(
-            "Definido"
-            if any(float(value) != 0.0 for value in (*offsets, *section_offsets))
-            else "Indefinido"
-        )
+        rotation = int(getattr(member, "rotation", 0))
+        tokens: list[str] = []
+        if rotation != 0:
+            tokens.append(f"R{rotation}")
+        for label, value in (
+            ("A", face_offsets[0] if len(face_offsets) > 0 else 0.0),
+            ("B", face_offsets[1] if len(face_offsets) > 1 else 0.0),
+            ("Y", section_offsets[0] if len(section_offsets) > 0 else 0.0),
+            ("Z", section_offsets[1] if len(section_offsets) > 1 else 0.0),
+        ):
+            value_mm = float(value) * 1000.0
+            if abs(value_mm) <= 1e-9:
+                continue
+            sign = "+" if value_mm > 0.0 else "-"
+            tokens.append(f"{label}{sign}{PropertyPanel._format_positioning_value(abs(value_mm))}")
+        if tokens:
+            return " ".join(tokens)
+        return "Centro geométrico"
+
+    @staticmethod
+    def _format_positioning_value(value: float) -> str:
+        return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
 
     def _show_rigid_bar_properties(self, name: str) -> None:
         """Render only the calculated rigid-link stiffnesses."""

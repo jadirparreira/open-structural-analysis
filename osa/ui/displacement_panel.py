@@ -342,6 +342,7 @@ class DisplacementPanel(QFrame):
             return
         self.rotation_input.setText(str(member.rotation))
         self.window.refresh_member_rotation(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
 
     def _rotate_45_requested(self, _checked: bool = False) -> None:
         """Increase the analytical member rotation by 45 degrees."""
@@ -356,6 +357,7 @@ class DisplacementPanel(QFrame):
             return
         self.rotation_input.setText(str(member.rotation))
         self.window.refresh_member_rotation(self._member_name)
+        self.window.properties.update_positioning_status(self._member_name)
 
     def _center_requested(self, _checked: bool) -> None:
         """Select the member's original geometric-center position."""
