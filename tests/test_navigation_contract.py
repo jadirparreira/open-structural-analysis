@@ -515,15 +515,22 @@ def test_tab_reaches_angle_and_manual_mouse_motion_cancels_edit(qt_app):
 
 
 @pytest.mark.parametrize(
-    ("entered", "expected"),
-    [("@4", 2.0), ("@-3", -5.0)],
+    ("start", "display", "entered", "expected"),
+    [
+        ((-2.0, 1.0, 0.0), (0.0, 2.0, 0.0), "@4", 2.0),
+        ((-2.0, 1.0, 0.0), (0.0, 2.0, 0.0), "@-3", -5.0),
+        ((2.0, 1.0, 0.0), (0.0, 2.0, 0.0), "@4", -2.0),
+        ((2.0, 1.0, 0.0), (0.0, 2.0, 0.0), "@-4", 6.0),
+    ],
 )
-def test_relative_coordinate_edit_is_offset_from_member_start(qt_app, entered, expected):
+def test_relative_coordinate_edit_follows_member_direction(
+    qt_app, start, display, entered, expected,
+):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_placement_mode(True)
-    scene.set_member_preview_start((-2.0, 1.0, 0.0))
-    scene._last_display_position = np.asarray((0.0, 2.0, 0.0))
+    scene.set_member_preview_start(start)
+    scene._last_display_position = np.asarray(display)
 
     scene._cycle_coordinate_edit()
     scene._coordinate_value_labels[0].setText(entered)

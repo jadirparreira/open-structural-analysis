@@ -282,6 +282,7 @@ class StructureScene(QWidget):
         self._camera_drag_last_position: tuple[int, int] | None = None
         self._camera_initialized = False
         self._manual_edit_target: np.ndarray | None = None
+        self._manual_edit_direction: np.ndarray | None = None
         self._manual_edit_index: int | None = None
         self._manual_edit_confirmable = False
         self._last_display_position: np.ndarray | None = None
@@ -1034,6 +1035,7 @@ class StructureScene(QWidget):
             self._member_placement_press = None
             self._member_preview_start = None
             self._manual_edit_target = None
+            self._manual_edit_direction = None
             self._manual_edit_index = None
             self._manual_edit_confirmable = False
             self._last_display_position = None
@@ -1117,7 +1119,12 @@ class StructureScene(QWidget):
             if relative:
                 if self._member_preview_start is None:
                     return
-                value += float(self._member_preview_start[index])
+                direction = 1.0
+                if self._manual_edit_direction is not None:
+                    component = float(self._manual_edit_direction[index])
+                    if abs(component) > 1e-9:
+                        direction = float(np.sign(component))
+                value = float(self._member_preview_start[index]) + value * direction
             target[index] = value
             return
         if self._member_preview_start is None:
@@ -1145,6 +1152,12 @@ class StructureScene(QWidget):
             if self._last_display_position is None:
                 return
             self._manual_edit_target = self._last_display_position.copy()
+            if self._member_preview_start is None:
+                self._manual_edit_direction = None
+            else:
+                self._manual_edit_direction = (
+                    self._manual_edit_target - self._member_preview_start
+                )
 
         current = self._manual_edit_index
         if current is not None:
@@ -1180,6 +1193,7 @@ class StructureScene(QWidget):
 
     def _cancel_coordinate_edit(self, *, update: bool = True) -> None:
         self._manual_edit_target = None
+        self._manual_edit_direction = None
         self._manual_edit_index = None
         self._manual_edit_confirmable = False
         for editor in (*self._coordinate_value_labels, self._angle_editor):
