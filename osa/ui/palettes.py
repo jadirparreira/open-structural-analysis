@@ -880,7 +880,7 @@ class AnalysisTopPalette(QFrame):
 
     diagram_options = (
         "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
-        "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
+        "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
     )
 
     def __init__(self, window: "MainWindow") -> None:

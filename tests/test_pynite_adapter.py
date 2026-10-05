@@ -210,6 +210,40 @@ def test_torsion_diagram_uses_torque_samples_and_moment_unit():
     assert labels == ("-1,25 kN·m",)
 
 
+def test_support_reactions_point_to_restrained_nodes_and_skip_free_nodes():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **options):
+            self.meshes.append((mesh, options))
+            return object()
+
+    model = StructuralModel()
+    model.nodes = {
+        "N1": Node("N1", 0, 0, 0, (True, True, False, False, False, False)),
+        "N2": Node("N2", 2, 0, 0),
+    }
+    result = AnalysisResult(0, "Combinação", node_results={
+        "N1": {"RXN_FX": 4.0, "RXN_FY": -2.0},
+        "N2": {"RXN_FX": 100.0},
+    })
+    plotter = Plotter()
+
+    actors, positions, labels = ResultRenderer().render(
+        plotter, model, result, "Reações de apoio",
+    )
+
+    assert actors
+    assert len(positions) == len(labels) == 2
+    assert {options["color"] for _mesh, options in plotter.meshes} == {
+        ResultRenderer.POSITIVE_COLOR, ResultRenderer.NEGATIVE_COLOR,
+    }
+    arrow_lengths = [float(np.linalg.norm(mesh.points[1] - mesh.points[0])) for mesh, _options in plotter.meshes]
+    assert arrow_lengths[0] == pytest.approx(arrow_lengths[1])
+    assert all(np.any(np.all(np.isclose(mesh.points, (0, 0, 0)), axis=1)) for mesh, _options in plotter.meshes)
+
+
 def test_bending_diagrams_use_their_respective_local_moments():
     class Plotter:
         def __init__(self):

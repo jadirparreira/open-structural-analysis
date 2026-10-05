@@ -20,6 +20,11 @@ class ResultRenderer:
     NEGATIVE_COLOR = "#cf222e"
     MAX_HEIGHT = 0.75
     MAX_DEFORMATION = 1.0
+    REACTION_MAX_HEIGHT = 1.0
+    REACTION_MIN_HEIGHT = 0.1
+    REACTION_MOMENT_MAX_RADIUS = 0.30
+    REACTION_MOMENT_MIN_RADIUS = 0.10
+    REACTION_LABEL_CLEARANCE = 0.12
     DEFORMATION_COLOR = "#8250df"
     UNDEFORMED_COLOR = "#8c959f"
     _millimeters_to_model_units = 1e-3
@@ -37,6 +42,9 @@ class ResultRenderer:
         "Fletor Y": ("moment_y", 2, "kN·m", -1.0, 1.0),
         "Fletor Z": ("moment_z", 1, "kN·m", -1.0, 1.0),
     }
+    REACTION_DIAGRAM = "Reações de apoio"
+    _REACTION_FORCE_KEYS: ClassVar[tuple[str, ...]] = ("RXN_FX", "RXN_FY", "RXN_FZ")
+    _REACTION_MOMENT_KEYS: ClassVar[tuple[str, ...]] = ("RXN_MX", "RXN_MY", "RXN_MZ")
 
     def render(
         self, plotter, model, result, diagram: str, *, solid_members_visible: bool = True,
@@ -46,6 +54,8 @@ class ResultRenderer:
         if diagram.startswith("Deformação"):
             components = diagram.removeprefix("Deformação ") or "XYZ"
             return self._render_deformation(plotter, model, result, components, solid_members_visible)
+        if diagram == self.REACTION_DIAGRAM:
+            return self._render_reactions(plotter, model, result)
         if diagram not in self.DIAGRAMS:
             return [], np.empty((0, 3)), ()
         result_key, axis_index, unit, display_sign, geometry_sign = self.DIAGRAMS[diagram]
@@ -154,6 +164,134 @@ class ResultRenderer:
             ))
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
 
+    def _render_reactions(self, plotter, model, result) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
+        """Renderiza reações nodais nos eixos globais, apontando para o nó.
+
+        Reações só são relevantes visualmente em nós com pelo menos uma
+        restrição (inclusive apoios elásticos). O sinal define a cor e o
+        sentido do componente; a ponta da seta permanece no nó para que a
+        leitura seja a mesma das cargas nodais globais.
+        """
+        supported_nodes = [
+            node for node in model.nodes.values()
+            if any(node.supports) or any(float(value) > 0.0 for value in node.support_stiffness)
+        ]
+        if not supported_nodes:
+            return [], np.empty((0, 3)), ()
+
+        node_values = {
+            node.name: result.node_results.get(node.name, {})
+            for node in supported_nodes
+        }
+        moment_maximum = max(
+            (
+                abs(self._display_value(float(values.get(key, 0.0))))
+                for values in node_values.values()
+                for key in self._REACTION_MOMENT_KEYS
+            ),
+            default=0.0,
+        )
+        span = self._model_span(model)
+        maximum_length = min(self.REACTION_MAX_HEIGHT, max(0.18, span * 0.035))
+        maximum_radius = min(self.REACTION_MOMENT_MAX_RADIUS, max(0.18, span * 0.035))
+        line_batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]] = {
+            (self.POSITIVE_COLOR, 3.0): ([], []),
+            (self.NEGATIVE_COLOR, 3.0): ([], []),
+        }
+        label_positions: list[np.ndarray] = []
+        labels: list[str] = []
+        global_basis = tuple(np.eye(3))
+
+        for node in supported_nodes:
+            values = node_values[node.name]
+            node_position = np.asarray((node.x, node.y, node.z), dtype=float)
+            for axis_index, key in enumerate(self._REACTION_FORCE_KEYS):
+                value = self._display_value(float(values.get(key, 0.0)))
+                if value == 0.0:
+                    continue
+                direction = np.zeros(3, dtype=float)
+                direction[axis_index] = np.sign(value)
+                # Reactions use a fixed visual scale. Their magnitude remains
+                # available in the label and in the sign/color, but does not
+                # change the length of the arrow.
+                arrow_length = max(self.REACTION_MIN_HEIGHT, maximum_length)
+                line_start = node_position - direction * arrow_length
+                chevron_size = arrow_length * 0.18
+                chevron_normal = self._perpendicular_to(direction)
+                arm_a = node_position - direction * chevron_size + chevron_normal * chevron_size * 0.55
+                arm_b = node_position - direction * chevron_size - chevron_normal * chevron_size * 0.55
+                points = np.asarray((line_start, node_position, arm_a, arm_b))
+                lines = np.asarray((2, 0, 1, 2, 1, 2, 2, 1, 3), dtype=np.int64)
+                self._append_lines(
+                    line_batches, (self._result_color(value), 3.0), points, lines,
+                )
+                label_positions.append(line_start - direction * self.REACTION_LABEL_CLEARANCE)
+                labels.append(self._format_force(value))
+
+            for axis_index, key in enumerate(self._REACTION_MOMENT_KEYS):
+                value = self._display_value(float(values.get(key, 0.0)))
+                if value == 0.0 or moment_maximum <= 0.0:
+                    continue
+                axis, plane_u, plane_v = self._moment_plane(global_basis, "XYZ"[axis_index])
+                radius = max(
+                    self.REACTION_MOMENT_MIN_RADIUS,
+                    maximum_radius * abs(value) / moment_maximum,
+                )
+                points, lines = self._add_moment_symbol(
+                    node_position, axis, plane_u, plane_v, value, radius,
+                )
+                self._append_lines(
+                    line_batches, (self._result_color(value), 3.0), points, lines,
+                )
+                label_positions.append(node_position + plane_u * (radius * 1.35))
+                labels.append(self._format_value(value, "kN·m"))
+
+        actors: list[object] = []
+        for (color, line_width), (points, lines) in line_batches.items():
+            if not points:
+                continue
+            mesh = pv.PolyData(np.asarray(points), lines=np.asarray(lines, dtype=np.int64))
+            actors.append(plotter.add_mesh(
+                mesh, color=color, line_width=line_width, lighting=False, pickable=False,
+                reset_camera=False, render=False, render_lines_as_tubes=True,
+            ))
+        return actors, np.asarray(label_positions, dtype=float).reshape((-1, 3)), tuple(labels)
+
+    @staticmethod
+    def _perpendicular_to(vector: np.ndarray) -> np.ndarray:
+        reference = np.array((0.0, 0.0, 1.0))
+        if abs(float(np.dot(vector, reference))) > 0.9:
+            reference = np.array((0.0, 1.0, 0.0))
+        perpendicular = np.cross(vector, reference)
+        return perpendicular / np.linalg.norm(perpendicular)
+
+    @staticmethod
+    def _add_moment_symbol(
+        center: np.ndarray,
+        axis: np.ndarray,
+        plane_u: np.ndarray,
+        plane_v: np.ndarray,
+        value: float,
+        radius: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        orientation = -1.0 if value > 0 else 1.0
+        angles = np.linspace(0.0, orientation * np.pi * 1.55, 25)
+        arc = np.asarray([
+            center + radius * (np.cos(angle) * plane_u + np.sin(angle) * plane_v)
+            for angle in angles
+        ])
+        tangent = -np.sin(angles[-1]) * plane_u + np.cos(angles[-1]) * plane_v
+        tangent *= orientation
+        tip = arc[-1]
+        back = tip - tangent * radius * 0.28
+        side = np.cross(axis, tangent)
+        side /= np.linalg.norm(side)
+        side *= radius * 0.14
+        points = np.vstack((arc, back + side, back - side, tip))
+        last = len(arc)
+        lines = [len(arc), *range(len(arc)), 2, last, last + 2, 2, last + 1, last + 2]
+        return points, np.asarray(lines, dtype=np.int64)
+
     @staticmethod
     def _append_face(
         batches: dict[str, tuple[list[np.ndarray], list[int]]],
@@ -175,6 +313,24 @@ class ResultRenderer:
         offset = len(point_batch)
         point_batch.extend(points)
         line_batch.extend((len(points), *range(offset, offset + len(points))))
+
+    @staticmethod
+    def _append_lines(
+        batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]],
+        key: tuple[str, float],
+        points: np.ndarray,
+        lines: np.ndarray,
+    ) -> None:
+        point_batch, line_batch = batches.setdefault(key, ([], []))
+        offset = len(point_batch)
+        point_batch.extend(points)
+        values = np.asarray(lines, dtype=np.int64).copy()
+        cursor = 0
+        while cursor < len(values):
+            count = int(values[cursor])
+            values[cursor + 1:cursor + 1 + count] += offset
+            cursor += count + 1
+        line_batch.extend(values.tolist())
 
     def _member_result_labels(
         self, values, geometry_values, baseline, curve, local_x, diagram_axis, unit: str,
