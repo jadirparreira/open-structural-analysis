@@ -899,6 +899,7 @@ class AnalysisTopPalette(QFrame):
             "QLabel#analysisPendingLabel { color: #57606a; padding: 0 8px; }"
             "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
             "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
         layout = QHBoxLayout(self)
