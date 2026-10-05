@@ -233,6 +233,7 @@ class StructureScene(QWidget):
         self._active_load_case: str | None = None
         self._actions_visible = False
         self._analysis_visible = False
+        self._result_diagrams_visible = True
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
         self._action_layer_key: tuple[object, ...] | None = None
@@ -634,6 +635,19 @@ class StructureScene(QWidget):
             self._result_line_widths.append((self._result_actors[0], 1.0))
             if not self._solid_members_visible and len(self._result_actors) > 1:
                 self._result_line_widths.append((self._result_actors[1], 2.0))
+        self._apply_result_layer_visibility()
+
+    def _result_layer_is_visible(self) -> bool:
+        """Deformation overlays are independent from the diagram toggle."""
+        return self._analysis_visible and (
+            self._result_diagrams_visible or self._active_result_type.startswith("Deformação")
+        )
+
+    def _apply_result_layer_visibility(self) -> None:
+        visible = self._result_layer_is_visible()
+        for actor in self._result_actors:
+            actor.SetVisibility(visible)
+        self._label_overlay.set_group_visible("result", visible)
 
     def _refresh_result_layer(self) -> None:
         """Refresh only the selected analysis overlay and its labels."""
@@ -642,8 +656,9 @@ class StructureScene(QWidget):
             self._add_results()
             self._label_overlay.set_group(
                 "result", self._result_label_positions, self._result_labels,
-                visible=True, deduplicate=True,
+                visible=self._result_layer_is_visible(), deduplicate=True,
             )
+            self._apply_result_layer_visibility()
         self._apply_representation_visibility()
         self._update_zoom_dependent_sizes()
         self._sync_labels()
@@ -667,7 +682,7 @@ class StructureScene(QWidget):
         )
         self._label_overlay.set_group(
             "result", self._result_label_positions, self._result_labels,
-            visible=self._analysis_visible, deduplicate=True,
+            visible=self._result_layer_is_visible(), deduplicate=True,
         )
 
     def _add_reference_axis_labels(self) -> None:
@@ -2121,16 +2136,12 @@ class StructureScene(QWidget):
             self._active_result_type, self._solid_members_visible,
         )
         if not visible and self._result_actors:
-            for actor in self._result_actors:
-                actor.SetVisibility(False)
-            self._label_overlay.set_group_visible("result", False)
+            self._apply_result_layer_visibility()
             self._apply_representation_visibility()
             self.plotter.render()
             return
         if visible and self._result_layer_key == current_key:
-            for actor in self._result_actors:
-                actor.SetVisibility(True)
-            self._label_overlay.set_group_visible("result", True)
+            self._apply_result_layer_visibility()
             self._apply_representation_visibility()
             self.plotter.render()
             return
@@ -2146,6 +2157,16 @@ class StructureScene(QWidget):
             self._refresh_result_layer()
         else:
             self._result_layer_key = None
+
+    def set_analysis_diagrams_visible(self, visible: bool) -> None:
+        """Show or hide result diagrams without affecting deformation views."""
+        visible = bool(visible)
+        if visible == self._result_diagrams_visible:
+            return
+        self._result_diagrams_visible = visible
+        if self._analysis_visible:
+            self._apply_result_layer_visibility()
+            self.plotter.render()
 
     def set_action_visibility(self, kind: str, visible: bool) -> None:
         """Liga ou desliga uma das quatro categorias de ações renderizadas."""

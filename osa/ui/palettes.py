@@ -920,6 +920,25 @@ class AnalysisTopPalette(QFrame):
         self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)
         selectors_layout.addWidget(self.combination_selector)
         selectors_layout.addWidget(self.diagram_selector)
+
+        result_diagrams_button = QToolButton(self)
+        result_diagrams_button.setFixedSize(24, 24)
+        result_diagrams_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "result-diagram.svg"))
+        )
+        result_diagrams_button.setIconSize(QSize(17, 17))
+        result_diagrams_tooltip = "Diagrama dos resultados"
+        result_diagrams_button.setToolTip(result_diagrams_tooltip)
+        result_diagrams_button.setProperty("paletteTooltip", result_diagrams_tooltip)
+        result_diagrams_button.setAccessibleName(result_diagrams_tooltip)
+        result_diagrams_button.setCheckable(True)
+        result_diagrams_button.setChecked(True)
+        result_diagrams_button.toggled.connect(window.scene.set_analysis_diagrams_visible)
+        result_diagrams_button.installEventFilter(self)
+        selectors_layout.addWidget(result_diagrams_button)
+        self.result_diagrams_button = result_diagrams_button
+        self.diagram_selector.currentTextChanged.connect(self._update_result_diagrams_button)
+        self._update_result_diagrams_button(self.diagram_selector.currentText())
         self.pending = QFrame(self)
         self.pending.setObjectName("analysisPending")
         pending_layout = QHBoxLayout(self.pending)
@@ -988,6 +1007,11 @@ class AnalysisTopPalette(QFrame):
         self.diagram_selector.blockSignals(True)
         self.diagram_selector.setCurrentText("Normal")
         self.diagram_selector.blockSignals(False)
+        self._update_result_diagrams_button(self.diagram_selector.currentText())
+
+    def _update_result_diagrams_button(self, result_type: str) -> None:
+        """The result-visibility toggle does not apply to deformation views."""
+        self.result_diagrams_button.setEnabled(not result_type.startswith("Deformação"))
 
     def set_analysis_visible(self, visible: bool) -> None:
         if not visible:
