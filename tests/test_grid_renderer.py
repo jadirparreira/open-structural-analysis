@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from osa.model import ReferenceAxis, StructuralModel
@@ -34,6 +36,42 @@ def test_grid_uses_axis_positions_without_using_their_line_extensions():
     })
 
     np.testing.assert_allclose(grid.mesh.bounds, (5.0, 15.0, 15.0, 25.0, 0.0, 0.0))
+
+
+def test_grid_stays_registered_to_the_origin_and_uses_one_metre_steps():
+    model = StructuralModel()
+    model.add_node("N1", 0.2, 0.3, 0.0)
+    model.add_node("N2", 10.2, 20.3, 5.0)
+
+    grid = GridRenderer()
+    grid.update(model.nodes.values())
+
+    np.testing.assert_allclose(grid.mesh.bounds, (-5.0, 16.0, -5.0, 26.0, 0.0, 0.0))
+    points = grid.mesh.points
+    assert np.any(np.all(np.isclose(points[:, :2], (0.0, 0.0)), axis=1))
+    np.testing.assert_allclose(np.diff(np.unique(points[:, 0])), 1.0)
+    np.testing.assert_allclose(np.diff(np.unique(points[:, 1])), 1.0)
+
+
+def test_grid_window_moves_only_when_model_crosses_a_full_metre():
+    nodes = [
+        SimpleNamespace(x=0.2, y=0.2, z=0.0),
+        SimpleNamespace(x=10.2, y=10.2, z=0.0),
+    ]
+
+    grid = GridRenderer()
+    grid.update(nodes)
+    initial_bounds = grid.bounds
+
+    nodes[0].x = 0.8
+    nodes[0].y = 0.8
+    grid.update(nodes)
+    assert grid.bounds == initial_bounds
+
+    nodes[0].x = 1.2
+    nodes[0].y = 1.2
+    grid.update(nodes)
+    assert grid.bounds == (-4.0, 16.0, -4.0, 16.0)
 
 
 def test_grid_elevation_changes_without_rebuilding_the_xy_footprint():

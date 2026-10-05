@@ -6,9 +6,15 @@ import pyvista as pv
 
 
 class GridRenderer:
-    """Render a 1 m reference grid around the structural model footprint."""
+    """Render a 1 m grid window aligned to the global model coordinates.
+
+    The visible window follows the model, but its limits are snapped to the
+    global one-metre lattice.  This keeps the grid registered to the origin
+    instead of letting every model update redefine the position of its lines.
+    """
 
     margin = 5.0
+    spacing = 1.0
     _color = (208, 215, 222)
 
     def __init__(self) -> None:
@@ -54,12 +60,7 @@ class GridRenderer:
             )
         else:
             footprint_bounds = (0.0, 0.0, 0.0, 0.0)
-        bounds = (
-            footprint_bounds[0] - self.margin,
-            footprint_bounds[1] + self.margin,
-            footprint_bounds[2] - self.margin,
-            footprint_bounds[3] + self.margin,
-        )
+        bounds = self._aligned_bounds(footprint_bounds)
 
         if (
             bounds == self._bounds
@@ -77,6 +78,39 @@ class GridRenderer:
     @property
     def bounds(self) -> tuple[float, float, float, float]:
         return self._bounds
+
+    @classmethod
+    def _aligned_bounds(
+        cls, footprint_bounds: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        """Return a one-metre-lattice window around ``footprint_bounds``.
+
+        ``floor``/``ceil`` are applied after adding the visual margin, so a
+        model moving inside one metre does not move the grid.  The small
+        tolerance prevents values such as ``4.999999999`` (created by model
+        arithmetic) from producing an unintended extra grid line.
+        """
+        minimum_u, maximum_u, minimum_v, maximum_v = footprint_bounds
+        return (
+            cls._snap_floor(minimum_u - cls.margin),
+            cls._snap_ceil(maximum_u + cls.margin),
+            cls._snap_floor(minimum_v - cls.margin),
+            cls._snap_ceil(maximum_v + cls.margin),
+        )
+
+    @classmethod
+    def _snap_floor(cls, value: float) -> float:
+        nearest = round(value / cls.spacing) * cls.spacing
+        if math.isclose(value, nearest, rel_tol=0.0, abs_tol=1e-9):
+            return float(nearest)
+        return float(math.floor(value / cls.spacing) * cls.spacing)
+
+    @classmethod
+    def _snap_ceil(cls, value: float) -> float:
+        nearest = round(value / cls.spacing) * cls.spacing
+        if math.isclose(value, nearest, rel_tol=0.0, abs_tol=1e-9):
+            return float(nearest)
+        return float(math.ceil(value / cls.spacing) * cls.spacing)
 
     def set_elevation(self, elevation: float) -> None:
         """Move the shared reference plane without rebuilding its XY geometry."""
@@ -110,15 +144,20 @@ class GridRenderer:
             direction=(0, 0, 1),
             i_size=width,
             j_size=height,
-            i_resolution=max(1, math.ceil(width)),
-            j_resolution=max(1, math.ceil(height)),
+            i_resolution=max(1, round(width / cls.spacing)),
+            j_resolution=max(1, round(height / cls.spacing)),
         ).extract_all_edges()
         local_points = mesh.points.copy()
+        # VTK stores the generated coordinates as float32.  Re-register the
+        # two in-plane coordinates after generation so the origin and every
+        # integer grid line remain exact despite float32 rounding.
+        local_points[:, :2] = np.rint(local_points[:, :2] / cls.spacing) * cls.spacing
         if plane == "XZ":
             mesh.points = np.column_stack((local_points[:, 0], np.full(len(local_points), offset), local_points[:, 1]))
         elif plane == "YZ":
             mesh.points = np.column_stack((np.full(len(local_points), offset), local_points[:, 0], local_points[:, 1]))
         else:
+            mesh.points = local_points
             mesh.points[:, 2] = offset
         cls._add_fade(mesh, footprint_bounds, plane)
         return mesh
