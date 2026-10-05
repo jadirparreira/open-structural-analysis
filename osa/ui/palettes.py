@@ -983,6 +983,12 @@ class AnalysisTopPalette(QFrame):
         self.pending.setVisible(not ready)
         self.adjustSize()
 
+    def reset_result_view(self) -> None:
+        """Return to the neutral view when analysis results are unavailable."""
+        self.diagram_selector.blockSignals(True)
+        self.diagram_selector.setCurrentText("Normal")
+        self.diagram_selector.blockSignals(False)
+
     def set_analysis_visible(self, visible: bool) -> None:
         if not visible:
             self._tooltip.dismiss()

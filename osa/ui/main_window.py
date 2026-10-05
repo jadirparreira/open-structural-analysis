@@ -1671,6 +1671,14 @@ class MainWindow(QMainWindow):
 
     def refresh_analysis_palette(self) -> None:
         names = tuple(result.load_reference for result in self.model.analysis_results)
+        if not names:
+            # Editing the model invalidates every analysis result.  Clear the
+            # remembered result view as well, otherwise reopening the Analysis
+            # group can request a stale deformation diagram with no result to
+            # render.
+            self.selected_analysis_combination = None
+            self.selected_analysis_diagram = "Normal"
+            self.analysis_top_palette.reset_result_view()
         previous = self.selected_analysis_combination
         self.analysis_top_palette.set_combinations(names, previous)
         self.analysis_top_palette.set_analysis_ready(bool(names))
