@@ -410,3 +410,41 @@ def test_deformation_components_share_the_xyz_scale():
     assert np.max(plotter_y.meshes[1].points[:, 1]) == pytest.approx(0.9)
     assert np.max(plotter_xyz.meshes[1].points[:, 0]) == pytest.approx(2.6)
     assert np.max(plotter_xyz.meshes[1].points[:, 1]) == pytest.approx(0.9)
+
+
+def test_deformation_applies_solid_positioning_without_moving_analytic_reference():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **_options):
+            self.meshes.append(mesh)
+            return object()
+
+    model = StructuralModel()
+    model.nodes = {"N1": Node("N1", 0, 0, 0), "N2": Node("N2", 2, 0, 0)}
+    model.bars = {"B1": Bar(
+        "B1", "N1", "N2", section="Retangular", profile="R 200 x 400",
+        section_geometry=(("b", 200), ("h", 400)),
+        solid_face_offsets=(0.2, 0.3), solid_section_offsets=(0.05, 0.07),
+    )}
+    result = AnalysisResult(0, "Combinação", member_results={
+        "B1": {"samples": (
+            {"x": 0, "deflection_x": 0, "deflection_y": 0, "deflection_z": 0},
+            {"x": 2, "deflection_x": 0, "deflection_y": 0.01, "deflection_z": 0},
+        )}
+    })
+    plotter = Plotter()
+
+    ResultRenderer().render(plotter, model, result, "Deformação XYZ")
+
+    reference = plotter.meshes[0]
+    deformed_face = plotter.meshes[1]
+    assert np.min(reference.points[:, 0]) == pytest.approx(0.0)
+    assert 1.9 < np.max(reference.points[:, 0]) < 2.0
+    assert np.min(deformed_face.points[:, 0]) == pytest.approx(-0.2)
+    assert np.max(deformed_face.points[:, 0]) == pytest.approx(2.3)
+
+    start_section = deformed_face.points[np.isclose(deformed_face.points[:, 0], -0.2)]
+    assert np.max(start_section[:, 1]) == pytest.approx(0.15)
+    assert np.max(start_section[:, 2]) == pytest.approx(0.27)

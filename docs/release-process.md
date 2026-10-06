@@ -15,6 +15,76 @@ O pacote oficial deverá ser compilado em um ambiente baseado no Ubuntu 22.04, o
 
 O Ubuntu 26 continuará sendo aceito como ambiente de desenvolvimento, mas não será o ambiente de referência para a compilação dos releases Linux.
 
+## Distribuição Windows
+
+A distribuição Windows será feita por meio de um instalador executável gerado com Inno Setup.
+
+O alvo inicial é:
+
+- Windows 10 versão 22H2 ou superior;
+- Windows 11;
+- arquitetura x86_64/64 bits.
+
+Não haverá, inicialmente, suporte oficial para Windows 7, Windows 8, Windows 8.1, versões de 32 bits ou Windows ARM.
+
+O instalador deverá incluir o aplicativo e todas as suas dependências, criar os atalhos do programa, usar o nome `Open Structural Analysis`, usar o ícone oficial e disponibilizar um desinstalador.
+
+Não será distribuído um pacote portátil `.zip` nesta etapa.
+
+## Builds oficiais
+
+As builds oficiais para Linux e Windows serão realizadas com Python 3.13.
+
+## Automação dos releases
+
+A automação será implementada em um workflow do GitHub Actions chamado:
+
+```text
+release.yml
+```
+
+Esse workflow terá três jobs principais:
+
+```text
+build-linux-appimage
+build-windows-installer
+publish-release
+```
+
+O job `build-linux-appimage` será responsável por gerar:
+
+```text
+OpenStructuralAnalysis-2026.10-x86_64.AppImage
+```
+
+O job `build-windows-installer` será responsável por gerar:
+
+```text
+OpenStructuralAnalysis-2026.10-Windows-x86_64-Setup.exe
+```
+
+O job `publish-release` anexará os dois arquivos e o arquivo de checksums ao release do GitHub:
+
+```text
+SHA256SUMS.txt
+```
+
+O workflow de release será acionado pela criação de uma tag no formato:
+
+```text
+vYYYY.MM
+```
+
+Por exemplo:
+
+```text
+v2026.10
+```
+
+Antes da publicação, a automação deverá validar que a versão da tag corresponde à versão definida no `pyproject.toml`, executar os testes e verificar se os dois pacotes foram gerados corretamente.
+
+Não será gerado pacote portátil `.zip` para Windows e não haverá assinatura digital nesta etapa.
+
 ## Versionamento
 
 O projeto usará versionamento baseado em calendário (Calendar Versioning), no formato:
@@ -54,7 +124,13 @@ O primeiro release Linux deverá conter, no mínimo:
 - notas resumindo o conteúdo da versão;
 - o checksum SHA-256 do arquivo distribuído.
 
-O processo de compilação e publicação será automatizado posteriormente com GitHub Actions.
+O processo de compilação e publicação será automatizado pelo workflow `release.yml` do GitHub Actions.
+
+O release Windows deverá conter, além do AppImage Linux:
+
+- o instalador Windows;
+- instruções de instalação e execução;
+- o checksum SHA-256 dos arquivos distribuídos.
 
 ## Identidade do AppImage
 
