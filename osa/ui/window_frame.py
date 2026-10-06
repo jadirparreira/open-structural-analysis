@@ -15,6 +15,11 @@ class RoundedMenu(QMenu):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        if sys.platform == "win32":
+            # The native popup shadow is rectangular and remains visible
+            # outside the rounded stylesheet/mask boundary on Windows.
+            self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
     def _update_windows_mask(self) -> None:
         if sys.platform != "win32" or not self.size().isValid():
