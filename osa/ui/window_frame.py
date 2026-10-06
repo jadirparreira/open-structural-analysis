@@ -1,49 +1,6 @@
 from .common import *
 
 
-class RoundedMenu(QMenu):
-    """Popup menu whose transparent corners are clipped on Windows.
-
-    Qt renders a translucent top-level popup differently across platforms. On
-    Windows, the transparent pixels outside a stylesheet rounded rectangle can
-    become black. A widget mask keeps those pixels outside the native window
-    while preserving the existing rounded menu appearance on Linux.
-    """
-
-    _CORNER_RADIUS = 8
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        if sys.platform == "win32":
-            # The native popup shadow is rectangular and remains visible
-            # outside the rounded stylesheet/mask boundary on Windows.
-            self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-
-    def _update_windows_mask(self) -> None:
-        if sys.platform != "win32" or not self.size().isValid():
-            return
-
-        mask = QBitmap(self.size())
-        mask.fill(Qt.GlobalColor.color0)
-        painter = QPainter(mask)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Qt.GlobalColor.color1)
-        painter.drawRoundedRect(QRectF(self.rect()), self._CORNER_RADIUS, self._CORNER_RADIUS)
-        painter.end()
-        self.setMask(mask)
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._update_windows_mask()
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._update_windows_mask()
-
-
 class TitleBar(QFrame):
     """Client-side title bar with Ubuntu-inspired window controls."""
 
@@ -59,7 +16,8 @@ class TitleBar(QFrame):
         file_menu_button = QToolButton()
         file_menu_button.setText("Arquivo")
         file_menu_button.setObjectName("menuButton")
-        file_menu = RoundedMenu(file_menu_button)
+        file_menu = QMenu(file_menu_button)
+        file_menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         new_model_action = file_menu.addAction("Novo modelo")
         new_model_action.triggered.connect(window.new_model)
         open_model_action = file_menu.addAction("Abrir modelo…")
@@ -80,7 +38,8 @@ class TitleBar(QFrame):
         edit_menu_button = QToolButton()
         edit_menu_button.setText("Editar")
         edit_menu_button.setObjectName("menuButton")
-        edit_menu = RoundedMenu(edit_menu_button)
+        edit_menu = QMenu(edit_menu_button)
+        edit_menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         edit_menu.addAction("Desfazer"); edit_menu.addAction("Refazer")
         edit_menu.addSeparator()
         properties_action = edit_menu.addAction("Propriedades")

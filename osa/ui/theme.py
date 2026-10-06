@@ -26,8 +26,8 @@ QFrame#propertyPanel QComboBox::down-arrow { image: none; }
 QToolButton#menuButton { border: 0; border-radius: 6px; padding: 5px 10px; color: #24292f; }
 QToolButton#menuButton:hover { background: #eaeef2; }
 QToolButton#menuButton::menu-indicator { image: none; }
-QMenu { background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px; color: #24292f; }
-QMenu::item { padding: 7px 28px 7px 10px; border-radius: 5px; }
+QMenu { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; padding: 5px; color: #24292f; }
+QMenu::item { padding: 7px 28px 7px 10px; border-radius: 0px; }
 QMenu::item:selected { background: #eaeef2; }
 QMenu::separator { height: 1px; background: #d8dee4; margin: 5px 6px; }
 QPushButton#primaryButton {
