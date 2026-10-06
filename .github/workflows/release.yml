@@ -48,7 +48,7 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Install virtual display
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb libgl1-mesa-dri
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb libegl1 libgl1-mesa-dri
 
       - name: Run tests
         run: xvfb-run -a -s "-screen 0 1280x1024x24" uv run pytest -q
