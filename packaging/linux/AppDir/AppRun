@@ -1,0 +1,68 @@
+#!/bin/sh
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# Quando um AppImage é aberto diretamente, o GNOME não enxerga o arquivo
+# .desktop que está dentro dele. Instalar uma cópia no perfil do usuário antes
+# de criar a janela permite que o ambiente associe o app_id ao nome e ao ícone.
+install_desktop_entry() {
+    [ -n "${HOME:-}" ] || return 0
+    [ -f "$HERE/openstructuralanalysis.desktop" ] || return 0
+    [ -f "$HERE/openstructuralanalysis.svg" ] || return 0
+
+    data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+    applications_dir=$data_home/applications
+    svg_icons_dir=$data_home/icons/hicolor/scalable/apps
+    png_icons_dir=$data_home/icons/hicolor/256x256/apps
+    icon_path=$svg_icons_dir/openstructuralanalysis.svg
+    mkdir -p "$applications_dir" "$svg_icons_dir" "$png_icons_dir"
+
+    # O caminho do AppImage pode conter aspas e percentuais. O campo Exec do
+    # desktop entry aceita caminhos com espaços quando eles são entre aspas.
+    appimage_path=${APPIMAGE:-$HERE/AppRun}
+    escaped_path=$(printf '%s' "$appimage_path" | sed \
+        's/[\\]/\\\\/g; s/"/\\"/g; s/%/%%/g')
+
+    desktop_tmp=$applications_dir/.openstructuralanalysis.desktop.$$
+    svg_icon_tmp=$svg_icons_dir/.openstructuralanalysis.svg.$$
+    png_icon_tmp=$png_icons_dir/.openstructuralanalysis.png.$$
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            Exec=*) printf 'Exec="%s"\n' "$escaped_path" ;;
+            # Caminho absoluto evita depender do cache de temas de ícones do
+            # GNOME para encontrar o SVG recém-instalado.
+            Icon=*) printf 'Icon=%s\n' "$icon_path" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < "$HERE/openstructuralanalysis.desktop" > "$desktop_tmp"
+    cp "$HERE/openstructuralanalysis.svg" "$svg_icon_tmp"
+    if [ -f "$HERE/.DirIcon" ]; then
+        cp "$HERE/.DirIcon" "$png_icon_tmp"
+    fi
+    mv "$desktop_tmp" "$applications_dir/openstructuralanalysis.desktop"
+    mv "$svg_icon_tmp" "$icon_path"
+    if [ -f "$png_icon_tmp" ]; then
+        mv "$png_icon_tmp" "$png_icons_dir/openstructuralanalysis.png"
+    fi
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$data_home/icons/hicolor" >/dev/null 2>&1 || true
+    fi
+}
+
+install_desktop_entry
+
+# O Ubuntu em Wayland precisa do app_id da janela para vinculá-la ao arquivo
+# openstructuralanalysis.desktop. O pacote contém o plugin nativo do Qt;
+# respeitamos QT_QPA_PLATFORM quando o usuário escolhe outro backend.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -z "${QT_QPA_PLATFORM:-}" ] \
+    && [ -f "$HERE/usr/lib/openstructuralanalysis/_internal/PySide6/Qt/plugins/platforms/libqwayland.so" ]; then
+    export QT_QPA_PLATFORM=wayland
+fi
+
+exec "$HERE/usr/bin/open-structural-analysis" "$@"

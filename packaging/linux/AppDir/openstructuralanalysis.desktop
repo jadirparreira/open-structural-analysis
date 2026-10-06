@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Open Structural Analysis
+Comment=Aplicação para modelagem e análise estrutural tridimensional
+Exec=open-structural-analysis
+Icon=openstructuralanalysis
+Terminal=false
+StartupNotify=true
+StartupWMClass=openstructuralanalysis
+X-GNOME-WMClass=openstructuralanalysis
+Categories=Science;

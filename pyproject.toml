@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "pyinstaller>=6.0"]
 
 [project.scripts]
 open-structural-analysis = "osa.main:main"
