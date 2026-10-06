@@ -11,7 +11,15 @@ from .window_frame import WindowFrame
 
 
 class CompactDoubleSpinBox(QDoubleSpinBox):
-    """Spinbox numérica que não exibe zeros decimais desnecessários."""
+    """Spinbox numérica compacta que aceita ponto ou vírgula decimal."""
+
+    def valueFromText(self, text: str) -> float:
+        """Parse decimal input independently of the operating-system locale."""
+        normalized = text.strip().replace(",", ".")
+        try:
+            return float(normalized)
+        except ValueError:
+            return super().valueFromText(text)
 
     def textFromValue(self, value: float) -> str:
         text = f"{value:.{self.decimals()}f}".rstrip("0").rstrip(".")
@@ -159,7 +167,11 @@ class PropertyPanel(QFrame):
                 field.setSingleStep(0.1)
                 field.setValue(value)
                 field.setAccessibleName(f"Coordenada {axis} (m)")
-                field.valueChanged.connect(lambda _value, axis=axis: self._node_changed(axis))
+                # Coordinates are committed as a complete edit.  Connecting
+                # to ``editingFinished`` prevents the model and scene from
+                # changing on every keystroke, while still committing on
+                # Enter or when the user moves focus to another input.
+                field.editingFinished.connect(lambda axis=axis: self._node_changed(axis))
                 self.fields.append(field)
                 axis_label = QLabel(axis)
                 axis_label.setObjectName("propertySection")
