@@ -15,6 +15,8 @@ jobs:
   build-linux-appimage:
     name: Build Linux AppImage
     runs-on: ubuntu-22.04
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
 
     steps:
       - name: Check out source
@@ -45,8 +47,11 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --extra dev
 
+      - name: Install virtual display
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb libgl1-mesa-dri
+
       - name: Run tests
-        run: uv run pytest -q
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" uv run pytest -q
 
       - name: Download appimagetool
         shell: bash
