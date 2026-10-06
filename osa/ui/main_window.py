@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
         self._copy_elements_selection: list[tuple[str, str]] = []
         self._copy_elements_reference: tuple[float, float, float] | None = None
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
-        self._member_direction_normalization_enabled = False
+        self._member_direction_normalization_enabled = True
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("Open Structural Analysis")
