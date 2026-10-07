@@ -348,6 +348,116 @@ class McpApplication:
             "members": [self._member_payload(member) for member in members],
         }
 
+    def update_member_properties(
+        self,
+        member_names: list[str],
+        *,
+        material: str | None = None,
+        section: str | None = None,
+        geometry: dict[str, float] | None = None,
+        profile: str | None = None,
+        rotation: int | None = None,
+        releases: list[bool] | None = None,
+        rotation_flexibility_percent: list[int] | None = None,
+        solid_face_offsets_mm: list[float] | None = None,
+        solid_section_offsets_mm: list[float] | None = None,
+        color: str | None = None,
+    ) -> dict[str, Any]:
+        """Atualiza qualquer combinação de propriedades editáveis dos membros."""
+        if not member_names:
+            raise ValueError("Informe pelo menos um membro.")
+        names = tuple(dict.fromkeys(member_names))
+        missing = next((name for name in names if name not in self.model.bars), None)
+        if missing is not None:
+            raise ValueError(f"Membro '{missing}' não encontrado.")
+
+        if rotation is not None:
+            if isinstance(rotation, bool) or not isinstance(rotation, int):
+                raise ValueError("A rotação deve ser um número inteiro em graus.")
+        normalized_releases = self._normalize_bool_values(releases, 12, "vinculações")
+        normalized_flexibility = self._normalize_int_values(
+            rotation_flexibility_percent, 6, 0, 99, "percentuais de semirrígidez",
+        )
+        face_offsets = self._normalize_offsets(solid_face_offsets_mm, "offsets das faces")
+        section_offsets = self._normalize_offsets(solid_section_offsets_mm, "offsets da seção")
+
+        if material is not None and material not in self.model.materials:
+            raise ValueError(f"Material '{material}' não encontrado.")
+        if color is not None:
+            self._validate_color(color)
+
+        for name in names:
+            member = self.model.bars[name]
+            target_material = material or member.material
+            target_section = section if section is not None else member.section
+            if section is not None:
+                material_type = self.model.material_types.get(target_material)
+                if section not in self.model.sections.get(material_type, ()):
+                    raise ValueError(
+                        f"A seção '{section}' não é compatível com o material '{target_material}'."
+                    )
+            if geometry is not None:
+                if target_material not in self.model.materials or not target_section:
+                    raise ValueError(
+                        "Para alterar a geometria, informe material e seção válidos "
+                        "ou mantenha essas propriedades já definidas no membro."
+                    )
+                self._validate_member_properties(target_material, target_section, geometry)
+            elif material is not None and member.section:
+                material_type = self.model.material_types.get(material)
+                if member.section not in self.model.sections.get(material_type, ()):
+                    raise ValueError(
+                        "A troca de material tornaria a seção atual incompatível; "
+                        "informe também uma seção compatível."
+                    )
+            if profile is not None and geometry is None and not member.geometry_dict():
+                raise ValueError(
+                    "Para alterar o perfil sem informar geometria, o membro precisa "
+                    "já possuir uma geometria de seção."
+                )
+
+        for name in names:
+            member = self.model.bars[name]
+            if geometry is not None:
+                member = self._apply_member_properties(
+                    name,
+                    material or member.material,
+                    section or member.section,
+                    geometry,
+                    profile,
+                )
+            else:
+                if material is not None:
+                    member = self.model_service.assign_material(name, material)
+                if section is not None:
+                    member = self.model_service.assign_section(name, section)
+                if profile is not None:
+                    member = self.model_service.assign_profile(
+                        name, profile, member.geometry_dict(),
+                    )
+            if rotation is not None:
+                member = self.model_service.update_member_rotation(name, rotation)
+            if normalized_releases is not None:
+                member = self.model_service.update_member_releases(name, normalized_releases)
+            if normalized_flexibility is not None:
+                member = self.model_service.update_member_rotation_flexibility_percent(
+                    name, normalized_flexibility,
+                )
+            if face_offsets is not None:
+                member = self.model_service.update_member_solid_face_offsets(name, face_offsets)
+            if section_offsets is not None:
+                member = self.model_service.update_member_solid_section_offsets(
+                    name, section_offsets,
+                )
+            if color is not None:
+                member = self.model_service.update_member_color(name, color)
+
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "members": [self._member_payload(self.model.bars[name]) for name in names],
+        }
+
     def _validate_member_properties(
         self,
         material: str,
@@ -395,7 +505,72 @@ class McpApplication:
             "section": member.section,
             "profile": member.profile,
             "geometry": member.geometry_dict(),
+            "rotation": member.rotation,
+            "releases": list(member.releases),
+            "rotation_flexibility_percent": list(member.rotation_flexibility_percent),
+            "solid_face_offsets_mm": [value * 1000.0 for value in member.solid_face_offsets],
+            "solid_section_offsets_mm": [value * 1000.0 for value in member.solid_section_offsets],
+            "color": member.color,
         }
+
+    @staticmethod
+    def _normalize_bool_values(
+        values: list[bool] | None,
+        expected: int,
+        label: str,
+    ) -> tuple[bool, ...] | None:
+        if values is None:
+            return None
+        if len(values) != expected or any(not isinstance(value, bool) for value in values):
+            raise ValueError(f"As {label} devem possuir exatamente {expected} valores booleanos.")
+        return tuple(values)
+
+    @staticmethod
+    def _normalize_int_values(
+        values: list[int] | None,
+        expected: int,
+        minimum: int,
+        maximum: int,
+        label: str,
+    ) -> tuple[int, ...] | None:
+        if values is None:
+            return None
+        if (
+            len(values) != expected
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not minimum <= value <= maximum
+                for value in values
+            )
+        ):
+            raise ValueError(
+                f"Os {label} devem possuir {expected} inteiros entre {minimum} e {maximum}."
+            )
+        return tuple(values)
+
+    @staticmethod
+    def _normalize_offsets(
+        values: list[float] | None,
+        label: str,
+    ) -> tuple[float, float] | None:
+        if values is None:
+            return None
+        if len(values) != 2:
+            raise ValueError(f"Os {label} devem possuir exatamente dois valores em milímetros.")
+        normalized = tuple(float(value) / 1000.0 for value in values)
+        if any(not isfinite(value) for value in normalized):
+            raise ValueError(f"Os {label} devem ser números finitos.")
+        return normalized  # type: ignore[return-value]
+
+    @staticmethod
+    def _validate_color(color: str) -> None:
+        if not isinstance(color, str) or len(color) != 7 or color[0] != "#":
+            raise ValueError("A cor deve estar no formato hexadecimal #RRGGBB.")
+        try:
+            int(color[1:], 16)
+        except ValueError as error:
+            raise ValueError("A cor deve estar no formato hexadecimal #RRGGBB.") from error
 
     def _axes_payload(self) -> dict[str, list[dict[str, Any]]]:
         return {

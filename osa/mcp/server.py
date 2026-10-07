@@ -347,3 +347,43 @@ class LocalMcpServer:
             return self.application.set_member_properties(
                 member_names, material, section, geometry, profile,
             )
+
+        @self.server.tool(
+            name="update_member_properties",
+            title="Atualizar propriedades dos membros",
+            description=(
+                "Atualiza qualquer combinação de propriedades dos membros. Informe uma lista "
+                "de nomes e somente os campos que deseja alterar. Pode alterar material, "
+                "section, geometry, profile, rotation, releases (12 booleanos na ordem "
+                "Dxa,Dxb,Dya,Dyb,Dza,Dzb,Rxa,Rxb,Rya,Ryb,Rza,Rzb), "
+                "rotation_flexibility_percent (6 inteiros), offsets em milímetros e color. "
+                "Para geometry, informe ou mantenha material e section válidos."
+            ),
+            annotations=write,
+        )
+        def update_member_properties(
+            member_names: list[str],
+            material: str | None = None,
+            section: str | None = None,
+            geometry: dict[str, float] | None = None,
+            profile: str | None = None,
+            rotation: int | None = None,
+            releases: list[bool] | None = None,
+            rotation_flexibility_percent: list[int] | None = None,
+            solid_face_offsets_mm: list[float] | None = None,
+            solid_section_offsets_mm: list[float] | None = None,
+            color: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.update_member_properties(
+                member_names,
+                material=material,
+                section=section,
+                geometry=geometry,
+                profile=profile,
+                rotation=rotation,
+                releases=releases,
+                rotation_flexibility_percent=rotation_flexibility_percent,
+                solid_face_offsets_mm=solid_face_offsets_mm,
+                solid_section_offsets_mm=solid_section_offsets_mm,
+                color=color,
+            )

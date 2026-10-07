@@ -31,6 +31,12 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "section": "",
         "profile": "",
         "geometry": {},
+        "rotation": 0,
+        "releases": [False] * 12,
+        "rotation_flexibility_percent": [0] * 6,
+        "solid_face_offsets_mm": [0.0, 0.0],
+        "solid_section_offsets_mm": [0.0, 0.0],
+        "color": "#6e7781",
     }
     assert application.get_project_summary() == {
         "revision": 3,
@@ -160,6 +166,56 @@ def test_mcp_application_rejects_invalid_reference_axis_direction():
         assert "X, Y ou Z" in str(error)
     else:
         raise AssertionError("Uma direção de eixo inválida deveria ser rejeitada.")
+
+
+def test_mcp_application_updates_any_combination_of_member_properties():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
+
+    result = application.update_member_properties(
+        ["B1"],
+        material="Concreto Estrutural",
+        section="Retangular",
+        geometry={"b": 200.0, "h": 400.0},
+        rotation=45,
+        releases=[False, False, False, False, False, False, True, False, False, False, False, False],
+        rotation_flexibility_percent=[10, 20, 30, 40, 50, 60],
+        solid_face_offsets_mm=[25.0, -10.0],
+        solid_section_offsets_mm=[15.0, -5.0],
+        color="#ABCDEF",
+    )
+
+    member = result["members"][0]
+    assert member["profile"] == "R 200 x 400"
+    assert member["rotation"] == 45
+    assert member["releases"][6] is True
+    assert member["rotation_flexibility_percent"] == [10, 20, 30, 40, 50, 60]
+    assert member["solid_face_offsets_mm"] == [25.0, -10.0]
+    assert member["solid_section_offsets_mm"] == [15.0, -5.0]
+    assert member["color"] == "#abcdef"
+
+
+def test_mcp_application_rejects_invalid_member_property_shapes():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
+
+    for kwargs in (
+        {"rotation": True},
+        {"releases": [False] * 11},
+        {"rotation_flexibility_percent": [0] * 5},
+        {"solid_face_offsets_mm": [0.0]},
+        {"color": "blue"},
+    ):
+        try:
+            application.update_member_properties(["B1"], **kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"As propriedades inválidas deveriam ser rejeitadas: {kwargs}")
 
 
 def test_local_mcp_server_uses_loopback_streamable_http():
