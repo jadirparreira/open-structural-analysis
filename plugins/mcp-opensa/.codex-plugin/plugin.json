@@ -1,0 +1,6 @@
+{
+  "name": "mcp-opensa",
+  "version": "0.1.0",
+  "description": "Conecta o ChatGPT Desktop ao projeto estrutural aberto no Open Structural Analysis.",
+  "mcpServers": "./.mcp.json"
+}

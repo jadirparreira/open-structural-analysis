@@ -1,10 +1,12 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, Signal
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
+from osa.integrations import LocalMcpIntegration
+from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService
 
 from .analysis_panel import ProcessingPanel
@@ -45,6 +47,8 @@ from .window_frame import TitleBar, WindowFrame
 
 
 class MainWindow(QMainWindow):
+    mcp_model_changed = Signal()
+
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
@@ -234,6 +238,17 @@ class MainWindow(QMainWindow):
         self.command_bar.reposition()
         self.history.reposition()
         self.refresh_scene()
+        self.mcp_model_changed.connect(self._refresh_after_mcp_change)
+        self._mcp_application = McpApplication(
+            self.model,
+            self.model_service,
+            self.command_session,
+            on_model_changed=self.mcp_model_changed.emit,
+        )
+        self._mcp_server = LocalMcpServer(self._mcp_application)
+        self._mcp_server.start()
+        self._mcp_integration = LocalMcpIntegration()
+        self._mcp_integration.ensure_installed()
 
     def process_analysis(self) -> None:
         """Run PyNite in the background after the progress card is painted."""
@@ -1644,6 +1659,13 @@ class MainWindow(QMainWindow):
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
         self.scene.render_model(self.model, preserve_camera=not fit_camera)
         self.properties.update_delete_button_state()
+
+    def _refresh_after_mcp_change(self) -> None:
+        """Atualiza a interface após uma operação recebida pelo MCP local."""
+        self.normalize_member_directions_if_enabled()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""
