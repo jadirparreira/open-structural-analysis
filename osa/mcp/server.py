@@ -127,6 +127,36 @@ class LocalMcpServer:
             return self.application.list_members()
 
         @self.server.tool(
+            name="list_rigid_bars",
+            title="Listar barras rígidas",
+            description="Consulta as barras rígidas do projeto aberto.",
+            annotations=read_only,
+        )
+        def list_rigid_bars() -> dict[str, Any]:
+            return self.application.list_rigid_bars()
+
+        @self.server.tool(
+            name="list_reference_axes",
+            title="Consultar eixos de referência",
+            description="Consulta os eixos de referência configurados no projeto aberto.",
+            annotations=read_only,
+        )
+        def list_reference_axes() -> dict[str, Any]:
+            return self.application.list_reference_axes()
+
+        @self.server.tool(
+            name="set_reference_axes",
+            title="Configurar eixos de referência",
+            description=(
+                "Substitui os eixos de referência do projeto. Informe um objeto com as chaves "
+                "X, Y e Z; cada uma contém uma lista de objetos {label, value}."
+            ),
+            annotations=write,
+        )
+        def set_reference_axes(axes: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+            return self.application.set_reference_axes(axes)
+
+        @self.server.tool(
             name="create_node",
             title="Criar nó",
             description=(
@@ -194,6 +224,88 @@ class LocalMcpServer:
         )
         def delete_member(member_name: str) -> dict[str, Any]:
             return self.application.delete_member(member_name)
+
+        @self.server.tool(
+            name="split_member",
+            title="Dividir membro",
+            description=(
+                "Divide um membro em partes iguais, criando nós intermediários. "
+                "Informe o nome padrão do membro e o número de partes maior que 1."
+            ),
+            annotations=write,
+        )
+        def split_member(member_name: str, parts: int) -> dict[str, Any]:
+            return self.application.split_member(member_name, parts)
+
+        @self.server.tool(
+            name="join_members",
+            title="Unir membros",
+            description=(
+                "Une dois membros que compartilham um nó e são colineares. "
+                "O primeiro nome é preservado."
+            ),
+            annotations=write,
+        )
+        def join_members(first_member: str, second_member: str) -> dict[str, Any]:
+            return self.application.join_members(first_member, second_member)
+
+        @self.server.tool(
+            name="reverse_member",
+            title="Inverter membro",
+            description="Inverte a orientação de um membro, trocando seus nós inicial e final.",
+            annotations=write,
+        )
+        def reverse_member(member_name: str) -> dict[str, Any]:
+            return self.application.reverse_member(member_name)
+
+        @self.server.tool(
+            name="create_rigid_bar",
+            title="Criar barra rígida",
+            description="Cria uma barra rígida entre dois nós existentes.",
+            annotations=write,
+        )
+        def create_rigid_bar(start_node: str, end_node: str) -> dict[str, Any]:
+            return self.application.create_rigid_bar(start_node, end_node)
+
+        @self.server.tool(
+            name="copy_elements",
+            title="Copiar elementos",
+            description=(
+                "Copia nós e/ou membros por uma translação. Informe listas de nomes e "
+                "um deslocamento [dx, dy, dz] nas unidades do projeto. Membros copiados "
+                "preservam suas propriedades."
+            ),
+            annotations=write,
+        )
+        def copy_elements(
+            offset: list[float],
+            node_names: list[str] | None = None,
+            member_names: list[str] | None = None,
+        ) -> dict[str, Any]:
+            if len(offset) != 3:
+                raise ValueError("O deslocamento deve possuir exatamente três valores.")
+            return self.application.copy_elements(
+                node_names,
+                member_names,
+                (float(offset[0]), float(offset[1]), float(offset[2])),
+            )
+
+        @self.server.tool(
+            name="copy_member_properties",
+            title="Copiar propriedades entre membros",
+            description=(
+                "Copia propriedades de um membro de referência para um membro de destino. "
+                "As propriedades possíveis são color, material, section, rotation, "
+                "offsets e releases. Se omitidas, todas são copiadas."
+            ),
+            annotations=write,
+        )
+        def copy_member_properties(
+            source_member: str,
+            target_member: str,
+            properties: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.copy_member_properties(source_member, target_member, properties)
 
         @self.server.tool(
             name="set_member_rectangular_section",

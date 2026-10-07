@@ -105,6 +105,63 @@ def test_mcp_application_lists_catalog_materials_and_sections():
     }]
 
 
+def test_mcp_application_exposes_geometry_operations():
+    model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
+    application.set_member_rectangular_section(["B1"], 200.0, 400.0)
+
+    axes = application.set_reference_axes({
+        "X": [{"label": "A", "value": 0.0}, {"label": "B", "value": 4.0}],
+        "Y": [],
+        "Z": [{"label": "0", "value": 0.0}],
+    })
+    assert axes["axes"]["X"][-1] == {"label": "B", "value": 4.0}
+    assert application.list_reference_axes()["axes"] == axes["axes"]
+
+    split = application.split_member("B1", 2)
+    assert split["created_nodes"] == ["N3"]
+    assert split["created_members"] == ["B1", "B2"]
+    assert model.bars["B2"].geometry_dict() == {"b": 200.0, "h": 400.0}
+
+    reversed_member = application.reverse_member("B1")
+    assert (reversed_member["member"]["start_node"], reversed_member["member"]["end_node"]) == (
+        "N3", "N1",
+    )
+    application.reverse_member("B1")
+    joined = application.join_members("B1", "B2")
+    assert joined["member"]["name"] == "B1"
+    assert set((joined["member"]["start_node"], joined["member"]["end_node"])) == {"N1", "N2"}
+    assert "N3" not in model.nodes
+
+    rigid = application.create_rigid_bar("N1", "N2")
+    assert rigid["rigid_bar"] == {"name": "N1-N2", "start_node": "N1", "end_node": "N2"}
+    assert application.list_rigid_bars()["rigid_bars"][0]["name"] == "N1-N2"
+
+    application.create_node(0.0, 4.0, 0.0)
+    application.create_node(4.0, 4.0, 0.0)
+    application.create_member("N3", "N4")
+    application.set_member_rectangular_section(["B2"], 100.0, 100.0)
+    copied = application.copy_member_properties("B1", "B2", ["material", "section"])
+    assert copied["member"]["geometry"] == {"b": 200.0, "h": 400.0}
+
+    translated = application.copy_elements([], ["B1"], (0.0, 8.0, 0.0))
+    assert translated["created_members"] == ["B3"]
+    assert len(translated["created_nodes"]) == 2
+
+
+def test_mcp_application_rejects_invalid_reference_axis_direction():
+    _model, application = make_application()
+
+    try:
+        application.set_reference_axes({"W": [{"label": "1", "value": 0.0}]})
+    except ValueError as error:
+        assert "X, Y ou Z" in str(error)
+    else:
+        raise AssertionError("Uma direção de eixo inválida deveria ser rejeitada.")
+
+
 def test_local_mcp_server_uses_loopback_streamable_http():
     _model, application = make_application()
 

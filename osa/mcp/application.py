@@ -12,7 +12,7 @@ from math import isfinite
 from typing import Any
 
 from osa.data import CatalogLoader
-from osa.domain import StructuralModel
+from osa.domain import ReferenceAxis, StructuralModel
 from osa.services import ModelService
 from osa.services.section_property_service import SectionPropertyService
 
@@ -121,6 +121,50 @@ class McpApplication:
             ],
         }
 
+    def list_rigid_bars(self) -> dict[str, Any]:
+        """Retorna as barras rígidas do projeto atualmente aberto."""
+        return {
+            "revision": self.model.revision,
+            "rigid_bars": [
+                {
+                    "name": rigid.name,
+                    "start_node": rigid.start_node,
+                    "end_node": rigid.end_node,
+                }
+                for rigid in self.model.rigid_bars.values()
+            ],
+        }
+
+    def list_reference_axes(self) -> dict[str, Any]:
+        """Retorna os eixos de referência configurados no projeto."""
+        return {
+            "revision": self.model.revision,
+            "axes": self._axes_payload(),
+        }
+
+    def set_reference_axes(self, axes: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        """Substitui os eixos de referência por uma configuração serializável."""
+        directions = {"X", "Y", "Z"}
+        unknown = set(axes) - directions
+        if unknown:
+            raise ValueError(
+                "As direções dos eixos devem ser somente X, Y ou Z."
+            )
+        normalized: dict[str, tuple[ReferenceAxis, ...]] = {}
+        for direction in ("X", "Y", "Z"):
+            entries: list[ReferenceAxis] = []
+            for item in axes.get(direction, []):
+                if not isinstance(item, dict) or "label" not in item or "value" not in item:
+                    raise ValueError("Cada eixo deve possuir 'label' e 'value'.")
+                try:
+                    entries.append(ReferenceAxis(str(item["label"]), float(item["value"])))
+                except (TypeError, ValueError) as error:
+                    raise ValueError("O valor de cada eixo deve ser numérico.") from error
+            normalized[direction] = tuple(entries)
+        self.model_service.set_reference_axes(normalized)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "axes": self._axes_payload()}
+
     def create_node(self, x: float, y: float, z: float) -> dict[str, Any]:
         """Cria um nó usando a identidade sequencial padrão do OpenSA."""
         node = self.model_service.create_node(x, y, z)
@@ -204,6 +248,80 @@ class McpApplication:
         self._notify_model_changed()
         return {"revision": self.model.revision, "deleted_member": member_name}
 
+    def split_member(self, member_name: str, parts: int) -> dict[str, Any]:
+        """Divide um membro em partes iguais, criando nós intermediários."""
+        node_names, member_names = self.model_service.split_member(member_name, parts)
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "source_member": member_name,
+            "created_nodes": list(node_names),
+            "created_members": list(member_names),
+            "members": [self._member_payload(self.model.bars[name]) for name in member_names],
+        }
+
+    def join_members(self, first_member: str, second_member: str) -> dict[str, Any]:
+        """Une dois membros adjacentes e colineares."""
+        joined = self.model_service.join_members(first_member, second_member)
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "deleted_member": second_member,
+            "member": self._member_payload(joined),
+        }
+
+    def reverse_member(self, member_name: str) -> dict[str, Any]:
+        """Inverte os nós inicial e final de um membro."""
+        member = self.model_service.reverse_member(member_name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "member": self._member_payload(member)}
+
+    def create_rigid_bar(self, start_node: str, end_node: str) -> dict[str, Any]:
+        """Cria uma barra rígida entre dois nós existentes."""
+        rigid = self.model_service.create_rigid_bar(start_node, end_node)
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "rigid_bar": {
+                "name": rigid.name,
+                "start_node": rigid.start_node,
+                "end_node": rigid.end_node,
+            },
+        }
+
+    def copy_elements(
+        self,
+        node_names: list[str] | None,
+        member_names: list[str] | None,
+        offset: tuple[float, float, float],
+    ) -> dict[str, Any]:
+        """Copia nós e membros por translação, preservando suas propriedades."""
+        copied_nodes, copied_members = self.model_service.copy_elements(
+            tuple(node_names or ()),
+            tuple(member_names or ()),
+            offset,
+        )
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "created_nodes": list(copied_nodes),
+            "created_members": list(copied_members),
+            "members": [self._member_payload(self.model.bars[name]) for name in copied_members],
+        }
+
+    def copy_member_properties(
+        self,
+        source_member: str,
+        target_member: str,
+        properties: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Copia propriedades selecionadas de um membro para outro."""
+        available = {"color", "material", "section", "rotation", "offsets", "releases"}
+        selected = frozenset(available if properties is None else properties)
+        member = self.model_service.copy_member_properties(source_member, target_member, selected)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "member": self._member_payload(member)}
+
     def set_member_properties(
         self,
         member_names: list[str],
@@ -277,6 +395,15 @@ class McpApplication:
             "section": member.section,
             "profile": member.profile,
             "geometry": member.geometry_dict(),
+        }
+
+    def _axes_payload(self) -> dict[str, list[dict[str, Any]]]:
+        return {
+            direction: [
+                {"label": axis.label, "value": axis.value}
+                for axis in self.model.axes.get(direction, ())
+            ]
+            for direction in ("X", "Y", "Z")
         }
 
     def _notify_model_changed(self) -> None:
