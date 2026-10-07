@@ -15,8 +15,23 @@ As alterações recebidas por MCP atualizam a cena do OpenSA depois da execuçã
 - `get_project_summary`: consulta a quantidade de entidades e a revisão atual.
 - `list_nodes`: lista os nós do projeto aberto.
 - `list_members`: lista os membros do projeto aberto.
+- `list_materials`: lista os materiais disponíveis no catálogo do projeto.
+- `list_sections`: lista as famílias de seção compatíveis com um material.
 - `create_node`: cria um nó no projeto aberto.
-- `create_member`: cria um membro entre dois nós existentes.
+- `set_node_supports`: define as seis restrições de um nó.
+- `create_member`: cria um membro entre dois nós existentes, opcionalmente já
+  com material, seção e geometria.
+- `set_member_properties`: atribui material e seção paramétrica a um ou mais
+  membros. As dimensões da seção usam milímetros; uma seção de 15 x 30 cm usa
+  `{ "b": 150, "h": 300 }`.
+
+Com essas ferramentas, uma IA pode modelar uma estrutura passo a passo:
+
+1. consultar materiais e seções;
+2. criar os nós nas coordenadas do projeto;
+3. criar os membros entre os nós;
+4. atribuir materiais e seções;
+5. definir os apoios.
 
 ## Teste local
 

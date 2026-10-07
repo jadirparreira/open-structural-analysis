@@ -92,6 +92,27 @@ class LocalMcpServer:
             return self.application.list_nodes()
 
         @self.server.tool(
+            name="list_materials",
+            title="Listar materiais",
+            description="Consulta os materiais disponíveis no projeto aberto.",
+            annotations=read_only,
+        )
+        def list_materials() -> dict[str, Any]:
+            return self.application.list_materials()
+
+        @self.server.tool(
+            name="list_sections",
+            title="Listar seções",
+            description=(
+                "Consulta as famílias de seção disponíveis. Informe o nome do material "
+                "ou o tipo do material, como 'Concreto'."
+            ),
+            annotations=read_only,
+        )
+        def list_sections(material: str | None = None) -> dict[str, Any]:
+            return self.application.list_sections(material)
+
+        @self.server.tool(
             name="list_members",
             title="Listar membros",
             description="Use esta ferramenta para consultar os membros do projeto aberto.",
@@ -113,11 +134,33 @@ class LocalMcpServer:
             return self.application.create_node(x, y, z, name=name)
 
         @self.server.tool(
+            name="set_node_supports",
+            title="Definir apoios do nó",
+            description=(
+                "Define as restrições translacionais e rotacionais de um nó. "
+                "Use true para restringir cada grau de liberdade, na ordem X, Y, Z, Rx, Ry e Rz."
+            ),
+            annotations=write,
+        )
+        def set_node_supports(
+            node_name: str,
+            dx: bool,
+            dy: bool,
+            dz: bool,
+            rx: bool = False,
+            ry: bool = False,
+            rz: bool = False,
+        ) -> dict[str, Any]:
+            return self.application.set_node_supports(node_name, dx, dy, dz, rx, ry, rz)
+
+        @self.server.tool(
             name="create_member",
             title="Criar membro",
             description=(
                 "Cria um membro entre dois nós existentes no projeto aberto. "
-                "Consulte os nós antes de chamar esta ferramenta."
+                "Consulte os nós antes de chamar esta ferramenta. Opcionalmente, "
+                "material, seção e geometria podem ser informados no mesmo passo; "
+                "as dimensões da seção usam milímetros."
             ),
             annotations=write,
         )
@@ -125,5 +168,38 @@ class LocalMcpServer:
             start_node: str,
             end_node: str,
             name: str | None = None,
+            material: str | None = None,
+            section: str | None = None,
+            geometry: dict[str, float] | None = None,
+            profile: str | None = None,
         ) -> dict[str, Any]:
-            return self.application.create_member(start_node, end_node, name=name)
+            return self.application.create_member(
+                start_node,
+                end_node,
+                name=name,
+                material=material,
+                section=section,
+                geometry=geometry,
+                profile=profile,
+            )
+
+        @self.server.tool(
+            name="set_member_properties",
+            title="Atribuir propriedades aos membros",
+            description=(
+                "Atribui material e seção paramétrica a um ou mais membros. "
+                "As dimensões da geometria usam milímetros; por exemplo, uma seção "
+                "retangular de 15 x 30 cm usa {b: 150, h: 300}."
+            ),
+            annotations=write,
+        )
+        def set_member_properties(
+            member_names: list[str],
+            material: str,
+            section: str,
+            geometry: dict[str, float],
+            profile: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.set_member_properties(
+                member_names, material, section, geometry, profile,
+            )
