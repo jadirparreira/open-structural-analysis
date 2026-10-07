@@ -17,8 +17,6 @@ As alterações recebidas por MCP atualizam a cena do OpenSA depois da execuçã
 - `list_members`: lista os membros do projeto aberto.
 - `create_node`: cria um nó no projeto aberto.
 - `create_member`: cria um membro entre dois nós existentes.
-- `create_template`: cria uma estrutura inicial `barrabieng`, `galpao`,
-  `mezanino` ou `portico`.
 
 ## Teste local
 

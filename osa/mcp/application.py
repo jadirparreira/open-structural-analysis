@@ -8,13 +8,10 @@ altere o mesmo modelo que está aberto na interface.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
-from osa.commands import CommandSession
 from osa.domain import StructuralModel
 from osa.services import ModelService
-
-TemplateName = Literal["barrabieng", "galpao", "mezanino", "portico"]
 
 
 class McpApplication:
@@ -24,13 +21,11 @@ class McpApplication:
         self,
         model: StructuralModel,
         model_service: ModelService,
-        command_session: CommandSession,
         *,
         on_model_changed: Callable[[], None] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
-        self.command_session = command_session
         self._on_model_changed = on_model_changed
 
     def get_project_summary(self) -> dict[str, Any]:
@@ -109,19 +104,6 @@ class McpApplication:
                 "start_node": member.start_node,
                 "end_node": member.end_node,
             },
-        }
-
-    def create_template(self, template: TemplateName) -> dict[str, Any]:
-        """Cria uma estrutura inicial existente no fluxo de comandos do OSA."""
-        response = self.command_session.submit(template)
-        if response.level == "error":
-            raise ValueError(response.message)
-        self._notify_model_changed()
-        return {
-            "template": template,
-            "message": response.message,
-            "revision": self.model.revision,
-            "summary": self.get_project_summary(),
         }
 
     def _notify_model_changed(self) -> None:

@@ -1,4 +1,3 @@
-from osa.commands import CommandSession
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.model import StructuralModel
 from osa.services import ModelService
@@ -7,11 +6,9 @@ from osa.services import ModelService
 def make_application(on_model_changed=None):
     model = StructuralModel()
     model_service = ModelService(model)
-    command_session = CommandSession(model_service)
     application = McpApplication(
         model,
         model_service,
-        command_session,
         on_model_changed=on_model_changed,
     )
     return model, application
@@ -44,17 +41,6 @@ def test_mcp_application_reads_and_changes_the_open_model():
     assert application.list_nodes()["nodes"][0]["name"] == "N1"
     assert application.list_members()["members"][0]["name"] == "B1"
     assert len(changes) == 3
-
-
-def test_mcp_application_can_launch_an_existing_structural_template():
-    model, application = make_application()
-
-    result = application.create_template("portico")
-
-    assert result["template"] == "portico"
-    assert result["summary"]["nodes"] == 8
-    assert result["summary"]["members"] == 8
-    assert all(node.supports[:3] == (True, True, True) for node in model.nodes.values() if node.z == 0.0)
 
 
 def test_local_mcp_server_uses_loopback_streamable_http():

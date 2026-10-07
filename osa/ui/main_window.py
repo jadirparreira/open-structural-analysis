@@ -242,7 +242,6 @@ class MainWindow(QMainWindow):
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
-            self.command_session,
             on_model_changed=self.mcp_model_changed.emit,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)

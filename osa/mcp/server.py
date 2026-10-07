@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Literal
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .application import McpApplication
-
-TemplateName = Literal["barrabieng", "galpao", "mezanino", "portico"]
 
 
 class LocalMcpServer:
@@ -129,16 +127,3 @@ class LocalMcpServer:
             name: str | None = None,
         ) -> dict[str, Any]:
             return self.application.create_member(start_node, end_node, name=name)
-
-        @self.server.tool(
-            name="create_template",
-            title="Criar estrutura inicial",
-            description=(
-                "Cria uma estrutura inicial pré-configurada no projeto aberto. "
-                "Use uma das opções: barrabieng, galpao, mezanino ou portico. "
-                "Use esta ferramenta quando o usuário pedir um modelo inicial desse tipo."
-            ),
-            annotations=write,
-        )
-        def create_template(template: TemplateName) -> dict[str, Any]:
-            return self.application.create_template(template)
