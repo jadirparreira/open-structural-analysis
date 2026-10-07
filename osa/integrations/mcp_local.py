@@ -11,6 +11,7 @@ from pathlib import Path
 
 MARKETPLACE_NAME = "open-structural-analysis-local"
 PLUGIN_NAME = "mcp-opensa"
+PLUGIN_VERSION = "0.1.1"
 
 
 class LocalMcpIntegration:
@@ -80,6 +81,7 @@ class LocalMcpIntegration:
             / "cache"
             / MARKETPLACE_NAME
             / PLUGIN_NAME
+            / PLUGIN_VERSION
         )
         if cache_root.is_dir():
             return

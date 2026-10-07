@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mcp-opensa",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Conecta o ChatGPT Desktop ao projeto estrutural aberto no Open Structural Analysis.",
   "author": {
     "name": "Open Structural Analysis contributors",
@@ -10,5 +10,13 @@
   "homepage": "https://github.com/jadirparreira/open-structural-analysis",
   "repository": "https://github.com/jadirparreira/open-structural-analysis",
   "license": "GPL-3.0-or-later",
-  "keywords": ["structural-analysis", "engineering", "mcp"]
+  "keywords": ["structural-analysis", "engineering", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "OpenSA",
+        "shortDescription": "Controle o modelo estrutural aberto"
+      }
+    }
+  }
 }

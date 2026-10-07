@@ -11,7 +11,7 @@ Analysis em execução no mesmo computador.
 3. Na primeira execução, o OpenSA registra o marketplace e tenta instalar o
    plugin no cliente local automaticamente.
 4. Reinicie o ChatGPT Desktop uma vez, se ele já estava aberto.
-5. Abra um chat Work e selecione `mcp-opensa`.
+5. Abra um chat Work e selecione `OpenSA` ou escreva `@OpenSA`.
 
 O plugin não inicia o OpenSA. O aplicativo precisa estar aberto para que as
 ferramentas operem sobre o projeto estrutural ativo.

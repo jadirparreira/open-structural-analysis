@@ -35,7 +35,8 @@ primeira abertura, o OpenSA copia o plugin para o marketplace pessoal local e
 tenta instalá-lo pelo cliente disponível. Se o ChatGPT Desktop já estiver
 aberto, é necessário reiniciá-lo uma vez para carregar o marketplace.
 
-Depois disso, basta abrir um chat Work e selecionar `mcp-opensa`.
+Depois disso, basta abrir um chat Work e selecionar `OpenSA` ou escrever
+`@OpenSA`.
 
 Se nenhum cliente compatível estiver instalado ou configurado, essa etapa é
 ignorada e o aplicativo continua funcionando normalmente.
