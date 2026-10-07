@@ -17,10 +17,15 @@ As alterações recebidas por MCP atualizam a cena do OpenSA depois da execuçã
 - `list_members`: lista os membros do projeto aberto.
 - `list_materials`: lista os materiais disponíveis no catálogo do projeto.
 - `list_sections`: lista as famílias de seção compatíveis com um material.
-- `create_node`: cria um nó no projeto aberto.
+- `create_node`: cria um nó no projeto aberto usando o nome sequencial padrão do
+  OpenSA (`N1`, `N2`, ...).
+- `delete_node`: exclui um nó pelo nome retornado pelo OpenSA.
 - `set_node_supports`: define as seis restrições de um nó.
-- `create_member`: cria um membro entre dois nós existentes, opcionalmente já
-  com material, seção e geometria.
+- `create_member`: cria um membro entre dois nós existentes usando o nome
+  sequencial padrão do OpenSA (`B1`, `B2`, ...).
+- `delete_member`: exclui um membro pelo nome retornado pelo OpenSA.
+- `set_member_rectangular_section`: atribui material e seção retangular usando
+  largura e altura explícitas em milímetros.
 - `set_member_properties`: atribui material e seção paramétrica a um ou mais
   membros. As dimensões da seção usam milímetros; uma seção de 15 x 30 cm usa
   `{ "b": 150, "h": 300 }`.

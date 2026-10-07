@@ -69,6 +69,11 @@ class LocalMcpServer:
             destructiveHint=False,
             openWorldHint=False,
         )
+        destructive = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            openWorldHint=False,
+        )
 
         @self.server.tool(
             name="get_project_summary",
@@ -130,8 +135,20 @@ class LocalMcpServer:
             ),
             annotations=write,
         )
-        def create_node(x: float, y: float, z: float, name: str | None = None) -> dict[str, Any]:
-            return self.application.create_node(x, y, z, name=name)
+        def create_node(x: float, y: float, z: float) -> dict[str, Any]:
+            return self.application.create_node(x, y, z)
+
+        @self.server.tool(
+            name="delete_node",
+            title="Excluir nó",
+            description=(
+                "Exclui um nó pelo nome padrão retornado por list_nodes. "
+                "O nó não pode ainda estar conectado a membros."
+            ),
+            annotations=destructive,
+        )
+        def delete_node(node_name: str) -> dict[str, Any]:
+            return self.application.delete_node(node_name)
 
         @self.server.tool(
             name="set_node_supports",
@@ -158,29 +175,44 @@ class LocalMcpServer:
             title="Criar membro",
             description=(
                 "Cria um membro entre dois nós existentes no projeto aberto. "
-                "Consulte os nós antes de chamar esta ferramenta. Opcionalmente, "
-                "material, seção e geometria podem ser informados no mesmo passo; "
-                "as dimensões da seção usam milímetros."
+                "Consulte os nós antes de chamar esta ferramenta. O nome do membro "
+                "é atribuído automaticamente pelo OpenSA."
             ),
             annotations=write,
         )
         def create_member(
             start_node: str,
             end_node: str,
-            name: str | None = None,
-            material: str | None = None,
-            section: str | None = None,
-            geometry: dict[str, float] | None = None,
-            profile: str | None = None,
         ) -> dict[str, Any]:
-            return self.application.create_member(
-                start_node,
-                end_node,
-                name=name,
-                material=material,
-                section=section,
-                geometry=geometry,
-                profile=profile,
+            return self.application.create_member(start_node, end_node)
+
+        @self.server.tool(
+            name="delete_member",
+            title="Excluir membro",
+            description="Exclui um membro pelo nome padrão retornado por list_members.",
+            annotations=destructive,
+        )
+        def delete_member(member_name: str) -> dict[str, Any]:
+            return self.application.delete_member(member_name)
+
+        @self.server.tool(
+            name="set_member_rectangular_section",
+            title="Atribuir seção retangular",
+            description=(
+                "Atribui uma seção retangular a um ou mais membros. Informe largura e "
+                "altura em milímetros; 15 x 30 cm corresponde a 150 x 300 mm. "
+                "O material padrão é Concreto Estrutural."
+            ),
+            annotations=write,
+        )
+        def set_member_rectangular_section(
+            member_names: list[str],
+            width_mm: float,
+            height_mm: float,
+            material: str = "Concreto Estrutural",
+        ) -> dict[str, Any]:
+            return self.application.set_member_rectangular_section(
+                member_names, width_mm, height_mm, material,
             )
 
         @self.server.tool(

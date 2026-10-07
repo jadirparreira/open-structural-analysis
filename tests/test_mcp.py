@@ -19,9 +19,9 @@ def test_mcp_application_reads_and_changes_the_open_model():
     changes = []
     application._on_model_changed = lambda: changes.append(model.revision)
 
-    application.create_node(0.0, 0.0, 0.0, name="N1")
-    application.create_node(4.0, 0.0, 0.0, name="N2")
-    result = application.create_member("N1", "N2", name="B1")
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    result = application.create_member("N1", "N2")
 
     assert result["member"] == {
         "name": "B1",
@@ -50,9 +50,9 @@ def test_mcp_application_reads_and_changes_the_open_model():
 
 def test_mcp_application_can_assign_concrete_properties_and_supports():
     _model, application = make_application()
-    application.create_node(0.0, 0.0, 0.0, name="N1")
-    application.create_node(8.0, 0.0, 0.0, name="N2")
-    application.create_member("N1", "N2", name="B1")
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(8.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
 
     supports = application.set_node_supports("N1", True, True, True)
     result = application.set_member_properties(
@@ -67,6 +67,19 @@ def test_mcp_application_can_assign_concrete_properties_and_supports():
     assert result["members"][0]["section"] == "Retangular"
     assert result["members"][0]["profile"] == "R 150 x 300"
     assert result["members"][0]["geometry"] == {"b": 150.0, "h": 300.0}
+
+
+def test_mcp_application_can_delete_members_and_nodes():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
+
+    deleted_member = application.delete_member("B1")
+    deleted_node = application.delete_node("N2")
+
+    assert deleted_member["deleted_member"] == "B1"
+    assert deleted_node["deleted_node"] == "N2"
 
 
 def test_mcp_application_lists_catalog_materials_and_sections():

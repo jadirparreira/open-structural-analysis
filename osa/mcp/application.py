@@ -121,9 +121,9 @@ class McpApplication:
             ],
         }
 
-    def create_node(self, x: float, y: float, z: float, name: str | None = None) -> dict[str, Any]:
-        """Cria um nó no modelo aberto."""
-        node = self.model_service.create_node(x, y, z, name=name)
+    def create_node(self, x: float, y: float, z: float) -> dict[str, Any]:
+        """Cria um nó usando a identidade sequencial padrão do OpenSA."""
+        node = self.model_service.create_node(x, y, z)
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
@@ -157,7 +157,6 @@ class McpApplication:
         self,
         start_node: str,
         end_node: str,
-        name: str | None = None,
         material: str | None = None,
         section: str | None = None,
         geometry: dict[str, float] | None = None,
@@ -168,11 +167,42 @@ class McpApplication:
             if material is None or section is None or geometry is None:
                 raise ValueError("Material, seção e geometria devem ser informados juntos.")
             self._validate_member_properties(material, section, geometry)
-        member = self.model_service.create_member(start_node, end_node, name=name)
+        member = self.model_service.create_member(start_node, end_node)
         if material is not None and section is not None and geometry is not None:
             member = self._apply_member_properties(member.name, material, section, geometry, profile)
         self._notify_model_changed()
         return {"revision": self.model.revision, "member": self._member_payload(member)}
+
+    def set_member_rectangular_section(
+        self,
+        member_names: list[str],
+        width_mm: float,
+        height_mm: float,
+        material: str = "Concreto Estrutural",
+    ) -> dict[str, Any]:
+        """Aplica uma seção retangular com dimensões explícitas em milímetros."""
+        return self.set_member_properties(
+            member_names,
+            material,
+            "Retangular",
+            {"b": width_mm, "h": height_mm},
+        )
+
+    def delete_node(self, node_name: str) -> dict[str, Any]:
+        """Exclui um nó, respeitando as regras de integridade do modelo."""
+        if node_name not in self.model.nodes:
+            raise ValueError(f"Nó '{node_name}' não encontrado.")
+        self.model_service.remove_node(node_name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_node": node_name}
+
+    def delete_member(self, member_name: str) -> dict[str, Any]:
+        """Exclui um membro e suas ações associadas."""
+        if member_name not in self.model.bars:
+            raise ValueError(f"Membro '{member_name}' não encontrado.")
+        self.model_service.remove_member(member_name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_member": member_name}
 
     def set_member_properties(
         self,
