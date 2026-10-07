@@ -218,6 +218,49 @@ def test_mcp_application_rejects_invalid_member_property_shapes():
             raise AssertionError(f"As propriedades inválidas deveriam ser rejeitadas: {kwargs}")
 
 
+def test_mcp_application_updates_node_without_changing_its_name():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+
+    result = application.update_node_properties(
+        "N1",
+        x=2.0,
+        y=3.0,
+        z=4.0,
+        supports=[True, True, True, False, False, True],
+        support_stiffness=[10.0, 20.0, 30.0, 1.0, 2.0, 3.0],
+    )
+
+    assert result["node"] == {
+        "name": "N1",
+        "x": 2.0,
+        "y": 3.0,
+        "z": 4.0,
+        "supports": [True, True, True, False, False, True],
+        "support_stiffness": [10.0, 20.0, 30.0, 1.0, 2.0, 3.0],
+    }
+    assert application.list_nodes()["nodes"][0]["support_stiffness"] == [
+        10.0, 20.0, 30.0, 1.0, 2.0, 3.0,
+    ]
+
+
+def test_mcp_application_rejects_partial_node_coordinates_and_invalid_stiffness():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+
+    for kwargs in (
+        {"x": 1.0},
+        {"supports": [False] * 5},
+        {"support_stiffness": [-1.0] * 6},
+    ):
+        try:
+            application.update_node_properties("N1", **kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"As propriedades inválidas deveriam ser rejeitadas: {kwargs}")
+
+
 def test_local_mcp_server_uses_loopback_streamable_http():
     _model, application = make_application()
 

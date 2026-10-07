@@ -201,6 +201,35 @@ class LocalMcpServer:
             return self.application.set_node_supports(node_name, dx, dy, dz, rx, ry, rz)
 
         @self.server.tool(
+            name="update_node_properties",
+            title="Atualizar propriedades do nó",
+            description=(
+                "Atualiza propriedades de um nó existente sem alterar seu nome. Informe "
+                "somente os campos desejados. Para coordenadas, informe x, y e z juntos. "
+                "supports possui seis booleanos na ordem Dx,Dy,Dz,Rx,Ry,Rz. "
+                "support_stiffness possui seis valores, com rigidezas translacionais em "
+                "kN/m e rotacionais em kN·m/rad."
+            ),
+            annotations=write,
+        )
+        def update_node_properties(
+            node_name: str,
+            x: float | None = None,
+            y: float | None = None,
+            z: float | None = None,
+            supports: list[bool] | None = None,
+            support_stiffness: list[float] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.update_node_properties(
+                node_name,
+                x=x,
+                y=y,
+                z=z,
+                supports=supports,
+                support_stiffness=support_stiffness,
+            )
+
+        @self.server.tool(
             name="create_member",
             title="Criar membro",
             description=(

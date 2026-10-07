@@ -98,6 +98,7 @@ class McpApplication:
                     "y": node.y,
                     "z": node.z,
                     "supports": list(node.supports),
+                    "support_stiffness": list(node.support_stiffness),
                 }
                 for node in self.model.nodes.values()
             ],
@@ -171,12 +172,7 @@ class McpApplication:
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
-            "node": {
-                "name": node.name,
-                "x": node.x,
-                "y": node.y,
-                "z": node.z,
-            },
+            "node": self._node_payload(node),
         }
 
     def set_node_supports(
@@ -194,8 +190,56 @@ class McpApplication:
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
-            "node": {"name": node.name, "supports": list(node.supports)},
+            "node": self._node_payload(node),
         }
+
+    def update_node_properties(
+        self,
+        node_name: str,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        supports: list[bool] | None = None,
+        support_stiffness: list[float] | None = None,
+    ) -> dict[str, Any]:
+        """Atualiza propriedades de um nó sem permitir alterar sua identidade."""
+        node = self.model.nodes.get(node_name)
+        if node is None:
+            raise ValueError(f"Nó '{node_name}' não encontrado.")
+        coordinates = (x, y, z)
+        if any(value is not None for value in coordinates) and not all(
+            value is not None for value in coordinates
+        ):
+            raise ValueError("Informe x, y e z juntos para alterar as coordenadas.")
+        normalized_coordinates: tuple[float, float, float] | None = None
+        if all(value is not None for value in coordinates):
+            try:
+                normalized_coordinates = tuple(float(value) for value in coordinates)  # type: ignore[arg-type]
+            except (TypeError, ValueError) as error:
+                raise ValueError("As coordenadas devem ser numéricas.") from error
+            if any(not isfinite(value) for value in normalized_coordinates):
+                raise ValueError("As coordenadas devem ser números finitos.")
+
+        normalized_supports = self._normalize_bool_values(supports, 6, "apoios")
+        normalized_stiffness = self._normalize_nonnegative_values(
+            support_stiffness, 6, "rigidezes de mola",
+        )
+        if (
+            normalized_coordinates is None
+            and normalized_supports is None
+            and normalized_stiffness is None
+        ):
+            raise ValueError("Informe pelo menos uma propriedade do nó para alterar.")
+
+        if normalized_coordinates is not None:
+            node = self.model_service.update_node(node_name, *normalized_coordinates)
+        if normalized_supports is not None:
+            node = self.model_service.update_supports(node_name, normalized_supports)
+        if normalized_stiffness is not None:
+            node = self.model_service.update_support_stiffness(node_name, normalized_stiffness)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "node": self._node_payload(node)}
 
     def create_member(
         self,
@@ -514,6 +558,17 @@ class McpApplication:
         }
 
     @staticmethod
+    def _node_payload(node) -> dict[str, Any]:
+        return {
+            "name": node.name,
+            "x": node.x,
+            "y": node.y,
+            "z": node.z,
+            "supports": list(node.supports),
+            "support_stiffness": list(node.support_stiffness),
+        }
+
+    @staticmethod
     def _normalize_bool_values(
         values: list[bool] | None,
         expected: int,
@@ -548,6 +603,24 @@ class McpApplication:
                 f"Os {label} devem possuir {expected} inteiros entre {minimum} e {maximum}."
             )
         return tuple(values)
+
+    @staticmethod
+    def _normalize_nonnegative_values(
+        values: list[float] | None,
+        expected: int,
+        label: str,
+    ) -> tuple[float, ...] | None:
+        if values is None:
+            return None
+        if len(values) != expected:
+            raise ValueError(f"As {label} devem possuir exatamente {expected} valores.")
+        try:
+            normalized = tuple(float(value) for value in values)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"As {label} devem ser numéricas.") from error
+        if any(not isfinite(value) or value < 0.0 for value in normalized):
+            raise ValueError(f"As {label} devem ser números não negativos.")
+        return normalized
 
     @staticmethod
     def _normalize_offsets(
