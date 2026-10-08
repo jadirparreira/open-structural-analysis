@@ -235,6 +235,86 @@ class McpApplication:
         self._notify_model_changed()
         return {"revision": self.model.revision, "action": self._action_payload(action)}
 
+    def update_applied_load(
+        self,
+        action_name: str,
+        *,
+        target: str | None = None,
+        direction: str | None = None,
+        initial: float | None = None,
+        final: float | None = None,
+        value: float | None = None,
+        load_case: str | None = None,
+        reference: str | None = None,
+    ) -> dict[str, Any]:
+        """Atualiza uma carga aplicada preservando o nome automático da ação."""
+        current = self.model.actions.get(action_name)
+        if current is None:
+            raise ValueError(f"Ação '{action_name}' não encontrada.")
+        if current.kind == "member_distributed_force_selfweight_Z":
+            raise ValueError("O peso próprio deve ser alterado por apply_selfweight ou remove_selfweight.")
+        if all(value is None for value in (target, direction, initial, final, value, load_case, reference)):
+            raise ValueError("Informe pelo menos um parâmetro para atualizar a ação.")
+
+        updated_target = current.target if target is None else str(target)
+        updated_load_case = current.load_case if load_case is None else str(load_case)
+        self._validate_load_case(updated_load_case)
+        self._ensure_load_case_accepts_loads(updated_load_case)
+
+        kind = current.kind
+        if kind.startswith("node_force_"):
+            target_kind = "node"
+            prefix = "node_force_"
+        elif kind.startswith("node_moment_"):
+            target_kind = "node"
+            prefix = "node_moment_"
+        elif kind.startswith("member_moment_"):
+            target_kind = "bar"
+            prefix = "member_moment_"
+        elif kind.startswith("member_distributed_force_"):
+            target_kind = "bar"
+            prefix = "member_distributed_force_"
+        else:
+            raise ValueError(f"O tipo de ação '{kind}' não pode ser atualizado pelo MCP.")
+        self._validate_load_target(updated_target, target_kind, updated_load_case)
+
+        if kind.startswith("member_distributed_force_"):
+            current_reference = "local" if kind.startswith("member_distributed_force_local_") else "global"
+            updated_reference = current_reference if reference is None else reference.casefold()
+            if updated_reference not in {"global", "local"}:
+                raise ValueError("O sistema de direção deve ser Global ou Local.")
+            current_direction = kind.rsplit("_", 1)[-1]
+            updated_direction = current_direction if direction is None else direction.upper()
+            self._validate_direction(updated_direction)
+            if value is not None:
+                raise ValueError("Cargas distribuídas devem usar initial e final, não value.")
+            if (initial is None) != (final is None):
+                raise ValueError("Informe initial e final juntos para atualizar uma carga distribuída.")
+            components = current.components if initial is None else (
+                self._finite_load_value(initial, "initial"),
+                self._finite_load_value(final, "final"),
+            )
+            kind = f"{prefix}{'local_' if updated_reference == 'local' else ''}{updated_direction}"
+        else:
+            if initial is not None or final is not None or reference is not None:
+                raise ValueError("Esta ação concentrada deve ser atualizada usando apenas value.")
+            current_direction = kind.rsplit("_", 1)[-1]
+            updated_direction = current_direction if direction is None else direction.upper()
+            self._validate_direction(updated_direction)
+            updated_value = current.components[0] if value is None else self._finite_load_value(value, "value")
+            components = (updated_value,)
+            kind = f"{prefix}{updated_direction}"
+
+        action = self.action_service.update_action(
+            action_name,
+            kind=kind,
+            target=updated_target,
+            components=tuple(components),
+            load_case=updated_load_case,
+        )
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action)}
+
     def apply_selfweight(
         self,
         load_case: str,
@@ -301,6 +381,13 @@ class McpApplication:
             raise ValueError(
                 f"A ação '{load_case}' está restrita ao peso próprio; remova-o antes de lançar outras cargas."
             )
+
+    @staticmethod
+    def _finite_load_value(value: float, parameter: str) -> float:
+        result = float(value)
+        if not isfinite(result):
+            raise ValueError(f"O parâmetro '{parameter}' deve ser um número finito.")
+        return result
 
     @staticmethod
     def _validate_direction(direction: str) -> None:

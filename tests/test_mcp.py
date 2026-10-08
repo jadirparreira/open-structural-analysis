@@ -281,6 +281,21 @@ def test_mcp_application_manages_node_and_member_actions():
     assert member_moment["action"]["kind"] == "member_moment_Y"
     assert len(application.list_actions("Ação permanente")["actions"]) == 4
 
+    updated_member_load = application.update_applied_load(
+        member_load["action"]["name"],
+        direction="Y",
+        initial=-3.0,
+        final=-5.0,
+    )
+    assert updated_member_load["action"] == {
+        "name": member_load["action"]["name"],
+        "kind": "member_distributed_force_Y",
+        "target": "B1",
+        "components": [-3.0, -5.0],
+        "load_case": "Ação permanente",
+    }
+    assert len(application.list_actions("Ação permanente", "B1")["actions"]) == 2
+
     deleted = application.delete_action(node_force["action"]["name"])
     assert deleted["deleted_action"]["target"] == "N1"
     cleared = application.clear_actions(target="B1", load_case="Ação permanente")

@@ -285,6 +285,38 @@ class LocalMcpServer:
             return self.application.add_member_moment(member_name, direction, value_knm_m, load_case)
 
         @self.server.tool(
+            name="update_applied_load",
+            title="Atualizar carregamento aplicado",
+            description=(
+                "Atualiza um carregamento existente pelo nome retornado por list_actions, "
+                "preservando sua identidade automática (por exemplo, Carga 5). "
+                "Para cargas distribuídas use initial_kn_m e final_kn_m; para forças e momentos "
+                "concentrados use value. Também é possível alterar target, direction, load_case e reference."
+            ),
+            annotations=write,
+        )
+        def update_applied_load(
+            action_name: str,
+            target: str | None = None,
+            direction: str | None = None,
+            initial_kn_m: float | None = None,
+            final_kn_m: float | None = None,
+            value: float | None = None,
+            load_case: str | None = None,
+            reference: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.update_applied_load(
+                action_name,
+                target=target,
+                direction=direction,
+                initial=initial_kn_m,
+                final=final_kn_m,
+                value=value,
+                load_case=load_case,
+                reference=reference,
+            )
+
+        @self.server.tool(
             name="apply_selfweight",
             title="Aplicar peso próprio",
             description=(

@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 from osa.domain import (
     Action,
@@ -61,6 +62,31 @@ class ActionService:
             raise ValueError(f"Ação '{name}' não encontrada.")
         self.model._touch()
         return action
+
+    def update_action(self, name: str, **changes: object) -> Action:
+        """Atualiza uma ação aplicada preservando seu identificador automático."""
+        current = self.model.actions.get(name)
+        if current is None:
+            raise ValueError(f"Ação '{name}' não encontrada.")
+        updated = replace(current, **changes)
+        conflict = next(
+            (
+                candidate for candidate_name, candidate in self.model.actions.items()
+                if candidate_name != name
+                and candidate.kind == updated.kind
+                and candidate.target == updated.target
+                and candidate.load_case == updated.load_case
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise ValueError(
+                "Já existe uma ação equivalente para esse alvo, direção e caso de carregamento: "
+                f"'{conflict.name}'."
+            )
+        self.model.actions[name] = updated
+        self.model._touch()
+        return updated
 
     def remove_actions(
         self,
