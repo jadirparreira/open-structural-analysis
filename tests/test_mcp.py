@@ -261,6 +261,54 @@ def test_mcp_application_rejects_partial_node_coordinates_and_invalid_stiffness(
             raise AssertionError(f"As propriedades inválidas deveriam ser rejeitadas: {kwargs}")
 
 
+def test_mcp_application_updates_and_deletes_rigid_bars_and_member_endpoints():
+    model, application = make_application()
+    for coordinates in ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (8.0, 0.0, 0.0)):
+        application.create_node(*coordinates)
+    application.create_member("N1", "N2")
+    changed_member = application.update_member_endpoints("B1", "N2", "N3")
+    assert changed_member["member"]["start_node"] == "N2"
+    assert changed_member["member"]["end_node"] == "N3"
+
+    application.create_rigid_bar("N1", "N2")
+    changed_rigid = application.update_rigid_bar_endpoints("N1-N2", "N1", "N3")
+    assert changed_rigid["rigid_bar"]["name"] == "N1-N3"
+    deleted = application.delete_rigid_bar("N1-N3")
+    assert deleted["deleted_rigid_bar"] == "N1-N3"
+    assert not model.rigid_bars
+
+
+def test_mcp_application_controls_geometry_view_options():
+    model = StructuralModel()
+    view = {
+        "grid_visible": True,
+        "reference_axes_visible": True,
+        "node_labels_visible": True,
+        "member_labels_visible": True,
+        "local_axes_visible": True,
+        "nodes_visible": True,
+        "solid_members_visible": True,
+        "member_releases_visible": True,
+        "semirigid_links_visible": True,
+        "node_supports_visible": True,
+        "snap_enabled": True,
+    }
+    changes = []
+    application = McpApplication(
+        model,
+        ModelService(model),
+        on_view_changed=lambda option, visible: (changes.append((option, visible)), view.update({option: visible})),
+        get_view_state=lambda: dict(view),
+    )
+
+    result = application.set_view_options({"grid_visible": False, "snap_enabled": False})
+
+    assert result["view"]["grid_visible"] is False
+    assert result["view"]["snap_enabled"] is False
+    assert changes == [("grid_visible", False), ("snap_enabled", False)]
+    assert application.get_view_options()["view"]["grid_visible"] is False
+
+
 def test_local_mcp_server_uses_loopback_streamable_http():
     _model, application = make_application()
 

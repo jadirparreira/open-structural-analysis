@@ -659,6 +659,26 @@ class TopIconPalette(QFrame):
         if button is not None:
             button.setChecked(not button.isChecked())
 
+    def set_view_option(self, option: str, visible: bool) -> None:
+        kind = {
+            "grid_visible": "grid",
+            "reference_axes_visible": "reference-axes",
+            "node_labels_visible": "node",
+            "member_labels_visible": "bar",
+            "local_axes_visible": "axes",
+            "nodes_visible": "nodes",
+            "solid_members_visible": "solid",
+            "member_releases_visible": "releases",
+            "semirigid_links_visible": "semirigid",
+            "node_supports_visible": "supports",
+        }.get(option)
+        if kind is not None:
+            button = self._visibility_buttons.get(kind)
+            if button is not None:
+                button.setChecked(bool(visible))
+        elif option == "snap_enabled":
+            self.snap_button.setChecked(bool(visible))
+
     def toggle_snap_command(self) -> None:
         self.snap_button.setChecked(not self.snap_button.isChecked())
 

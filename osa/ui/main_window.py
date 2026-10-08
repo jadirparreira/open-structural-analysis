@@ -48,6 +48,7 @@ from .window_frame import TitleBar, WindowFrame
 
 class MainWindow(QMainWindow):
     mcp_model_changed = Signal()
+    mcp_view_changed = Signal(str, bool)
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
@@ -239,10 +240,13 @@ class MainWindow(QMainWindow):
         self.history.reposition()
         self.refresh_scene()
         self.mcp_model_changed.connect(self._refresh_after_mcp_change)
+        self.mcp_view_changed.connect(self._apply_mcp_view_change)
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
             on_model_changed=self.mcp_model_changed.emit,
+            on_view_changed=self.mcp_view_changed.emit,
+            get_view_state=self.scene.view_state,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_server.start()
@@ -1665,6 +1669,28 @@ class MainWindow(QMainWindow):
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.refresh_scene()
+
+    def _apply_mcp_view_change(self, option: str, visible: bool) -> None:
+        setters = {
+            "grid_visible": self.scene.set_grid_visible,
+            "reference_axes_visible": self.scene.set_reference_axes_visible,
+            "local_axes_visible": self.scene.set_local_axes_visible,
+            "nodes_visible": self.scene.set_nodes_visible,
+            "solid_members_visible": self.scene.set_solid_members_visible,
+            "member_releases_visible": self.scene.set_member_releases_visible,
+            "semirigid_links_visible": self.scene.set_semirigid_links_visible,
+            "node_supports_visible": self.scene.set_node_supports_visible,
+            "snap_enabled": self.scene.set_snap_enabled,
+        }
+        if option in setters:
+            setters[option](visible)
+        elif option == "node_labels_visible":
+            self.scene.set_labels_visible("node", visible)
+        elif option == "member_labels_visible":
+            self.scene.set_labels_visible("bar", visible)
+        else:
+            raise ValueError(f"Opção visual desconhecida: {option}")
+        self.top_icon_palette.set_view_option(option, visible)
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""

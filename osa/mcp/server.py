@@ -136,6 +136,30 @@ class LocalMcpServer:
             return self.application.list_rigid_bars()
 
         @self.server.tool(
+            name="get_view_options",
+            title="Consultar opções visuais",
+            description="Consulta o que está visível na cena do OpenSA.",
+            annotations=read_only,
+        )
+        def get_view_options() -> dict[str, Any]:
+            return self.application.get_view_options()
+
+        @self.server.tool(
+            name="set_view_options",
+            title="Controlar visualização",
+            description=(
+                "Controla a visualização da cena sem alterar o modelo. Opções: "
+                "grid_visible, reference_axes_visible, node_labels_visible, "
+                "member_labels_visible, local_axes_visible, nodes_visible, "
+                "solid_members_visible, member_releases_visible, semirigid_links_visible, "
+                "node_supports_visible e snap_enabled. Informe somente os campos desejados."
+            ),
+            annotations=write,
+        )
+        def set_view_options(options: dict[str, bool]) -> dict[str, Any]:
+            return self.application.set_view_options(options)
+
+        @self.server.tool(
             name="list_reference_axes",
             title="Consultar eixos de referência",
             description="Consulta os eixos de referência configurados no projeto aberto.",
@@ -255,6 +279,21 @@ class LocalMcpServer:
             return self.application.delete_member(member_name)
 
         @self.server.tool(
+            name="update_member_endpoints",
+            title="Alterar extremidades do membro",
+            description=(
+                "Altera os nós inicial e final de um membro, preservando sua identidade e propriedades."
+            ),
+            annotations=write,
+        )
+        def update_member_endpoints(
+            member_name: str,
+            start_node: str,
+            end_node: str,
+        ) -> dict[str, Any]:
+            return self.application.update_member_endpoints(member_name, start_node, end_node)
+
+        @self.server.tool(
             name="split_member",
             title="Dividir membro",
             description=(
@@ -295,6 +334,33 @@ class LocalMcpServer:
         )
         def create_rigid_bar(start_node: str, end_node: str) -> dict[str, Any]:
             return self.application.create_rigid_bar(start_node, end_node)
+
+        @self.server.tool(
+            name="delete_rigid_bar",
+            title="Excluir barra rígida",
+            description="Exclui uma barra rígida pelo nome retornado por list_rigid_bars.",
+            annotations=destructive,
+        )
+        def delete_rigid_bar(rigid_bar_name: str) -> dict[str, Any]:
+            return self.application.delete_rigid_bar(rigid_bar_name)
+
+        @self.server.tool(
+            name="update_rigid_bar_endpoints",
+            title="Alterar extremidades da barra rígida",
+            description=(
+                "Altera os nós de uma barra rígida. O nome da barra rígida será atualizado "
+                "automaticamente para refletir os novos nós."
+            ),
+            annotations=write,
+        )
+        def update_rigid_bar_endpoints(
+            rigid_bar_name: str,
+            start_node: str,
+            end_node: str,
+        ) -> dict[str, Any]:
+            return self.application.update_rigid_bar_endpoints(
+                rigid_bar_name, start_node, end_node,
+            )
 
         @self.server.tool(
             name="copy_elements",

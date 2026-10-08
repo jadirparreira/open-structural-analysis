@@ -26,10 +26,14 @@ class McpApplication:
         model_service: ModelService,
         *,
         on_model_changed: Callable[[], None] | None = None,
+        on_view_changed: Callable[[str, bool], None] | None = None,
+        get_view_state: Callable[[], dict[str, bool]] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
         self._on_model_changed = on_model_changed
+        self._on_view_changed = on_view_changed
+        self._get_view_state = get_view_state
         self._section_properties = SectionPropertyService()
         self._catalog = CatalogLoader()
 
@@ -135,6 +139,42 @@ class McpApplication:
                 for rigid in self.model.rigid_bars.values()
             ],
         }
+
+    def get_view_options(self) -> dict[str, Any]:
+        """Retorna as opções visuais da cena conectada ao MCP."""
+        if self._get_view_state is None:
+            raise ValueError("A cena visual do OpenSA não está disponível.")
+        return {"view": self._get_view_state()}
+
+    def set_view_options(self, options: dict[str, bool]) -> dict[str, Any]:
+        """Atualiza opções visuais sem alterar o modelo estrutural."""
+        available = {
+            "grid_visible",
+            "reference_axes_visible",
+            "node_labels_visible",
+            "member_labels_visible",
+            "local_axes_visible",
+            "nodes_visible",
+            "solid_members_visible",
+            "member_releases_visible",
+            "semirigid_links_visible",
+            "node_supports_visible",
+            "snap_enabled",
+        }
+        unknown = set(options) - available
+        if unknown:
+            raise ValueError(f"Opção visual desconhecida: {sorted(unknown)[0]}")
+        if not options:
+            raise ValueError("Informe pelo menos uma opção visual.")
+        if any(not isinstance(value, bool) for value in options.values()):
+            raise ValueError("As opções visuais devem ser booleanas.")
+        if self._on_view_changed is None or self._get_view_state is None:
+            raise ValueError("A cena visual do OpenSA não está disponível.")
+        view = dict(self._get_view_state())
+        for option, visible in options.items():
+            self._on_view_changed(option, visible)
+            view[option] = visible
+        return {"view": view}
 
     def list_reference_axes(self) -> dict[str, Any]:
         """Retorna os eixos de referência configurados no projeto."""
@@ -291,6 +331,43 @@ class McpApplication:
         self.model_service.remove_member(member_name)
         self._notify_model_changed()
         return {"revision": self.model.revision, "deleted_member": member_name}
+
+    def update_member_endpoints(
+        self,
+        member_name: str,
+        start_node: str,
+        end_node: str,
+    ) -> dict[str, Any]:
+        """Altera os nós inicial e final de um membro sem alterar sua identidade."""
+        member = self.model_service.update_member_nodes(member_name, start_node, end_node)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "member": self._member_payload(member)}
+
+    def delete_rigid_bar(self, rigid_bar_name: str) -> dict[str, Any]:
+        """Exclui uma barra rígida pelo nome atual."""
+        if rigid_bar_name not in self.model.rigid_bars:
+            raise ValueError(f"Barra rígida '{rigid_bar_name}' não encontrada.")
+        self.model_service.remove_rigid_bar(rigid_bar_name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_rigid_bar": rigid_bar_name}
+
+    def update_rigid_bar_endpoints(
+        self,
+        rigid_bar_name: str,
+        start_node: str,
+        end_node: str,
+    ) -> dict[str, Any]:
+        """Altera os nós de uma barra rígida; o nome acompanha os novos nós."""
+        rigid = self.model_service.update_rigid_bar_nodes(rigid_bar_name, start_node, end_node)
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "rigid_bar": {
+                "name": rigid.name,
+                "start_node": rigid.start_node,
+                "end_node": rigid.end_node,
+            },
+        }
 
     def split_member(self, member_name: str, parts: int) -> dict[str, Any]:
         """Divide um membro em partes iguais, criando nós intermediários."""

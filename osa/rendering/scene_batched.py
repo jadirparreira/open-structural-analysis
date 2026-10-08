@@ -1079,6 +1079,22 @@ class StructureScene(QWidget):
         if self._member_preview_start is not None:
             self.plotter.render()
 
+    def view_state(self) -> dict[str, bool]:
+        """Retorna o estado dos controles visuais da sessão de geometria."""
+        return {
+            "grid_visible": self._grid_visible,
+            "reference_axes_visible": self._reference_axes_visible,
+            "node_labels_visible": self._labels_visibility["node"],
+            "member_labels_visible": self._labels_visibility["bar"],
+            "local_axes_visible": self._local_axes_visible,
+            "nodes_visible": self._nodes_visible,
+            "solid_members_visible": self._solid_members_visible,
+            "member_releases_visible": self._member_releases_visible,
+            "semirigid_links_visible": self._semirigid_links_visible,
+            "node_supports_visible": self._node_supports_visible,
+            "snap_enabled": self._snap_enabled,
+        }
+
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:
         """Enable or disable one snap type without changing the master magnet."""
         if snap_kind not in self._snap_types:
