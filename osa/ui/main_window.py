@@ -49,6 +49,7 @@ from .window_frame import TitleBar, WindowFrame
 class MainWindow(QMainWindow):
     mcp_model_changed = Signal()
     mcp_view_changed = Signal(str, bool)
+    mcp_active_action_changed = Signal(str)
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
@@ -241,12 +242,15 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
         self.mcp_model_changed.connect(self._refresh_after_mcp_change)
         self.mcp_view_changed.connect(self._apply_mcp_view_change)
+        self.mcp_active_action_changed.connect(self._select_active_action)
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
             on_model_changed=self.mcp_model_changed.emit,
             on_view_changed=self.mcp_view_changed.emit,
             get_view_state=self.scene.view_state,
+            on_active_action_changed=self.mcp_active_action_changed.emit,
+            get_active_action=lambda: self.selected_action_name,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_server.start()
@@ -1688,9 +1692,15 @@ class MainWindow(QMainWindow):
             self.scene.set_labels_visible("node", visible)
         elif option == "member_labels_visible":
             self.scene.set_labels_visible("bar", visible)
+        elif option in {
+            "node_forces_visible", "node_moments_visible",
+            "member_forces_visible", "member_moments_visible",
+        }:
+            self.scene.set_action_visibility(option.removesuffix("_visible"), visible)
         else:
             raise ValueError(f"Opção visual desconhecida: {option}")
         self.top_icon_palette.set_view_option(option, visible)
+        self.action_top_palette.set_view_option(option, visible)
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""

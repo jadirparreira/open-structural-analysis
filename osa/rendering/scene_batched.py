@@ -1093,6 +1093,10 @@ class StructureScene(QWidget):
             "semirigid_links_visible": self._semirigid_links_visible,
             "node_supports_visible": self._node_supports_visible,
             "snap_enabled": self._snap_enabled,
+            "node_forces_visible": self._action_visibility["node_forces"],
+            "node_moments_visible": self._action_visibility["node_moments"],
+            "member_forces_visible": self._action_visibility["member_forces"],
+            "member_moments_visible": self._action_visibility["member_moments"],
         }
 
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:

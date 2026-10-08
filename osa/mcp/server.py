@@ -127,6 +127,211 @@ class LocalMcpServer:
             return self.application.list_members()
 
         @self.server.tool(
+            name="list_action_groups",
+            title="Listar grupos de ações",
+            description="Consulta os grupos de ações e as ações disponíveis em cada grupo.",
+            annotations=read_only,
+        )
+        def list_action_groups() -> dict[str, Any]:
+            return self.application.list_action_groups()
+
+        @self.server.tool(
+            name="list_actions",
+            title="Listar carregamentos",
+            description=(
+                "Consulta os carregamentos aplicados. Pode filtrar por load_case ou target. "
+                "Use esta ferramenta antes de editar ou excluir uma carga."
+            ),
+            annotations=read_only,
+        )
+        def list_actions(
+            load_case: str | None = None,
+            target: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.list_actions(load_case, target)
+
+        @self.server.tool(
+            name="get_action_state",
+            title="Consultar estado das ações",
+            description="Consulta o grupo e a ação atualmente selecionados no OpenSA.",
+            annotations=read_only,
+        )
+        def get_action_state() -> dict[str, Any]:
+            return self.application.get_action_state()
+
+        @self.server.tool(
+            name="set_action_group",
+            title="Selecionar grupo de ações",
+            description="Seleciona um grupo de ações existente ou um modelo padrão.",
+            annotations=write,
+        )
+        def set_action_group(group_name: str) -> dict[str, Any]:
+            return self.application.set_action_group(group_name)
+
+        @self.server.tool(
+            name="set_active_action",
+            title="Selecionar ação ativa",
+            description=(
+                "Seleciona a ação/caso de carregamento usado pela interface. "
+                "Use o nome da ação retornado por list_action_groups."
+            ),
+            annotations=write,
+        )
+        def set_active_action(action_name: str) -> dict[str, Any]:
+            return self.application.set_active_action(action_name)
+
+        @self.server.tool(
+            name="create_action_group",
+            title="Criar grupo de ações",
+            description=(
+                "Cria um grupo personalizado. Cada ação deve ter name e abbreviation, "
+                "por exemplo {name: 'Ação permanente', abbreviation: 'AP'}."
+            ),
+            annotations=write,
+        )
+        def create_action_group(
+            name: str,
+            actions: list[dict[str, str]],
+        ) -> dict[str, Any]:
+            return self.application.create_action_group(name, actions)
+
+        @self.server.tool(
+            name="update_action_group",
+            title="Atualizar grupo de ações",
+            description="Atualiza o nome e as ações de um grupo personalizado existente.",
+            annotations=write,
+        )
+        def update_action_group(
+            old_name: str,
+            name: str,
+            actions: list[dict[str, str]],
+        ) -> dict[str, Any]:
+            return self.application.update_action_group(old_name, name, actions)
+
+        @self.server.tool(
+            name="delete_action_group",
+            title="Excluir grupo de ações",
+            description="Exclui um grupo personalizado de ações.",
+            annotations=destructive,
+        )
+        def delete_action_group(name: str) -> dict[str, Any]:
+            return self.application.delete_action_group(name)
+
+        @self.server.tool(
+            name="add_node_force",
+            title="Aplicar força no nó",
+            description="Aplica ou atualiza uma força nodal em kN nas direções X, Y ou Z.",
+            annotations=write,
+        )
+        def add_node_force(
+            node_name: str,
+            direction: str,
+            value_kn: float,
+            load_case: str,
+        ) -> dict[str, Any]:
+            return self.application.add_node_force(node_name, direction, value_kn, load_case)
+
+        @self.server.tool(
+            name="add_node_moment",
+            title="Aplicar momento no nó",
+            description="Aplica ou atualiza um momento nodal em kN·m nas direções X, Y ou Z.",
+            annotations=write,
+        )
+        def add_node_moment(
+            node_name: str,
+            direction: str,
+            value_knm: float,
+            load_case: str,
+        ) -> dict[str, Any]:
+            return self.application.add_node_moment(node_name, direction, value_knm, load_case)
+
+        @self.server.tool(
+            name="add_member_distributed_load",
+            title="Aplicar carga distribuída no membro",
+            description=(
+                "Aplica ou atualiza uma força distribuída em kN/m no membro. "
+                "Use initial e final para uma carga linearmente variável; valores iguais "
+                "representam carga uniforme. reference pode ser global ou local."
+            ),
+            annotations=write,
+        )
+        def add_member_distributed_load(
+            member_name: str,
+            direction: str,
+            initial_kn_m: float,
+            final_kn_m: float,
+            load_case: str,
+            reference: str = "global",
+        ) -> dict[str, Any]:
+            return self.application.add_member_distributed_load(
+                member_name, direction, initial_kn_m, final_kn_m, load_case, reference,
+            )
+
+        @self.server.tool(
+            name="add_member_moment",
+            title="Aplicar momento no membro",
+            description=(
+                "Aplica ou atualiza um momento distribuído em kN·m/m no eixo local "
+                "X, Y ou Z do membro."
+            ),
+            annotations=write,
+        )
+        def add_member_moment(
+            member_name: str,
+            direction: str,
+            value_knm_m: float,
+            load_case: str,
+        ) -> dict[str, Any]:
+            return self.application.add_member_moment(member_name, direction, value_knm_m, load_case)
+
+        @self.server.tool(
+            name="apply_selfweight",
+            title="Aplicar peso próprio",
+            description=(
+                "Substitui os carregamentos do caso informado pelo peso próprio dos membros. "
+                "Informe materials para filtrar materiais; omitindo, todos os materiais serão usados."
+            ),
+            annotations=write,
+        )
+        def apply_selfweight(
+            load_case: str,
+            materials: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.apply_selfweight(load_case, materials)
+
+        @self.server.tool(
+            name="remove_selfweight",
+            title="Remover peso próprio",
+            description="Remove as cargas de peso próprio do caso de carregamento informado.",
+            annotations=write,
+        )
+        def remove_selfweight(load_case: str) -> dict[str, Any]:
+            return self.application.remove_selfweight(load_case)
+
+        @self.server.tool(
+            name="delete_action",
+            title="Excluir carregamento",
+            description="Exclui um carregamento específico pelo nome retornado por list_actions.",
+            annotations=destructive,
+        )
+        def delete_action(action_name: str) -> dict[str, Any]:
+            return self.application.delete_action(action_name)
+
+        @self.server.tool(
+            name="clear_actions",
+            title="Limpar carregamentos",
+            description=(
+                "Remove carregamentos por load_case, target ou ambos. Informe pelo menos um filtro."
+            ),
+            annotations=destructive,
+        )
+        def clear_actions(
+            load_case: str | None = None,
+            target: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.clear_actions(load_case=load_case, target=target)
+
+        @self.server.tool(
             name="list_rigid_bars",
             title="Listar barras rígidas",
             description="Consulta as barras rígidas do projeto aberto.",
@@ -152,7 +357,8 @@ class LocalMcpServer:
                 "grid_visible, reference_axes_visible, node_labels_visible, "
                 "member_labels_visible, local_axes_visible, nodes_visible, "
                 "solid_members_visible, member_releases_visible, semirigid_links_visible, "
-                "node_supports_visible e snap_enabled. Informe somente os campos desejados."
+                "node_supports_visible, snap_enabled, node_forces_visible, node_moments_visible, "
+                "member_forces_visible e member_moments_visible. Informe somente os campos desejados."
             ),
             annotations=write,
         )

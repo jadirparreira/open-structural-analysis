@@ -261,6 +261,83 @@ def test_mcp_application_rejects_partial_node_coordinates_and_invalid_stiffness(
             raise AssertionError(f"As propriedades inválidas deveriam ser rejeitadas: {kwargs}")
 
 
+def test_mcp_application_manages_node_and_member_actions():
+    _model, application = make_application()
+    application.create_node(0.0, 0.0, 0.0)
+    application.create_node(4.0, 0.0, 0.0)
+    application.create_member("N1", "N2")
+    application.set_member_rectangular_section(["B1"], 200.0, 300.0)
+
+    node_force = application.add_node_force("N1", "X", 10.0, "Ação permanente")
+    node_moment = application.add_node_moment("N1", "Z", 5.0, "Ação permanente")
+    member_load = application.add_member_distributed_load(
+        "B1", "Z", -2.0, -4.0, "Ação permanente", "global",
+    )
+    member_moment = application.add_member_moment("B1", "Y", 3.0, "Ação permanente")
+
+    assert node_force["action"]["kind"] == "node_force_X"
+    assert node_moment["action"]["kind"] == "node_moment_Z"
+    assert member_load["action"]["components"] == [-2.0, -4.0]
+    assert member_moment["action"]["kind"] == "member_moment_Y"
+    assert len(application.list_actions("Ação permanente")["actions"]) == 4
+
+    deleted = application.delete_action(node_force["action"]["name"])
+    assert deleted["deleted_action"]["target"] == "N1"
+    cleared = application.clear_actions(target="B1", load_case="Ação permanente")
+    assert len(cleared["deleted_actions"]) == 2
+
+    selfweight = application.apply_selfweight("Peso próprio")
+    assert selfweight["actions"][0]["kind"] == "member_distributed_force_selfweight_Z"
+    assert application.list_actions("Peso próprio")["actions"]
+    application.remove_selfweight("Peso próprio")
+    assert not application.list_actions("Peso próprio")["actions"]
+
+
+def test_mcp_application_manages_action_groups_and_active_action():
+    _model, application = make_application()
+    active_actions = []
+    application._on_active_action_changed = active_actions.append
+
+    created = application.create_action_group(
+        "Grupo IA",
+        [{"name": "Carga de uso", "abbreviation": "CU"}],
+    )
+    assert created["group"]["custom"] is True
+    application.set_action_group("Grupo IA")
+    selected = application.set_active_action("Carga de uso")
+    assert selected["active_action"] == "Carga de uso"
+    assert active_actions == ["Carga de uso"]
+
+    updated = application.update_action_group(
+        "Grupo IA",
+        "Grupo IA 2",
+        [{"name": "Vento", "abbreviation": "V0"}],
+    )
+    assert updated["group"]["name"] == "Grupo IA 2"
+    deleted = application.delete_action_group("Grupo IA 2")
+    assert deleted["deleted_group"] == "Grupo IA 2"
+
+
+def test_mcp_application_controls_action_visibility_options():
+    model = StructuralModel()
+    view = {
+        "node_forces_visible": True,
+        "node_moments_visible": True,
+        "member_forces_visible": True,
+        "member_moments_visible": True,
+    }
+    application = McpApplication(
+        model,
+        ModelService(model),
+        on_view_changed=lambda option, visible: view.update({option: visible}),
+        get_view_state=lambda: dict(view),
+    )
+
+    result = application.set_view_options({"node_forces_visible": False})
+
+    assert result["view"]["node_forces_visible"] is False
+
+
 def test_mcp_application_updates_and_deletes_rigid_bars_and_member_endpoints():
     model, application = make_application()
     for coordinates in ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (8.0, 0.0, 0.0)):

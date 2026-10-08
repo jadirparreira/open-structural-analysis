@@ -853,6 +853,18 @@ class ActionTopPalette(QFrame):
         if button is not None:
             button.setChecked(not button.isChecked())
 
+    def set_view_option(self, option: str, visible: bool) -> None:
+        kind = {
+            "node_forces_visible": "node_forces",
+            "node_moments_visible": "node_moments",
+            "member_forces_visible": "member_forces",
+            "member_moments_visible": "member_moments",
+        }.get(option)
+        if kind is not None:
+            button = self._action_visibility_buttons.get(kind)
+            if button is not None:
+                button.setChecked(bool(visible))
+
     def set_actions(
         self,
         action_names: tuple[str, ...],

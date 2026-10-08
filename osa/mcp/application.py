@@ -12,7 +12,8 @@ from math import isfinite
 from typing import Any
 
 from osa.data import CatalogLoader
-from osa.domain import ReferenceAxis, StructuralModel
+from osa.domain import ActionDefinition, ActionGroup, ReferenceAxis, StructuralModel
+from osa.services import ActionService
 from osa.services import ModelService
 from osa.services.section_property_service import SectionPropertyService
 
@@ -25,15 +26,21 @@ class McpApplication:
         model: StructuralModel,
         model_service: ModelService,
         *,
+        action_service: ActionService | None = None,
         on_model_changed: Callable[[], None] | None = None,
         on_view_changed: Callable[[str, bool], None] | None = None,
         get_view_state: Callable[[], dict[str, bool]] | None = None,
+        on_active_action_changed: Callable[[str], None] | None = None,
+        get_active_action: Callable[[], str | None] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
+        self.action_service = action_service or ActionService(model)
         self._on_model_changed = on_model_changed
         self._on_view_changed = on_view_changed
         self._get_view_state = get_view_state
+        self._on_active_action_changed = on_active_action_changed
+        self._get_active_action = get_active_action
         self._section_properties = SectionPropertyService()
         self._catalog = CatalogLoader()
 
@@ -90,6 +97,248 @@ class McpApplication:
                 for material_kind in material_types
             ],
         }
+
+    def list_action_groups(self) -> dict[str, Any]:
+        """Retorna grupos de ações e suas ações disponíveis."""
+        groups = []
+        templates = self.action_service.templates()
+        for name in self.action_service.action_group_names():
+            group = self.model.action_groups.get(name) or templates[name]
+            groups.append(self._action_group_payload(group, name in self.model.action_groups))
+        return {
+            "selected_group": self.model.selected_action_group,
+            "groups": groups,
+        }
+
+    def list_actions(self, load_case: str | None = None, target: str | None = None) -> dict[str, Any]:
+        """Retorna carregamentos aplicados, opcionalmente filtrados."""
+        actions = [
+            self._action_payload(action)
+            for action in self.model.actions.values()
+            if (load_case is None or action.load_case == load_case)
+            and (target is None or action.target == target)
+        ]
+        return {
+            "revision": self.model.revision,
+            "active_action": self._get_active_action() if self._get_active_action else None,
+            "actions": actions,
+        }
+
+    def get_action_state(self) -> dict[str, Any]:
+        """Retorna o grupo e a ação atualmente selecionados na interface."""
+        return {
+            "selected_group": self.model.selected_action_group,
+            "active_action": self._get_active_action() if self._get_active_action else None,
+            "available_actions": [
+                action.name for action in (self.action_service.selected_group() or ActionGroup("", ())).actions
+            ],
+        }
+
+    def set_action_group(self, group_name: str) -> dict[str, Any]:
+        """Seleciona um grupo de ações existente ou um modelo padrão."""
+        if group_name not in self.action_service.action_group_names():
+            raise ValueError(f"Grupo de ações '{group_name}' não encontrado.")
+        self.action_service.select_action_group(group_name)
+        self._notify_model_changed()
+        return self.get_action_state()
+
+    def set_active_action(self, action_name: str) -> dict[str, Any]:
+        """Seleciona a ação ativa na interface sem alterar os carregamentos."""
+        group = self.action_service.selected_group()
+        if group is None or action_name not in {action.name for action in group.actions}:
+            raise ValueError(f"Ação '{action_name}' não está disponível no grupo selecionado.")
+        if self._on_active_action_changed is None:
+            raise ValueError("A seleção visual da ação não está disponível.")
+        self._on_active_action_changed(action_name)
+        state = self.get_action_state()
+        state["active_action"] = action_name
+        return state
+
+    def create_action_group(
+        self,
+        name: str,
+        actions: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Cria um grupo personalizado de ações."""
+        group = self._action_group_from_payload(name, actions)
+        created = self.action_service.add_action_group(group)
+        self._notify_model_changed()
+        return {"group": self._action_group_payload(created, True)}
+
+    def update_action_group(
+        self,
+        old_name: str,
+        name: str,
+        actions: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Atualiza um grupo personalizado de ações."""
+        if old_name not in self.model.action_groups:
+            raise ValueError(f"Grupo personalizado '{old_name}' não encontrado.")
+        group = self._action_group_from_payload(name, actions)
+        updated = self.action_service.update_action_group(old_name, group)
+        self._notify_model_changed()
+        return {"group": self._action_group_payload(updated, True)}
+
+    def delete_action_group(self, name: str) -> dict[str, Any]:
+        """Exclui um grupo personalizado de ações."""
+        if name not in self.model.action_groups:
+            raise ValueError("Somente grupos personalizados podem ser excluídos.")
+        self.action_service.remove_action_group(name)
+        self._notify_model_changed()
+        return {"deleted_group": name, "selected_group": self.model.selected_action_group}
+
+    def add_node_force(self, node_name: str, direction: str, value: float, load_case: str) -> dict[str, Any]:
+        self._validate_load_target(node_name, "node", load_case)
+        self._validate_direction(direction)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_node_force(node_name, direction, float(value), load_case)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action) if action else None}
+
+    def add_node_moment(self, node_name: str, direction: str, value: float, load_case: str) -> dict[str, Any]:
+        self._validate_load_target(node_name, "node", load_case)
+        self._validate_direction(direction)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_node_moment(node_name, direction, float(value), load_case)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action) if action else None}
+
+    def add_member_distributed_load(
+        self,
+        member_name: str,
+        direction: str,
+        initial: float,
+        final: float,
+        load_case: str,
+        reference: str = "global",
+    ) -> dict[str, Any]:
+        self._validate_load_target(member_name, "bar", load_case)
+        self._validate_direction(direction)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_member_distributed_force(
+            member_name, direction, float(initial), float(final), load_case, reference,
+        )
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action)}
+
+    def add_member_moment(
+        self,
+        member_name: str,
+        direction: str,
+        value: float,
+        load_case: str,
+    ) -> dict[str, Any]:
+        self._validate_load_target(member_name, "bar", load_case)
+        self._validate_direction(direction)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_member_moment(member_name, direction, float(value), load_case)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action)}
+
+    def apply_selfweight(
+        self,
+        load_case: str,
+        materials: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Substitui as cargas do caso pelo peso próprio dos materiais selecionados."""
+        self._validate_load_case(load_case)
+        selected_materials = tuple(materials) if materials is not None else tuple(self.model.materials)
+        unknown = next((material for material in selected_materials if material not in self.model.materials), None)
+        if unknown is not None:
+            raise ValueError(f"Material '{unknown}' não encontrado.")
+        weights: list[tuple[str, float]] = []
+        for material in selected_materials:
+            weights.extend(self.model_service.member_selfweights(material))
+        if not weights:
+            raise ValueError("Não há membros com propriedades para aplicar o peso próprio.")
+        actions = self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
+        self._notify_model_changed()
+        return {
+            "revision": self.model.revision,
+            "load_case": load_case,
+            "actions": [self._action_payload(action) for action in actions],
+        }
+
+    def remove_selfweight(self, load_case: str) -> dict[str, Any]:
+        self._validate_load_case(load_case)
+        self.action_service.remove_selfweight(load_case)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "load_case": load_case, "selfweight": False}
+
+    def delete_action(self, action_name: str) -> dict[str, Any]:
+        action = self.action_service.remove_action(action_name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_action": self._action_payload(action)}
+
+    def clear_actions(
+        self,
+        *,
+        load_case: str | None = None,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        if load_case is None and target is None:
+            raise ValueError("Informe load_case, target ou ambos para limpar ações.")
+        if load_case is not None:
+            self._validate_load_case(load_case)
+        names = self.action_service.remove_actions(target=target, load_case=load_case)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_actions": list(names)}
+
+    def _validate_load_case(self, load_case: str) -> None:
+        group = self.action_service.selected_group()
+        if group is None or load_case not in {action.name for action in group.actions}:
+            raise ValueError(f"Ação '{load_case}' não está disponível no grupo selecionado.")
+
+    def _validate_load_target(self, name: str, kind: str, load_case: str) -> None:
+        self._validate_load_case(load_case)
+        if kind == "node" and name not in self.model.nodes:
+            raise ValueError(f"Nó '{name}' não encontrado.")
+        if kind == "bar" and name not in self.model.bars:
+            raise ValueError(f"Membro '{name}' não encontrado.")
+
+    def _ensure_load_case_accepts_loads(self, load_case: str) -> None:
+        if self.action_service.has_selfweight(load_case):
+            raise ValueError(
+                f"A ação '{load_case}' está restrita ao peso próprio; remova-o antes de lançar outras cargas."
+            )
+
+    @staticmethod
+    def _validate_direction(direction: str) -> None:
+        if direction.upper() not in {"X", "Y", "Z"}:
+            raise ValueError("A direção deve ser X, Y ou Z.")
+
+    @staticmethod
+    def _action_payload(action) -> dict[str, Any]:
+        return {
+            "name": action.name,
+            "kind": action.kind,
+            "target": action.target,
+            "components": list(action.components),
+            "load_case": action.load_case,
+        }
+
+    @staticmethod
+    def _action_group_payload(group: ActionGroup, custom: bool) -> dict[str, Any]:
+        return {
+            "name": group.name,
+            "custom": custom,
+            "actions": [
+                {"name": action.name, "abbreviation": action.abbreviation}
+                for action in group.actions
+            ],
+        }
+
+    @staticmethod
+    def _action_group_from_payload(
+        name: str,
+        actions: list[dict[str, str]],
+    ) -> ActionGroup:
+        definitions = []
+        for item in actions:
+            if not isinstance(item, dict) or "name" not in item or "abbreviation" not in item:
+                raise ValueError("Cada ação deve possuir name e abbreviation.")
+            definitions.append(ActionDefinition(str(item["name"]), str(item["abbreviation"])))
+        return ActionGroup(name, tuple(definitions))
 
     def list_nodes(self) -> dict[str, Any]:
         """Retorna os nós do projeto atualmente aberto."""
@@ -160,6 +409,10 @@ class McpApplication:
             "semirigid_links_visible",
             "node_supports_visible",
             "snap_enabled",
+            "node_forces_visible",
+            "node_moments_visible",
+            "member_forces_visible",
+            "member_moments_visible",
         }
         unknown = set(options) - available
         if unknown:
