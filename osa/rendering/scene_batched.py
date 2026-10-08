@@ -1099,6 +1099,14 @@ class StructureScene(QWidget):
             "member_moments_visible": self._action_visibility["member_moments"],
         }
 
+    def analysis_view_state(self) -> dict[str, object]:
+        """Retorna o estado visual da sessão de análise."""
+        return {
+            "selected_combination": self._active_analysis_combination,
+            "selected_diagram": self._active_result_type,
+            "result_diagrams_visible": self._result_diagrams_visible,
+        }
+
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:
         """Enable or disable one snap type without changing the master magnet."""
         if snap_kind not in self._snap_types:

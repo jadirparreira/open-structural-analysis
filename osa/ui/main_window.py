@@ -50,6 +50,9 @@ class MainWindow(QMainWindow):
     mcp_model_changed = Signal()
     mcp_view_changed = Signal(str, bool)
     mcp_active_action_changed = Signal(str)
+    mcp_analysis_view_changed = Signal(str, str)
+    mcp_analysis_diagrams_changed = Signal(bool)
+    mcp_session_changed = Signal(str)
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
@@ -243,14 +246,23 @@ class MainWindow(QMainWindow):
         self.mcp_model_changed.connect(self._refresh_after_mcp_change)
         self.mcp_view_changed.connect(self._apply_mcp_view_change)
         self.mcp_active_action_changed.connect(self._select_active_action)
+        self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
+        self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
+        self.mcp_session_changed.connect(self.palette.show_group)
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
+            analysis_engine=self.analysis_service.engine,
             on_model_changed=self.mcp_model_changed.emit,
             on_view_changed=self.mcp_view_changed.emit,
             get_view_state=self.scene.view_state,
             on_active_action_changed=self.mcp_active_action_changed.emit,
             get_active_action=lambda: self.selected_action_name,
+            on_analysis_view_changed=self.mcp_analysis_view_changed.emit,
+            get_analysis_view_state=self.scene.analysis_view_state,
+            on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
+            on_session_changed=self.mcp_session_changed.emit,
+            get_session=lambda: self.palette.active_group,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_server.start()
@@ -1754,6 +1766,19 @@ class MainWindow(QMainWindow):
     def _sync_analysis_result(self) -> None:
         if hasattr(self, "scene"):
             self.scene.set_analysis_result(self.selected_analysis_combination, self.selected_analysis_diagram)
+
+    def _apply_mcp_analysis_view(self, combination: str, diagram: str) -> None:
+        """Atualiza os seletores e o resultado visual após uma chamada MCP."""
+        self.selected_analysis_combination = combination or None
+        self.selected_analysis_diagram = diagram or "Normal"
+        self.analysis_top_palette.set_combinations(
+            tuple(result.load_reference for result in self.model.analysis_results),
+            self.selected_analysis_combination,
+        )
+        self.analysis_top_palette.diagram_selector.blockSignals(True)
+        self.analysis_top_palette.diagram_selector.setCurrentText(self.selected_analysis_diagram)
+        self.analysis_top_palette.diagram_selector.blockSignals(False)
+        self._sync_analysis_result()
 
     def _select_active_action(self, name: str) -> None:
         self.selected_action_name = name or None

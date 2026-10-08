@@ -7,15 +7,30 @@ altere o mesmo modelo que está aberto na interface.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 from math import isfinite
 from typing import Any
 
+from osa.analysis import AnalysisRequest
+from osa.analysis.pynite import PyniteAdapter
 from osa.data import CatalogLoader
-from osa.domain import ActionDefinition, ActionGroup, ReferenceAxis, StructuralModel
-from osa.services import ActionService
-from osa.services import ModelService
+from osa.domain import (
+    ActionDefinition,
+    ActionGroup,
+    LoadCombination,
+    ReferenceAxis,
+    StructuralModel,
+)
+from osa.services import ActionService, ModelService, ResultService
 from osa.services.section_property_service import SectionPropertyService
+
+ANALYSIS_DIAGRAMS = (
+    "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
+    "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
+)
+ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
+APPLICATION_SESSIONS = ("Geometria", "Ações", "Análise")
 
 
 class McpApplication:
@@ -27,22 +42,64 @@ class McpApplication:
         model_service: ModelService,
         *,
         action_service: ActionService | None = None,
+        analysis_engine=None,
         on_model_changed: Callable[[], None] | None = None,
         on_view_changed: Callable[[str, bool], None] | None = None,
         get_view_state: Callable[[], dict[str, bool]] | None = None,
         on_active_action_changed: Callable[[str], None] | None = None,
         get_active_action: Callable[[], str | None] | None = None,
+        on_analysis_view_changed: Callable[[str, str], None] | None = None,
+        get_analysis_view_state: Callable[[], dict[str, Any]] | None = None,
+        on_analysis_diagrams_changed: Callable[[bool], None] | None = None,
+        on_session_changed: Callable[[str], None] | None = None,
+        get_session: Callable[[], str | None] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
         self.action_service = action_service or ActionService(model)
+        self._analysis_engine = analysis_engine or PyniteAdapter()
         self._on_model_changed = on_model_changed
         self._on_view_changed = on_view_changed
         self._get_view_state = get_view_state
         self._on_active_action_changed = on_active_action_changed
         self._get_active_action = get_active_action
+        self._on_analysis_view_changed = on_analysis_view_changed
+        self._get_analysis_view_state = get_analysis_view_state
+        self._on_analysis_diagrams_changed = on_analysis_diagrams_changed
+        self._on_session_changed = on_session_changed
+        self._get_session = get_session
+        self._session = "Geometria"
+        self._analysis_view = {
+            "selected_combination": None,
+            "selected_diagram": "Normal",
+            "result_diagrams_visible": True,
+        }
+        self._result_service = ResultService(model)
         self._section_properties = SectionPropertyService()
         self._catalog = CatalogLoader()
+
+    def get_session_state(self) -> dict[str, Any]:
+        """Retorna a sessão visual atualmente aberta no OpenSA."""
+        active_session = self._get_session() if self._get_session is not None else self._session
+        return {
+            "active_session": active_session,
+            "available_sessions": list(APPLICATION_SESSIONS),
+        }
+
+    def set_session(self, session: str) -> dict[str, Any]:
+        """Abre uma sessão visual da aplicação."""
+        normalized = str(session).strip()
+        if normalized not in APPLICATION_SESSIONS:
+            raise ValueError(
+                "Sessão desconhecida. Use Geometria, Ações ou Análise."
+            )
+        if self._on_session_changed is None:
+            raise ValueError("A navegação visual do OpenSA não está disponível.")
+        self._session = normalized
+        self._on_session_changed(normalized)
+        state = self.get_session_state()
+        state["active_session"] = normalized
+        return state
 
     def get_project_summary(self) -> dict[str, Any]:
         """Retorna um resumo pequeno e estável do modelo aberto."""
@@ -186,6 +243,244 @@ class McpApplication:
         self.action_service.remove_action_group(name)
         self._notify_model_changed()
         return {"deleted_group": name, "selected_group": self.model.selected_action_group}
+
+    def list_load_combinations(self) -> dict[str, Any]:
+        """Retorna as combinações configuradas no projeto."""
+        return {
+            "revision": self.model.revision,
+            "selected_group": self.model.selected_action_group,
+            "combinations": [
+                self._load_combination_payload(combination)
+                for combination in self.model.load_combinations.values()
+            ],
+        }
+
+    def create_load_combination(
+        self,
+        name: str,
+        factors: dict[str, float] | None = None,
+        factors_2: dict[str, float] | None = None,
+        factors_3: dict[str, float] | None = None,
+        active_actions: list[str] | None = None,
+        action_group: str | None = None,
+        limit_state: str = "CAR",
+    ) -> dict[str, Any]:
+        """Cria uma combinação de carregamento."""
+        combination = self._combination_from_values(
+            name, factors, factors_2, factors_3, active_actions, action_group, limit_state,
+        )
+        if combination.name in self.model.load_combinations:
+            raise ValueError(f"Já existe uma combinação chamada '{combination.name}'.")
+        self.action_service.set_combination(combination)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "combination": self._load_combination_payload(combination)}
+
+    def update_load_combination(
+        self,
+        old_name: str,
+        name: str | None = None,
+        factors: dict[str, float] | None = None,
+        factors_2: dict[str, float] | None = None,
+        factors_3: dict[str, float] | None = None,
+        active_actions: list[str] | None = None,
+        action_group: str | None = None,
+        limit_state: str | None = None,
+    ) -> dict[str, Any]:
+        """Atualiza uma combinação preservando os campos não informados."""
+        current = self.model.load_combinations.get(old_name)
+        if current is None:
+            raise ValueError(f"Combinação '{old_name}' não encontrada.")
+        updated = self._combination_from_values(
+            current.name if name is None else name,
+            self._factor_dict(current.factors) if factors is None else factors,
+            self._factor_dict(current.factors_2) if factors_2 is None else factors_2,
+            self._factor_dict(current.factors_3) if factors_3 is None else factors_3,
+            list(current.active_actions) if active_actions is None and current.active_actions is not None else active_actions,
+            current.action_group if action_group is None else action_group,
+            current.limit_state if limit_state is None else limit_state,
+        )
+        if updated.name != old_name and updated.name in self.model.load_combinations:
+            raise ValueError(f"Já existe uma combinação chamada '{updated.name}'.")
+        del self.model.load_combinations[old_name]
+        self.action_service.set_combination(updated)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "combination": self._load_combination_payload(updated)}
+
+    def delete_load_combination(self, name: str) -> dict[str, Any]:
+        """Exclui uma combinação de carregamento."""
+        if name not in self.model.load_combinations:
+            raise ValueError(f"Combinação '{name}' não encontrada.")
+        self.action_service.remove_combination(name)
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "deleted_combination": name}
+
+    def get_analysis_state(self) -> dict[str, Any]:
+        """Retorna o estado da análise e da visualização de resultados."""
+        current_results = self._result_service.current()
+        view = self._analysis_view_state()
+        return {
+            "revision": self.model.revision,
+            "results_revision": current_results[0].model_revision if current_results else None,
+            "ready": bool(current_results),
+            "available_combinations": list(self.model.load_combinations),
+            "result_combinations": [result.load_reference for result in current_results],
+            "selected_combination": view["selected_combination"],
+            "selected_diagram": view["selected_diagram"],
+            "result_diagrams_visible": view["result_diagrams_visible"],
+        }
+
+    def run_analysis(self, combinations: list[str] | None = None) -> dict[str, Any]:
+        """Executa a análise sobre uma cópia do modelo e publica os resultados."""
+        orphaned_actions = self.model.remove_orphaned_actions()
+        if orphaned_actions:
+            self._notify_model_changed()
+        if self.action_service.ensure_default_combinations():
+            self._notify_model_changed()
+        requested = tuple(combinations or ())
+        unknown = set(requested) - set(self.model.load_combinations)
+        if unknown:
+            raise ValueError(
+                "Combinações não encontradas para análise: " + ", ".join(sorted(unknown)) + "."
+            )
+        source_revision = self.model.revision
+        snapshot = copy.deepcopy(self.model)
+        results = self._analysis_engine.run(snapshot, AnalysisRequest(requested))
+        if self.model.revision != source_revision:
+            raise ValueError("O modelo foi alterado durante a análise. Execute o processamento novamente.")
+        self.model.analysis_results = list(results)
+        self._notify_model_changed()
+        self._analysis_view["selected_combination"] = results[0].load_reference if results else None
+        self._analysis_view["selected_diagram"] = "Normal"
+        return {
+            "revision": self.model.revision,
+            "status": "completed",
+            "processed_combinations": [result.load_reference for result in results],
+            "result_count": len(results),
+            "orphaned_actions_removed": list(orphaned_actions),
+        }
+
+    def list_analysis_results(self) -> dict[str, Any]:
+        """Lista os resultados válidos da análise atual."""
+        results = self._result_service.current()
+        return {
+            "revision": self.model.revision,
+            "results": [
+                {
+                    "combination": result.load_reference,
+                    "model_revision": result.model_revision,
+                    "nodes": len(result.node_results),
+                    "members": len(result.member_results),
+                }
+                for result in results
+            ],
+        }
+
+    def get_node_analysis_results(
+        self,
+        combination: str,
+        node_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Retorna deslocamentos, rotações e reações dos nós."""
+        result = self._analysis_result(combination)
+        names = tuple(node_names) if node_names is not None else tuple(result.node_results)
+        unknown = set(names) - set(result.node_results)
+        if unknown:
+            raise ValueError("Nós sem resultado: " + ", ".join(sorted(unknown)) + ".")
+        return {
+            "revision": self.model.revision,
+            "combination": combination,
+            "nodes": [{"name": name, **result.node_results[name]} for name in names],
+        }
+
+    def get_member_analysis_results(
+        self,
+        combination: str,
+        member_names: list[str] | None = None,
+        include_samples: bool = False,
+    ) -> dict[str, Any]:
+        """Retorna esforços e deslocamentos dos membros."""
+        result = self._analysis_result(combination)
+        names = tuple(member_names) if member_names is not None else tuple(result.member_results)
+        unknown = set(names) - set(result.member_results)
+        if unknown:
+            raise ValueError("Membros sem resultado: " + ", ".join(sorted(unknown)) + ".")
+        members = []
+        for name in names:
+            values = dict(result.member_results[name])
+            if not include_samples:
+                values.pop("samples", None)
+            members.append({"name": name, **values})
+        return {"revision": self.model.revision, "combination": combination, "members": members}
+
+    def get_support_reactions(
+        self,
+        combination: str,
+        node_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Retorna as reações nos nós apoiados."""
+        result = self._analysis_result(combination)
+        names = tuple(node_names) if node_names is not None else tuple(self.model.nodes)
+        unknown = set(names) - set(result.node_results)
+        if unknown:
+            raise ValueError("Nós sem resultado: " + ", ".join(sorted(unknown)) + ".")
+        reaction_keys = ("RXN_FX", "RXN_FY", "RXN_FZ", "RXN_MX", "RXN_MY", "RXN_MZ")
+        reactions = []
+        for name in names:
+            node = self.model.nodes[name]
+            if not any(node.supports) and not any(float(value) > 0.0 for value in node.support_stiffness):
+                continue
+            values = result.node_results[name]
+            reactions.append({"name": name, **{key: values.get(key, 0.0) for key in reaction_keys}})
+        return {"revision": self.model.revision, "combination": combination, "reactions": reactions}
+
+    def set_analysis_view(
+        self,
+        combination: str | None = None,
+        diagram: str | None = None,
+    ) -> dict[str, Any]:
+        """Seleciona a combinação e o tipo de diagrama exibido na interface."""
+        current_results = self._result_service.current()
+        selected_combination = combination
+        if (
+            selected_combination is not None
+            and selected_combination not in {result.load_reference for result in current_results}
+        ):
+            raise ValueError(f"Não há resultado válido para a combinação '{selected_combination}'.")
+        selected_diagram = self._analysis_view["selected_diagram"] if diagram is None else diagram
+        if selected_diagram not in ANALYSIS_DIAGRAMS:
+            raise ValueError(f"Diagrama desconhecido: '{selected_diagram}'.")
+        self._analysis_view.update({
+            "selected_combination": selected_combination,
+            "selected_diagram": selected_diagram,
+        })
+        if self._on_analysis_view_changed is None:
+            raise ValueError("A visualização da análise não está disponível.")
+        self._on_analysis_view_changed(selected_combination or "", selected_diagram)
+        state = self.get_analysis_state()
+        state["selected_combination"] = selected_combination
+        state["selected_diagram"] = selected_diagram
+        return state
+
+    def set_analysis_diagrams_visible(self, visible: bool) -> dict[str, Any]:
+        """Mostra ou oculta os diagramas de resultados na cena."""
+        if not isinstance(visible, bool):
+            raise TypeError("visible deve ser booleano.")
+        if self._on_analysis_diagrams_changed is None:
+            raise ValueError("A visualização da análise não está disponível.")
+        self._analysis_view["result_diagrams_visible"] = visible
+        self._on_analysis_diagrams_changed(visible)
+        state = self.get_analysis_state()
+        state["result_diagrams_visible"] = visible
+        return state
+
+    def _analysis_result(self, combination: str):
+        result = next(
+            (item for item in self._result_service.current() if item.load_reference == combination),
+            None,
+        )
+        if result is None:
+            raise ValueError(f"Não há resultado válido para a combinação '{combination}'.")
+        return result
 
     def add_node_force(self, node_name: str, direction: str, value: float, load_case: str) -> dict[str, Any]:
         self._validate_load_target(node_name, "node", load_case)
@@ -403,6 +698,78 @@ class McpApplication:
             "components": list(action.components),
             "load_case": action.load_case,
         }
+
+    @staticmethod
+    def _factor_dict(factors: tuple[tuple[str, float], ...]) -> dict[str, float]:
+        return {name: value for name, value in factors}
+
+    @classmethod
+    def _load_combination_payload(cls, combination: LoadCombination) -> dict[str, Any]:
+        return {
+            "name": combination.name,
+            "factors": cls._factor_dict(combination.factors),
+            "factors_2": cls._factor_dict(combination.factors_2),
+            "factors_3": cls._factor_dict(combination.factors_3),
+            "active_actions": None if combination.active_actions is None else list(combination.active_actions),
+            "action_group": combination.action_group,
+            "limit_state": combination.limit_state,
+        }
+
+    def _combination_from_values(
+        self,
+        name: str,
+        factors: dict[str, float] | None,
+        factors_2: dict[str, float] | None,
+        factors_3: dict[str, float] | None,
+        active_actions: list[str] | None,
+        action_group: str | None,
+        limit_state: str,
+    ) -> LoadCombination:
+        normalized_name = str(name).strip()
+        if not normalized_name:
+            raise ValueError("Informe o nome da combinação.")
+        if limit_state not in ANALYSIS_LIMIT_STATES:
+            raise ValueError("O estado limite deve ser CAR, ELU ou ELS.")
+        selected_group = action_group or self.model.selected_action_group
+        if action_group is not None and action_group not in self.action_service.action_group_names():
+            raise ValueError(f"Grupo de ações '{action_group}' não encontrado.")
+        group = self.model.action_groups.get(selected_group)
+        if group is None:
+            group = self.action_service.templates().get(selected_group)
+        abbreviations = tuple(action.abbreviation for action in group.actions) if group else ()
+        normalized_factors = self._normalize_factors(factors, abbreviations)
+        normalized_factors_2 = self._normalize_factors(factors_2, abbreviations)
+        normalized_factors_3 = self._normalize_factors(factors_3, abbreviations)
+        normalized_active = None if active_actions is None else tuple(str(item) for item in active_actions)
+        unknown_active = set(normalized_active or ()) - set(abbreviations)
+        if unknown_active:
+            raise ValueError("Ações ativas desconhecidas: " + ", ".join(sorted(unknown_active)) + ".")
+        return LoadCombination(
+            normalized_name,
+            tuple(normalized_factors.items()),
+            tuple(normalized_factors_2.items()),
+            tuple(normalized_factors_3.items()),
+            normalized_active,
+            selected_group if selected_group else None,
+            limit_state,
+        )
+
+    @staticmethod
+    def _normalize_factors(
+        factors: dict[str, float] | None,
+        abbreviations: tuple[str, ...],
+    ) -> dict[str, float]:
+        values = {abbreviation: 1.0 for abbreviation in abbreviations} if factors is None else dict(factors)
+        unknown = set(values) - set(abbreviations)
+        if unknown and abbreviations:
+            raise ValueError("Siglas de ação desconhecidas: " + ", ".join(sorted(unknown)) + ".")
+        normalized = {}
+        for name, value in values.items():
+            numeric = float(value)
+            if not isfinite(numeric):
+                raise ValueError(f"O fator '{name}' deve ser um número finito.")
+            normalized[str(name)] = numeric
+        return normalized
 
     @staticmethod
     def _action_group_payload(group: ActionGroup, custom: bool) -> dict[str, Any]:
@@ -672,6 +1039,27 @@ class McpApplication:
         self._notify_model_changed()
         return {"revision": self.model.revision, "deleted_member": member_name}
 
+    def delete_elements(
+        self,
+        *,
+        nodes: list[str] | None = None,
+        members: list[str] | None = None,
+        rigid_bars: list[str] | None = None,
+        cascade: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Exclui vários elementos estruturais em uma operação validada."""
+        result = self.model_service.remove_elements(
+            node_names=tuple(nodes or ()),
+            member_names=tuple(members or ()),
+            rigid_bar_names=tuple(rigid_bars or ()),
+            cascade=cascade,
+            dry_run=dry_run,
+        )
+        if result["status"] == "deleted":
+            self._notify_model_changed()
+        return {"revision": self.model.revision, **result}
+
     def update_member_endpoints(
         self,
         member_name: str,
@@ -832,9 +1220,8 @@ class McpApplication:
         if missing is not None:
             raise ValueError(f"Membro '{missing}' não encontrado.")
 
-        if rotation is not None:
-            if isinstance(rotation, bool) or not isinstance(rotation, int):
-                raise ValueError("A rotação deve ser um número inteiro em graus.")
+        if rotation is not None and (isinstance(rotation, bool) or not isinstance(rotation, int)):
+            raise ValueError("A rotação deve ser um número inteiro em graus.")
         normalized_releases = self._normalize_bool_values(releases, 12, "vinculações")
         normalized_flexibility = self._normalize_int_values(
             rotation_flexibility_percent, 6, 0, 99, "percentuais de semirrígidez",
@@ -1070,6 +1457,12 @@ class McpApplication:
             ]
             for direction in ("X", "Y", "Z")
         }
+
+    def _analysis_view_state(self) -> dict[str, Any]:
+        state = dict(self._analysis_view)
+        if self._get_analysis_view_state is not None:
+            state.update(self._get_analysis_view_state())
+        return state
 
     def _notify_model_changed(self) -> None:
         if self._on_model_changed is not None:

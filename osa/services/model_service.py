@@ -196,6 +196,115 @@ class ModelService:
     def remove_rigid_bar(self, name: str) -> None:
         self.model.remove_rigid_bar(name)
 
+    def remove_elements(
+        self,
+        *,
+        node_names: tuple[str, ...] = (),
+        member_names: tuple[str, ...] = (),
+        rigid_bar_names: tuple[str, ...] = (),
+        cascade: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        """Remove elementos estruturais em lote após validar dependências."""
+        nodes = self._unique_names(node_names)
+        members = self._unique_names(member_names)
+        rigid_bars = self._unique_names(rigid_bar_names)
+        if not nodes and not members and not rigid_bars:
+            raise ValueError("Informe pelo menos um nó, membro ou barra rígida.")
+
+        self._validate_existing_names(nodes, self.model.nodes, "nó")
+        self._validate_existing_names(members, self.model.bars, "membro")
+        self._validate_existing_names(rigid_bars, self.model.rigid_bars, "barra rígida")
+
+        requested_members = set(members)
+        requested_rigid_bars = set(rigid_bars)
+        cascade_members: list[str] = []
+        cascade_rigid_bars: list[str] = []
+        if cascade:
+            for node_name in nodes:
+                cascade_members.extend(
+                    member.name
+                    for member in self.model.bars.values()
+                    if node_name in (member.start_node, member.end_node)
+                    and member.name not in requested_members
+                )
+                cascade_rigid_bars.extend(
+                    rigid.name
+                    for rigid in self.model.rigid_bars.values()
+                    if node_name in (rigid.start_node, rigid.end_node)
+                    and rigid.name not in requested_rigid_bars
+                )
+        members = self._unique_names((*members, *cascade_members))
+        rigid_bars = self._unique_names((*rigid_bars, *cascade_rigid_bars))
+        member_set = set(members)
+        rigid_bar_set = set(rigid_bars)
+        requested_node_set = set(nodes)
+
+        blockers = [
+            {
+                "node": node_name,
+                "members": [
+                    member.name for member in self.model.bars.values()
+                    if node_name in (member.start_node, member.end_node)
+                    and member.name not in member_set
+                ],
+                "rigid_bars": [
+                    rigid.name for rigid in self.model.rigid_bars.values()
+                    if node_name in (rigid.start_node, rigid.end_node)
+                    and rigid.name not in rigid_bar_set
+                ],
+            }
+            for node_name in nodes
+            if any(
+                node_name in (member.start_node, member.end_node)
+                and member.name not in member_set
+                for member in self.model.bars.values()
+            ) or any(
+                node_name in (rigid.start_node, rigid.end_node)
+                and rigid.name not in rigid_bar_set
+                for rigid in self.model.rigid_bars.values()
+            )
+        ]
+        deleted_actions = tuple(
+            name for name, action in self.model.actions.items()
+            if action.target in requested_node_set | member_set | rigid_bar_set
+        )
+        result: dict[str, object] = {
+            "status": "preview" if dry_run else "blocked" if blockers else "deleted",
+            "nodes": list(nodes),
+            "members": list(members),
+            "rigid_bars": list(rigid_bars),
+            "actions": list(deleted_actions),
+            "cascade_added": {
+                "members": [name for name in members if name not in set(member_names)],
+                "rigid_bars": [name for name in rigid_bars if name not in set(rigid_bar_names)],
+            },
+            "blocked": blockers,
+        }
+        if dry_run or blockers:
+            return result
+
+        for name in members:
+            del self.model.bars[name]
+        for name in rigid_bars:
+            del self.model.rigid_bars[name]
+        for name in nodes:
+            del self.model.nodes[name]
+        for name in deleted_actions:
+            del self.model.actions[name]
+        self.model._touch()
+        return result
+
+    @staticmethod
+    def _unique_names(names: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(str(name) for name in names))
+
+    @staticmethod
+    def _validate_existing_names(names, collection, label: str) -> None:
+        missing = next((name for name in names if name not in collection), None)
+        if missing is not None:
+            raise ValueError(f"{label.capitalize()} '{missing}' não encontrado.")
+
     def resolve_node_name(self, value: str) -> str | None:
         folded = value.strip().casefold()
         return next((name for name in self.model.nodes if name.casefold() == folded), None)

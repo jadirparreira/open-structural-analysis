@@ -1,3 +1,4 @@
+from osa.commands import CommandSession
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.model import StructuralModel
 from osa.services import ModelService
@@ -12,6 +13,25 @@ def make_application(on_model_changed=None):
         on_model_changed=on_model_changed,
     )
     return model, application
+
+
+def test_mcp_application_switches_visual_sessions():
+    _model, application = make_application()
+    sessions = []
+    active_session = ["Geometria"]
+    application._get_session = lambda: active_session[0]
+
+    assert application.get_session_state() == {
+        "active_session": "Geometria",
+        "available_sessions": ["Geometria", "Ações", "Análise"],
+    }
+
+    application._on_session_changed = lambda session: (sessions.append(session), active_session.__setitem__(0, session))
+    selected = application.set_session("Análise")
+
+    assert selected["active_session"] == "Análise"
+    assert sessions == ["Análise"]
+    assert application.get_session_state()["active_session"] == "Análise"
 
 
 def test_mcp_application_reads_and_changes_the_open_model():
@@ -86,6 +106,39 @@ def test_mcp_application_can_delete_members_and_nodes():
 
     assert deleted_member["deleted_member"] == "B1"
     assert deleted_node["deleted_node"] == "N2"
+
+
+def test_mcp_application_deletes_structural_elements_in_batches():
+    model, application = make_application()
+    for coordinates in ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (8.0, 0.0, 0.0)):
+        application.create_node(*coordinates)
+    application.create_member("N1", "N2")
+    application.create_member("N2", "N3")
+    application.create_rigid_bar("N1", "N3")
+
+    preview = application.delete_elements(nodes=["N1"], dry_run=True)
+    assert preview["status"] == "preview"
+    assert preview["blocked"] == [{"node": "N1", "members": ["B1"], "rigid_bars": ["N1-N3"]}]
+    assert set(model.nodes) == {"N1", "N2", "N3"}
+
+    blocked = application.delete_elements(nodes=["N1"])
+    assert blocked["status"] == "blocked"
+    assert set(model.bars) == {"B1", "B2"}
+
+    deleted = application.delete_elements(nodes=["N1"], cascade=True)
+    assert deleted["status"] == "deleted"
+    assert deleted["cascade_added"] == {"members": ["B1"], "rigid_bars": ["N1-N3"]}
+    assert deleted["nodes"] == ["N1"]
+    assert set(model.nodes) == {"N2", "N3"}
+    assert set(model.bars) == {"B2"}
+    assert not model.rigid_bars
+
+    final = application.delete_elements(nodes=["N2"], members=["B2", "B2"])
+    assert final["status"] == "deleted"
+    assert final["nodes"] == ["N2"]
+    assert final["members"] == ["B2"]
+    assert set(model.nodes) == {"N3"}
+    assert not model.bars
 
 
 def test_mcp_application_lists_catalog_materials_and_sections():
@@ -331,6 +384,79 @@ def test_mcp_application_manages_action_groups_and_active_action():
     assert updated["group"]["name"] == "Grupo IA 2"
     deleted = application.delete_action_group("Grupo IA 2")
     assert deleted["deleted_group"] == "Grupo IA 2"
+
+
+def test_mcp_application_manages_load_combinations():
+    _model, application = make_application()
+
+    created = application.create_load_combination(
+        "ELU IA",
+        factors={"PP": 1.25, "AP": 1.35, "AV": 1.50},
+        factors_2={"PP": 1.0, "AP": 1.0, "AV": 1.0},
+        factors_3={"PP": 1.0, "AP": 1.0, "AV": 1.0},
+        active_actions=["PP", "AP", "AV"],
+        limit_state="ELU",
+    )
+    assert created["combination"]["limit_state"] == "ELU"
+    assert created["combination"]["factors"]["AV"] == 1.50
+
+    updated = application.update_load_combination(
+        "ELU IA",
+        name="ELU IA 2",
+        active_actions=["PP", "AV"],
+    )
+    assert updated["combination"]["name"] == "ELU IA 2"
+    assert updated["combination"]["factors"]["AP"] == 1.35
+    assert updated["combination"]["active_actions"] == ["PP", "AV"]
+
+    listed = application.list_load_combinations()
+    assert [item["name"] for item in listed["combinations"]] == ["ELU IA 2"]
+    deleted = application.delete_load_combination("ELU IA 2")
+    assert deleted["deleted_combination"] == "ELU IA 2"
+    assert application.list_load_combinations()["combinations"] == []
+
+
+def test_mcp_application_runs_analysis_and_reads_results():
+    model = StructuralModel()
+    CommandSession(ModelService(model)).submit("mezanino")
+    view = {
+        "selected_combination": None,
+        "selected_diagram": "Normal",
+        "result_diagrams_visible": True,
+    }
+    application = McpApplication(
+        model,
+        ModelService(model),
+        on_analysis_view_changed=lambda combination, diagram: view.update(
+            {"selected_combination": combination or None, "selected_diagram": diagram}
+        ),
+        get_analysis_view_state=lambda: dict(view),
+        on_analysis_diagrams_changed=lambda visible: view.update(
+            {"result_diagrams_visible": visible}
+        ),
+    )
+
+    processed = application.run_analysis(["Combinação 01"])
+    assert processed["status"] == "completed"
+    assert processed["processed_combinations"] == ["Combinação 01"]
+
+    state = application.get_analysis_state()
+    assert state["ready"] is True
+    assert state["result_combinations"] == ["Combinação 01"]
+    assert application.list_analysis_results()["results"][0]["members"] > 0
+
+    nodes = application.get_node_analysis_results("Combinação 01", ["N1"])
+    assert nodes["nodes"][0]["name"] == "N1"
+    members = application.get_member_analysis_results("Combinação 01", ["B1"], include_samples=True)
+    assert len(members["members"][0]["samples"]) == 21
+    reactions = application.get_support_reactions("Combinação 01")
+    assert reactions["reactions"]
+
+    selected = application.set_analysis_view("Combinação 01", "Fletor Z")
+    assert selected["selected_combination"] == "Combinação 01"
+    assert selected["selected_diagram"] == "Fletor Z"
+    hidden = application.set_analysis_diagrams_visible(False)
+    assert hidden["result_diagrams_visible"] is False
 
 
 def test_mcp_application_controls_action_visibility_options():

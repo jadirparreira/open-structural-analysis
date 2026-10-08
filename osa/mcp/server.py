@@ -29,6 +29,11 @@ class LocalMcpServer:
             instructions=(
                 "Você está conectado ao Open Structural Analysis. "
                 "Consulte o projeto atual antes de fazer alterações. "
+                "A interface possui as sessões Geometria, Ações e Análise. "
+                "Antes de executar uma operação relacionada a uma sessão, consulte "
+                "get_session_state e abra a sessão correspondente com set_session. "
+                "Mantenha essa sessão aberta durante a sequência de operações para "
+                "que o usuário acompanhe visualmente onde as alterações estão ocorrendo. "
                 "As coordenadas do modelo usam as unidades do projeto; "
                 "se elas não estiverem claras, pergunte ao usuário."
             ),
@@ -86,6 +91,27 @@ class LocalMcpServer:
         )
         def get_project_summary() -> dict[str, Any]:
             return self.application.get_project_summary()
+
+        @self.server.tool(
+            name="get_session_state",
+            title="Consultar sessão aberta",
+            description="Consulta se Geometria, Ações ou Análise está aberta na interface.",
+            annotations=read_only,
+        )
+        def get_session_state() -> dict[str, Any]:
+            return self.application.get_session_state()
+
+        @self.server.tool(
+            name="set_session",
+            title="Abrir sessão do programa",
+            description=(
+                "Abre uma sessão visual do OpenSA. Use exatamente Geometria, Ações ou Análise "
+                "antes das operações relacionadas à respectiva sessão."
+            ),
+            annotations=write,
+        )
+        def set_session(session: str) -> dict[str, Any]:
+            return self.application.set_session(session)
 
         @self.server.tool(
             name="list_nodes",
@@ -216,6 +242,170 @@ class LocalMcpServer:
         )
         def delete_action_group(name: str) -> dict[str, Any]:
             return self.application.delete_action_group(name)
+
+        @self.server.tool(
+            name="list_load_combinations",
+            title="Listar combinações de carga",
+            description="Consulta as combinações de carregamento configuradas no projeto.",
+            annotations=read_only,
+        )
+        def list_load_combinations() -> dict[str, Any]:
+            return self.application.list_load_combinations()
+
+        @self.server.tool(
+            name="create_load_combination",
+            title="Criar combinação de carga",
+            description=(
+                "Cria uma combinação. factors, factors_2 e factors_3 usam as siglas das ações "
+                "como chaves; active_actions informa as siglas participantes. limit_state pode ser CAR, ELU ou ELS."
+            ),
+            annotations=write,
+        )
+        def create_load_combination(
+            name: str,
+            factors: dict[str, float] | None = None,
+            factors_2: dict[str, float] | None = None,
+            factors_3: dict[str, float] | None = None,
+            active_actions: list[str] | None = None,
+            action_group: str | None = None,
+            limit_state: str = "CAR",
+        ) -> dict[str, Any]:
+            return self.application.create_load_combination(
+                name, factors, factors_2, factors_3, active_actions, action_group, limit_state,
+            )
+
+        @self.server.tool(
+            name="update_load_combination",
+            title="Atualizar combinação de carga",
+            description="Atualiza uma combinação existente; informe somente os campos desejados.",
+            annotations=write,
+        )
+        def update_load_combination(
+            old_name: str,
+            name: str | None = None,
+            factors: dict[str, float] | None = None,
+            factors_2: dict[str, float] | None = None,
+            factors_3: dict[str, float] | None = None,
+            active_actions: list[str] | None = None,
+            action_group: str | None = None,
+            limit_state: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.update_load_combination(
+                old_name,
+                name=name,
+                factors=factors,
+                factors_2=factors_2,
+                factors_3=factors_3,
+                active_actions=active_actions,
+                action_group=action_group,
+                limit_state=limit_state,
+            )
+
+        @self.server.tool(
+            name="delete_load_combination",
+            title="Excluir combinação de carga",
+            description="Exclui uma combinação existente pelo nome.",
+            annotations=destructive,
+        )
+        def delete_load_combination(name: str) -> dict[str, Any]:
+            return self.application.delete_load_combination(name)
+
+        @self.server.tool(
+            name="get_analysis_state",
+            title="Consultar estado da análise",
+            description="Consulta o estado da análise, resultados disponíveis e visualização atual.",
+            annotations=read_only,
+        )
+        def get_analysis_state() -> dict[str, Any]:
+            return self.application.get_analysis_state()
+
+        @self.server.tool(
+            name="run_analysis",
+            title="Processar estrutura",
+            description=(
+                "Executa a análise estrutural. Se combinations não for informado, processa todas as "
+                "combinações configuradas e retorna os resultados gerados."
+            ),
+            annotations=write,
+        )
+        def run_analysis(combinations: list[str] | None = None) -> dict[str, Any]:
+            return self.application.run_analysis(combinations)
+
+        @self.server.tool(
+            name="list_analysis_results",
+            title="Listar resultados da análise",
+            description="Lista as combinações que possuem resultados válidos na revisão atual.",
+            annotations=read_only,
+        )
+        def list_analysis_results() -> dict[str, Any]:
+            return self.application.list_analysis_results()
+
+        @self.server.tool(
+            name="get_node_analysis_results",
+            title="Consultar resultados dos nós",
+            description="Consulta deslocamentos, rotações e reações nodais de uma combinação analisada.",
+            annotations=read_only,
+        )
+        def get_node_analysis_results(
+            combination: str,
+            node_names: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.get_node_analysis_results(combination, node_names)
+
+        @self.server.tool(
+            name="get_member_analysis_results",
+            title="Consultar resultados dos membros",
+            description=(
+                "Consulta esforços e deslocamentos dos membros. include_samples inclui as 21 amostras "
+                "ao longo de cada membro para reconstruir diagramas."
+            ),
+            annotations=read_only,
+        )
+        def get_member_analysis_results(
+            combination: str,
+            member_names: list[str] | None = None,
+            include_samples: bool = False,
+        ) -> dict[str, Any]:
+            return self.application.get_member_analysis_results(
+                combination, member_names, include_samples,
+            )
+
+        @self.server.tool(
+            name="get_support_reactions",
+            title="Consultar reações de apoio",
+            description="Consulta forças e momentos de reação nos nós apoiados.",
+            annotations=read_only,
+        )
+        def get_support_reactions(
+            combination: str,
+            node_names: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.get_support_reactions(combination, node_names)
+
+        @self.server.tool(
+            name="set_analysis_view",
+            title="Selecionar visualização da análise",
+            description=(
+                "Seleciona a combinação e o diagrama exibido. Diagramas: Normal, Cortante Y, Cortante Z, "
+                "Torsor, Fletor Y, Fletor Z, Reações de apoio, Deformação X, Deformação Y, "
+                "Deformação Z e Deformação XYZ."
+            ),
+            annotations=write,
+        )
+        def set_analysis_view(
+            combination: str | None = None,
+            diagram: str | None = None,
+        ) -> dict[str, Any]:
+            return self.application.set_analysis_view(combination, diagram)
+
+        @self.server.tool(
+            name="set_analysis_diagrams_visible",
+            title="Mostrar ou ocultar diagramas",
+            description="Mostra ou oculta os diagramas de resultados na cena do OpenSA.",
+            annotations=write,
+        )
+        def set_analysis_diagrams_visible(visible: bool) -> dict[str, Any]:
+            return self.application.set_analysis_diagrams_visible(visible)
 
         @self.server.tool(
             name="add_node_force",
@@ -515,6 +705,32 @@ class LocalMcpServer:
         )
         def delete_member(member_name: str) -> dict[str, Any]:
             return self.application.delete_member(member_name)
+
+        @self.server.tool(
+            name="delete_elements",
+            title="Excluir elementos em lote",
+            description=(
+                "Exclui vários nós, membros e barras rígidas em uma operação validada. "
+                "Use dry_run para visualizar o plano sem alterar o modelo. Por segurança, "
+                "nós com dependências bloqueiam a operação; use cascade=true para incluir "
+                "automaticamente os membros e barras rígidas conectados."
+            ),
+            annotations=destructive,
+        )
+        def delete_elements(
+            nodes: list[str] | None = None,
+            members: list[str] | None = None,
+            rigid_bars: list[str] | None = None,
+            cascade: bool = False,
+            dry_run: bool = False,
+        ) -> dict[str, Any]:
+            return self.application.delete_elements(
+                nodes=nodes,
+                members=members,
+                rigid_bars=rigid_bars,
+                cascade=cascade,
+                dry_run=dry_run,
+            )
 
         @self.server.tool(
             name="update_member_endpoints",
