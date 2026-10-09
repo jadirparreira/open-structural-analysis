@@ -81,9 +81,8 @@ class LocalMcpIntegration:
             / "cache"
             / MARKETPLACE_NAME
             / PLUGIN_NAME
-            / PLUGIN_VERSION
         )
-        if cache_root.is_dir():
+        if any((cache_root / version).is_dir() for version in ("local", PLUGIN_VERSION)):
             return
         threading.Thread(
             target=self._install_with_client,

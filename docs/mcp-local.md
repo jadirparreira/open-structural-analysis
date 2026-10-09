@@ -90,15 +90,27 @@ O servidor não publica uma porta externa e não implementa ainda autenticação
 histórico de alterações ou confirmação própria para operações de escrita. Por
 isso, esta versão deve ser usada apenas localmente durante o desenvolvimento.
 
-## Plugin local para o ChatGPT Desktop
+## Ativação pelo usuário
 
-O pacote em `plugins/mcp-opensa` registra este servidor no ChatGPT Desktop. Na
-primeira abertura, o OpenSA copia o plugin para o marketplace pessoal local e
-tenta instalá-lo pelo cliente disponível. Se o ChatGPT Desktop já estiver
-aberto, é necessário reiniciá-lo uma vez para carregar o marketplace.
+O servidor MCP não é iniciado automaticamente. Abra `Arquivo > Configurações >
+MCP` e ative `Servidor MCP` quando quiser permitir que um cliente externo acesse
+o modelo aberto.
 
-Depois disso, basta abrir um chat Work e selecionar `OpenSA` ou escrever
+A página informa o estado do endpoint local e exibe o endereço:
+
+```text
+http://127.0.0.1:8765/mcp-opensa
+```
+
+Ao ativar o servidor, o OpenSA também copia o pacote em `plugins/mcp-opensa`
+para o marketplace pessoal e tenta registrar o plugin no ChatGPT Desktop. Se o
+ChatGPT Desktop já estiver aberto, é necessário reiniciá-lo para carregar o
+marketplace; depois, abra um chat Work e selecione `OpenSA` ou escreva
 `@OpenSA`.
 
-Se nenhum cliente compatível estiver instalado ou configurado, essa etapa é
-ignorada e o aplicativo continua funcionando normalmente.
+O mesmo endereço pode ser copiado para configurar manualmente outro cliente
+MCP, como o Claude, quando ele aceitar Streamable HTTP local. O OpenSA consegue
+confirmar que o endpoint está acessível e que o plugin do ChatGPT foi registrado,
+mas não consegue detectar se o usuário selecionou o plugin dentro do cliente.
+
+Ao desativar a opção ou fechar o OpenSA, o servidor MCP é encerrado.

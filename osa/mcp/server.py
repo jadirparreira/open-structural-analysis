@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 from typing import Any
 
@@ -43,6 +44,10 @@ class LocalMcpServer:
             stateless_http=True,
         )
         self._thread: threading.Thread | None = None
+        self._uvicorn_server: Any | None = None
+        self._last_error: str | None = None
+        self._stop_requested = False
+        self._state_lock = threading.Lock()
         self._register_tools()
 
     @property
@@ -50,18 +55,88 @@ class LocalMcpServer:
         return f"http://{self.host}:{self.port}/mcp-opensa"
 
     def start(self) -> None:
-        """Inicia o servidor uma única vez em uma thread daemon."""
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(
-            target=self._run,
-            name="osa-mcp-server",
-            daemon=True,
-        )
-        self._thread.start()
+        """Inicia o servidor em uma thread daemon, se ainda não estiver ativo."""
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._last_error = None
+            self._stop_requested = False
+            self._uvicorn_server = None
+            self._thread = threading.Thread(
+                target=self._run,
+                name="osa-mcp-server",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        """Solicita o encerramento do servidor e aguarda sua thread."""
+        with self._state_lock:
+            server = self._uvicorn_server
+            thread = self._thread
+            self._stop_requested = True
+        if server is not None:
+            server.should_exit = True
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    @property
+    def is_running(self) -> bool:
+        """Indica se o Uvicorn concluiu a inicialização do endpoint."""
+        with self._state_lock:
+            server = self._uvicorn_server
+            thread = self._thread
+        return bool(thread is not None and thread.is_alive() and server is not None and server.started)
+
+    @property
+    def last_error(self) -> str | None:
+        """Retorna o último erro de inicialização, se houver."""
+        with self._state_lock:
+            return self._last_error
+
+    def is_listening(self) -> bool:
+        """Confirma que a porta local aceita conexões TCP."""
+        try:
+            with socket.create_connection((self.host, self.port), timeout=0.2):
+                return True
+        except OSError:
+            return False
 
     def _run(self) -> None:
-        self.server.run(transport="streamable-http")
+        server = None
+        try:
+            import uvicorn
+
+            application = self.server.streamable_http_app()
+            config = uvicorn.Config(
+                application,
+                host=self.host,
+                port=self.port,
+                log_level="warning",
+            )
+            server = uvicorn.Server(config)
+            with self._state_lock:
+                self._uvicorn_server = server
+                stop_requested = self._stop_requested
+            if stop_requested:
+                server.should_exit = True
+            server.run()
+        except Exception as error:  # noqa: BLE001  # depende do ambiente de rede
+            with self._state_lock:
+                self._last_error = str(error)
+        finally:
+            with self._state_lock:
+                if (
+                    server is not None
+                    and not server.started
+                    and not self._stop_requested
+                    and self._last_error is None
+                ):
+                    self._last_error = (
+                        f"Não foi possível abrir {self.endpoint}. "
+                        "A porta pode estar em uso por outro programa."
+                    )
+                self._uvicorn_server = None
 
     def _register_tools(self) -> None:
         read_only = ToolAnnotations(

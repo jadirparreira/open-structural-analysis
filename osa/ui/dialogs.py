@@ -745,6 +745,11 @@ class ProgramSettingsDialog(QDialog):
             "border-radius: 5px; background: #ffffff; }"
             "QCheckBox::indicator:hover { border-color: #0969da; }"
             "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QLineEdit#mcpEndpoint { min-height: 32px; padding: 2px 9px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; color: #57606a; }"
+            "QPushButton#copyEndpoint { min-height: 32px; padding: 4px 12px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#copyEndpoint:hover { background: #eaeef2; }"
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
@@ -771,6 +776,7 @@ class ProgramSettingsDialog(QDialog):
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
         categories.addItem("Membros")
+        categories.addItem("MCP")
         pages = QStackedWidget()
         snaps_page = QWidget()
         page_layout = QVBoxLayout(snaps_page)
@@ -846,11 +852,67 @@ class ProgramSettingsDialog(QDialog):
         members_close_row.addWidget(members_close_button)
         members_layout.addLayout(members_close_row)
         pages.addWidget(members_page)
+
+        mcp_page = QWidget()
+        mcp_layout = QVBoxLayout(mcp_page)
+        mcp_layout.addSpacing(10)
+        mcp_hint = QLabel(
+            "Permita que o ChatGPT Desktop, Claude ou outro cliente MCP compatível "
+            "acesse o modelo estrutural aberto no OpenSA."
+        )
+        mcp_hint.setObjectName("hint")
+        mcp_hint.setWordWrap(True)
+        mcp_layout.addWidget(mcp_hint)
+        self._mcp_checkbox = QCheckBox("Ativar servidor MCP")
+        self._mcp_checkbox.setAccessibleName("Ativar servidor MCP")
+        self._mcp_checkbox.setChecked(self.window.mcp_enabled)
+        self._mcp_checkbox.toggled.connect(self._toggle_mcp)
+        mcp_layout.addWidget(self._mcp_checkbox)
+
+        endpoint_label = QLabel("Endereço do servidor")
+        endpoint_label.setObjectName("propertySection")
+        mcp_layout.addWidget(endpoint_label)
+        endpoint_row = QHBoxLayout()
+        endpoint_row.setSpacing(8)
+        self._mcp_endpoint = QLineEdit(self.window.mcp_endpoint)
+        self._mcp_endpoint.setObjectName("mcpEndpoint")
+        self._mcp_endpoint.setReadOnly(True)
+        self._mcp_endpoint.setAccessibleName("Endereço do servidor MCP")
+        copy_button = QPushButton("Copiar")
+        copy_button.setObjectName("copyEndpoint")
+        copy_button.setAccessibleName("Copiar endereço do servidor MCP")
+        copy_button.clicked.connect(self._copy_mcp_endpoint)
+        endpoint_row.addWidget(self._mcp_endpoint, 1)
+        endpoint_row.addWidget(copy_button)
+        mcp_layout.addLayout(endpoint_row)
+
+        mcp_layout.addStretch(1)
+        mcp_close_button = QPushButton("Fechar")
+        mcp_close_button.setObjectName("closeProperties")
+        mcp_close_button.clicked.connect(self.accept)
+        mcp_close_row = QHBoxLayout()
+        mcp_close_row.addStretch()
+        mcp_close_row.addWidget(mcp_close_button)
+        mcp_layout.addLayout(mcp_close_row)
+        pages.addWidget(mcp_page)
+
         categories.currentRowChanged.connect(pages.setCurrentIndex)
         categories.setCurrentRow(0)
         layout.addWidget(categories)
         layout.addWidget(pages, 1)
         outer.addLayout(layout, 1)
+
+    def _toggle_mcp(self, enabled: bool) -> None:
+        try:
+            self.window.set_mcp_enabled(enabled)
+        except RuntimeError as error:
+            self._mcp_checkbox.blockSignals(True)
+            self._mcp_checkbox.setChecked(False)
+            self._mcp_checkbox.blockSignals(False)
+            QMessageBox.warning(self, "Servidor MCP", str(error))
+
+    def _copy_mcp_endpoint(self) -> None:
+        QApplication.clipboard().setText(self.window.mcp_endpoint)
 
 
 class ActionGroupDialog(QDialog):

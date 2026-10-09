@@ -26,6 +26,16 @@ data_files.extend(
     for path in sorted((project_root / "osa/resources/icons").glob("*.svg"))
 )
 
+plugin_root = project_root / "plugins"
+data_files.extend(
+    (
+        str(path),
+        str(Path("plugins") / path.relative_to(plugin_root).parent),
+    )
+    for path in sorted(plugin_root.rglob("*"))
+    if path.is_file()
+)
+
 
 # As coleções iniciais são intencionalmente amplas. PyVista e VTK usam
 # imports dinâmicos e bibliotecas compartilhadas que nem sempre aparecem na

@@ -29,6 +29,10 @@ Não haverá, inicialmente, suporte oficial para Windows 7, Windows 8, Windows 8
 
 O instalador deverá incluir o aplicativo e todas as suas dependências, criar os atalhos do programa, usar o nome `Open Structural Analysis`, usar o ícone oficial e disponibilizar um desinstalador.
 
+As builds também deverão incluir o pacote local `plugins/mcp-opensa` e o
+marketplace correspondente, pois o OpenSA os registra no perfil do usuário
+quando o servidor MCP é ativado em `Arquivo > Configurações > MCP`.
+
 Não será distribuído um pacote portátil `.zip` nesta etapa.
 
 ## Builds oficiais

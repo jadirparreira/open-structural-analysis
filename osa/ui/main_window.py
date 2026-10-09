@@ -265,9 +265,8 @@ class MainWindow(QMainWindow):
             get_session=lambda: self.palette.active_group,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
-        self._mcp_server.start()
         self._mcp_integration = LocalMcpIntegration()
-        self._mcp_integration.ensure_installed()
+        self._mcp_enabled = False
 
     def process_analysis(self) -> None:
         """Run PyNite in the background after the progress card is painted."""
@@ -335,6 +334,76 @@ class MainWindow(QMainWindow):
         dialog = ProgramSettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+
+    @property
+    def mcp_enabled(self) -> bool:
+        """Indica se o servidor MCP foi ativado nesta execução do OpenSA."""
+        return self._mcp_enabled
+
+    @property
+    def mcp_endpoint(self) -> str:
+        return self._mcp_server.endpoint
+
+    def set_mcp_enabled(self, enabled: bool) -> None:
+        """Ativa ou desativa o servidor MCP a partir das configurações."""
+        enabled = bool(enabled)
+        if enabled == self._mcp_enabled:
+            return
+        if enabled:
+            try:
+                self._mcp_integration.ensure_installed()
+                self._mcp_server.start()
+            except (OSError, RuntimeError) as error:
+                self._mcp_enabled = False
+                raise RuntimeError(f"Não foi possível ativar o servidor MCP: {error}") from error
+            self._mcp_enabled = True
+            return
+        self._mcp_server.stop()
+        self._mcp_enabled = False
+
+    def mcp_status(self) -> dict[str, str]:
+        """Retorna o estado que deve ser apresentado na página MCP."""
+        if not self._mcp_enabled:
+            return {
+                "state": "disabled",
+                "text": "Servidor MCP desativado",
+                "detail": "Ative esta opção para permitir que um cliente MCP acesse o modelo aberto.",
+            }
+        if self._mcp_server.last_error:
+            return {
+                "state": "error",
+                "text": "Não foi possível iniciar o servidor MCP",
+                "detail": self._mcp_server.last_error,
+            }
+        if not self._mcp_server.is_running:
+            return {
+                "state": "starting",
+                "text": "Iniciando servidor MCP…",
+                "detail": "O OpenSA está preparando o endpoint local.",
+            }
+        if not self._mcp_server.is_listening():
+            return {
+                "state": "error",
+                "text": "O endpoint MCP não está acessível",
+                "detail": self._mcp_server.endpoint,
+            }
+        if self._mcp_integration.is_installed():
+            return {
+                "state": "ready",
+                "text": "MCP ativo e funcionando",
+                "detail": (
+                    "ChatGPT Desktop: plugin registrado.\n"
+                    f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+                ),
+            }
+        return {
+            "state": "ready",
+            "text": "MCP ativo e funcionando",
+            "detail": (
+                "ChatGPT Desktop: registro não confirmado.\n"
+                f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+            ),
+        }
 
     @property
     def member_direction_normalization_enabled(self) -> bool:
@@ -1671,6 +1740,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._confirm_pending_changes():
+            self._mcp_server.stop()
             event.accept()
         else:
             event.ignore()
