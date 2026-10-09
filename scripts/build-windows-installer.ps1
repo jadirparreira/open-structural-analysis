@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot ".." )).Path
-$Version = if ($env:OSA_VERSION) { $env:OSA_VERSION } else { "2026.10" }
+$Version = if ($env:OSA_VERSION) { $env:OSA_VERSION } else { "2026.1" }
 $IconSource = Join-Path $Root "osa\resources\icons\openstructuralanalysis.svg"
 $IconOutput = Join-Path $Root "build\windows\openstructuralanalysis.ico"
 $Spec = Join-Path $Root "packaging\windows\open-structural-analysis.spec"

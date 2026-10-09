@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SPEC_FILE="$ROOT_DIR/packaging/linux/open-structural-analysis.spec"
 APPDIR="$ROOT_DIR/packaging/linux/AppDir"
 PYINSTALLER_DIST="$ROOT_DIR/dist/open-structural-analysis"
-VERSION="${OSA_VERSION:-2026.10}"
+VERSION="${OSA_VERSION:-2026.1}"
 OUTPUT="$ROOT_DIR/dist/OpenStructuralAnalysis-${VERSION}-x86_64.AppImage"
 RUNTIME_FILE="$ROOT_DIR/build-tools/runtime-x86_64"
 

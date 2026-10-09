@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-structural-analysis"
-version = "2026.10"
+version = "2026.1"
 description = "Open-source structural bar-modeling application"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
