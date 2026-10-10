@@ -487,3 +487,43 @@ def test_deformation_applies_solid_positioning_without_moving_analytic_reference
     start_section = deformed_face.points[np.isclose(deformed_face.points[:, 0], -0.2)]
     assert np.max(start_section[:, 1]) == pytest.approx(0.15)
     assert np.max(start_section[:, 2]) == pytest.approx(0.27)
+
+
+@pytest.mark.parametrize(
+    ("section", "geometry", "expected_longitudinal_edges"),
+    (
+        ("W Laminado", (("d", 200), ("bf", 100), ("tw", 6), ("tf", 8)), 16),
+        ("Barra Circular", (("d", 100),), 0),
+    ),
+)
+def test_deformation_solid_uses_the_model_edge_convention(
+    section, geometry, expected_longitudinal_edges,
+):
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **_options):
+            self.meshes.append(mesh)
+            return object()
+
+    model = StructuralModel()
+    model.nodes = {"N1": Node("N1", 0, 0, 0), "N2": Node("N2", 2, 0, 0)}
+    model.bars = {"B1": Bar(
+        "B1", "N1", "N2", section=section, profile="Teste",
+        section_geometry=geometry,
+    )}
+    result = AnalysisResult(0, "Combinação", member_results={
+        "B1": {"samples": (
+            {"x": 0, "deflection_y": 0, "deflection_z": 0},
+            {"x": 1, "deflection_y": 0.01, "deflection_z": 0},
+            {"x": 2, "deflection_y": 0.02, "deflection_z": 0},
+        )}
+    })
+    plotter = Plotter()
+
+    ResultRenderer().render(plotter, model, result, "Deformação XYZ")
+
+    # The edge mesh has one closed profile line at each end plus the selected
+    # longitudinal edges; circular profiles therefore keep only their caps.
+    assert plotter.meshes[2].n_cells == 2 + expected_longitudinal_edges

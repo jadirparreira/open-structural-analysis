@@ -26,10 +26,14 @@ class SolidMemberRenderer:
 
     _millimeters_to_model_units = 1e-3
     _arc_steps = 12
+    _edge_feature_angle = 25.0
 
     def __init__(self) -> None:
         self._mesh_cache: dict[tuple[tuple[tuple[float, float], ...], ...], pv.PolyData] = {}
         self._edge_mesh_cache: dict[tuple[tuple[tuple[float, float], ...], ...], pv.PolyData] = {}
+        self._longitudinal_edge_indices_cache: dict[
+            tuple[tuple[tuple[float, float], ...], ...], tuple[tuple[int, ...], ...]
+        ] = {}
 
     def render(self, plotter, member, start, end, *, visible: bool) -> SolidMemberVisual | None:
         try:
@@ -137,30 +141,162 @@ class SolidMemberRenderer:
         self._edge_mesh_cache[shape.signature] = mesh
         return mesh
 
+    def longitudinal_edge_indices(self, shape: SectionShape) -> tuple[tuple[int, ...], ...]:
+        """Return the profile vertices that need longitudinal edges.
+
+        The deformed solid is assembled along a changing centerline, so its
+        side faces cannot reuse the unit-length edge mesh directly. Mapping
+        the selected longitudinal edges back to profile vertices lets that
+        renderer use exactly the same feature and curve-transition rules.
+        """
+        cached = self._longitudinal_edge_indices_cache.get(shape.signature)
+        if cached is not None:
+            return cached
+
+        indices_by_loop: list[list[int]] = [[] for _ in shape.loops]
+        edge_mesh = self._edge_mesh_for(shape)
+        raw_lines = edge_mesh.lines
+        offset = 0
+        scale = self._millimeters_to_model_units
+        loop_arrays = [np.asarray(loop, dtype=float) for loop in shape.loops]
+        while offset < len(raw_lines):
+            count = int(raw_lines[offset])
+            point_ids = raw_lines[offset + 1:offset + count + 1]
+            offset += count + 1
+            if count != 2:
+                continue
+            first, second = edge_mesh.points[point_ids]
+            if abs(float(first[0] - second[0])) <= 0.5:
+                continue
+            profile_point = np.asarray(first[1:], dtype=float) / scale
+            for loop_index, loop in enumerate(loop_arrays):
+                distances = np.linalg.norm(loop - profile_point, axis=1)
+                point_index = int(np.argmin(distances))
+                if float(distances[point_index]) <= 1e-4:
+                    if point_index not in indices_by_loop[loop_index]:
+                        indices_by_loop[loop_index].append(point_index)
+                    break
+
+        result = tuple(tuple(indices) for indices in indices_by_loop)
+        self._longitudinal_edge_indices_cache[shape.signature] = result
+        return result
+
+    @staticmethod
+    def silhouette_for(mesh: pv.PolyData, camera) -> pv.PolyData:
+        """Return the camera-facing outer contour of a solid mesh.
+
+        Feature edges describe the geometry itself, while a silhouette
+        describes what is visible from the current view. Keeping the passes
+        separate avoids drawing tessellation seams along curved walls.
+        """
+        silhouette = vtk.vtkPolyDataSilhouette()
+        silhouette.SetInputData(mesh)
+        silhouette.SetCamera(camera)
+        silhouette.Update()
+        return pv.wrap(silhouette.GetOutput()).copy(deep=True)
+
     @staticmethod
     def edge_color(face_color: str) -> tuple[float, float, float]:
         return tuple(max(0.0, min(1.0, channel * 0.65)) for channel in pv.Color(face_color).float_rgb)
 
     def _build_edge_mesh(self, shape: SectionShape) -> pv.PolyData:
+        surface = self._mesh_for(shape)
+        feature_edges = vtk.vtkFeatureEdges()
+        feature_edges.SetInputData(surface)
+        feature_edges.BoundaryEdgesOn()
+        feature_edges.FeatureEdgesOn()
+        feature_edges.NonManifoldEdgesOn()
+        feature_edges.ManifoldEdgesOff()
+        feature_edges.SetFeatureAngle(self._edge_feature_angle)
+        feature_edges.Update()
+        feature_mesh = pv.wrap(feature_edges.GetOutput()).copy(deep=True)
+        transition_mesh = self._build_curve_transition_mesh(shape)
+        if not transition_mesh.n_lines:
+            return feature_mesh
+        append = vtk.vtkAppendPolyData()
+        append.AddInputData(feature_mesh)
+        append.AddInputData(transition_mesh)
+        append.Update()
+        return pv.wrap(append.GetOutput()).copy(deep=True)
+
+    def _build_curve_transition_mesh(self, shape: SectionShape) -> pv.PolyData:
+        """Add longitudinal edges at the ends of sampled curved runs."""
+        if self._is_round_shape(shape):
+            return pv.PolyData()
+
+        transition_indices: list[tuple[tuple[float, float], ...]] = []
+        for loop in shape.loops:
+            indices = self._curve_transition_indices(loop)
+            transition_indices.extend(
+                tuple(loop[index] for index in indices),
+            )
+        if not transition_indices:
+            return pv.PolyData()
+
         points = vtk.vtkPoints()
         lines = vtk.vtkCellArray()
         scale = self._millimeters_to_model_units
-        for loop in shape.loops:
-            base_ids = [points.InsertNextPoint(0.0, y * scale, z * scale) for y, z in loop]
-            end_ids = [points.InsertNextPoint(1.0, y * scale, z * scale) for y, z in loop]
-            for index, next_index in enumerate((*range(1, len(loop)), 0)):
-                for first, second in (
-                    (base_ids[index], base_ids[next_index]),
-                    (end_ids[index], end_ids[next_index]),
-                    (base_ids[index], end_ids[index]),
-                ):
-                    lines.InsertNextCell(2)
-                    lines.InsertCellPoint(first)
-                    lines.InsertCellPoint(second)
+        for point in transition_indices:
+            base = points.InsertNextPoint(0.0, point[0] * scale, point[1] * scale)
+            end = points.InsertNextPoint(1.0, point[0] * scale, point[1] * scale)
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(base)
+            lines.InsertCellPoint(end)
         poly_data = vtk.vtkPolyData()
         poly_data.SetPoints(points)
         poly_data.SetLines(lines)
         return pv.wrap(poly_data).copy(deep=True)
+
+    @staticmethod
+    def _is_round_shape(shape: SectionShape) -> bool:
+        for loop in shape.loops:
+            points = np.asarray(loop, dtype=float) - np.asarray(shape.centroid, dtype=float)
+            radii = np.linalg.norm(points, axis=1)
+            if np.ptp(radii) > max(1e-6, float(np.max(radii)) * 1e-4):
+                return False
+        return bool(shape.loops)
+
+    @staticmethod
+    def _curve_transition_indices(loop: tuple[tuple[float, float], ...]) -> list[int]:
+        count = len(loop)
+        turns: list[float] = []
+        for index, point in enumerate(loop):
+            previous = np.asarray(point, dtype=float) - np.asarray(loop[index - 1], dtype=float)
+            following = np.asarray(loop[(index + 1) % count], dtype=float) - np.asarray(point, dtype=float)
+            denominator = float(np.linalg.norm(previous) * np.linalg.norm(following))
+            cross = abs(float(previous[0] * following[1] - previous[1] * following[0]))
+            turns.append(cross / denominator if denominator > 1e-12 else 0.0)
+
+        smooth = [turn < 0.5 for turn in turns]
+        if not any(smooth):
+            return []
+
+        # Adjacent fillets can belong to the same smooth run when the
+        # straight segment between them is sampled with smooth end points.
+        # In that case using only the first and last point of the run loses
+        # the two transition edges in the middle. Keep every low-turn group
+        # inside the run so each curved segment contributes both ends.
+        if all(smooth):
+            smooth_runs = [list(range(count))]
+        else:
+            smooth_runs: list[list[int]] = []
+            for index, is_smooth in enumerate(smooth):
+                if not is_smooth or smooth[index - 1]:
+                    continue
+                run = [index]
+                cursor = (index + 1) % count
+                while cursor != index and smooth[cursor]:
+                    run.append(cursor)
+                    cursor = (cursor + 1) % count
+                smooth_runs.append(run)
+
+        transitions: list[int] = []
+        for run in smooth_runs:
+            threshold = min(turns[index] for index in run) * 1.5
+            transitions.extend(
+                index for index in run if turns[index] <= threshold
+            )
+        return list(dict.fromkeys(transitions))
 
     def _build_mesh(self, shape: SectionShape) -> pv.PolyData:
         points = vtk.vtkPoints()

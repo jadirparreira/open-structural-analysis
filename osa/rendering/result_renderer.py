@@ -11,10 +11,14 @@ import pyvista as pv
 from osa.sections import section_shape
 
 from .local_axes_renderer import LocalAxesRenderer
+from .solid_member_renderer import SolidMemberRenderer
 
 
 class ResultRenderer:
     """Renderiza diagramas de esforços internos sobre os eixos locais."""
+
+    def __init__(self) -> None:
+        self._solid_member_renderer = SolidMemberRenderer()
 
     POSITIVE_COLOR = "#0969da"
     NEGATIVE_COLOR = "#cf222e"
@@ -507,9 +511,11 @@ class ResultRenderer:
                 shape = section_shape(member.section, member.geometry_dict(), arc_steps=12)
                 if shape is None:
                     raise ValueError("Seção incompleta.")
+                longitudinal_edge_indices = self._solid_member_renderer.longitudinal_edge_indices(shape)
                 self._append_deformed_member_solid(
                     face_points, faces, face_colors, edge_points, edges, edge_colors,
-                    positioned_centerline, local_y, local_z, shape.loops, color,
+                    positioned_centerline, local_y, local_z, shape.loops,
+                    longitudinal_edge_indices, color,
                     np.clip(color.astype(float) * 0.65, 0, 255).astype(np.uint8),
                 )
             except (KeyError, TypeError, ValueError):
@@ -592,10 +598,10 @@ class ResultRenderer:
 
     def _append_deformed_member_solid(
         self, face_points, faces, face_colors, edge_points, edges, edge_colors,
-        centerline, local_y, local_z, loops, color, edge_color,
+        centerline, local_y, local_z, loops, longitudinal_edge_indices, color, edge_color,
     ) -> None:
         """Extruda a seção real ao longo da configuração deformada calculada."""
-        for loop in loops:
+        for loop_index, loop in enumerate(loops):
             ring_offsets: list[int] = []
             for center in centerline:
                 ring_offsets.append(len(face_points))
@@ -615,7 +621,7 @@ class ResultRenderer:
             self._append_colored_polyline(edge_points, edges, edge_colors, [
                 face_points[ring_offsets[-1] + index] for index in (*range(size), 0)
             ], edge_color)
-            for index in range(size):
+            for index in longitudinal_edge_indices[loop_index]:
                 self._append_colored_polyline(edge_points, edges, edge_colors, [
                     face_points[ring + index] for ring in ring_offsets
                 ], edge_color)

@@ -96,8 +96,11 @@ class StructureScene(QWidget):
     _rigid_bar_line_width = 2.0
     _hover_highlight_padding = 2.0
     _selected_highlight_padding = 3.0
+    _solid_highlight_line_width = 2.0
+    _circular_silhouette_line_width = 3.0
     _snap_tolerance_pixels = 14.0
     _placement_drag_tolerance_pixels = 4.0
+    _silhouette_navigation_interval_ms = 500
     _perpendicular_guide_half_length = 5.0
     _perpendicular_snap_half_length = 10.0
     _axis_colors = ("#d1242f", "#f2b705", "#2da44e")
@@ -213,6 +216,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._member_silhouette_actor = None
         self._member_preview_actor = None
         self._perpendicular_guide_actor = None
         self._orthogonal_guide_actor = None
@@ -299,6 +303,12 @@ class StructureScene(QWidget):
         self._label_timer.setSingleShot(True)
         self._label_timer.setInterval(16)
         self._label_timer.timeout.connect(self._sync_labels)
+        self._silhouette_timer = QTimer(self)
+        self._silhouette_timer.setSingleShot(True)
+        # Silhouettes remain visible during navigation, but are intentionally
+        # refreshed at a much lower rate than camera events arrive.
+        self._silhouette_timer.setInterval(self._silhouette_navigation_interval_ms)
+        self._silhouette_timer.timeout.connect(self._refresh_member_silhouette_throttled)
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(24)
@@ -452,6 +462,8 @@ class StructureScene(QWidget):
         self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
+        self._silhouette_timer.stop()
+        self._refresh_member_silhouette()
         self.plotter.render()
 
     def _add_member_batches(self) -> None:
@@ -486,6 +498,20 @@ class StructureScene(QWidget):
             edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
             edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+        self._member_silhouette_actor = self._add_colored_mesh(
+            self._member_renderer.silhouette_mesh(
+                batch, self.plotter.renderer.GetActiveCamera(),
+            ),
+            "batch:member-silhouette",
+            line_width=self._circular_silhouette_line_width,
+            lighting=False,
+        )
+        if self._member_silhouette_actor is not None:
+            self._member_silhouette_actor.SetPickable(False)
+            silhouette_mapper = self._member_silhouette_actor.GetMapper()
+            silhouette_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            silhouette_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            silhouette_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
 
         for mesh, color in zip(batch.axes, self._axis_colors):
             if not mesh.n_cells:
@@ -1932,7 +1958,9 @@ class StructureScene(QWidget):
             if mesh is None or not mesh.n_cells:
                 return
             actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=self._highlight_line_width(slot, kind),
+                mesh,
+                color=color,
+                line_width=self._highlight_line_width(slot, kind, name if kind == "bar" else None),
                 render_lines_as_tubes=True, lighting=False, pickable=False,
                 reset_camera=False, render=False,
             )
@@ -1979,7 +2007,9 @@ class StructureScene(QWidget):
         batch.geometry.GetCellData().Modified()
         batch.geometry.Modified()
 
-    def _highlight_line_width(self, slot: str, kind: str = "bar") -> float:
+    def _highlight_line_width(
+        self, slot: str, kind: str = "bar", member_name: str | None = None,
+    ) -> float:
         """Return a stroke wider than the representation currently visible.
 
         Member strokes are scaled after camera zoom.  A fixed-width hover
@@ -2006,6 +2036,11 @@ class StructureScene(QWidget):
         width = fallback
         if reference_actor is not None:
             width = float(reference_actor.GetProperty().GetLineWidth())
+        if self._solid_members_visible and kind == "bar":
+            member = self._model.bars.get(member_name) if member_name is not None else None
+            if member is not None and member.section in self._member_renderer._silhouette_sections:
+                return self._circular_silhouette_line_width
+            return self._solid_highlight_line_width
         padding = (
             self._selected_highlight_padding
             if slot.startswith("selected") else self._hover_highlight_padding
@@ -2016,8 +2051,13 @@ class StructureScene(QWidget):
         member = self._model.bars.get(name)
         if member is not None:
             if self._solid_members_visible and self._member_batch is not None:
+                source = self._member_batch.silhouette_sources.get(name)
+                if source is not None:
+                    return self._member_renderer.solids.silhouette_for(
+                        source, self.plotter.renderer.GetActiveCamera(),
+                    )
                 outline = self._member_batch.outlines.get(name)
-                if outline is not None:
+                if outline is not None and outline.n_cells:
                     return outline
             start = self._model.nodes[member.start_node]
             end = self._model.nodes[member.end_node]
@@ -2038,6 +2078,8 @@ class StructureScene(QWidget):
             self._member_face_actor.SetVisibility(solid)
         if self._member_edge_actor is not None:
             self._member_edge_actor.SetVisibility(solid)
+        if self._member_silhouette_actor is not None:
+            self._member_silhouette_actor.SetVisibility(solid)
         if self._member_fallback_actor is not None:
             self._member_fallback_actor.SetVisibility(solid)
 
@@ -2269,6 +2311,7 @@ class StructureScene(QWidget):
         if batch is None or member_name not in batch.names:
             self.render_model(self._model)
             return
+        member = self._model.bars.get(member_name)
         index = batch.names.index(member_name)
         base = np.asarray(pv.Color(self._model.bars[member_name].color).int_rgb, dtype=np.uint8)
         edge = np.clip(base.astype(float) * 0.65, 0, 255).astype(np.uint8)
@@ -2283,6 +2326,15 @@ class StructureScene(QWidget):
             mesh.cell_data["rgb"] = values
             mesh.GetCellData().Modified()
             mesh.Modified()
+        if member is not None and member.section in self._member_renderer._silhouette_sections:
+            self._member_renderer.update_silhouette_color(batch, member_name, base)
+            if self._member_silhouette_actor is not None:
+                silhouette = self._member_renderer.silhouette_mesh(
+                    batch, self.plotter.renderer.GetActiveCamera(),
+                )
+                mapper = self._member_silhouette_actor.GetMapper()
+                mapper.SetInputData(silhouette)
+                mapper.Modified()
         self.plotter.render()
 
     def update_member_releases(self, _member_name: str) -> None:
@@ -2608,6 +2660,7 @@ class StructureScene(QWidget):
 
     def _on_interaction_end(self, *_args) -> None:
         self._camera_interacting = False
+        self._silhouette_timer.stop()
         # Orbiting and panning change the viewing direction but are not camera
         # resets.  Recalculate only the clipping planes so no geometry remains
         # hidden after a navigation gesture.
@@ -2617,6 +2670,8 @@ class StructureScene(QWidget):
         self._sync_labels()
         self._update_coordinate_readout()
         self._orientation_widget.sync_from_camera()
+        self._silhouette_timer.stop()
+        self._refresh_member_silhouette()
         self.plotter.render()
 
     def _sync_labels(self) -> None:
@@ -2629,7 +2684,47 @@ class StructureScene(QWidget):
 
     def _on_camera_modified(self, *_args) -> None:
         self._update_depth_overlays()
+        if not self._silhouette_timer.isActive():
+            self._silhouette_timer.start()
         self._schedule_label_sync()
+
+    def _refresh_member_silhouette_throttled(self) -> None:
+        self._refresh_member_silhouette()
+        self.plotter.render()
+        if self._camera_interacting:
+            self._silhouette_timer.start()
+
+    def _refresh_member_silhouette(self) -> None:
+        """Refresh the screen-space contour after the camera changes."""
+        batch = self._member_batch
+        if batch is None or not batch.silhouette_sources:
+            return
+        mesh = self._member_renderer.silhouette_mesh(
+            batch, self.plotter.renderer.GetActiveCamera(),
+        )
+        if self._member_silhouette_actor is None:
+            if not mesh.n_cells:
+                return
+            self._member_silhouette_actor = self._add_colored_mesh(
+                mesh,
+                "batch:member-silhouette",
+                line_width=self._circular_silhouette_line_width,
+                lighting=False,
+            )
+            self._member_silhouette_actor.SetPickable(False)
+            self._member_silhouette_actor.SetVisibility(
+                self._solid_members_visible and not (
+                    self._analysis_visible and self._active_result_type.startswith("Deformação")
+                )
+            )
+            return
+        mapper = self._member_silhouette_actor.GetMapper()
+        mapper.SetInputData(mesh)
+        mapper.Modified()
+        self._member_silhouette_actor.SetVisibility(
+            self._solid_members_visible
+            and not (self._analysis_visible and self._active_result_type.startswith("Deformação"))
+        )
 
     def _update_depth_overlays(self) -> None:
         """Move analytical axis strokes slightly toward the active camera.
@@ -2697,7 +2792,10 @@ class StructureScene(QWidget):
             if actor is not None and (slot.startswith("selected") or slot == "hover"):
                 target = highlight_targets.get(slot)
                 kind = target[0] if target is not None else "bar"
-                actor.GetProperty().SetLineWidth(self._highlight_line_width(slot, kind))
+                member_name = target[1] if target is not None and target[0] == "bar" else None
+                actor.GetProperty().SetLineWidth(
+                    self._highlight_line_width(slot, kind, member_name),
+                )
 
     def _current_parallel_scale(self) -> float | None:
         camera = self.plotter.renderer.GetActiveCamera()
@@ -2745,6 +2843,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._member_silhouette_actor = None
         self._member_preview_actor = None
         self._perpendicular_guide_actor = None
         self._orthogonal_guide_actor = None

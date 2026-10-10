@@ -1,10 +1,10 @@
 from itertools import product
 
 import numpy as np
+import vtk
 
 from osa.commands import CommandSession
-from osa.domain import Action
-from osa.domain import Node
+from osa.domain import Action, Node
 from osa.model import StructuralModel
 from osa.rendering.action_renderer import ActionRenderer
 from osa.rendering.batched_renderer import (
@@ -25,7 +25,8 @@ def warehouse_model():
 
 def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     model = warehouse_model()
-    batch = BatchedMemberRenderer().build(model, 0.05)
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
 
     assert len(batch.names) == 839
     assert batch.lines.n_cells == 839
@@ -36,6 +37,43 @@ def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     assert set(np.unique(batch.lines.cell_data["element_index"])) == set(range(839))
     assert batch.faces.cell_data["rgb"].shape == (batch.faces.n_cells, 3)
     assert len(batch.outlines) == 839
+    expected_silhouette_members = {
+        name for name, member in model.bars.items()
+        if member.section in renderer._silhouette_sections
+    }
+    assert set(batch.silhouette_sources) == expected_silhouette_members
+    assert sum(mesh.n_cells for mesh in batch.silhouette_faces_by_color.values()) > 0
+
+
+def test_member_silhouette_batch_keeps_a_line_for_each_visible_contour():
+    model = warehouse_model()
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
+    camera = vtk.vtkCamera()
+    camera.SetPosition(20.0, 20.0, 15.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+
+    silhouettes = renderer.silhouette_mesh(batch, camera)
+
+    assert silhouettes.n_lines > 0
+    assert silhouettes.cell_data["rgb"].shape == (silhouettes.n_cells, 3)
+    assert np.all(silhouettes.cell_data["rgb"] == np.asarray((71, 77, 83), dtype=np.uint8))
+
+
+def test_member_silhouette_color_update_only_rebuilds_its_color_groups():
+    model = warehouse_model()
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
+    member_name = next(iter(batch.silhouette_sources))
+    camera = vtk.vtkCamera()
+    camera.SetPosition(20.0, 20.0, 15.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+
+    renderer.update_silhouette_color(batch, member_name, np.asarray((9, 18, 27), dtype=np.uint8))
+    silhouettes = renderer.silhouette_mesh(batch, camera)
+
+    assert batch.silhouette_member_colors[member_name] == (9, 18, 27)
+    assert np.any(np.all(silhouettes.cell_data["rgb"] == (5, 11, 17), axis=1))
 
 
 def test_node_batch_keeps_spherical_markers_and_pick_identity():

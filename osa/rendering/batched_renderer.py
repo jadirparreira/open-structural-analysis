@@ -102,9 +102,12 @@ class MemberBatch:
     fallback_lines: pv.PolyData
     faces: pv.PolyData
     edges: pv.PolyData
+    silhouette_faces_by_color: dict[tuple[int, int, int], pv.PolyData]
     axes: tuple[pv.PolyData, pv.PolyData, pv.PolyData]
     releases: pv.PolyData
     outlines: dict[str, pv.PolyData]
+    silhouette_sources: dict[str, pv.PolyData]
+    silhouette_member_colors: dict[str, tuple[int, int, int]]
     label_positions: np.ndarray
 
 
@@ -141,6 +144,13 @@ class BatchedRigidBarRenderer:
 class BatchedMemberRenderer:
     """Build a handful of meshes for any number of structural members."""
 
+    _silhouette_sections = frozenset({
+        "Tubular Circular",
+        "Barra Circular",
+        "Circular",
+        "Circular Vazado",
+    })
+
     def __init__(self, solid_renderer: SolidMemberRenderer | None = None) -> None:
         self.solids = solid_renderer or SolidMemberRenderer()
 
@@ -161,6 +171,8 @@ class BatchedMemberRenderer:
         axis_segments: tuple[list, list, list] = ([], [], [])
         release_polylines: list[np.ndarray] = []
         outlines: dict[str, pv.PolyData] = {}
+        silhouette_sources: dict[str, pv.PolyData] = {}
+        silhouette_member_colors: dict[str, tuple[int, int, int]] = {}
         label_positions = np.empty((len(names), 3), dtype=float)
 
         for element_index, member_name in enumerate(names):
@@ -242,6 +254,9 @@ class BatchedMemberRenderer:
             edge_colors.extend([_rgb(member.color, 0.65)] * edge.n_cells)
             edge_point_count += len(edge.points)
             outlines[member_name] = edge
+            if member.section in self._silhouette_sections:
+                silhouette_sources[member_name] = face
+                silhouette_member_colors[member_name] = tuple(int(channel) for channel in color)
 
         faces = (
             pv.PolyData(
@@ -272,17 +287,88 @@ class BatchedMemberRenderer:
         if edges.n_cells:
             edges.cell_data["element_index"] = np.asarray(edge_indices, dtype=np.int32)
             edges.cell_data["rgb"] = np.asarray(edge_colors, dtype=np.uint8)
+        silhouette_faces_by_color = self._build_silhouette_faces_by_color(
+            silhouette_sources, silhouette_member_colors,
+        )
         return MemberBatch(
             names=names,
             lines=_line_mesh(line_segments),
             fallback_lines=_line_mesh(fallback_segments),
             faces=faces,
             edges=edges,
+            silhouette_faces_by_color=silhouette_faces_by_color,
             axes=tuple(_line_mesh(segments) for segments in axis_segments),  # type: ignore[arg-type]
             releases=_polyline_mesh(release_polylines),
             outlines=outlines,
+            silhouette_sources=silhouette_sources,
+            silhouette_member_colors=silhouette_member_colors,
             label_positions=label_positions,
         )
+
+    def update_silhouette_color(
+        self, batch: MemberBatch, member_name: str, color: np.ndarray,
+    ) -> None:
+        """Rebuild only the color groups used by the silhouette pass."""
+        if member_name not in batch.silhouette_sources:
+            return
+        batch.silhouette_member_colors[member_name] = tuple(
+            int(channel) for channel in np.asarray(color, dtype=np.uint8)
+        )
+        batch.silhouette_faces_by_color = self._build_silhouette_faces_by_color(
+            batch.silhouette_sources, batch.silhouette_member_colors,
+        )
+
+    def _build_silhouette_faces_by_color(
+        self,
+        sources: dict[str, pv.PolyData],
+        member_colors: dict[str, tuple[int, int, int]],
+    ) -> dict[tuple[int, int, int], pv.PolyData]:
+        points_by_color: dict[tuple[int, int, int], list[np.ndarray]] = {}
+        cells_by_color: dict[tuple[int, int, int], list[int]] = {}
+        point_counts: dict[tuple[int, int, int], int] = {}
+        for member_name, source in sources.items():
+            color = member_colors[member_name]
+            points_by_color.setdefault(color, []).append(source.points)
+            cells_by_color.setdefault(color, [])
+            point_counts.setdefault(color, 0)
+            self._append_cells(cells_by_color[color], source.faces, point_counts[color])
+            point_counts[color] += len(source.points)
+        return {
+            color: pv.PolyData(
+                np.vstack(points_by_color[color]),
+                faces=np.asarray(cells_by_color[color], dtype=np.int64),
+            )
+            for color in points_by_color
+        }
+
+    def silhouette_mesh(self, batch: MemberBatch, camera) -> pv.PolyData:
+        """Build the visible contour pass for the current camera."""
+        if not batch.silhouette_faces_by_color:
+            return _empty_mesh()
+        points: list[np.ndarray] = []
+        lines: list[int] = []
+        colors: list[tuple[int, int, int]] = []
+        point_count = 0
+        for color, faces in batch.silhouette_faces_by_color.items():
+            silhouette = self.solids.silhouette_for(faces, camera)
+            if not silhouette.n_lines:
+                continue
+            points.append(silhouette.points)
+            encoded = np.asarray(silhouette.lines, dtype=np.int64)
+            cursor = 0
+            while cursor < len(encoded):
+                count = int(encoded[cursor])
+                lines.append(count)
+                lines.extend((encoded[cursor + 1:cursor + 1 + count] + point_count).tolist())
+                colors.append(tuple(max(0, int(channel * 0.65)) for channel in color))
+                cursor += count + 1
+            point_count += len(silhouette.points)
+
+        if not points:
+            return _empty_mesh()
+        mesh = pv.PolyData(np.vstack(points), lines=np.asarray(lines, dtype=np.int64))
+        mesh.cell_data["rgb"] = np.asarray(colors, dtype=np.uint8)
+        return mesh
 
     @staticmethod
     def _append_cells(destination: list[int], encoded: np.ndarray, offset: int) -> None:
