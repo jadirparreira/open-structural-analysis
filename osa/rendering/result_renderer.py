@@ -20,10 +20,8 @@ class ResultRenderer:
     NEGATIVE_COLOR = "#cf222e"
     MAX_HEIGHT = 0.75
     MAX_DEFORMATION = 1.0
-    REACTION_MAX_HEIGHT = 1.0
-    REACTION_MIN_HEIGHT = 0.1
-    REACTION_MOMENT_MAX_RADIUS = 0.30
-    REACTION_MOMENT_MIN_RADIUS = 0.10
+    REACTION_FORCE_LENGTH = 0.50
+    REACTION_MOMENT_DIAMETER = 0.50
     REACTION_LABEL_CLEARANCE = 0.12
     DEFORMATION_COLOR = "#8250df"
     UNDEFORMED_COLOR = "#8c959f"
@@ -183,17 +181,7 @@ class ResultRenderer:
             node.name: result.node_results.get(node.name, {})
             for node in supported_nodes
         }
-        moment_maximum = max(
-            (
-                abs(self._display_value(float(values.get(key, 0.0))))
-                for values in node_values.values()
-                for key in self._REACTION_MOMENT_KEYS
-            ),
-            default=0.0,
-        )
-        span = self._model_span(model)
-        maximum_length = min(self.REACTION_MAX_HEIGHT, max(0.18, span * 0.035))
-        maximum_radius = min(self.REACTION_MOMENT_MAX_RADIUS, max(0.18, span * 0.035))
+        moment_radius = self.REACTION_MOMENT_DIAMETER * 0.5
         line_batches: dict[tuple[str, float], tuple[list[np.ndarray], list[int]]] = {
             (self.POSITIVE_COLOR, 3.0): ([], []),
             (self.NEGATIVE_COLOR, 3.0): ([], []),
@@ -214,7 +202,7 @@ class ResultRenderer:
                 # Reactions use a fixed visual scale. Their magnitude remains
                 # available in the label and in the sign/color, but does not
                 # change the length of the arrow.
-                arrow_length = max(self.REACTION_MIN_HEIGHT, maximum_length)
+                arrow_length = self.REACTION_FORCE_LENGTH
                 line_start = node_position - direction * arrow_length
                 chevron_size = arrow_length * 0.18
                 chevron_normal = self._perpendicular_to(direction)
@@ -230,20 +218,21 @@ class ResultRenderer:
 
             for axis_index, key in enumerate(self._REACTION_MOMENT_KEYS):
                 value = self._display_value(float(values.get(key, 0.0)))
-                if value == 0.0 or moment_maximum <= 0.0:
+                if value == 0.0:
                     continue
                 axis, plane_u, plane_v = self._moment_plane(global_basis, "XYZ"[axis_index])
-                radius = max(
-                    self.REACTION_MOMENT_MIN_RADIUS,
-                    maximum_radius * abs(value) / moment_maximum,
-                )
                 points, lines = self._add_moment_symbol(
-                    node_position, axis, plane_u, plane_v, value, radius,
+                    node_position, axis, plane_u, plane_v, value, moment_radius,
                 )
                 self._append_lines(
                     line_batches, (self._result_color(value), 3.0), points, lines,
                 )
-                label_positions.append(node_position + plane_u * (radius * 1.35))
+                label_direction = {
+                    "X": global_basis[1],
+                    "Y": global_basis[2],
+                    "Z": global_basis[0],
+                }["XYZ"[axis_index]]
+                label_positions.append(node_position + label_direction * (moment_radius * 1.35))
                 labels.append(self._format_value(value, "kN·m"))
 
         actors: list[object] = []
@@ -291,6 +280,18 @@ class ResultRenderer:
         last = len(arc)
         lines = [len(arc), *range(len(arc)), 2, last, last + 2, 2, last + 1, last + 2]
         return points, np.asarray(lines, dtype=np.int64)
+
+    @staticmethod
+    def _moment_plane(
+        basis: tuple[np.ndarray, np.ndarray, np.ndarray], direction: str,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Retorna o eixo e o plano perpendicular da reação de momento."""
+        local_x, local_y, local_z = basis
+        if direction == "X":
+            return local_x, local_y, local_z
+        if direction == "Y":
+            return local_y, local_x, -local_z
+        return local_z, local_x, local_y
 
     @staticmethod
     def _append_face(
