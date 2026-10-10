@@ -78,36 +78,29 @@ class ReferenceAxesRenderer:
 
     def _line_specs(self, axes, bounds, plane: str, offset: float):
         plane = plane.upper()
-        minimum_u, maximum_u, minimum_v, maximum_v = bounds
         x_values = tuple(float(axis.value) for axis in axes.get("X", ()))
         y_values = tuple(float(axis.value) for axis in axes.get("Y", ()))
         z_values = tuple(float(axis.value) for axis in axes.get("Z", ()))
-        u_start, u_end = self._extended_range(y_values if plane != "YZ" else x_values, minimum_u, maximum_u)
-        v_start, v_end = self._extended_range(z_values, minimum_v, maximum_v)
-        specs = []
-        if plane == "XZ":
-            for axis in axes.get("X", ()):
-                if np.isclose(float(axis.value), offset):
-                    specs.append(((u_start, 0.0), (u_end, 0.0), "", (0.0, self._label_offset(bounds))))
-            for axis in axes.get("Y", ()):
-                specs.append(((axis.value, v_start), (axis.value, v_end), axis.label, (self._label_offset(bounds), 0.0)))
-            for axis in axes.get("Z", ()):
-                specs.append(((u_start, axis.value), (u_end, axis.value), axis.label, (0.0, self._label_offset(bounds))))
-        elif plane == "YZ":
-            for axis in axes.get("Y", ()):
-                if np.isclose(float(axis.value), offset):
-                    specs.append(((u_start, 0.0), (u_end, 0.0), "", (0.0, self._label_offset(bounds))))
-            for axis in axes.get("X", ()):
-                specs.append(((axis.value, v_start), (axis.value, v_end), axis.label, (self._label_offset(bounds), 0.0)))
-            for axis in axes.get("Z", ()):
-                specs.append(((u_start, axis.value), (u_end, axis.value), axis.label, (0.0, self._label_offset(bounds))))
-        else:
-            x_start, x_end, y_start, y_end = self._line_extents(axes, bounds)
-            label_offset = self._label_offset(bounds)
-            for axis in axes.get("X", ()):
-                specs.append(((x_start, axis.value), (x_end, axis.value), axis.label, (0.0, label_offset)))
-            for axis in axes.get("Y", ()):
-                specs.append(((axis.value, y_start), (axis.value, y_end), axis.label, (label_offset, 0.0)))
+        plane_axes = {
+            "XY": (axes.get("X", ()), axes.get("Y", ()), x_values, y_values),
+            "XZ": (axes.get("X", ()), axes.get("Z", ()), x_values, z_values),
+            "YZ": (axes.get("Y", ()), axes.get("Z", ()), y_values, z_values),
+        }
+        first_axes, second_axes, first_values, second_values = plane_axes.get(
+            plane, plane_axes["XY"]
+        )
+        u_start, u_end, v_start, v_end = self._line_extents(
+            first_values, second_values, bounds,
+        )
+        label_offset = self._label_offset(bounds)
+        specs = [
+            ((axis.value, v_start), (axis.value, v_end), axis.label, (label_offset, 0.0))
+            for axis in first_axes
+        ]
+        specs.extend(
+            ((u_start, axis.value), (u_end, axis.value), axis.label, (0.0, label_offset))
+            for axis in second_axes
+        )
         return specs
 
     @classmethod
@@ -130,15 +123,16 @@ class ReferenceAxesRenderer:
             return np.asarray((offset, u, v), dtype=float)
         return np.asarray((u, v, offset), dtype=float)
 
-    def _line_extents(self, axes, bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-        minimum_x, maximum_x, minimum_y, maximum_y = bounds
-        x_axis_values = tuple(axis.value for axis in axes.get("X", ()))
-        y_axis_values = tuple(axis.value for axis in axes.get("Y", ()))
-        x_start = min(y_axis_values) - self._extension if y_axis_values else minimum_x
-        x_end = max(y_axis_values) + self._extension if y_axis_values else maximum_x
-        y_start = min(x_axis_values) - self._extension if x_axis_values else minimum_y
-        y_end = max(x_axis_values) + self._extension if x_axis_values else maximum_y
-        return x_start, x_end, y_start, y_end
+    def _line_extents(
+        self, first_values, second_values,
+        bounds: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        minimum_u, maximum_u, minimum_v, maximum_v = bounds
+        u_start = min(first_values) - self._extension if first_values else minimum_u
+        u_end = max(first_values) + self._extension if first_values else maximum_u
+        v_start = min(second_values) - self._extension if second_values else minimum_v
+        v_end = max(second_values) + self._extension if second_values else maximum_v
+        return u_start, u_end, v_start, v_end
 
     def _append_dash_dot(
         self,

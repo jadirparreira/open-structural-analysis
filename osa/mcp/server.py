@@ -676,7 +676,9 @@ class LocalMcpServer:
             title="Configurar eixos de referência",
             description=(
                 "Substitui os eixos de referência do projeto. Informe um objeto com as chaves "
-                "X, Y e Z; cada uma contém uma lista de objetos {label, value}."
+                "X, Y e Z; cada uma contém uma lista de objetos {label, value}. Em XY, "
+                "value em X posiciona a linha em x=value, value em Y posiciona a linha em "
+                "y=value e value em Z define a elevação."
             ),
             annotations=write,
         )

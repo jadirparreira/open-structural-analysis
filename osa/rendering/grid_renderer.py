@@ -39,13 +39,13 @@ class GridRenderer:
         z_axis_values = tuple(float(axis.value) for axis in axes.get("Z", ()))
         if self._plane == "XZ":
             positions = tuple((float(node.x), float(node.z)) for node in nodes)
-            axis_u_values, axis_v_values = y_axis_values, z_axis_values
+            axis_u_values, axis_v_values = x_axis_values, z_axis_values
         elif self._plane == "YZ":
             positions = tuple((float(node.y), float(node.z)) for node in nodes)
-            axis_u_values, axis_v_values = x_axis_values, z_axis_values
+            axis_u_values, axis_v_values = y_axis_values, z_axis_values
         else:
             positions = tuple((float(node.x), float(node.y)) for node in nodes)
-            axis_u_values, axis_v_values = y_axis_values, x_axis_values
+            axis_u_values, axis_v_values = x_axis_values, y_axis_values
         if positions:
             us, vs = zip(*positions)
             footprint_bounds = (
