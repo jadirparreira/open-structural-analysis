@@ -89,9 +89,10 @@ class StructureScene(QWidget):
     empty_clicked = Signal()
     placement_point_clicked = Signal(object)
     enter_pressed = Signal()
-    # The wireframe member and local-axis strokes are intentionally separate:
-    # they may be tuned independently while remaining visually lightweight.
-    _member_line_width = 1.5
+    # The wireframe member and local-axis strokes are intentionally separate.
+    # Keep both as screen-space strokes instead of tubes: tubes make a
+    # line-only model feel heavier than the solid view it replaces.
+    _member_line_width = 1.25
     _local_axis_line_width = 1.0
     _rigid_bar_line_width = 2.0
     _hover_highlight_padding = 2.0
@@ -124,6 +125,22 @@ class StructureScene(QWidget):
         # changes elevation, without the accumulated camera roll of VTK's
         # default trackball. This matches the architectural-model workflow.
         self._apply_revit_navigation_style()
+
+        # Local axes are analytical overlays. Render them in a dedicated
+        # full-viewport layer so a solid member can never occlude them.
+        self._local_axes_renderer = vtk.vtkRenderer()
+        self._local_axes_renderer.SetLayer(1)
+        self._local_axes_renderer.SetInteractive(False)
+        # Preserve the already-rendered color buffer, but let this layer
+        # clear the previous depth buffer. With EraseOff, VTK can retain the
+        # solid member's depth values and reject an axis that crosses it.
+        self._local_axes_renderer.SetErase(True)
+        self._local_axes_renderer.SetPreserveColorBuffer(True)
+        self._local_axes_renderer.SetPreserveDepthBuffer(False)
+        self._local_axes_renderer.SetActiveCamera(self.plotter.renderer.GetActiveCamera())
+        if self.plotter.render_window.GetNumberOfLayers() < 2:
+            self.plotter.render_window.SetNumberOfLayers(2)
+        self.plotter.render_window.AddRenderer(self._local_axes_renderer)
 
         self._grid_renderer = GridRenderer()
         self._reference_axes_renderer = ReferenceAxesRenderer()
@@ -532,11 +549,11 @@ class StructureScene(QWidget):
             return
         self._member_line_actor = self._add_colored_mesh(
             batch.lines, "batch:member-lines", line_width=self._member_line_width,
-            render_lines_as_tubes=True, lighting=False,
+            lighting=False,
         )
         self._member_fallback_actor = self._add_colored_mesh(
             batch.fallback_lines, "batch:member-fallback", line_width=self._member_line_width,
-            render_lines_as_tubes=True, lighting=False,
+            lighting=False,
         )
         self._member_face_actor = self._add_colored_mesh(
             batch.faces, "batch:member-faces", smooth_shading=False, lighting=True,
@@ -576,19 +593,7 @@ class StructureScene(QWidget):
         for mesh, color in zip(batch.axes, self._axis_colors):
             if not mesh.n_cells:
                 continue
-            actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=self._local_axis_line_width, pickable=False,
-                reset_camera=False, render=False, render_lines_as_tubes=True,
-                lighting=False,
-            )
-            axis_mapper = actor.GetMapper()
-            # Local axes are an analytical overlay: keep them visible over
-            # coincident solid faces, just as the profile contour lines are.
-            # The relative offset only affects depth ties and does not alter
-            # the axis geometry or the picking order of structural elements.
-            axis_mapper.SetResolveCoincidentTopologyToPolygonOffset()
-            axis_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-            axis_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+            actor = self._add_local_axis_overlay(mesh, color)
             actor.SetVisibility(self._local_axes_visible)
             self._local_axis_actors.append(actor)
 
@@ -599,6 +604,20 @@ class StructureScene(QWidget):
                 lighting=False,
             )
             self._release_actor.SetVisibility(self._member_releases_visible)
+
+    def _add_local_axis_overlay(self, mesh: pv.PolyData, color: str):
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(mesh)
+        mapper.SetScalarVisibility(False)
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetPickable(False)
+        actor.GetProperty().SetColor(*pv.Color(color).float_rgb)
+        actor.GetProperty().SetLineWidth(self._local_axis_line_width)
+        actor.GetProperty().LightingOff()
+        actor.GetProperty().RenderLinesAsTubesOff()
+        self._local_axes_renderer.AddActor(actor)
+        return actor
 
     def _add_node_batches(self) -> None:
         batch = self._node_batch
@@ -3711,25 +3730,11 @@ class StructureScene(QWidget):
         )
 
     def _update_depth_overlays(self) -> None:
-        """Move analytical axis strokes slightly toward the active camera.
-
-        The axes are batched into three actors, so one camera-facing offset is
-        applied to each actor.  This reproduces the previous per-member
-        overlay behavior while avoiding one actor per member.
-        """
+        """Keep analytical axes aligned while the overlay layer owns depth."""
         if not self._local_axis_actors:
             return
-        camera = self.plotter.renderer.GetActiveCamera()
-        direction = np.asarray(camera.GetPosition(), dtype=float) - np.asarray(
-            camera.GetFocalPoint(), dtype=float,
-        )
-        length = float(np.linalg.norm(direction))
-        if length <= 1e-12:
-            return
-        direction /= length
-        offset = direction * (self._marker_radius_current * 0.25)
         for actor in self._local_axis_actors:
-            actor.SetPosition(*offset)
+            actor.SetPosition(0.0, 0.0, 0.0)
 
     def _reference_plane_levels(self) -> tuple[float, ...]:
         values = {0.0}
@@ -3821,6 +3826,8 @@ class StructureScene(QWidget):
         self._selected = self._selected_elements[-1] if self._selected_elements else None
 
     def _clear_actor_references(self) -> None:
+        for actor in self._local_axis_actors:
+            self._local_axes_renderer.RemoveActor(actor)
         self._grid_actor = None
         self._reference_axes_actor = None
         self._member_line_actor = None
