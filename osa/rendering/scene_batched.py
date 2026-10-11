@@ -114,7 +114,11 @@ class StructureScene(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.plotter = QtInteractor(self)
+        # VTK's generic OpenGL window can query the Qt framebuffer before the
+        # QOpenGLWidget context is current when multisampling is enabled. A
+        # zero-sample context avoids the GL_INVALID_OPERATION color-buffer
+        # warnings on Linux/Wayland and keeps line rendering deterministic.
+        self.plotter = QtInteractor(self, multi_samples=0)
         layout.addWidget(self.plotter)
         self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plotter.installEventFilter(self)

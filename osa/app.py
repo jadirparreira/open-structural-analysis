@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +13,19 @@ from PySide6.QtWidgets import QApplication
 def create_application(argv: list[str] | None = None):
     # Import tardio mantém a inspeção do domínio independente do OpenGL/Qt.
     from osa.ui.main_window import APP_STYLESHEET, MainWindow
+
+    # O OSA usa os diálogos e widgets nativos do Qt e não precisa do XDG
+    # Desktop Portal. Em algumas sessões KDE/Wayland o registro do app no
+    # portal falha com "Connection already associated with an application ID".
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("QT_NO_XDG_DESKTOP_PORTAL", "1")
+        # VTK 9.7 can emit four benign framebuffer WARNs when Qt/Wayland
+        # exposes the generic OpenGL window before its color attachments are
+        # available. Keep actual VTK errors visible, but avoid polluting the
+        # terminal with this integration warning.
+        from vtkmodules.vtkCommonCore import vtkLogger
+
+        vtkLogger.SetStderrVerbosity(vtkLogger.VERBOSITY_ERROR)
 
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     resource_root = Path(__file__).resolve().parent / "resources" / "icons"
