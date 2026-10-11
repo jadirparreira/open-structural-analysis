@@ -633,6 +633,26 @@ class TopIconPalette(QFrame):
         layout.addWidget(copy_properties_button)
         self.copy_properties_button = copy_properties_button
 
+        measure_button = QToolButton(self)
+        measure_button.setFixedSize(24, 24)
+        measure_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "ruler.svg"))
+        )
+        measure_button.setIconSize(QSize(19, 19))
+        measure_tooltip = _command_tooltip("Medir", "MEASURE")
+        measure_button.setToolTip(measure_tooltip)
+        measure_button.setProperty("paletteTooltip", measure_tooltip)
+        measure_button.setAccessibleName("Medir")
+        measure_button.clicked.connect(window.start_measurement)
+        measure_button.installEventFilter(self)
+        measure_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(measure_button)
+        self.measure_button = measure_button
+
         copy_elements_button = QToolButton(self)
         copy_elements_button.setFixedSize(24, 24)
         copy_elements_button.setIcon(

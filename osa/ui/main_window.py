@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
-        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "axes",
+        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
         "referenceaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_measurement_point)
         self._make_shortcuts()
         self.palette = FloatingPalette(self)
         self.palette.reposition()
@@ -656,6 +657,18 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def start_measurement(self) -> None:
+        """Start a transient two-point distance measurement in the viewport."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._command_mode = "measurement"
+        self.scene.set_measurement_mode(True)
+        self.history.append(
+            "> <b>Medir</b> "
+            "<span style='color:#57606a'>(Clique no ponto inicial da medição)</span>"
+        )
+        self.scene.plotter.setFocus()
+
     def start_node_placement(self) -> None:
         """Start the single-click graphical node-placement flow."""
         self.command_session.cancel()
@@ -1087,6 +1100,7 @@ class MainWindow(QMainWindow):
             "rigid": ("Geometria", self.start_rigid_bar_placement),
             "copy": ("Geometria", self.start_copy_elements),
             "cprop": ("Geometria", self.start_copy_member_properties),
+            "measure": ("Geometria", self.start_measurement),
             "axes": ("Geometria", self.toggle_axes_panel),
             "group": ("Ações", self.open_action_groups),
             "action": ("Ações", self.start_load_command),
@@ -1299,6 +1313,23 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         QTimer.singleShot(0, self.refresh_scene)
 
+    def _handle_measurement_point(self, point: object) -> None:
+        """Collect two transient points and close the measurement tool."""
+        if self._command_mode != "measurement":
+            return
+        coordinates = tuple(float(value) for value in point)
+        if self.scene.measurement_start is None:
+            self.scene.set_measurement_start(coordinates)
+            self.history.append(
+                "> <b>Medir</b> "
+                "<span style='color:#57606a'>(Clique no ponto final da medição)</span>"
+            )
+            return
+
+        self._command_mode = None
+        self.scene.set_measurement_start(None)
+        self.scene.set_measurement_mode(False)
+
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         if self._command_mode == "action_selection":
@@ -1339,6 +1370,15 @@ class MainWindow(QMainWindow):
             self.history.append(
                 f"> <b>{label}</b> "
                 "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode == "measurement":
+            self._command_mode = None
+            self.scene.set_measurement_start(None)
+            self.scene.set_measurement_mode(False)
+            self.history.append(
+                "> <b>Medir</b> "
+                "<span style='color:#8c959f'>(Medição cancelada)</span>"
             )
             return
         if self._command_mode not in {

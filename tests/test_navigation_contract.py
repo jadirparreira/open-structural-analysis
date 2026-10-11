@@ -71,6 +71,7 @@ def test_model_refresh_and_reference_planes_preserve_camera_pose(qt_app):
 
 def test_wheel_zoom_changes_scale_without_reframing(qt_app):
     scene = StructureScene()
+    scene.plotter.render_window.SetSize(800, 600)
     scene.render_model(_sample_model(), preserve_camera=False)
     before = _camera_pose(scene)
     interactor = scene.plotter.iren.interactor
@@ -82,6 +83,83 @@ def test_wheel_zoom_changes_scale_without_reframing(qt_app):
         assert np.allclose(before_value, after_value)
     assert after[3] < before[3]
     assert scene.plotter.camera_set
+
+
+def test_dolly_zoom_defers_render_to_camera_frame_timer(qt_app, monkeypatch):
+    scene = StructureScene()
+    scene.plotter.render_window.SetSize(800, 600)
+    scene.render_model(_sample_model(), preserve_camera=False)
+    camera = scene.plotter.renderer.GetActiveCamera()
+    camera.ParallelProjectionOn()
+    before_scale = float(camera.GetParallelScale())
+    render_calls: list[object] = []
+    monkeypatch.setattr(scene.plotter, "render", lambda: render_calls.append(True))
+
+    scene._camera_interacting = True
+    scene._camera_drag_last_position = (400, 300)
+    scene._dolly_camera(320)
+
+    assert float(camera.GetParallelScale()) < before_scale
+    assert render_calls == []
+    assert scene._camera_render_timer.isActive()
+    scene._camera_render_timer.stop()
+
+
+def test_measurement_snap_refresh_is_deferred_until_navigation_settles(qt_app, monkeypatch):
+    scene = StructureScene()
+    scene.plotter.render_window.SetSize(800, 600)
+    scene.render_model(_sample_model(), preserve_camera=False)
+    scene._measurement_mode = True
+    refreshes: list[object] = []
+    monkeypatch.setattr(
+        scene, "_update_measurement_readout", lambda: refreshes.append(True),
+    )
+    monkeypatch.setattr(scene.plotter, "render", lambda: None)
+
+    scene._camera_interacting = True
+    scene._on_interaction_end()
+
+    assert refreshes == []
+    assert scene._measurement_refresh_timer.isActive()
+    scene._measurement_refresh_timer.stop()
+    scene._refresh_measurement_after_navigation()
+    assert refreshes == [True]
+
+
+def test_measurement_mode_defers_its_first_snap_projection(qt_app, monkeypatch):
+    scene = StructureScene()
+    scene.plotter.render_window.SetSize(800, 600)
+    scene.render_model(_sample_model(), preserve_camera=False)
+    refreshes: list[object] = []
+    monkeypatch.setattr(
+        scene, "_update_measurement_readout", lambda: refreshes.append(True),
+    )
+
+    scene.set_measurement_mode(True)
+
+    assert refreshes == []
+    assert scene._measurement_refresh_timer.isActive()
+    scene._measurement_refresh_timer.stop()
+
+
+def test_measurement_preview_line_is_transient_and_uses_fixed_start(qt_app):
+    scene = StructureScene()
+    scene.render_model(StructuralModel())
+    scene.set_measurement_mode(True)
+    scene._measurement_refresh_timer.stop()
+    scene.set_measurement_start((1.0, 2.0, 3.0))
+
+    endpoint = np.asarray((5.0, 7.0, 11.0))
+    scene._update_measurement_preview(endpoint)
+
+    assert scene._measurement_preview_actor.GetVisibility()
+    assert np.allclose(
+        np.asarray(scene._measurement_preview_actor.GetMapper().GetInput().points),
+        np.asarray(((1.0, 2.0, 3.0), (5.0, 7.0, 11.0))),
+    )
+
+    scene.set_measurement_mode(False)
+    assert not scene._measurement_preview_actor.GetVisibility()
 
 
 def test_horizontal_orbit_keeps_global_z_after_any_cube_orientation(qt_app, monkeypatch):
