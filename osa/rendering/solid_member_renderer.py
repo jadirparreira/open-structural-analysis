@@ -41,6 +41,7 @@ class SolidMemberRenderer:
                 member.section,
                 member.geometry_dict(),
                 arc_steps=self._arc_steps,
+                mirror_z=member.section_mirrored,
             )
             if shape is None:
                 return None

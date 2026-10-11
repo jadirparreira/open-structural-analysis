@@ -508,7 +508,10 @@ class ResultRenderer:
                 )
                 continue
             try:
-                shape = section_shape(member.section, member.geometry_dict(), arc_steps=12)
+                shape = section_shape(
+                    member.section, member.geometry_dict(), arc_steps=12,
+                    mirror_z=member.section_mirrored,
+                )
                 if shape is None:
                     raise ValueError("Seção incompleta.")
                 longitudinal_edge_indices = self._solid_member_renderer.longitudinal_edge_indices(shape)

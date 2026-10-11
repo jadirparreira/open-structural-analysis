@@ -63,6 +63,7 @@ class ModelBuilder:
                 member.section,
                 member.geometry_dict(),
                 source.materials[member.material][3] / 9.80665e-3,
+                mirror_z=member.section_mirrored,
             )
             section_name = f"section::{member.name}"
             target.add_section(

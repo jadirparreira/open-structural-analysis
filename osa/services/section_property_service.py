@@ -13,5 +13,9 @@ class SectionPropertyService:
         family: str,
         geometry: Mapping[str, float],
         density_kg_m3: float,
+        *,
+        mirror_z: bool = False,
     ) -> SectionProperties:
-        return calculate_section_properties(family, geometry, density_kg_m3)
+        return calculate_section_properties(
+            family, geometry, density_kg_m3, mirror_z=mirror_z,
+        )

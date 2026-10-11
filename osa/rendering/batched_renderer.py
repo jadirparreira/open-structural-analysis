@@ -229,7 +229,10 @@ class BatchedMemberRenderer:
             solid_delta = solid_end - solid_start
 
             try:
-                shape = section_shape(member.section, member.geometry_dict(), arc_steps=12)
+                shape = section_shape(
+                    member.section, member.geometry_dict(), arc_steps=12,
+                    mirror_z=member.section_mirrored,
+                )
                 if shape is None:
                     raise ValueError("Seção incompleta.")
                 face_source = self.solids._mesh_for(shape)

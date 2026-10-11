@@ -139,6 +139,9 @@ class ModelService:
     def assign_profile(self, name: str, profile: str, geometry: dict[str, float]):
         return self.model.update_member_profile(name, profile, geometry)
 
+    def set_section_mirrored(self, name: str, mirrored: bool):
+        return self.model.update_member_section_mirrored(name, mirrored)
+
     def update_member_rotation(self, name: str, rotation: int):
         return self.model.update_member_rotation(name, rotation)
 
@@ -176,6 +179,7 @@ class ModelService:
                     member.section,
                     member.geometry_dict(),
                     member.material_values[3] / 9.80665e-3,
+                    mirror_z=member.section_mirrored,
                 )
             except (KeyError, TypeError, ValueError):
                 missing.append(member.name)

@@ -15,6 +15,7 @@ from osa.sections.contours import (
     i_svg_path,
     l_formed_svg_path,
     l_svg_path,
+    mirror_svg_path,
     rounded_rect_svg_path,
     t_svg_path,
     u_formed_svg_path,
@@ -37,6 +38,7 @@ class SectionPanel(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         self._member_name = ""
         self._section_family = ""
+        self._section_mirrored = False
         self._decimals = {
             "d": 0, "bf": 0, "tw": 2, "tf": 2,
             "b": 0, "t": 2, "c": 0, "D": 0, "De": 0, "Di": 0, "h": 0,
@@ -54,6 +56,19 @@ class SectionPanel(QFrame):
         self.profile.setPlaceholderText("Indefinido")
         profile_row = QHBoxLayout(); profile_row.setSpacing(6)
         profile_row.addWidget(self.profile, 1)
+        self.mirror_toggle = QToolButton()
+        self.mirror_toggle.setCheckable(True)
+        self.mirror_toggle.setChecked(False)
+        self.mirror_toggle.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "mirror-z.svg")))
+        self.mirror_toggle.setIconSize(QSize(18, 18)); self.mirror_toggle.setFixedSize(34, 34)
+        self.mirror_toggle.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        self.mirror_toggle.setToolTip("Espelhar seção em torno do eixo Z")
+        self.mirror_toggle.setAccessibleName("Espelhar seção em torno do eixo Z")
+        self.mirror_toggle.toggled.connect(self._section_mirrored_changed)
+        profile_row.addWidget(self.mirror_toggle)
         self.mechanical_toggle = QToolButton()
         self.mechanical_toggle.setCheckable(True)
         self.mechanical_toggle.setChecked(False)
@@ -195,6 +210,9 @@ class SectionPanel(QFrame):
         # Each member opens with the optional mechanical block collapsed.
         self.mechanical_toggle.setChecked(False)
         member = self.window.model.bars.get(member_name)
+        self._section_mirrored = bool(getattr(member, "section_mirrored", False)) if member else False
+        with QSignalBlocker(self.mirror_toggle):
+            self.mirror_toggle.setChecked(self._section_mirrored)
         if member is not None:
             if member.profile:
                 self.window.section_profiles[member_name] = member.profile
@@ -300,6 +318,23 @@ class SectionPanel(QFrame):
         self.layout().activate()
         self.adjustSize()
         self.resize(self.width(), self.sizeHint().height())
+
+    def _section_mirrored_changed(self, mirrored: bool) -> None:
+        if not self._member_name:
+            return
+        self._section_mirrored = bool(mirrored)
+        self.window.model_service.set_section_mirrored(self._member_name, self._section_mirrored)
+        values = self.window.section_geometry.get(self._member_name)
+        properties = None
+        invalid = False
+        if values:
+            try:
+                properties = self._calculate_properties(values)
+            except ValueError:
+                invalid = True
+        self._populate_calculated_values(properties, bool(values))
+        self._update_preview(values, invalid=invalid)
+        self.window.refresh_member_geometry(self._member_name)
 
     def _default_geometry(self, profile: str) -> dict[str, float]:
         # Defaults are kept in the catalog and copied into the member-specific
@@ -623,7 +658,10 @@ class SectionPanel(QFrame):
     def _calculate_properties(self, geometry: dict[str, float]):
         member = self.window.model.bars.get(self._member_name)
         density = member.material_values[3] / 9.80665e-3 if member is not None else 7850.0
-        return self.window.section_property_service.calculate(self._section_family, geometry, density)
+        return self.window.section_property_service.calculate(
+            self._section_family, geometry, density,
+            mirror_z=self._section_mirrored,
+        )
 
     def _populate_calculated_values(self, properties, enabled: bool) -> None:
         values = {
@@ -1082,6 +1120,8 @@ class SectionPanel(QFrame):
                 '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>'
                 '<path d="M12 9v4"/><path d="M12 17h.01"/></g>'
             )
+        if self._section_mirrored:
+            path = mirror_svg_path(path, canvas_w / 2.0)
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_w:g}" height="{canvas_h:g}" '
                f'viewBox="0 0 {canvas_w:g} {canvas_h:g}">'
                '<defs>'

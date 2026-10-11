@@ -100,15 +100,16 @@ class ProjectSerializer:
                 self._material_values(item.get("material_values", (200000000.0, 76900000.0, 0.30, 76.9822025))),
                 item.get("section", ""), item.get("profile", ""),
                 tuple((str(key), float(value)) for key, value in geometry),
-                candidate._member_rotation(item.get("rotation", 0)),
-                releases,
-                candidate._member_color(item.get("color", "#6e7781")),
-                candidate._member_solid_face_offsets(
+                rotation=candidate._member_rotation(item.get("rotation", 0)),
+                releases=releases,
+                color=candidate._member_color(item.get("color", "#6e7781")),
+                solid_face_offsets=candidate._member_solid_face_offsets(
                     tuple(float(value) for value in item.get("solid_face_offsets", (0.0, 0.0)))
                 ),
-                candidate._member_solid_section_offsets(
+                solid_section_offsets=candidate._member_solid_section_offsets(
                     tuple(float(value) for value in item.get("solid_section_offsets", (0.0, 0.0)))
                 ),
+                section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
             )
             candidate.bars[member.name] = member

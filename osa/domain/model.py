@@ -453,6 +453,7 @@ class StructuralModel:
             changes["section"] = source.section
             changes["profile"] = source.profile
             changes["section_geometry"] = source.section_geometry
+            changes["section_mirrored"] = source.section_mirrored
         if "rotation" in properties:
             changes["rotation"] = source.rotation
         if "offsets" in properties:
@@ -647,7 +648,10 @@ class StructuralModel:
         return self.bars[name]
 
     def update_bar_section(self, name: str, section: str) -> Bar:
-        self.bars[name] = replace(self.bars[name], section=section, profile="", section_geometry=())
+        self.bars[name] = replace(
+            self.bars[name], section=section, profile="", section_geometry=(),
+            section_mirrored=False,
+        )
         self._touch()
         return self.bars[name]
 
@@ -655,6 +659,13 @@ class StructuralModel:
         self.bars[name] = replace(
             self.bars[name], profile=profile, section_geometry=tuple((key, float(value)) for key, value in geometry.items())
         )
+        self._touch()
+        return self.bars[name]
+
+    def update_member_section_mirrored(self, name: str, mirrored: bool) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+        self.bars[name] = replace(self.bars[name], section_mirrored=bool(mirrored))
         self._touch()
         return self.bars[name]
 

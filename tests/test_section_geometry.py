@@ -34,6 +34,20 @@ def test_section_shape_centers_hollow_section_at_its_composite_centroid():
     assert shape.centroid == pytest.approx((0.0, 0.0), abs=1e-10)
 
 
+def test_section_shape_mirror_z_reflects_the_centered_profile():
+    original = section_shape("L Formado", {"d": 60, "bf": 50, "t": 2})
+    mirrored = section_shape("L Formado", {"d": 60, "bf": 50, "t": 2}, mirror_z=True)
+
+    assert original is not None and mirrored is not None
+    assert mirrored.bounds == pytest.approx(
+        (-original.bounds[1], -original.bounds[0], original.bounds[2], original.bounds[3])
+    )
+    for original_loop, mirrored_loop in zip(original.loops, mirrored.loops):
+        for (original_y, original_z), (mirrored_y, mirrored_z) in zip(original_loop, mirrored_loop):
+            assert mirrored_y == pytest.approx(-original_y)
+            assert mirrored_z == pytest.approx(original_z)
+
+
 @pytest.mark.parametrize(
     ("family", "geometry"),
     (

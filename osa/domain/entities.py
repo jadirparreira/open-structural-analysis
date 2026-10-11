@@ -61,6 +61,8 @@ class Member:
     section: str = ""
     profile: str = ""
     section_geometry: tuple[tuple[str, float], ...] = ()
+    # Espelhamento visual e geométrico da seção em torno do eixo local Z.
+    section_mirrored: bool = False
     rotation: int = 0
     releases: tuple[bool, ...] = (False,) * 12
     color: str = "#6e7781"

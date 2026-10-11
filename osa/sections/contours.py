@@ -6,10 +6,86 @@ com raios de dobra e detalhes próprios de cada família de seção.
 
 from __future__ import annotations
 
+import re
 from math import cos, pi, sin, tan
 
 
 Point = tuple[float, float]
+
+_SVG_PATH_TOKEN = re.compile(
+    r"[A-Za-z]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+)
+_SVG_PATH_ARGUMENTS = {"M": 2, "L": 2, "H": 1, "V": 1, "A": 7, "Q": 4}
+
+
+def mirror_svg_path(path: str, axis_x: float) -> str:
+    """Reflect an absolute SVG path at a vertical line without SVG transforms.
+
+    The section preview uses SVG paint servers for material hatching. Qt's SVG
+    renderer drops those patterns when a negative scale is applied, so the
+    path coordinates are reflected before rendering instead.
+    """
+    tokens = _SVG_PATH_TOKEN.findall(path)
+    mirrored: list[str] = []
+    index = 0
+    command: str | None = None
+
+    def number() -> float:
+        nonlocal index
+        if index >= len(tokens) or tokens[index].isalpha():
+            raise ValueError("Caminho SVG incompleto.")
+        value = float(tokens[index])
+        index += 1
+        return value
+
+    def format_number(value: float) -> str:
+        if abs(value) < 1e-9:
+            value = 0.0
+        return f"{value:.2f}"
+
+    while index < len(tokens):
+        if tokens[index].isalpha():
+            command = tokens[index].upper()
+            index += 1
+        if command is None:
+            raise ValueError("Caminho SVG sem comando inicial.")
+        if command == "Z":
+            mirrored.append("Z")
+            command = None
+            continue
+        try:
+            argument_count = _SVG_PATH_ARGUMENTS[command]
+        except KeyError as error:
+            raise ValueError(f"Comando SVG não suportado: {command}.") from error
+
+        values = [number() for _ in range(argument_count)]
+        if command == "M" or command == "L":
+            values[0] = 2.0 * axis_x - values[0]
+            mirrored.append(f"{command} {format_number(values[0])} {format_number(values[1])}")
+        elif command == "H":
+            mirrored.append(f"H {format_number(2.0 * axis_x - values[0])}")
+        elif command == "V":
+            mirrored.append(f"V {format_number(values[0])}")
+        elif command == "Q":
+            values[0] = 2.0 * axis_x - values[0]
+            values[2] = 2.0 * axis_x - values[2]
+            mirrored.append(
+                "Q " + " ".join(format_number(value) for value in values)
+            )
+        else:  # A: radii, rotation, flags, endpoint x/y
+            values[2] = -values[2]
+            values[4] = 1.0 - values[4]
+            values[5] = 2.0 * axis_x - values[5]
+            mirrored.append(
+                "A " + " ".join(
+                    str(int(value)) if position in (3, 4) else format_number(value)
+                    for position, value in enumerate(values)
+                )
+            )
+        if command == "M":
+            # Additional coordinate pairs after M are implicit L commands.
+            command = "L"
+    return " ".join(mirrored)
 
 
 def rounded_rect_svg_path(

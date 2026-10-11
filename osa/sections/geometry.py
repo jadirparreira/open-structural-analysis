@@ -367,6 +367,7 @@ def section_shape(
     geometry: dict[str, float],
     *,
     arc_steps: int = 12,
+    mirror_z: bool = False,
 ) -> SectionShape | None:
     """Resolve a member section into centered, closed 2D loops.
 
@@ -376,7 +377,21 @@ def section_shape(
     result mode.
     """
     items = tuple(sorted((str(key), float(value)) for key, value in geometry.items()))
-    return _section_shape_cached(str(family), items, int(arc_steps))
+    shape = _section_shape_cached(str(family), items, int(arc_steps))
+    if shape is None or not mirror_z:
+        return shape
+    mirrored_loops = tuple(
+        tuple((-point[0], point[1]) for point in loop)
+        for loop in shape.loops
+    )
+    return SectionShape(
+        mirrored_loops,
+        (-shape.centroid[0], shape.centroid[1]),
+        (
+            -shape.bounds[1], -shape.bounds[0],
+            shape.bounds[2], shape.bounds[3],
+        ),
+    )
 
 
 def _section_shape_uncached(
