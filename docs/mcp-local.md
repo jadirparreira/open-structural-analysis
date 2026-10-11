@@ -40,6 +40,9 @@ alterações na tela.
 - `delete_elements`: exclui nós, membros e barras rígidas em lote. Use
   `dry_run` para revisar o plano e `cascade` para incluir automaticamente as
   dependências conectadas aos nós selecionados.
+- `clear_actions`: remove todas as cargas de um ou vários elementos, usando
+  `target` para um elemento ou `targets` para uma lista de nós e membros. O
+  filtro `load_case` é opcional.
 
 Com essas ferramentas, uma IA pode modelar uma estrutura passo a passo:
 

@@ -776,6 +776,7 @@ class ProgramSettingsDialog(QDialog):
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
         categories.addItem("Membros")
+        categories.addItem("Vídeo")
         categories.addItem("MCP")
         pages = QStackedWidget()
         snaps_page = QWidget()
@@ -853,6 +854,62 @@ class ProgramSettingsDialog(QDialog):
         members_layout.addLayout(members_close_row)
         pages.addWidget(members_page)
 
+        video_page = QWidget()
+        video_layout = QVBoxLayout(video_page)
+        video_layout.addSpacing(10)
+        video_hint = QLabel(
+            "Ajuste a suavidade das bordas dos membros, sólidos e eixos locais. "
+            "Valores maiores melhoram o acabamento, mas podem consumir mais recursos gráficos."
+        )
+        video_hint.setObjectName("hint")
+        video_hint.setWordWrap(True)
+        video_layout.addWidget(video_hint)
+        video_layout.addSpacing(10)
+
+        antialiasing_header = QHBoxLayout()
+        antialiasing_label = QLabel("Qualidade do antialiasing")
+        antialiasing_label.setObjectName("propertySection")
+        antialiasing_header.addWidget(antialiasing_label)
+        antialiasing_header.addStretch(1)
+        self._antialiasing_value = QLabel()
+        self._antialiasing_value.setObjectName("settingValue")
+        antialiasing_header.addWidget(self._antialiasing_value)
+        video_layout.addLayout(antialiasing_header)
+
+        self._antialiasing_slider = QSlider(Qt.Orientation.Horizontal)
+        self._antialiasing_slider.setRange(0, 3)
+        self._antialiasing_slider.setSingleStep(1)
+        self._antialiasing_slider.setPageStep(1)
+        self._antialiasing_slider.setTickInterval(1)
+        self._antialiasing_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._antialiasing_slider.setAccessibleName("Qualidade do antialiasing")
+        current_samples = self.window.scene.antialiasing_samples()
+        self._antialiasing_slider.setValue(self._antialiasing_index(current_samples))
+        self._set_antialiasing_label(current_samples)
+        self._antialiasing_slider.valueChanged.connect(self._set_antialiasing_level)
+        video_layout.addWidget(self._antialiasing_slider)
+
+        scale_labels = QHBoxLayout()
+        scale_labels.setContentsMargins(0, 0, 0, 0)
+        for index, text in enumerate(("0x", "2x", "4x", "8x")):
+            label = QLabel(text)
+            label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft if index == 0
+                else Qt.AlignmentFlag.AlignRight if index == 3
+                else Qt.AlignmentFlag.AlignHCenter
+            )
+            scale_labels.addWidget(label, 1)
+        video_layout.addLayout(scale_labels)
+        video_layout.addStretch(1)
+        video_close_button = QPushButton("Fechar")
+        video_close_button.setObjectName("closeProperties")
+        video_close_button.clicked.connect(self.accept)
+        video_close_row = QHBoxLayout()
+        video_close_row.addStretch()
+        video_close_row.addWidget(video_close_button)
+        video_layout.addLayout(video_close_row)
+        pages.addWidget(video_page)
+
         mcp_page = QWidget()
         mcp_layout = QVBoxLayout(mcp_page)
         mcp_layout.addSpacing(10)
@@ -913,6 +970,19 @@ class ProgramSettingsDialog(QDialog):
 
     def _copy_mcp_endpoint(self) -> None:
         QApplication.clipboard().setText(self.window.mcp_endpoint)
+
+    @staticmethod
+    def _antialiasing_index(samples: int) -> int:
+        levels = (0, 2, 4, 8)
+        return levels.index(samples)
+
+    def _set_antialiasing_label(self, samples: int) -> None:
+        self._antialiasing_value.setText(f"{samples}x")
+
+    def _set_antialiasing_level(self, index: int) -> None:
+        samples = (0, 2, 4, 8)[int(index)]
+        self._set_antialiasing_label(samples)
+        self.window.scene.set_antialiasing_samples(samples)
 
 
 class ActionGroupDialog(QDialog):

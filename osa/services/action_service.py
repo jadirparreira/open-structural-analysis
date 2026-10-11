@@ -92,12 +92,18 @@ class ActionService:
         self,
         *,
         target: str | None = None,
+        targets: tuple[str, ...] | None = None,
         load_case: str | None = None,
     ) -> tuple[str, ...]:
-        """Remove ações filtradas por alvo e/ou caso de carregamento."""
+        """Remove ações filtradas por um ou vários alvos e/ou caso de carregamento."""
+        target_filter = None
+        if target is not None:
+            target_filter = {target}
+        elif targets:
+            target_filter = set(targets)
         names = tuple(
             name for name, action in self.model.actions.items()
-            if (target is None or action.target == target)
+            if (target_filter is None or action.target in target_filter)
             and (load_case is None or action.load_case == load_case)
         )
         if names:

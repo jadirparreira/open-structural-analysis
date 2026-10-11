@@ -618,15 +618,21 @@ class LocalMcpServer:
             name="clear_actions",
             title="Limpar carregamentos",
             description=(
-                "Remove carregamentos por load_case, target ou ambos. Informe pelo menos um filtro."
+                "Remove carregamentos por load_case, target, targets ou uma combinação desses filtros. "
+                "target mantém o filtro de um único elemento; targets aceita vários nós e membros."
             ),
             annotations=destructive,
         )
         def clear_actions(
             load_case: str | None = None,
             target: str | None = None,
+            targets: list[str] | None = None,
         ) -> dict[str, Any]:
-            return self.application.clear_actions(load_case=load_case, target=target)
+            return self.application.clear_actions(
+                load_case=load_case,
+                target=target,
+                targets=targets,
+            )
 
         @self.server.tool(
             name="list_rigid_bars",

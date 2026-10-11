@@ -650,12 +650,22 @@ class McpApplication:
         *,
         load_case: str | None = None,
         target: str | None = None,
+        targets: list[str] | None = None,
     ) -> dict[str, Any]:
-        if load_case is None and target is None:
-            raise ValueError("Informe load_case, target ou ambos para limpar ações.")
+        if target is not None and targets is not None:
+            raise ValueError("Informe target ou targets, não os dois.")
+        selected_targets = tuple(dict.fromkeys(targets or ()))
+        if targets is not None and not selected_targets:
+            raise ValueError("Informe pelo menos um elemento em targets.")
+        if load_case is None and target is None and not selected_targets:
+            raise ValueError("Informe load_case, target, targets ou uma combinação deles para limpar ações.")
         if load_case is not None:
             self._validate_load_case(load_case)
-        names = self.action_service.remove_actions(target=target, load_case=load_case)
+        names = self.action_service.remove_actions(
+            target=target,
+            targets=selected_targets,
+            load_case=load_case,
+        )
         self._notify_model_changed()
         return {"revision": self.model.revision, "deleted_actions": list(names)}
 

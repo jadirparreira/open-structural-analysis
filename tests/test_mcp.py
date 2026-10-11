@@ -354,6 +354,17 @@ def test_mcp_application_manages_node_and_member_actions():
     cleared = application.clear_actions(target="B1", load_case="Ação permanente")
     assert len(cleared["deleted_actions"]) == 2
 
+    application.add_node_force("N1", "Y", 7.0, "Ação permanente")
+    application.add_node_moment("N1", "X", 2.0, "Ação variável")
+    application.add_member_moment("B1", "X", 1.0, "Ação variável")
+    application.add_member_moment("B1", "Z", 2.0, "Ação variável")
+    application.add_member_moment("B1", "Y", 3.0, "Ação permanente")
+
+    cleared_targets = application.clear_actions(targets=["N1", "B1"])
+    assert len(cleared_targets["deleted_actions"]) == 6
+    assert not application.list_actions(target="N1")["actions"]
+    assert not application.list_actions(target="B1")["actions"]
+
     selfweight = application.apply_selfweight("Peso próprio")
     assert selfweight["actions"][0]["kind"] == "member_distributed_force_selfweight_Z"
     assert application.list_actions("Peso próprio")["actions"]

@@ -27,6 +27,12 @@ def test_mcp_is_disabled_until_user_activates_it(qt_app):
     assert window._mcp_server.is_running is False
     assert window.mcp_status()["state"] == "disabled"
     assert dialog._mcp_checkbox.isChecked() is False
+    assert dialog._antialiasing_slider.value() == 2
+    assert window.scene.antialiasing_samples() == 4
+
+    dialog._antialiasing_slider.setValue(3)
+    assert window.scene.antialiasing_samples() == 8
+    assert dialog._antialiasing_value.text() == "8x"
 
     dialog.close()
     window.close()

@@ -85,6 +85,9 @@ class SnapMarker(QWidget):
 class StructureScene(QWidget):
     """Render the full model with a small, stable number of VTK actors."""
 
+    _antialiasing_levels = (0, 2, 4, 8)
+    _default_antialiasing_samples = 4
+
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
     placement_point_clicked = Signal(object)
@@ -114,11 +117,11 @@ class StructureScene(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        # VTK's generic OpenGL window can query the Qt framebuffer before the
-        # QOpenGLWidget context is current when multisampling is enabled. A
-        # zero-sample context avoids the GL_INVALID_OPERATION color-buffer
-        # warnings on Linux/Wayland and keeps line rendering deterministic.
-        self.plotter = QtInteractor(self, multi_samples=0)
+        # Keep a moderate default so edges and thin overlays retain a clean
+        # finish without imposing the highest multisampling cost on every
+        # project. The setting can be changed live from Program Settings.
+        self._antialiasing_samples = self._default_antialiasing_samples
+        self.plotter = QtInteractor(self, multi_samples=self._antialiasing_samples)
         layout.addWidget(self.plotter)
         self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plotter.installEventFilter(self)
@@ -545,6 +548,22 @@ class StructureScene(QWidget):
         self._orientation_widget.sync_from_camera()
         self._silhouette_timer.stop()
         self._refresh_member_silhouette()
+        self.plotter.render()
+
+    def antialiasing_samples(self) -> int:
+        """Return the active multisampling level used by the viewport."""
+        return self._antialiasing_samples
+
+    def set_antialiasing_samples(self, samples: int) -> None:
+        """Apply a supported multisampling level without closing the app."""
+        samples = int(samples)
+        if samples not in self._antialiasing_levels:
+            raise ValueError("A qualidade do antialiasing deve ser 0, 2, 4 ou 8.")
+        if samples == self._antialiasing_samples:
+            return
+        self._antialiasing_samples = samples
+        self.plotter.render_window.SetMultiSamples(samples)
+        self.plotter.render_window.Modified()
         self.plotter.render()
 
     def _add_member_batches(self) -> None:

@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
