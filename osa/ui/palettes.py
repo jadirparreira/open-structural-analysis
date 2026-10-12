@@ -18,7 +18,7 @@ class PaletteTooltip(QLabel):
         self.setObjectName("paletteTooltip")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pending: tuple[QToolButton, str, str] | None = None
+        self._pending: tuple[QToolButton, str, str, int] | None = None
         self._show_timer = QTimer(self)
         self._show_timer.setSingleShot(True)
         self._show_timer.timeout.connect(self._show_pending)
@@ -30,24 +30,24 @@ class PaletteTooltip(QLabel):
         self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._fade_animation.finished.connect(self._fade_finished)
 
-    def schedule_for(self, button: QToolButton, text: str) -> None:
-        self._schedule(button, text, "right")
+    def schedule_for(self, button: QToolButton, text: str, gap: int = 10) -> None:
+        self._schedule(button, text, "right", gap)
 
     def schedule_below(self, button: QToolButton, text: str) -> None:
-        self._schedule(button, text, "below")
+        self._schedule(button, text, "below", 10)
 
     def schedule_upper_right(self, button: QToolButton, text: str) -> None:
-        self._schedule(button, text, "upper-right")
+        self._schedule(button, text, "upper-right", 10)
 
     def schedule_left(self, button: QToolButton, text: str) -> None:
-        self._schedule(button, text, "left")
+        self._schedule(button, text, "left", 10)
 
     def schedule_above(self, button: QToolButton, text: str) -> None:
-        self._schedule(button, text, "above")
+        self._schedule(button, text, "above", 10)
 
-    def _schedule(self, button: QToolButton, text: str, placement: str) -> None:
+    def _schedule(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
-        self._pending = button, text, placement
+        self._pending = button, text, placement, gap
         if self.isVisible():
             self._animate_to(0.0)
         self._show_timer.start(self.SHOW_DELAY_MS)
@@ -57,12 +57,12 @@ class PaletteTooltip(QLabel):
         self._pending = None
         if pending is None:
             return
-        button, text, placement = pending
+        button, text, placement, gap = pending
         if not button.isVisible():
             return
-        self._show_now(button, text, placement)
+        self._show_now(button, text, placement, gap)
 
-    def _show_now(self, button: QToolButton, text: str, placement: str) -> None:
+    def _show_now(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
         self._pending = None
         self.setText(text)
@@ -92,7 +92,7 @@ class PaletteTooltip(QLabel):
                 button_position.y() + (button.height() - self.height()) // 2,
             )
         else:
-            button_position = button.mapTo(parent, QPoint(button.width() + 10, 0))
+            button_position = button.mapTo(parent, QPoint(button.width() + gap, 0))
             self.move(
                 button_position.x(),
                 button_position.y() + (button.height() - self.height()) // 2,

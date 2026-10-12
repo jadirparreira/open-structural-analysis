@@ -7,8 +7,11 @@ class ProjectService:
         self.model = model
         self.repository = repository or ProjectRepository()
 
-    def save(self, path) -> None:
-        self.repository.save(self.model, path)
+    def save(self, path, thumbnail: str | None = None) -> None:
+        self.repository.save(self.model, path, thumbnail)
+
+    def load_thumbnail(self, path) -> str | None:
+        return self.repository.load_thumbnail(path)
 
     def load(self, path) -> None:
         self.repository.load(self.model, path)

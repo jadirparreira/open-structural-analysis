@@ -1,5 +1,7 @@
 from osa.domain import ActionDefinition, ActionGroup
 from osa.model import ReferenceAxis, StructuralModel
+from osa.persistence import ProjectRepository
+from osa.services import ThumbnailService
 
 
 def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
@@ -19,6 +21,23 @@ def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
     assert restored.bars["B1"].rotation_flexibility_percent == (10, 20, 30, 40, 50, 60)
     assert restored.bars["B1"].section_mirrored is True
     assert restored.bars["B1"] == model.bars["B1"]
+
+
+def test_project_thumbnail_is_persisted_without_affecting_model_round_trip(tmp_path):
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 4, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    thumbnail = ThumbnailService.generate(model)
+    path = tmp_path / "preview.osa"
+
+    repository = ProjectRepository()
+    repository.save(model, path, thumbnail=thumbnail)
+
+    restored = StructuralModel()
+    repository.load(restored, path)
+    assert restored.as_dict() == model.as_dict()
+    assert repository.load_thumbnail(path) == thumbnail
 
 
 def test_v1_files_are_still_readable():

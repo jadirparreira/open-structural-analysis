@@ -29,6 +29,7 @@ QToolButton#menuButton::menu-indicator { image: none; }
 QMenu { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; padding: 5px; color: #24292f; }
 QMenu::item { padding: 7px 28px 7px 10px; border-radius: 0px; }
 QMenu::item:selected { background: #eaeef2; }
+QMenu::item:disabled { color: #8c959f; background: transparent; }
 QMenu::separator { height: 1px; background: #d8dee4; margin: 5px 6px; }
 QPushButton#primaryButton {
     min-height: 34px; padding: 4px 16px; border: 0; border-radius: 7px;
@@ -95,4 +96,32 @@ QLabel#historyLine { color: #57606a; padding: 1px 8px; }
 QLineEdit#commandInput { min-height: 36px; border: 1px solid #d0d7de; border-radius: 8px; background: #ffffff; color: #24292f; padding: 0 10px; }
 QLineEdit#commandInput:focus { border: 2px solid #0969da; }
 QToolTip { background: #24292f; color: #ffffff; border: 1px solid #57606a; }
+QWidget#homePage { background: #ffffff; }
+QFrame#homeRecentPanel { background: #f6f8fa; border-right: 1px solid #d0d7de; }
+QScrollArea#homeRecentScroll, QScrollArea#homeRecentScroll QWidget#qt_scrollarea_viewport { background: #f6f8fa; border: 0; }
+QWidget#homeRecentContent { background: #f6f8fa; }
+QFrame#homeMainPanel { background: #ffffff; }
+QLabel#homeSectionTitle { color: #24292f; font-size: 13px; font-weight: 400; }
+QLabel#homeHint { color: #57606a; font-size: 12px; }
+QLabel#homeWelcome { color: #57606a; font-size: 22px; font-weight: 400; }
+QLabel#homeWordmark { color: #24292f; font-size: 28px; }
+QLabel#homeDescription { color: #57606a; font-size: 14px; }
+QFrame#homeSeparator { color: #d0d7de; background: #d0d7de; max-height: 1px; }
+QLabel#homeDisclaimer { color: #8c959f; font-size: 11px; }
+QFrame#recentProjectCard { background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; }
+QFrame#recentProjectCard:hover { border-color: #0969da; background: #f6f8fa; }
+QLabel#recentProjectName { color: #24292f; font-size: 12px; font-weight: 600; }
+QLabel#recentProjectMeta { color: #8c959f; font-size: 11px; }
+QToolButton#recentProjectRemoveButton {
+    border: 0; border-radius: 6px; padding: 0;
+    background: transparent; color: #8c959f;
+}
+QToolButton#recentProjectRemoveButton:hover { background: #eaeef2; color: #24292f; }
+QToolButton#recentProjectRemoveButton:pressed { background: #d0d7de; }
+QPushButton#homePrimaryButton { min-height: 42px; padding: 4px 16px; border: 0; border-radius: 7px; background: #0969da; color: #ffffff; font-weight: 700; }
+QPushButton#homePrimaryButton:hover { background: #0550ae; }
+QPushButton#homePrimaryButton:pressed { background: #033d8b; }
+QPushButton#homeSecondaryButton { min-height: 42px; padding: 4px 16px; border: 1px solid #d0d7de; border-radius: 7px; background: #f6f8fa; color: #24292f; }
+QPushButton#homeSecondaryButton:hover { background: #eaeef2; border-color: #8c959f; }
+QPushButton#homeSecondaryButton:pressed { background: #d0d7de; }
 """

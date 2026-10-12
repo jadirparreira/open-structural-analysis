@@ -1,5 +1,6 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
+import json
 
 from PySide6.QtCore import QThread, Signal
 
@@ -15,6 +16,8 @@ from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
+    PROJECT_MANUAL_URL,
+    AboutDialog,
     ActionDialog,
     ActionGroupDialog,
     CombinationsDialog,
@@ -25,6 +28,7 @@ from .dialogs import (
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
+from .home import HomePage
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -103,8 +107,12 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
         self.scene = StructureScene(shell)
+        self.home = HomePage(shell)
+        self.view_stack = QStackedWidget(shell)
+        self.view_stack.addWidget(self.home)
+        self.view_stack.addWidget(self.scene)
         shell_layout.addWidget(self.title_bar)
-        shell_layout.addWidget(self.scene, 1)
+        shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self.selected: tuple[str, str] | None = None
@@ -268,6 +276,11 @@ class MainWindow(QMainWindow):
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_integration = LocalMcpIntegration()
         self._mcp_enabled = False
+        self.home.new_project_requested.connect(self.new_model)
+        self.home.open_project_requested.connect(self.open_model)
+        self.home.recent_project_requested.connect(self._open_recent_project)
+        self.home.manual_requested.connect(self.open_manual)
+        self.show_home()
 
     def process_analysis(self) -> None:
         """Run PyNite in the background after the progress card is painted."""
@@ -333,6 +346,11 @@ class MainWindow(QMainWindow):
 
     def open_program_settings(self) -> None:
         dialog = ProgramSettingsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
+    def open_about(self) -> None:
+        dialog = AboutDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
 
@@ -1675,6 +1693,17 @@ class MainWindow(QMainWindow):
     def new_model(self) -> None:
         if not self._confirm_pending_changes():
             return
+        self._reset_model_state()
+        self.show_editor()
+
+    def close_project(self) -> None:
+        """Fecha o modelo atual e retorna à Home, mantendo a aplicação aberta."""
+        if not self._confirm_pending_changes():
+            return
+        self._reset_model_state()
+        self.show_home()
+
+    def _reset_model_state(self) -> None:
         self.axes_panel.discard()
         self.model.clear()
         self.section_profiles.clear()
@@ -1719,48 +1748,58 @@ class MainWindow(QMainWindow):
 
     def _save_model_to(self, path: str | Path) -> None:
         try:
-            self.project_service.save(path)
+            thumbnail = ThumbnailService.generate(self.model)
+            self.project_service.save(path, thumbnail=thumbnail)
             self.current_path = Path(path)
             self._saved_revision = self.model.revision
+            self.home.store.add(self.current_path)
+            self.home.refresh()
         except OSError as error:
             self.show_error(f"Não foi possível salvar o arquivo: {error}")
 
     def open_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._project_file_filter)
         if path:
-            if Path(path).suffix.casefold() != ".osa":
-                self.show_error("Selecione um arquivo de modelo com extensão .osa.")
-                return
-            try:
-                self.axes_panel.discard()
-                self.project_service.load(path)
-                self.normalize_member_directions_if_enabled()
-                self.section_profiles = {
-                    name: member.profile for name, member in self.model.bars.items() if member.profile
-                }
-                self.section_geometry = {
-                    name: member.geometry_dict() for name, member in self.model.bars.items()
-                    if member.section_geometry
-                }
-                self.command_session.cancel()
-                self._command_mode = None
-                self._member_placement_start = None
-                self._join_member_first = None
-                self._copy_properties_reference = None
-                self._copy_elements_selection = []
-                self._copy_elements_reference = None
-                self._pending_action_launch = None
-                self.member_property_copy_panel.hide()
-                self.scene.set_member_placement_mode(False)
-                self.scene.set_selection_highlight(())
-                self.clear_selection()
-                self.current_path = Path(path)
-                self._saved_revision = self.model.revision
-                self.refresh_action_palette()
-                self.refresh_analysis_palette()
-                self.refresh_scene(fit_camera=True)
-            except (OSError, ValueError, KeyError) as error:
-                self.show_error(f"Não foi possível abrir o modelo: {error}")
+            self._open_model_path(path)
+
+    def _open_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if path.suffix.casefold() != ".osa":
+            self.show_error("Selecione um arquivo de modelo com extensão .osa.")
+            return
+        try:
+            self.axes_panel.discard()
+            self.project_service.load(path)
+            self.normalize_member_directions_if_enabled()
+            self.section_profiles = {
+                name: member.profile for name, member in self.model.bars.items() if member.profile
+            }
+            self.section_geometry = {
+                name: member.geometry_dict() for name, member in self.model.bars.items()
+                if member.section_geometry
+            }
+            self.command_session.cancel()
+            self._command_mode = None
+            self._member_placement_start = None
+            self._join_member_first = None
+            self._copy_properties_reference = None
+            self._copy_elements_selection = []
+            self._copy_elements_reference = None
+            self._pending_action_launch = None
+            self.member_property_copy_panel.hide()
+            self.scene.set_member_placement_mode(False)
+            self.scene.set_selection_highlight(())
+            self.clear_selection()
+            self.current_path = path
+            self._saved_revision = self.model.revision
+            self.home.store.add(self.current_path)
+            self.home.refresh()
+            self.refresh_action_palette()
+            self.refresh_analysis_palette()
+            self.refresh_scene(fit_camera=True)
+            self.show_editor()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            self.show_error(f"Não foi possível abrir o modelo: {error}")
 
     def _has_unsaved_changes(self) -> bool:
         return self.model.revision != self._saved_revision
@@ -1788,6 +1827,58 @@ class MainWindow(QMainWindow):
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
         self.scene.render_model(self.model, preserve_camera=not fit_camera)
         self.properties.update_delete_button_state()
+
+    def show_home(self) -> None:
+        """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
+        self.view_stack.setCurrentWidget(self.home)
+        self.title_bar.set_close_project_enabled(False)
+        self.home.refresh()
+        for widget in (
+            self.palette,
+            self.top_icon_palette,
+            self.action_top_palette,
+            self.analysis_top_palette,
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+            self.properties,
+            self.displacement_panel,
+            self.processing_panel,
+            self.command_bar,
+            self.history,
+        ):
+            widget.hide()
+
+    def show_editor(self) -> None:
+        """Retorna à cena 3D e restaura seus controles contextuais."""
+        self.view_stack.setCurrentWidget(self.scene)
+        self.title_bar.set_close_project_enabled(True)
+        for widget in (
+            self.palette,
+            self.top_icon_palette,
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+            self.command_bar,
+        ):
+            widget.show()
+        self.palette.reposition()
+        self.top_icon_palette.reposition()
+        self.command_bar.reposition()
+        self._reposition_navigation_button()
+
+    def _open_recent_project(self, path: str) -> None:
+        self._open_model_path(path)
+
+    def open_manual(self) -> None:
+        """Abre a página pública do projeto, que concentra o manual atual."""
+        QDesktopServices.openUrl(QUrl(PROJECT_MANUAL_URL))
 
     def _refresh_after_mcp_change(self) -> None:
         """Atualiza a interface após uma operação recebida pelo MCP local."""

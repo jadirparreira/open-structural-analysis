@@ -14,14 +14,18 @@ class ProjectRepository:
     def __init__(self, serializer: ProjectSerializer | None = None) -> None:
         self.serializer = serializer or ProjectSerializer()
 
-    def save(self, model: StructuralModel, path: str | Path) -> None:
+    def save(self, model: StructuralModel, path: str | Path, thumbnail: str | None = None) -> None:
         target = Path(path)
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_text(
-            json.dumps(self.serializer.dump(model), ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(self.serializer.dump(model, thumbnail), ensure_ascii=False, indent=2), encoding="utf-8"
         )
         temporary.replace(target)
 
     def load(self, model: StructuralModel, path: str | Path) -> None:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         self.serializer.load_into(model, data)
+
+    def load_thumbnail(self, path: str | Path) -> str | None:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return self.serializer.thumbnail_from(data)

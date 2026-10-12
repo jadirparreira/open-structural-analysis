@@ -7,9 +7,14 @@ from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
+from .home import _brand_lockup
 from .profile_selector import ProfileComboBox
 
 PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
+PROJECT_SITE_URL = "https://www.opensa.com.br"
+PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
+PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
+PROJECT_VERSION = "2026.1"
 
 
 class UnsavedChangesDialog(QDialog):
@@ -521,6 +526,81 @@ class ErrorDialog(QDialog):
         content.addLayout(footer)
         outer.addLayout(content, 1)
         self.adjustSize()
+
+
+class AboutDialog(QDialog):
+    """Informações do aplicativo no mesmo quadro dos demais diálogos."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sobre")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(480, 360)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-weight: 600; }"
+            "QLabel#aboutTitle { color: #24292f; font-size: 18px; font-weight: 700; }"
+            "QLabel#aboutVersion, QLabel#aboutDescription, QLabel#aboutLicense { color: #57606a; }"
+            "QLabel#aboutSection { color: #57606a; font-size: 12px; font-weight: 600; }"
+            "QLabel#aboutLink { color: #0969da; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 4, 8, 4)
+        title = QLabel("Sobre")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(22, 20, 22, 18)
+        content.setSpacing(8)
+        content.addWidget(_brand_lockup(self, f"Versão {PROJECT_VERSION}"))
+        content.addSpacing(6)
+
+        site_label = QLabel("Site do projeto")
+        site_label.setObjectName("aboutSection")
+        content.addWidget(site_label)
+        site_link = QLabel(f'<a href="{PROJECT_SITE_URL}">www.opensa.com.br</a>')
+        site_link.setObjectName("aboutLink")
+        site_link.setOpenExternalLinks(True)
+        site_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        content.addWidget(site_link)
+
+        github_label = QLabel("Código-fonte")
+        github_label.setObjectName("aboutSection")
+        content.addWidget(github_label)
+        github_link = QLabel(f'<a href="{PROJECT_GITHUB_URL}">github.com/jadirparreira/open-structural-analysis</a>')
+        github_link.setObjectName("aboutLink")
+        github_link.setOpenExternalLinks(True)
+        github_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        content.addWidget(github_link)
+
+        license_label = QLabel("Distribuído sob a licença GPL-3.0-or-later.")
+        license_label.setObjectName("aboutLicense")
+        content.addWidget(license_label)
+        content.addStretch(1)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("secondaryButton")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        content.addLayout(footer)
+        outer.addLayout(content, 1)
 
 
 class SettingsDialog(QDialog):
