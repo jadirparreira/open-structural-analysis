@@ -7,14 +7,36 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPropertyAnimation,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFontMetrics,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -30,7 +52,7 @@ class RecentProjectStore:
     """Persiste caminhos e datas de acesso sem duplicar projetos."""
 
     _settings_key = "recentProjects"
-    _maximum = 12
+    _maximum = 16
 
     def __init__(self) -> None:
         self.settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
@@ -59,6 +81,161 @@ class RecentProjectStore:
         self.settings.sync()
 
 
+class ScrollingNameLabel(QLabel):
+    """Nome de modelo em uma linha, com fade e revelação no hover."""
+
+    _fade_width = 28
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self._scroll_offset = 0.0
+        self._animation = QPropertyAnimation(self, b"scrollOffset", self)
+        self._animation.finished.connect(self._on_animation_finished)
+        self._cycle_timer = QTimer(self)
+        self._cycle_timer.setSingleShot(True)
+        self._cycle_timer.timeout.connect(self._advance_cycle)
+        self._cycle_state = "idle"
+        self.setObjectName("recentProjectName")
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        super().setText(text)
+
+    def _get_scroll_offset(self) -> float:
+        return self._scroll_offset
+
+    def _set_scroll_offset(self, value: float) -> None:
+        self._scroll_offset = float(value)
+        self.update()
+
+    scrollOffset = Property(float, _get_scroll_offset, _set_scroll_offset)
+
+    def setText(self, text: str) -> None:
+        self._full_text = str(text)
+        self._animation.stop()
+        self._cycle_timer.stop()
+        self._cycle_state = "idle"
+        self._scroll_offset = 0.0
+        super().setText(self._full_text)
+        self.update()
+
+    def _text_width(self) -> int:
+        return QFontMetrics(self.font()).horizontalAdvance(self._full_text)
+
+    def _overflow(self) -> int:
+        return max(0, self._text_width() - max(0, self.width()))
+
+    def _animate_to(self, target: float, duration: int, easing: QEasingCurve.Type) -> None:
+        if self._overflow() <= 0:
+            return
+        self._animation.stop()
+        self._animation.setStartValue(self._scroll_offset)
+        self._animation.setEndValue(float(target))
+        self._animation.setDuration(duration)
+        self._animation.setEasingCurve(easing)
+        self._animation.start()
+
+    def start_scrolling(self) -> None:
+        overflow = self._overflow()
+        if overflow > 0:
+            self._cycle_timer.stop()
+            self._animation.stop()
+            self._scroll_offset = 0.0
+            self._cycle_state = "pause_start"
+            self._cycle_timer.start(1000)
+
+    def stop_scrolling(self) -> None:
+        self._cycle_timer.stop()
+        self._animation.stop()
+        if self._overflow() > 0 and self._scroll_offset != 0.0:
+            self._cycle_state = "idle"
+            self._animate_to(0.0, 220, QEasingCurve.Type.OutCubic)
+        else:
+            self._cycle_state = "idle"
+            self._scroll_offset = 0.0
+
+    def _advance_cycle(self) -> None:
+        overflow = self._overflow()
+        if overflow <= 0:
+            self._cycle_state = "idle"
+            return
+        if self._cycle_state == "pause_start":
+            self._cycle_state = "forward"
+            slide_duration = round(overflow * 25)
+            self._animate_to(-overflow, slide_duration, QEasingCurve.Type.Linear)
+        elif self._cycle_state == "pause_end":
+            self._cycle_state = "backward"
+            self._animate_to(0.0, 240, QEasingCurve.Type.OutCubic)
+
+    def _on_animation_finished(self) -> None:
+        if self._cycle_state == "forward":
+            self._cycle_state = "pause_end"
+            self._cycle_timer.start(2000)
+        elif self._cycle_state == "backward":
+            self._cycle_state = "pause_start"
+            self._cycle_timer.start(1000)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._overflow() <= 0:
+            self._animation.stop()
+            self._cycle_timer.stop()
+            self._cycle_state = "idle"
+            self._scroll_offset = 0.0
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        metrics = QFontMetrics(self.font())
+        return QSize(1, metrics.height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(1, QFontMetrics(self.font()).height())
+
+    def paintEvent(self, event) -> None:
+        del event
+        if not self._full_text:
+            return
+
+        metrics = QFontMetrics(self.font())
+        baseline = (self.height() - metrics.height()) // 2 + metrics.ascent()
+        text_width = max(1, self._text_width() + 2)
+        overflow = self._overflow()
+        surface = QPixmap(text_width, max(1, self.height()))
+        surface.fill(Qt.GlobalColor.transparent)
+
+        surface_painter = QPainter(surface)
+        surface_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        surface_painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        surface_painter.setFont(self.font())
+        surface_painter.drawText(0, baseline, self._full_text)
+        if overflow > 0:
+            visible_start = max(0.0, -self._scroll_offset)
+            visible_end = min(float(text_width), self.width() - self._scroll_offset)
+            fade_width = min(28.0, max(4.0, self.width() / 4.0))
+            progress = min(1.0, max(0.0, -self._scroll_offset / overflow))
+            left_edge_alpha = round(255 * (1.0 - progress))
+            right_edge_alpha = round(255 * progress)
+            fade = QLinearGradient(0, 0, text_width, 0)
+            opaque = QColor(255, 255, 255, 255)
+            left_edge = QColor(255, 255, 255, left_edge_alpha)
+            right_edge = QColor(255, 255, 255, right_edge_alpha)
+            fade.setColorAt(max(0.0, visible_start / text_width), left_edge)
+            fade.setColorAt(min(1.0, (visible_start + fade_width) / text_width), opaque)
+            fade.setColorAt(max(0.0, (visible_end - fade_width) / text_width), opaque)
+            fade.setColorAt(min(1.0, visible_end / text_width), right_edge)
+            fade.setColorAt(1.0, right_edge)
+            surface_painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_DestinationIn
+            )
+            surface_painter.fillRect(surface.rect(), QBrush(fade))
+        surface_painter.end()
+
+        painter = QPainter(self)
+        painter.setClipRect(self.rect())
+        painter.drawPixmap(round(self._scroll_offset), 0, surface)
+        painter.end()
+
+
 class ProjectCard(QFrame):
     clicked = Signal(str)
     remove_requested = Signal(str)
@@ -70,6 +247,7 @@ class ProjectCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(str(path))
         self.setMinimumHeight(78)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 9, 10, 9)
@@ -83,10 +261,8 @@ class ProjectCard(QFrame):
         details = QVBoxLayout()
         details.setContentsMargins(0, 0, 0, 0)
         details.setSpacing(2)
-        name = QLabel(path.stem, self)
-        name.setObjectName("recentProjectName")
-        name.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        name.setWordWrap(True)
+        name = ScrollingNameLabel(path.stem, self)
+        self.name_label = name
         details.addWidget(name)
         state = "Arquivo não encontrado" if not path.is_file() else "Projeto OSA"
         meta_text = f"{_relative_date(last_opened)} · {state}"
@@ -106,6 +282,14 @@ class ProjectCard(QFrame):
         remove_button.clicked.connect(lambda: self.remove_requested.emit(str(self.path)))
         self.remove_button = remove_button
         layout.addWidget(remove_button, 0, Qt.AlignmentFlag.AlignTop)
+
+    def enterEvent(self, event) -> None:
+        self.name_label.start_scrolling()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.name_label.stop_scrolling()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -139,7 +323,7 @@ class HomePage(QWidget):
         recent_layout = QVBoxLayout(self.recent_panel)
         recent_layout.setContentsMargins(24, 30, 20, 24)
         recent_layout.setSpacing(14)
-        recent_title = QLabel("Projetos recentes", self.recent_panel)
+        recent_title = QLabel("Modelos recentes", self.recent_panel)
         recent_title.setObjectName("homeSectionTitle")
         recent_layout.addWidget(recent_title)
 
@@ -151,7 +335,7 @@ class HomePage(QWidget):
         self.recent_content = QWidget()
         self.recent_content.setObjectName("homeRecentContent")
         self.recent_layout = QVBoxLayout(self.recent_content)
-        self.recent_layout.setContentsMargins(0, 4, 0, 0)
+        self.recent_layout.setContentsMargins(0, 4, 8, 0)
         self.recent_layout.setSpacing(8)
         scroll.setWidget(self.recent_content)
         recent_layout.addWidget(scroll, 1)
@@ -174,8 +358,8 @@ class HomePage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(10)
         actions.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        actions.addWidget(self._action_button("Novo projeto", True, self.new_project_requested.emit))
-        actions.addWidget(self._action_button("Abrir projeto", False, self.open_project_requested.emit))
+        actions.addWidget(self._action_button("Novo modelo", True, self.new_project_requested.emit))
+        actions.addWidget(self._action_button("Abrir modelo", False, self.open_project_requested.emit))
         actions.addWidget(self._action_button("Ver manual", False, self.manual_requested.emit))
         main_layout.addLayout(actions)
         main_layout.addStretch(2)

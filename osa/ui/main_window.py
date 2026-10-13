@@ -1,6 +1,7 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
 import json
+import threading
 
 from PySide6.QtCore import QThread, Signal
 
@@ -71,6 +72,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.model = StructuralModel()
+        self._model_access_lock = threading.RLock()
         self.model_service = ModelService(self.model)
         self.material_service = MaterialService(self.model)
         self.action_service = ActionService(self.model)
@@ -272,6 +274,7 @@ class MainWindow(QMainWindow):
             on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
             on_session_changed=self.mcp_session_changed.emit,
             get_session=lambda: self.palette.active_group,
+            model_lock=self._model_access_lock,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_integration = LocalMcpIntegration()
@@ -1825,13 +1828,14 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
-        self.scene.render_model(self.model, preserve_camera=not fit_camera)
+        with self._model_access_lock:
+            self.scene.render_model(self.model, preserve_camera=not fit_camera)
         self.properties.update_delete_button_state()
 
     def show_home(self) -> None:
         """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
         self.view_stack.setCurrentWidget(self.home)
-        self.title_bar.set_close_project_enabled(False)
+        self.title_bar.set_project_actions_enabled(False)
         self.home.refresh()
         for widget in (
             self.palette,
@@ -1855,7 +1859,7 @@ class MainWindow(QMainWindow):
     def show_editor(self) -> None:
         """Retorna à cena 3D e restaura seus controles contextuais."""
         self.view_stack.setCurrentWidget(self.scene)
-        self.title_bar.set_close_project_enabled(True)
+        self.title_bar.set_project_actions_enabled(True)
         for widget in (
             self.palette,
             self.top_icon_palette,

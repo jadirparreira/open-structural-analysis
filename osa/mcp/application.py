@@ -8,6 +8,7 @@ altere o mesmo modelo que está aberto na interface.
 from __future__ import annotations
 
 import copy
+import threading
 from collections.abc import Callable
 from math import isfinite
 from typing import Any
@@ -53,6 +54,7 @@ class McpApplication:
         on_analysis_diagrams_changed: Callable[[bool], None] | None = None,
         on_session_changed: Callable[[str], None] | None = None,
         get_session: Callable[[], str | None] | None = None,
+        model_lock=None,
     ) -> None:
         self.model = model
         self.model_service = model_service
@@ -68,6 +70,10 @@ class McpApplication:
         self._on_analysis_diagrams_changed = on_analysis_diagrams_changed
         self._on_session_changed = on_session_changed
         self._get_session = get_session
+        # FastMCP may execute requests concurrently.  The model is shared with
+        # the Qt scene, so every public application call must use the same
+        # lock that protects scene rendering in MainWindow.
+        self.model_lock = model_lock or threading.RLock()
         self._session = "Geometria"
         self._analysis_view = {
             "selected_combination": None,
@@ -77,6 +83,24 @@ class McpApplication:
         self._result_service = ResultService(model)
         self._section_properties = SectionPropertyService()
         self._catalog = CatalogLoader()
+
+    def __getattribute__(self, name):
+        """Serialize public MCP operations that access the shared model.
+
+        Keeping this at the application boundary covers both read and write
+        tools, including newly registered tools, without requiring every
+        method to remember a separate ``with self.model_lock`` block.
+        """
+        attribute = object.__getattribute__(self, name)
+        if name.startswith("_") or name == "model_lock" or not callable(attribute):
+            return attribute
+        lock = object.__getattribute__(self, "model_lock")
+
+        def synchronized(*args, **kwargs):
+            with lock:
+                return attribute(*args, **kwargs)
+
+        return synchronized
 
     def get_session_state(self) -> dict[str, Any]:
         """Retorna a sessão visual atualmente aberta no OpenSA."""

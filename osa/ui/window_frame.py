@@ -22,10 +22,10 @@ class TitleBar(QFrame):
         new_model_action.triggered.connect(window.new_model)
         open_model_action = file_menu.addAction("Abrir modelo…")
         open_model_action.triggered.connect(window.open_model)
-        save_model_action = file_menu.addAction("Salvar")
-        save_model_action.triggered.connect(window.save_model)
-        save_model_as_action = file_menu.addAction("Salvar como…")
-        save_model_as_action.triggered.connect(window.save_model_as)
+        self.save_model_action = file_menu.addAction("Salvar")
+        self.save_model_action.triggered.connect(window.save_model)
+        self.save_model_as_action = file_menu.addAction("Salvar como…")
+        self.save_model_as_action.triggered.connect(window.save_model_as)
         file_menu.addSeparator()
         settings_action = file_menu.addAction("Configurações")
         settings_action.triggered.connect(window.open_program_settings)
@@ -41,7 +41,10 @@ class TitleBar(QFrame):
         edit_menu_button.setObjectName("menuButton")
         edit_menu = QMenu(edit_menu_button)
         edit_menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
-        edit_menu.addAction("Desfazer"); edit_menu.addAction("Refazer")
+        self.undo_action = edit_menu.addAction("Desfazer")
+        self.undo_action.setEnabled(False)
+        self.redo_action = edit_menu.addAction("Refazer")
+        self.redo_action.setEnabled(False)
         edit_menu.addSeparator()
         properties_action = edit_menu.addAction("Propriedades")
         properties_action.triggered.connect(window.open_settings)
@@ -74,6 +77,13 @@ class TitleBar(QFrame):
 
     def set_close_project_enabled(self, enabled: bool) -> None:
         self.close_project_action.setEnabled(bool(enabled))
+
+    def set_project_actions_enabled(self, enabled: bool) -> None:
+        """Enable actions that require an open project in the editor."""
+        enabled = bool(enabled)
+        self.save_model_action.setEnabled(enabled)
+        self.save_model_as_action.setEnabled(enabled)
+        self.close_project_action.setEnabled(enabled)
 
     def set_maximized(self, maximized: bool) -> None:
         if maximized:
