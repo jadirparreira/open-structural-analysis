@@ -1,7 +1,15 @@
 import math
 
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QListWidgetItem,
+    QStyle,
+    QStyleOptionSlider,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
@@ -797,6 +805,50 @@ class SettingsDialog(QDialog):
         )
 
 
+class _SliderScale(QWidget):
+    """Draw quality markers at the actual centers of a slider's handles."""
+
+    def __init__(self, slider: QSlider):
+        super().__init__()
+        self._slider = slider
+        self.setFixedHeight(30)
+        slider.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched is self._slider and event.type() in (QEvent.Type.Resize, QEvent.Type.StyleChange):
+            self.update()
+        return super().eventFilter(watched, event)
+
+    def _marker_centers(self) -> tuple[int, ...]:
+        option = QStyleOptionSlider()
+        self._slider.initStyleOption(option)
+        centers = []
+        for position in range(self._slider.minimum(), self._slider.maximum() + 1):
+            option.sliderPosition = position
+            option.sliderValue = position
+            handle = self._slider.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                option,
+                QStyle.SubControl.SC_SliderHandle,
+                self._slider,
+            )
+            centers.append(handle.center().x())
+        return tuple(centers)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for center, text in zip(self._marker_centers(), ("0x", "2x", "4x", "8x")):
+            painter.setPen(QColor("#afb8c1"))
+            painter.drawLine(center, 0, center, 5)
+            painter.setPen(QColor("#57606a"))
+            painter.drawText(
+                QRectF(center - 25, 9, 50, 21),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                text,
+            )
+
+
 class ProgramSettingsDialog(QDialog):
     """Application settings window using the same navigation as properties."""
 
@@ -833,6 +885,16 @@ class ProgramSettingsDialog(QDialog):
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
+            "QSlider#antialiasingSlider:horizontal { min-height: 26px; }"
+            "QSlider#antialiasingSlider::groove:horizontal { height: 6px; border-radius: 3px; "
+            "background: #d0d7de; }"
+            "QSlider#antialiasingSlider::sub-page:horizontal { background: #0969da; border-radius: 3px; }"
+            "QSlider#antialiasingSlider::add-page:horizontal { background: #d0d7de; border-radius: 3px; }"
+            "QSlider#antialiasingSlider::handle:horizontal { width: 18px; margin: -7px 0; "
+            "border: 2px solid #0969da; border-radius: 10px; background: #ffffff; }"
+            "QSlider#antialiasingSlider::handle:horizontal:hover { background: #ddf4ff; }"
+            "QSlider#antialiasingSlider::handle:horizontal:pressed { background: #0969da; }"
+            "QLabel#settingValue { color: #0969da; font-weight: 600; }"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -957,29 +1019,21 @@ class ProgramSettingsDialog(QDialog):
         video_layout.addLayout(antialiasing_header)
 
         self._antialiasing_slider = QSlider(Qt.Orientation.Horizontal)
+        self._antialiasing_slider.setObjectName("antialiasingSlider")
         self._antialiasing_slider.setRange(0, 3)
         self._antialiasing_slider.setSingleStep(1)
         self._antialiasing_slider.setPageStep(1)
-        self._antialiasing_slider.setTickInterval(1)
-        self._antialiasing_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._antialiasing_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self._antialiasing_slider.setAccessibleName("Qualidade do antialiasing")
+        self._antialiasing_slider.setAccessibleDescription("Níveis disponíveis: 0x, 2x, 4x e 8x")
         current_samples = self.window.scene.antialiasing_samples()
         self._antialiasing_slider.setValue(self._antialiasing_index(current_samples))
         self._set_antialiasing_label(current_samples)
         self._antialiasing_slider.valueChanged.connect(self._set_antialiasing_level)
         video_layout.addWidget(self._antialiasing_slider)
 
-        scale_labels = QHBoxLayout()
-        scale_labels.setContentsMargins(0, 0, 0, 0)
-        for index, text in enumerate(("0x", "2x", "4x", "8x")):
-            label = QLabel(text)
-            label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft if index == 0
-                else Qt.AlignmentFlag.AlignRight if index == 3
-                else Qt.AlignmentFlag.AlignHCenter
-            )
-            scale_labels.addWidget(label, 1)
-        video_layout.addLayout(scale_labels)
+        self._antialiasing_scale = _SliderScale(self._antialiasing_slider)
+        video_layout.addWidget(self._antialiasing_scale)
         video_layout.addStretch(1)
         video_close_button = QPushButton("Fechar")
         video_close_button.setObjectName("closeProperties")
