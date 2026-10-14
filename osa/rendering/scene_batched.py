@@ -85,19 +85,26 @@ class SnapMarker(QWidget):
 class StructureScene(QWidget):
     """Render the full model with a small, stable number of VTK actors."""
 
+    _antialiasing_levels = (0, 2, 4, 8)
+    _default_antialiasing_samples = 4
+
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
     placement_point_clicked = Signal(object)
     enter_pressed = Signal()
-    # The wireframe member and local-axis strokes are intentionally separate:
-    # they may be tuned independently while remaining visually lightweight.
-    _member_line_width = 1.5
+    # The wireframe member and local-axis strokes are intentionally separate.
+    # Keep both as screen-space strokes instead of tubes: tubes make a
+    # line-only model feel heavier than the solid view it replaces.
+    _member_line_width = 1.25
     _local_axis_line_width = 1.0
     _rigid_bar_line_width = 2.0
     _hover_highlight_padding = 2.0
     _selected_highlight_padding = 3.0
+    _solid_highlight_line_width = 2.0
+    _circular_silhouette_line_width = 3.0
     _snap_tolerance_pixels = 14.0
     _placement_drag_tolerance_pixels = 4.0
+    _silhouette_navigation_interval_ms = 500
     _perpendicular_guide_half_length = 5.0
     _perpendicular_snap_half_length = 10.0
     _axis_colors = ("#d1242f", "#f2b705", "#2da44e")
@@ -110,7 +117,11 @@ class StructureScene(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.plotter = QtInteractor(self)
+        # Keep a moderate default so edges and thin overlays retain a clean
+        # finish without imposing the highest multisampling cost on every
+        # project. The setting can be changed live from Program Settings.
+        self._antialiasing_samples = self._default_antialiasing_samples
+        self.plotter = QtInteractor(self, multi_samples=self._antialiasing_samples)
         layout.addWidget(self.plotter)
         self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plotter.installEventFilter(self)
@@ -121,6 +132,22 @@ class StructureScene(QWidget):
         # changes elevation, without the accumulated camera roll of VTK's
         # default trackball. This matches the architectural-model workflow.
         self._apply_revit_navigation_style()
+
+        # Local axes are analytical overlays. Render them in a dedicated
+        # full-viewport layer so a solid member can never occlude them.
+        self._local_axes_renderer = vtk.vtkRenderer()
+        self._local_axes_renderer.SetLayer(1)
+        self._local_axes_renderer.SetInteractive(False)
+        # Preserve the already-rendered color buffer, but let this layer
+        # clear the previous depth buffer. With EraseOff, VTK can retain the
+        # solid member's depth values and reject an axis that crosses it.
+        self._local_axes_renderer.SetErase(True)
+        self._local_axes_renderer.SetPreserveColorBuffer(True)
+        self._local_axes_renderer.SetPreserveDepthBuffer(False)
+        self._local_axes_renderer.SetActiveCamera(self.plotter.renderer.GetActiveCamera())
+        if self.plotter.render_window.GetNumberOfLayers() < 2:
+            self.plotter.render_window.SetNumberOfLayers(2)
+        self.plotter.render_window.AddRenderer(self._local_axes_renderer)
 
         self._grid_renderer = GridRenderer()
         self._reference_axes_renderer = ReferenceAxesRenderer()
@@ -197,9 +224,44 @@ class StructureScene(QWidget):
         angle_layout.addWidget(self._angle_editor)
         self._angle_readout.adjustSize()
         self._angle_readout.hide()
+        self._measurement_readout = QFrame(self.plotter)
+        self._measurement_readout.setObjectName("measurementReadout")
+        self._measurement_readout.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._measurement_readout.setStyleSheet(
+            "QFrame#measurementReadout { background: rgba(246, 248, 250, 245); "
+            "border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QLabel { color: #57606a; background: transparent; border: 0; "
+            "padding: 0; font-size: 11px; font-weight: 600; }"
+            "QLineEdit { color: #24292f; background: transparent; border: 0; "
+            "padding: 0; font-size: 11px; }"
+        )
+        measurement_layout = QVBoxLayout(self._measurement_readout)
+        measurement_layout.setContentsMargins(8, 6, 8, 6)
+        measurement_layout.setSpacing(1)
+        self._measurement_value_labels: list[QLineEdit] = []
+        for label_text in ("Δ", "ΔX", "ΔY", "ΔZ"):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            delta_label = QLabel(label_text, self._measurement_readout)
+            delta_label.setFixedWidth(18 if label_text != "Δ" else 10)
+            delta_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(delta_label)
+            value_label = QLineEdit("0.000 m", self._measurement_readout)
+            value_label.setObjectName("measurementValue")
+            value_label.setReadOnly(True)
+            value_label.setFixedWidth(readout_value_width)
+            value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(value_label)
+            measurement_layout.addLayout(row)
+            self._measurement_value_labels.append(value_label)
+        self._measurement_readout.adjustSize()
+        self._measurement_readout.hide()
         self._equalize_readout_widths()
         self._snap_marker = SnapMarker(self.plotter)
         self._snap_marker.hide()
+        self._measurement_start_marker = SnapMarker(self.plotter)
+        self._measurement_start_marker.hide()
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
         self._member_batch: MemberBatch | None = None
@@ -208,12 +270,18 @@ class StructureScene(QWidget):
         self._base_geometry_cache: tuple[MemberBatch, NodeBatch, tuple[str, ...], pv.PolyData] | None = None
         self._rigid_bar_names: tuple[str, ...] = ()
         self._rigid_bar_mesh: pv.PolyData | None = None
+        self._measurement_face_locator: vtk.vtkCellLocator | None = None
+        self._measurement_face_locator_key: tuple[int, int] | None = None
+        self._measurement_edge_faces: dict[tuple[float, ...], frozenset[int]] | None = None
+        self._measurement_edge_faces_key: tuple[int, int] | None = None
 
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._member_silhouette_actor = None
         self._member_preview_actor = None
+        self._measurement_preview_actor = None
         self._perpendicular_guide_actor = None
         self._orthogonal_guide_actor = None
         self._rigid_bar_actor = None
@@ -263,8 +331,28 @@ class StructureScene(QWidget):
         self._pointer_position: tuple[float, float] | None = None
         self._member_placement_mode = False
         self._node_placement_mode = False
+        self._measurement_mode = False
         self._member_placement_press: tuple[float, float] | None = None
         self._member_preview_start: np.ndarray | None = None
+        self._measurement_start: np.ndarray | None = None
+        self._measurement_start_snap_kind: str | None = None
+        self._measurement_segments_cache: tuple[tuple[object, ...], tuple] | None = None
+        self._wheel_interaction_timer = QTimer(self)
+        self._wheel_interaction_timer.setSingleShot(True)
+        self._wheel_interaction_timer.setInterval(90)
+        self._wheel_interaction_timer.timeout.connect(self._finish_wheel_interaction)
+        self._camera_render_timer = QTimer(self)
+        self._camera_render_timer.setInterval(16)
+        self._camera_render_timer.timeout.connect(self._render_camera_frame)
+        self._measurement_refresh_timer = QTimer(self)
+        self._measurement_refresh_timer.setSingleShot(True)
+        # Let the final camera frame reach the screen before rebuilding the
+        # measurement candidates. That rebuild projects every profile edge
+        # and can perform several solid-ray tests on a dense model.
+        self._measurement_refresh_timer.setInterval(80)
+        self._measurement_refresh_timer.timeout.connect(
+            self._refresh_measurement_after_navigation,
+        )
         self._snap_enabled = True
         self._snap_types = {
             "grid": True,
@@ -299,6 +387,12 @@ class StructureScene(QWidget):
         self._label_timer.setSingleShot(True)
         self._label_timer.setInterval(16)
         self._label_timer.timeout.connect(self._sync_labels)
+        self._silhouette_timer = QTimer(self)
+        self._silhouette_timer.setSingleShot(True)
+        # Silhouettes remain visible during navigation, but are intentionally
+        # refreshed at a much lower rate than camera events arrive.
+        self._silhouette_timer.setInterval(self._silhouette_navigation_interval_ms)
+        self._silhouette_timer.timeout.connect(self._refresh_member_silhouette_throttled)
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(24)
@@ -452,6 +546,24 @@ class StructureScene(QWidget):
         self._update_depth_overlays()
         self._sync_labels()
         self._orientation_widget.sync_from_camera()
+        self._silhouette_timer.stop()
+        self._refresh_member_silhouette()
+        self.plotter.render()
+
+    def antialiasing_samples(self) -> int:
+        """Return the active multisampling level used by the viewport."""
+        return self._antialiasing_samples
+
+    def set_antialiasing_samples(self, samples: int) -> None:
+        """Apply a supported multisampling level without closing the app."""
+        samples = int(samples)
+        if samples not in self._antialiasing_levels:
+            raise ValueError("A qualidade do antialiasing deve ser 0, 2, 4 ou 8.")
+        if samples == self._antialiasing_samples:
+            return
+        self._antialiasing_samples = samples
+        self.plotter.render_window.SetMultiSamples(samples)
+        self.plotter.render_window.Modified()
         self.plotter.render()
 
     def _add_member_batches(self) -> None:
@@ -460,11 +572,11 @@ class StructureScene(QWidget):
             return
         self._member_line_actor = self._add_colored_mesh(
             batch.lines, "batch:member-lines", line_width=self._member_line_width,
-            render_lines_as_tubes=True, lighting=False,
+            lighting=False,
         )
         self._member_fallback_actor = self._add_colored_mesh(
             batch.fallback_lines, "batch:member-fallback", line_width=self._member_line_width,
-            render_lines_as_tubes=True, lighting=False,
+            lighting=False,
         )
         self._member_face_actor = self._add_colored_mesh(
             batch.faces, "batch:member-faces", smooth_shading=False, lighting=True,
@@ -486,23 +598,25 @@ class StructureScene(QWidget):
             edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
             edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+        self._member_silhouette_actor = self._add_colored_mesh(
+            self._member_renderer.silhouette_mesh(
+                batch, self.plotter.renderer.GetActiveCamera(),
+            ),
+            "batch:member-silhouette",
+            line_width=self._circular_silhouette_line_width,
+            lighting=False,
+        )
+        if self._member_silhouette_actor is not None:
+            self._member_silhouette_actor.SetPickable(False)
+            silhouette_mapper = self._member_silhouette_actor.GetMapper()
+            silhouette_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            silhouette_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            silhouette_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
 
         for mesh, color in zip(batch.axes, self._axis_colors):
             if not mesh.n_cells:
                 continue
-            actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=self._local_axis_line_width, pickable=False,
-                reset_camera=False, render=False, render_lines_as_tubes=True,
-                lighting=False,
-            )
-            axis_mapper = actor.GetMapper()
-            # Local axes are an analytical overlay: keep them visible over
-            # coincident solid faces, just as the profile contour lines are.
-            # The relative offset only affects depth ties and does not alter
-            # the axis geometry or the picking order of structural elements.
-            axis_mapper.SetResolveCoincidentTopologyToPolygonOffset()
-            axis_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-            axis_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+            actor = self._add_local_axis_overlay(mesh, color)
             actor.SetVisibility(self._local_axes_visible)
             self._local_axis_actors.append(actor)
 
@@ -513,6 +627,20 @@ class StructureScene(QWidget):
                 lighting=False,
             )
             self._release_actor.SetVisibility(self._member_releases_visible)
+
+    def _add_local_axis_overlay(self, mesh: pv.PolyData, color: str):
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(mesh)
+        mapper.SetScalarVisibility(False)
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetPickable(False)
+        actor.GetProperty().SetColor(*pv.Color(color).float_rgb)
+        actor.GetProperty().SetLineWidth(self._local_axis_line_width)
+        actor.GetProperty().LightingOff()
+        actor.GetProperty().RenderLinesAsTubesOff()
+        self._local_axes_renderer.AddActor(actor)
+        return actor
 
     def _add_node_batches(self) -> None:
         batch = self._node_batch
@@ -975,8 +1103,10 @@ class StructureScene(QWidget):
         if watched is self.plotter and event.type() == QEvent.Type.Leave:
             self._coordinate_readout.hide()
             self._angle_readout.hide()
+            self._measurement_readout.hide()
             self._snap_marker.hide()
             self._hide_member_preview()
+            self._hide_measurement_preview()
             self._hide_orthogonal_guide()
         if (
             watched is self.plotter
@@ -997,13 +1127,33 @@ class StructureScene(QWidget):
         self._schedule_navigation_viewport_sync()
 
     def _placement_active(self) -> bool:
-        return self._member_placement_mode or self._node_placement_mode
+        return self._member_placement_mode or self._node_placement_mode or self._measurement_mode
+
+    @property
+    def measurement_start(self) -> tuple[float, float, float] | None:
+        """Return the fixed first point of the active transient measurement."""
+        if self._measurement_start is None:
+            return None
+        return tuple(float(value) for value in self._measurement_start)
 
     def _on_mouse_move(self, *_args) -> None:
         if self._camera_interacting:
             return
         self._update_coordinate_readout()
-        if self._member_preview_start is not None:
+        if self._measurement_refresh_timer.isActive():
+            # Keep postponing the expensive snap query until both the camera
+            # and pointer have been still briefly. The previous marker stays
+            # hidden during this short interval, avoiding a stale snap.
+            self._measurement_refresh_timer.start()
+        else:
+            self._update_measurement_readout()
+        if self._member_preview_start is not None or (
+            self._measurement_start is not None
+            and not self._measurement_refresh_timer.isActive()
+        ):
+            # Both placement previews are world-space actors.  Render after
+            # changing their mapper so the line follows the cursor even when
+            # the interactor itself does not schedule a paint for this move.
             self.plotter.render()
         x, y = self.plotter.iren.get_event_position()
         position = (int(x), int(y))
@@ -1023,6 +1173,9 @@ class StructureScene(QWidget):
         """Enable the coordinate readout used by graphical member placement."""
         self._member_placement_mode = bool(active)
         self._node_placement_mode = False
+        self._measurement_mode = False
+        self._measurement_start = None
+        self._hide_measurement_preview()
         self._set_point_placement_mode(active)
 
     def set_selection_highlight(self, elements: object) -> None:
@@ -1041,9 +1194,40 @@ class StructureScene(QWidget):
         """Enable the single-click graphical node-placement flow."""
         self._node_placement_mode = bool(active)
         self._member_placement_mode = False
+        self._measurement_mode = False
+        self._measurement_start = None
+        self._hide_measurement_preview()
         if active:
             self._member_preview_start = None
         self._set_point_placement_mode(active)
+
+    def set_measurement_mode(self, active: bool) -> None:
+        """Enable the transient two-point measurement flow."""
+        self._measurement_mode = bool(active)
+        self._member_placement_mode = False
+        self._node_placement_mode = False
+        self._member_preview_start = None
+        if not active:
+            self._measurement_start = None
+            self._measurement_start_snap_kind = None
+            self._hide_measurement_preview()
+        self._set_point_placement_mode(active)
+
+    def set_measurement_start(self, point: object | None) -> None:
+        """Set or clear the first point of the active measurement."""
+        self._measurement_start = (
+            None if point is None else np.asarray(tuple(point), dtype=float)
+        )
+        self._measurement_start_snap_kind = None
+        if self._measurement_start is not None and self._measurement_mode:
+            cursor_position = self._cursor_world_position()
+            if cursor_position is not None:
+                snapped, snap_kind = self._measurement_target(cursor_position)
+                if snap_kind is not None and np.allclose(
+                    snapped, self._measurement_start, atol=1e-9, rtol=0.0,
+                ):
+                    self._measurement_start_snap_kind = snap_kind
+        self._update_measurement_readout()
 
     def _set_point_placement_mode(self, active: bool) -> None:
         if not active:
@@ -1054,16 +1238,25 @@ class StructureScene(QWidget):
             self._manual_edit_index = None
             self._manual_edit_confirmable = False
             self._last_display_position = None
+            self._measurement_start = None
+            self._measurement_start_snap_kind = None
             for editor in (*self._coordinate_value_labels, self._angle_editor):
                 editor.setReadOnly(True)
             self._coordinate_readout.hide()
             self._angle_readout.hide()
+            self._measurement_readout.hide()
             self._snap_marker.hide()
+            self._measurement_start_marker.hide()
             self._hide_member_preview()
+            self._hide_measurement_preview()
             self._hide_perpendicular_guide()
             self._hide_orthogonal_guide()
             return
         self._update_coordinate_readout()
+        if self._measurement_mode:
+            self._measurement_refresh_timer.start()
+        else:
+            self._update_measurement_readout()
 
     def set_member_preview_start(self, point: object | None) -> None:
         """Set the fixed 3D point from which the graphical preview begins."""
@@ -1078,6 +1271,34 @@ class StructureScene(QWidget):
         self._update_coordinate_readout()
         if self._member_preview_start is not None:
             self.plotter.render()
+
+    def view_state(self) -> dict[str, bool]:
+        """Retorna o estado dos controles visuais da sessão de geometria."""
+        return {
+            "grid_visible": self._grid_visible,
+            "reference_axes_visible": self._reference_axes_visible,
+            "node_labels_visible": self._labels_visibility["node"],
+            "member_labels_visible": self._labels_visibility["bar"],
+            "local_axes_visible": self._local_axes_visible,
+            "nodes_visible": self._nodes_visible,
+            "solid_members_visible": self._solid_members_visible,
+            "member_releases_visible": self._member_releases_visible,
+            "semirigid_links_visible": self._semirigid_links_visible,
+            "node_supports_visible": self._node_supports_visible,
+            "snap_enabled": self._snap_enabled,
+            "node_forces_visible": self._action_visibility["node_forces"],
+            "node_moments_visible": self._action_visibility["node_moments"],
+            "member_forces_visible": self._action_visibility["member_forces"],
+            "member_moments_visible": self._action_visibility["member_moments"],
+        }
+
+    def analysis_view_state(self) -> dict[str, object]:
+        """Retorna o estado visual da sessão de análise."""
+        return {
+            "selected_combination": self._active_analysis_combination,
+            "selected_diagram": self._active_result_type,
+            "result_diagrams_visible": self._result_diagrams_visible,
+        }
 
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:
         """Enable or disable one snap type without changing the master magnet."""
@@ -1217,19 +1438,21 @@ class StructureScene(QWidget):
             self._update_coordinate_readout()
 
     def _update_coordinate_readout(self) -> None:
-        if not self._placement_active() or self._pointer_position is None:
+        if not (self._member_placement_mode or self._node_placement_mode) or self._pointer_position is None:
             self._coordinate_readout.hide()
             self._angle_readout.hide()
-            self._snap_marker.hide()
-            self._hide_member_preview()
+            if not self._measurement_mode:
+                self._snap_marker.hide()
+                self._hide_member_preview()
             return
 
         x, y = self._pointer_position
         if self._orientation_widget.is_pointer_over(int(x), int(y)):
             self._coordinate_readout.hide()
             self._angle_readout.hide()
-            self._snap_marker.hide()
-            self._hide_member_preview()
+            if not self._measurement_mode:
+                self._snap_marker.hide()
+                self._hide_member_preview()
             return
         if self._manual_edit_target is not None:
             display_position = self._manual_edit_target.copy()
@@ -1305,6 +1528,101 @@ class StructureScene(QWidget):
             )
             self._angle_readout.show()
             self._angle_readout.raise_()
+
+    def _update_measurement_readout(self) -> None:
+        """Render the live delta box only after the first measurement click."""
+        if (
+            not self._measurement_mode
+            or self._pointer_position is None
+        ):
+            self._measurement_readout.hide()
+            self._measurement_start_marker.hide()
+            self._hide_measurement_preview()
+            if not self._member_placement_mode and not self._node_placement_mode:
+                self._snap_marker.hide()
+            return
+
+        if self._camera_interacting:
+            self._measurement_readout.hide()
+            self._snap_marker.hide()
+            self._measurement_start_marker.hide()
+            return
+
+        x, y = self._pointer_position
+        if self._orientation_widget.is_pointer_over(int(x), int(y)):
+            self._measurement_readout.hide()
+            self._snap_marker.hide()
+            self._measurement_start_marker.hide()
+            self._hide_measurement_preview()
+            return
+        position = self._cursor_world_position()
+        if position is None:
+            self._measurement_readout.hide()
+            self._snap_marker.hide()
+            self._measurement_start_marker.hide()
+            self._hide_measurement_preview()
+            return
+        display_position, snap_kind = self._measurement_target(position)
+
+        # Before the first click the measurement tool only exposes the active
+        # snap marker.  The delta panel starts after the first point is fixed.
+        if self._measurement_start is None:
+            self._measurement_readout.hide()
+            self._measurement_start_marker.hide()
+            self._hide_measurement_preview()
+            if snap_kind is None:
+                self._snap_marker.hide()
+            else:
+                self._position_snap_marker(display_position, snap_kind)
+            return
+
+        # The first point is fixed after the initial click.  Keep a lightweight
+        # world-space line from it to the live (possibly snapped) endpoint so
+        # the measured pair is obvious while the cursor moves.  This is the
+        # same transient preview used by Add Member and is hidden on completion.
+        self._update_measurement_preview(display_position)
+        self._update_measurement_start_marker()
+        delta = np.asarray(display_position, dtype=float) - self._measurement_start
+        values = (
+            float(np.linalg.norm(delta)),
+            float(delta[0]),
+            float(delta[1]),
+            float(delta[2]),
+        )
+        for label, value in zip(self._measurement_value_labels, values):
+            label.setText(f"{0.0 if abs(value) < 0.0005 else value:.3f} m")
+
+        if snap_kind is None:
+            self._snap_marker.hide()
+        else:
+            self._position_snap_marker(display_position, snap_kind)
+
+        self._measurement_readout.adjustSize()
+        offset = 16
+        width = self._measurement_readout.width()
+        height = self._measurement_readout.height()
+        left = x + offset
+        top = y + offset
+        if left + width > self.plotter.width():
+            left = x - width - offset
+        if top + height > self.plotter.height():
+            top = y - height - offset
+        self._measurement_readout.move(
+            max(0, min(int(left), self.plotter.width() - width)),
+            max(0, min(int(top), self.plotter.height() - height)),
+        )
+        self._measurement_readout.show()
+        self._measurement_readout.raise_()
+
+    def _update_measurement_start_marker(self) -> None:
+        if self._measurement_start_snap_kind is None or self._measurement_start is None:
+            self._measurement_start_marker.hide()
+            return
+        self._position_snap_marker(
+            self._measurement_start,
+            self._measurement_start_snap_kind,
+            marker=self._measurement_start_marker,
+        )
 
     def _equalize_readout_widths(self) -> None:
         """Keep coordinate and angle readouts aligned as one visual stack."""
@@ -1395,6 +1713,650 @@ class StructureScene(QWidget):
         )
         return candidate, kind
 
+    def _measurement_target(self, position: np.ndarray) -> tuple[np.ndarray, str | None]:
+        """Resolve a measurement point without changing the placement snaps."""
+        if not self._snap_enabled or self._pointer_position is None:
+            return np.asarray(position, dtype=float), None
+
+        candidates: list[tuple[float, int, str, np.ndarray]] = []
+        matrix, width, height = self._measurement_projection_context()
+        pointer = np.asarray(self._pointer_position, dtype=float)
+        depth_cache: dict[tuple[int, int], float] = {}
+
+        if self._snap_types["grid"] and self._grid_visible:
+            grid_candidate = self._nearest_grid_candidate(
+                position, projection=(matrix, width, height),
+            )
+            if grid_candidate is not None:
+                grid_point, distance = grid_candidate
+                grid_screen, grid_visible = project_world_to_screen(
+                    np.asarray([grid_point], dtype=float), matrix, width, height,
+                )
+                if (
+                    distance <= self._snap_tolerance_pixels
+                    and bool(grid_visible[0])
+                    and self._measurement_visible_points(
+                        grid_screen, np.asarray([grid_point], dtype=float),
+                        matrix, depth_cache,
+                    )[0]
+                ):
+                    candidates.append((distance, 5, "grid", np.asarray(grid_point, dtype=float)))
+
+        if self._snap_types["endpoint"]:
+            node_points = np.asarray(
+                [(node.x, node.y, node.z) for node in self._model.nodes.values()],
+                dtype=float,
+            ).reshape((-1, 3))
+            node_screens, node_visible = project_world_to_screen(
+                node_points, matrix, width, height,
+            )
+            node_distances = np.linalg.norm(node_screens - pointer, axis=1)
+            node_indices = np.flatnonzero(
+                node_visible & (node_distances <= self._snap_tolerance_pixels)
+            )
+            if len(node_indices):
+                node_depth_visible = self._measurement_visible_points(
+                    node_screens[node_indices], node_points[node_indices],
+                    matrix, depth_cache,
+                )
+            else:
+                node_depth_visible = np.empty(0, dtype=bool)
+            for index, visible in zip(node_indices, node_depth_visible):
+                if not visible:
+                    continue
+                candidates.append(
+                    (float(node_distances[index]), 0, "endpoint", node_points[index])
+                )
+
+        if self._snap_types["center"]:
+            center_points = []
+            for member in self._model.bars.values():
+                start = self._model.nodes.get(member.start_node)
+                end = self._model.nodes.get(member.end_node)
+                if start is None or end is None:
+                    continue
+                center_points.append(
+                    (
+                        (start.x + end.x) / 2.0,
+                        (start.y + end.y) / 2.0,
+                        (start.z + end.z) / 2.0,
+                    )
+                )
+            center_points_array = np.asarray(center_points, dtype=float).reshape((-1, 3))
+            center_screens, center_visible = project_world_to_screen(
+                center_points_array, matrix, width, height,
+            )
+            center_distances = np.linalg.norm(center_screens - pointer, axis=1)
+            center_indices = np.flatnonzero(
+                center_visible & (center_distances <= self._snap_tolerance_pixels)
+            )
+            if len(center_indices):
+                center_depth_visible = self._measurement_visible_points(
+                    center_screens[center_indices], center_points_array[center_indices],
+                    matrix, depth_cache,
+                )
+            else:
+                center_depth_visible = np.empty(0, dtype=bool)
+            for index, visible in zip(center_indices, center_depth_visible):
+                if not visible:
+                    continue
+                candidates.append(
+                    (float(center_distances[index]), 3, "center", center_points_array[index])
+                )
+
+        segment_data, point_data = self._measurement_segments(matrix, width, height)
+        screen_starts, screen_ends, world_starts, world_ends, kinds, priorities = segment_data
+        if len(screen_starts):
+            screen_deltas = screen_ends - screen_starts
+            lengths_squared = np.einsum("ij,ij->i", screen_deltas, screen_deltas)
+            fractions = np.divide(
+                np.einsum("ij,ij->i", pointer - screen_starts, screen_deltas),
+                lengths_squared,
+                out=np.zeros(len(screen_starts), dtype=float),
+                where=lengths_squared > 1e-12,
+            )
+            fractions = np.clip(fractions, 0.0, 1.0)
+            closest_screens = screen_starts + fractions[:, None] * screen_deltas
+            distances = np.linalg.norm(pointer - closest_screens, axis=1)
+            segment_indices = np.flatnonzero(
+                distances <= self._snap_tolerance_pixels
+            )
+            if len(segment_indices):
+                segment_worlds = world_starts[segment_indices] + fractions[segment_indices, None] * (
+                    world_ends[segment_indices] - world_starts[segment_indices]
+                )
+                segment_depth_visible = self._measurement_visible_points(
+                    closest_screens[segment_indices], segment_worlds,
+                    matrix, depth_cache,
+                    surface_points=np.asarray(
+                        [str(kinds[index]).startswith(("edge", "silhouette"))
+                         for index in segment_indices],
+                        dtype=bool,
+                    ),
+                    edge_starts=world_starts[segment_indices],
+                    edge_ends=world_ends[segment_indices],
+                )
+                visible_indices = segment_indices[segment_depth_visible]
+                if len(visible_indices):
+                    visible_order = np.lexsort(
+                        (priorities[visible_indices], distances[visible_indices])
+                    )
+                    segment_index = int(visible_indices[visible_order[0]])
+                    candidates.append(
+                        (
+                            float(distances[segment_index]),
+                            int(priorities[segment_index]),
+                            kinds[segment_index],
+                            world_starts[segment_index]
+                            + fractions[segment_index]
+                            * (world_ends[segment_index] - world_starts[segment_index]),
+                        )
+                    )
+        (
+            point_screens, point_worlds, point_kinds, point_priorities,
+            point_edge_starts, point_edge_ends,
+        ) = point_data
+        if len(point_screens):
+            point_distances = np.linalg.norm(point_screens - pointer, axis=1)
+            point_indices = np.flatnonzero(
+                point_distances <= self._snap_tolerance_pixels
+            )
+            if len(point_indices):
+                point_depth_visible = self._measurement_visible_points(
+                    point_screens[point_indices], point_worlds[point_indices],
+                    matrix, depth_cache,
+                    surface_points=np.asarray(
+                        [str(point_kinds[index]).startswith(("edge", "silhouette"))
+                         for index in point_indices],
+                        dtype=bool,
+                    ),
+                    edge_starts=point_edge_starts[point_indices],
+                    edge_ends=point_edge_ends[point_indices],
+                )
+                visible_indices = point_indices[point_depth_visible]
+                if len(visible_indices):
+                    visible_order = np.lexsort(
+                        (point_priorities[visible_indices], point_distances[visible_indices])
+                    )
+                    point_index = int(visible_indices[visible_order[0]])
+                    candidates.append(
+                        (
+                            float(point_distances[point_index]),
+                            int(point_priorities[point_index]),
+                            point_kinds[point_index],
+                            point_worlds[point_index],
+                        )
+                    )
+
+        candidates = [
+            candidate for candidate in candidates
+            if candidate[0] <= self._snap_tolerance_pixels
+        ]
+        if not candidates:
+            return np.asarray(position, dtype=float), None
+        _distance, _priority, kind, candidate = min(
+            candidates, key=lambda item: (item[0], item[1])
+        )
+        return candidate, kind
+
+    def _measurement_visible_points(
+        self,
+        screen_points: np.ndarray,
+        world_points: np.ndarray,
+        matrix: np.ndarray,
+        depth_cache: dict[tuple[int, int], float],
+        *,
+        surface_points: np.ndarray | None = None,
+        edge_starts: np.ndarray | None = None,
+        edge_ends: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return points visible in the current camera view.
+
+        Solid edge candidates are already tested against the first geometric
+        face hit by their camera ray.  For those points the raster Z buffer is
+        only a coarse, rounded pixel sample and can land on a neighboring face
+        at a noticeably different depth.  Keep the geometric result for solid
+        edges, while retaining the Z-buffer requirement for analytical lines,
+        nodes and grid points.
+        """
+        if not len(screen_points):
+            return np.empty(0, dtype=bool)
+        render_window = self.plotter.render_window
+        render_width, render_height = tuple(render_window.GetSize())
+        widget_width, widget_height = self.plotter.width(), self.plotter.height()
+        if (
+            render_width <= 1 or render_height <= 1
+            or widget_width <= 1 or widget_height <= 1
+        ):
+            return np.ones(len(screen_points), dtype=bool)
+
+        pixel_x = np.rint(
+            np.asarray(screen_points, dtype=float)[:, 0]
+            * float(render_width - 1) / float(widget_width - 1)
+        ).astype(int)
+        pixel_y = np.rint(
+            (float(widget_height - 1) - np.asarray(screen_points, dtype=float)[:, 1])
+            * float(render_height - 1) / float(widget_height - 1)
+        ).astype(int)
+        pixel_x = np.clip(pixel_x, 0, render_width - 1)
+        pixel_y = np.clip(pixel_y, 0, render_height - 1)
+        display_x = np.clip(
+            np.asarray(screen_points, dtype=float)[:, 0]
+            * float(render_width - 1) / float(widget_width - 1),
+            0.0, float(render_width - 1),
+        )
+        display_y = np.clip(
+            (float(widget_height - 1) - np.asarray(screen_points, dtype=float)[:, 1])
+            * float(render_height - 1) / float(widget_height - 1),
+            0.0, float(render_height - 1),
+        )
+
+        surface_mask = None
+        if surface_points is not None:
+            surface_mask = np.asarray(surface_points, dtype=bool)
+            if len(surface_mask) != len(world_points):
+                surface_mask = np.zeros(len(world_points), dtype=bool)
+            # Most calls contain only profile edge candidates.  Their raster
+            # depths are intentionally not used, so avoid thousands of
+            # redundant Z-buffer reads on every mouse move.
+            if np.all(surface_mask):
+                return self._measurement_solid_visible_points(
+                    world_points, display_x, display_y,
+                    edge_starts=edge_starts, edge_ends=edge_ends,
+                )
+
+        unique_pixels, inverse = np.unique(
+            np.column_stack((pixel_x, pixel_y)), axis=0, return_inverse=True,
+        )
+        scene_depths = np.empty(len(unique_pixels), dtype=float)
+        for index, (x, y) in enumerate(unique_pixels):
+            key = int(x), int(y)
+            if key not in depth_cache:
+                try:
+                    depth_cache[key] = float(
+                        render_window.GetZbufferDataAtPoint(key[0], key[1])
+                    )
+                except (TypeError, ValueError, RuntimeError):
+                    depth_cache[key] = float("nan")
+            scene_depths[index] = depth_cache[key]
+
+        points = np.asarray(world_points, dtype=float)
+        homogeneous = np.column_stack((points, np.ones(len(points))))
+        clip = homogeneous @ np.asarray(matrix, dtype=float).T
+        safe_w = np.where(np.abs(clip[:, 3]) > 1e-12, clip[:, 3], 1.0)
+        normalized_depth = (clip[:, 2] / safe_w + 1.0) * 0.5
+        sampled_depth = scene_depths[inverse]
+        valid_depth = np.isfinite(sampled_depth) & (sampled_depth < 1.0)
+        visible = ~valid_depth
+        visible[valid_depth] = (
+            normalized_depth[valid_depth] <= sampled_depth[valid_depth] + 0.01
+        )
+
+        solid_visible = self._measurement_solid_visible_points(
+            world_points, display_x, display_y,
+            edge_starts=edge_starts, edge_ends=edge_ends,
+        )
+        if surface_mask is None:
+            return visible & solid_visible
+        # A visible profile edge lies precisely between raster pixels.  Its
+        # one-pixel Z-buffer sample can therefore belong to the adjacent face
+        # (or even to the background), which made an edge snap depend on zoom
+        # level and which side of the member happened to cover that pixel.
+        # The face locator tests the actual camera ray against solid geometry,
+        # so it is the authoritative visibility test for feature edges.  Keep
+        # the raster test for every other target, such as nodes, grid points
+        # and analytical member lines.
+        return np.where(surface_mask, solid_visible, visible & solid_visible)
+
+    def _measurement_solid_visible_points(
+        self,
+        world_points: np.ndarray,
+        display_x: np.ndarray,
+        display_y: np.ndarray,
+        *,
+        edge_starts: np.ndarray | None = None,
+        edge_ends: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Reject points behind the first solid face hit by the camera ray."""
+        actor = self._member_face_actor
+        if (
+            actor is None
+            or not actor.GetVisibility()
+            or not self._solid_members_visible
+        ):
+            return np.ones(len(world_points), dtype=bool)
+
+        locator = self._measurement_face_locator_for_current_batch()
+        if locator is None:
+            return np.ones(len(world_points), dtype=bool)
+
+        visible = np.ones(len(world_points), dtype=bool)
+        renderer = self.plotter.renderer
+        unique_display_points, inverse = np.unique(
+            np.column_stack((display_x, display_y)), axis=0, return_inverse=True,
+        )
+        hit_parameters = np.full(len(unique_display_points), np.nan, dtype=float)
+        hit_cell_ids = np.full(len(unique_display_points), -1, dtype=np.int64)
+        ray_nears = np.empty((len(unique_display_points), 3), dtype=float)
+        ray_vectors = np.empty((len(unique_display_points), 3), dtype=float)
+        ray_lengths = np.empty(len(unique_display_points), dtype=float)
+        for index, (x, y) in enumerate(unique_display_points):
+            near = self._display_to_world(renderer, float(x), float(y), 0.0)
+            far = self._display_to_world(renderer, float(x), float(y), 1.0)
+            if near is None or far is None:
+                continue
+            ray = np.asarray(far, dtype=float) - np.asarray(near, dtype=float)
+            ray_length = float(np.linalg.norm(ray))
+            if ray_length <= 1e-12:
+                continue
+            ray_nears[index] = near
+            ray_vectors[index] = ray
+            ray_lengths[index] = ray_length
+            hit_points = vtk.vtkPoints()
+            hit_cells = vtk.vtkIdList()
+            if not locator.IntersectWithLine(
+                tuple(near), tuple(far), 1e-9,
+                hit_points, hit_cells,
+            ):
+                continue
+            intersection_points = np.asarray(
+                [hit_points.GetPoint(point_index) for point_index in range(hit_points.GetNumberOfPoints())],
+                dtype=float,
+            )
+            intersection_parameters = np.einsum(
+                "ij,j->i", intersection_points - near, ray,
+            )
+            closest_intersection = int(np.argmin(intersection_parameters))
+            hit_parameters[index] = float(
+                intersection_parameters[closest_intersection] / (ray_length * ray_length)
+            )
+            hit_cell_ids[index] = int(hit_cells.GetId(closest_intersection))
+
+        candidate_nears = ray_nears[inverse]
+        candidate_rays = ray_vectors[inverse]
+        candidate_ray_squared = np.einsum("ij,ij->i", candidate_rays, candidate_rays)
+        candidate_parameters = np.divide(
+            np.einsum("ij,ij->i", np.asarray(world_points, dtype=float) - candidate_nears, candidate_rays),
+            candidate_ray_squared,
+            out=np.zeros(len(world_points), dtype=float),
+            where=candidate_ray_squared > 1e-12,
+        )
+        valid_depth = np.isfinite(hit_parameters[inverse])
+        tolerance = np.divide(
+            5e-4, ray_lengths[inverse],
+            out=np.full(len(world_points), 1e-8, dtype=float),
+            where=ray_lengths[inverse] > 1e-12,
+        )
+        visible[valid_depth] = (
+            candidate_parameters[valid_depth]
+            <= hit_parameters[inverse][valid_depth] + tolerance[valid_depth]
+        )
+        # A feature edge is a topological boundary shared by one or more
+        # faces. At an exact raster boundary, a ray can land a few floating
+        # point units inside one of those adjacent faces. Treat that as the
+        # same visible entity. Crucially, this does not admit a hidden edge:
+        # a face from another part (or the front face of the same solid) has a
+        # different topology and remains rejected.
+        if edge_starts is not None and edge_ends is not None:
+            starts = np.asarray(edge_starts, dtype=float)
+            ends = np.asarray(edge_ends, dtype=float)
+            if starts.shape == (len(world_points), 3) and ends.shape == starts.shape:
+                rejected = np.flatnonzero(valid_depth & ~visible)
+                if len(rejected):
+                    edge_faces = self._measurement_edge_faces_for_current_batch()
+                    for point_index in rejected:
+                        hit_cell = int(hit_cell_ids[inverse[point_index]])
+                        incident_faces = edge_faces.get(
+                            self._measurement_edge_key(starts[point_index], ends[point_index]),
+                            frozenset(),
+                        )
+                        if hit_cell in incident_faces:
+                            visible[point_index] = True
+        return visible
+
+    @staticmethod
+    def _measurement_edge_key(start: np.ndarray, end: np.ndarray) -> tuple[float, ...]:
+        """Canonical key for an undirected topological edge."""
+        first = tuple(np.round(np.asarray(start, dtype=float), decimals=9))
+        second = tuple(np.round(np.asarray(end, dtype=float), decimals=9))
+        return (*first, *second) if first <= second else (*second, *first)
+
+    def _measurement_edge_faces_for_current_batch(self) -> dict[tuple[float, ...], frozenset[int]]:
+        """Map each solid edge to its incident face cells, cached per batch."""
+        batch = self._member_batch
+        if batch is None or not batch.faces.n_cells:
+            return {}
+        key = id(batch.faces), self._model.revision
+        if self._measurement_edge_faces_key == key and self._measurement_edge_faces is not None:
+            return self._measurement_edge_faces
+
+        edge_faces: dict[tuple[float, ...], set[int]] = {}
+        encoded = np.asarray(batch.faces.faces, dtype=np.int64)
+        cursor = 0
+        cell_id = 0
+        while cursor < len(encoded):
+            count = int(encoded[cursor])
+            point_ids = encoded[cursor + 1:cursor + count + 1]
+            cursor += count + 1
+            if count >= 2:
+                for first_id, second_id in zip(point_ids, np.roll(point_ids, -1)):
+                    edge_faces.setdefault(
+                        self._measurement_edge_key(
+                            batch.faces.points[int(first_id)], batch.faces.points[int(second_id)],
+                        ),
+                        set(),
+                    ).add(cell_id)
+            cell_id += 1
+        self._measurement_edge_faces = {
+            edge: frozenset(face_ids) for edge, face_ids in edge_faces.items()
+        }
+        self._measurement_edge_faces_key = key
+        return self._measurement_edge_faces
+
+    def _measurement_face_locator_for_current_batch(self) -> vtk.vtkCellLocator | None:
+        """Return a cached locator for all visible solid member faces."""
+        batch = self._member_batch
+        if batch is None or not batch.faces.n_cells:
+            return None
+        key = id(batch.faces), self._model.revision
+        if self._measurement_face_locator_key == key:
+            return self._measurement_face_locator
+        locator = vtk.vtkCellLocator()
+        locator.SetDataSet(batch.faces)
+        locator.BuildLocator()
+        self._measurement_face_locator = locator
+        self._measurement_face_locator_key = key
+        return locator
+
+    @staticmethod
+    def _measurement_normalized_depth(
+        world_points: np.ndarray, matrix: np.ndarray,
+    ) -> np.ndarray:
+        points = np.asarray(world_points, dtype=float)
+        homogeneous = np.column_stack((points, np.ones(len(points))))
+        clip = homogeneous @ np.asarray(matrix, dtype=float).T
+        safe_w = np.where(np.abs(clip[:, 3]) > 1e-12, clip[:, 3], 1.0)
+        return clip[:, 2] / safe_w
+
+    def _measurement_projection_context(self) -> tuple[np.ndarray, int, int]:
+        """Build one camera projection context for the current mouse update."""
+        renderer = self.plotter.renderer
+        camera = renderer.GetActiveCamera()
+        vtk_matrix = camera.GetCompositeProjectionTransformMatrix(
+            renderer.GetTiledAspectRatio(), -1.0, 1.0,
+        )
+        matrix = np.asarray([
+            [vtk_matrix.GetElement(row, column) for column in range(4)]
+            for row in range(4)
+        ])
+        return matrix, self.plotter.width(), self.plotter.height()
+
+    def _measurement_segments(
+        self, matrix: np.ndarray, width: int, height: int,
+    ) -> tuple[tuple, tuple]:
+        """Return projected snap segments, rebuilding only after a camera change."""
+        solid_visible = bool(
+            self._solid_members_visible
+            and self._member_edge_actor is not None
+            and self._member_edge_actor.GetVisibility()
+        )
+        silhouette_visible = bool(
+            self._member_silhouette_actor is not None
+            and self._member_silhouette_actor.GetVisibility()
+        )
+        camera = self.plotter.renderer.GetActiveCamera()
+        key = (
+            self._model.revision,
+            id(self._member_batch),
+            int(camera.GetMTime()),
+            width,
+            height,
+            solid_visible,
+            silhouette_visible,
+        )
+        if self._measurement_segments_cache is not None:
+            cached_key, cached_segments = self._measurement_segments_cache
+            if cached_key == key:
+                return cached_segments
+
+        meshes: list[tuple[pv.PolyData, str, int, bool]] = []
+        discrete_points: list[tuple] = []
+        if solid_visible and self._member_batch is not None:
+            meshes.append((self._member_batch.edges, "edge", 1, True))
+            if silhouette_visible and self._member_silhouette_actor is not None:
+                vtk_mesh = self._member_silhouette_actor.GetMapper().GetInput()
+                if vtk_mesh is not None:
+                    meshes.append((pv.wrap(vtk_mesh), "silhouette", 1, True))
+        elif self._member_batch is not None:
+            meshes.append((self._member_batch.lines, "line", 2, True))
+        if self._rigid_bar_mesh is not None:
+            meshes.append((self._rigid_bar_mesh, "line", 2, True))
+
+        segments: list[tuple] = []
+        for mesh, kind, priority, discrete in meshes:
+            self._append_measurement_mesh_segments(
+                segments, mesh, kind, priority, matrix, width, height,
+                discrete_points if discrete else None,
+            )
+        segment_arrays = self._measurement_segment_arrays(segments)
+        point_arrays = self._measurement_point_arrays(discrete_points)
+        cached_segments = segment_arrays, point_arrays
+        self._measurement_segments_cache = key, cached_segments
+        return cached_segments
+
+    @staticmethod
+    def _measurement_segment_arrays(segments: list[tuple]) -> tuple:
+        if not segments:
+            return (
+                np.empty((0, 2), dtype=float),
+                np.empty((0, 2), dtype=float),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                (),
+                np.empty(0, dtype=np.int8),
+            )
+        return (
+            np.asarray([segment[0] for segment in segments], dtype=float),
+            np.asarray([segment[1] for segment in segments], dtype=float),
+            np.asarray([segment[2] for segment in segments], dtype=float),
+            np.asarray([segment[3] for segment in segments], dtype=float),
+            tuple(str(segment[4]) for segment in segments),
+            np.asarray([int(segment[5]) for segment in segments], dtype=np.int8),
+        )
+
+    @staticmethod
+    def _measurement_point_arrays(points: list[tuple]) -> tuple:
+        if not points:
+            return (
+                np.empty((0, 2), dtype=float),
+                np.empty((0, 3), dtype=float),
+                (),
+                np.empty(0, dtype=np.int8),
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+            )
+        return (
+            np.asarray([point[0] for point in points], dtype=float),
+            np.asarray([point[1] for point in points], dtype=float),
+            tuple(str(point[2]) for point in points),
+            np.asarray([int(point[3]) for point in points], dtype=np.int8),
+            np.asarray([point[4] for point in points], dtype=float),
+            np.asarray([point[5] for point in points], dtype=float),
+        )
+
+    def _append_measurement_mesh_segments(
+        self,
+        segments: list[tuple],
+        mesh: pv.PolyData,
+        kind: str,
+        priority: int,
+        matrix: np.ndarray,
+        width: int,
+        height: int,
+        discrete_points: list[tuple] | None = None,
+    ) -> None:
+        """Project one line mesh in a single NumPy pass and cache its segments."""
+        if mesh is None or not mesh.n_lines or not mesh.n_points:
+            return
+        screen_points, visible = project_world_to_screen(
+            np.asarray(mesh.points, dtype=float), matrix, width, height,
+            clip_to_viewport=False,
+        )
+        midpoint_records: list[tuple[np.ndarray, str, int, np.ndarray, np.ndarray]] = []
+        encoded = np.asarray(mesh.lines, dtype=np.int64)
+        cursor = 0
+        while cursor < len(encoded):
+            count = int(encoded[cursor])
+            point_ids = encoded[cursor + 1:cursor + 1 + count]
+            cursor += count + 1
+            if count < 2:
+                continue
+            for first_id, second_id in zip(point_ids[:-1], point_ids[1:]):
+                first_index = int(first_id)
+                second_index = int(second_id)
+                if not visible[first_index] or not visible[second_index]:
+                    continue
+                first_screen = screen_points[first_index]
+                second_screen = screen_points[second_index]
+                first_world = np.asarray(mesh.points[first_index], dtype=float)
+                second_world = np.asarray(mesh.points[second_index], dtype=float)
+                if discrete_points is None:
+                    segments.append(
+                        (
+                            first_screen, second_screen,
+                            first_world, second_world,
+                            kind, priority,
+                        )
+                    )
+                    continue
+                endpoint_kind = f"{kind}-endpoint"
+                midpoint_kind = f"{kind}-midpoint"
+                discrete_points.append((
+                    first_screen, first_world, endpoint_kind, 0, first_world, second_world,
+                ))
+                discrete_points.append((
+                    second_screen, second_world, endpoint_kind, 0, first_world, second_world,
+                ))
+                midpoint_world = (first_world + second_world) * 0.5
+                midpoint_records.append((
+                    midpoint_world, midpoint_kind, 1, first_world, second_world,
+                ))
+
+        if midpoint_records and discrete_points is not None:
+            midpoint_worlds = np.asarray(
+                [record[0] for record in midpoint_records], dtype=float,
+            )
+            midpoint_screens, midpoint_visible = project_world_to_screen(
+                midpoint_worlds, matrix, width, height, clip_to_viewport=False,
+            )
+            for screen, (world, midpoint_type, midpoint_priority, edge_start, edge_end), is_visible in zip(
+                midpoint_screens, midpoint_records, midpoint_visible,
+            ):
+                if is_visible:
+                    discrete_points.append((
+                        screen, world, midpoint_type, midpoint_priority, edge_start, edge_end,
+                    ))
+
     def _snap_to_grid(self, position: np.ndarray) -> np.ndarray | None:
         """Return the nearest grid intersection for compatibility callers."""
         if not self._snap_enabled or not self._snap_types["grid"] or not self._grid_visible:
@@ -1404,7 +2366,12 @@ class StructureScene(QWidget):
             return None
         return candidate[0]
 
-    def _nearest_grid_candidate(self, position: np.ndarray) -> tuple[np.ndarray, float] | None:
+    def _nearest_grid_candidate(
+        self,
+        position: np.ndarray,
+        *,
+        projection: tuple[np.ndarray, int, int] | None = None,
+    ) -> tuple[np.ndarray, float] | None:
         if self._pointer_position is None:
             return None
         first_values, second_values, first_axis, second_axis = self._grid_intersection_axes()
@@ -1424,7 +2391,15 @@ class StructureScene(QWidget):
                 candidate = np.asarray(position, dtype=float).copy()
                 candidate[first_axis] = first_value
                 candidate[second_axis] = second_value
-                screen, visible = self._world_to_screen(candidate)
+                if projection is None:
+                    screen, visible = self._world_to_screen(candidate)
+                else:
+                    matrix, width, height = projection
+                    projected, visible_values = project_world_to_screen(
+                        np.asarray([candidate], dtype=float), matrix, width, height,
+                    )
+                    screen = projected[0]
+                    visible = bool(visible_values[0])
                 if not visible:
                     continue
                 distance = float(np.linalg.norm(screen - np.asarray(self._pointer_position)))
@@ -1460,18 +2435,36 @@ class StructureScene(QWidget):
             1,
         )
 
-    def _position_snap_marker(self, position: np.ndarray, kind: str | None) -> None:
+    def _position_snap_marker(
+        self,
+        position: np.ndarray,
+        kind: str | None,
+        *,
+        marker: SnapMarker | None = None,
+    ) -> None:
+        marker = self._snap_marker if marker is None else marker
         screen, visible = self._world_to_screen(position)
         if not visible:
-            self._snap_marker.hide()
+            marker.hide()
             return
-        self._snap_marker.set_kind(kind or "grid")
-        self._snap_marker.move(
-            int(round(float(screen[0]) - self._snap_marker.width() / 2.0)),
-            int(round(float(screen[1]) - self._snap_marker.height() / 2.0)),
+        marker_kind = {
+            "grid": "grid",
+            "endpoint": "endpoint",
+            "center": "center",
+            "edge-endpoint": "endpoint",
+            "silhouette-endpoint": "endpoint",
+            "line-endpoint": "endpoint",
+            "edge-midpoint": "center",
+            "silhouette-midpoint": "center",
+            "line-midpoint": "center",
+        }.get(kind or "grid", "grid")
+        marker.set_kind(marker_kind)
+        marker.move(
+            int(round(float(screen[0]) - marker.width() / 2.0)),
+            int(round(float(screen[1]) - marker.height() / 2.0)),
         )
-        self._snap_marker.show()
-        self._snap_marker.raise_()
+        marker.show()
+        marker.raise_()
 
     def _update_member_preview(self, endpoint: np.ndarray | None) -> None:
         start = self._member_preview_start
@@ -1503,6 +2496,38 @@ class StructureScene(QWidget):
     def _hide_member_preview(self) -> None:
         if self._member_preview_actor is not None:
             self._member_preview_actor.SetVisibility(False)
+
+    def _update_measurement_preview(self, endpoint: np.ndarray | None) -> None:
+        """Show the transient line from the fixed measurement start point."""
+        start = self._measurement_start
+        if start is None or endpoint is None or not self._measurement_mode:
+            self._hide_measurement_preview()
+            return
+        if float(np.linalg.norm(endpoint - start)) <= 1e-12:
+            self._hide_measurement_preview()
+            return
+        mesh = pv.Line(tuple(start), tuple(endpoint))
+        if self._measurement_preview_actor is None:
+            self._measurement_preview_actor = self.plotter.add_mesh(
+                mesh,
+                color="#0969da",
+                line_width=3.0,
+                render_lines_as_tubes=True,
+                lighting=False,
+                pickable=False,
+                reset_camera=False,
+                render=False,
+            )
+            self._measurement_preview_actor.SetObjectName("measurement-preview")
+        else:
+            mapper = self._measurement_preview_actor.GetMapper()
+            mapper.SetInputData(mesh)
+            mapper.Modified()
+        self._measurement_preview_actor.SetVisibility(True)
+
+    def _hide_measurement_preview(self) -> None:
+        if self._measurement_preview_actor is not None:
+            self._measurement_preview_actor.SetVisibility(False)
 
     def _world_to_screen(self, position: np.ndarray) -> tuple[np.ndarray, bool]:
         renderer = self.plotter.renderer
@@ -1596,6 +2621,9 @@ class StructureScene(QWidget):
         position = self._cursor_world_position()
         if position is None:
             return None
+        if self._measurement_mode:
+            target, _snap_kind = self._measurement_target(position)
+            return target
         target, _snap_kind = self._placement_target(position)
         return target
 
@@ -1904,7 +2932,9 @@ class StructureScene(QWidget):
             if mesh is None or not mesh.n_cells:
                 return
             actor = self.plotter.add_mesh(
-                mesh, color=color, line_width=self._highlight_line_width(slot, kind),
+                mesh,
+                color=color,
+                line_width=self._highlight_line_width(slot, kind, name if kind == "bar" else None),
                 render_lines_as_tubes=True, lighting=False, pickable=False,
                 reset_camera=False, render=False,
             )
@@ -1951,7 +2981,9 @@ class StructureScene(QWidget):
         batch.geometry.GetCellData().Modified()
         batch.geometry.Modified()
 
-    def _highlight_line_width(self, slot: str, kind: str = "bar") -> float:
+    def _highlight_line_width(
+        self, slot: str, kind: str = "bar", member_name: str | None = None,
+    ) -> float:
         """Return a stroke wider than the representation currently visible.
 
         Member strokes are scaled after camera zoom.  A fixed-width hover
@@ -1978,6 +3010,11 @@ class StructureScene(QWidget):
         width = fallback
         if reference_actor is not None:
             width = float(reference_actor.GetProperty().GetLineWidth())
+        if self._solid_members_visible and kind == "bar":
+            member = self._model.bars.get(member_name) if member_name is not None else None
+            if member is not None and member.section in self._member_renderer._silhouette_sections:
+                return self._circular_silhouette_line_width
+            return self._solid_highlight_line_width
         padding = (
             self._selected_highlight_padding
             if slot.startswith("selected") else self._hover_highlight_padding
@@ -1988,8 +3025,13 @@ class StructureScene(QWidget):
         member = self._model.bars.get(name)
         if member is not None:
             if self._solid_members_visible and self._member_batch is not None:
+                source = self._member_batch.silhouette_sources.get(name)
+                if source is not None:
+                    return self._member_renderer.solids.silhouette_for(
+                        source, self.plotter.renderer.GetActiveCamera(),
+                    )
                 outline = self._member_batch.outlines.get(name)
-                if outline is not None:
+                if outline is not None and outline.n_cells:
                     return outline
             start = self._model.nodes[member.start_node]
             end = self._model.nodes[member.end_node]
@@ -2010,6 +3052,8 @@ class StructureScene(QWidget):
             self._member_face_actor.SetVisibility(solid)
         if self._member_edge_actor is not None:
             self._member_edge_actor.SetVisibility(solid)
+        if self._member_silhouette_actor is not None:
+            self._member_silhouette_actor.SetVisibility(solid)
         if self._member_fallback_actor is not None:
             self._member_fallback_actor.SetVisibility(solid)
 
@@ -2241,6 +3285,7 @@ class StructureScene(QWidget):
         if batch is None or member_name not in batch.names:
             self.render_model(self._model)
             return
+        member = self._model.bars.get(member_name)
         index = batch.names.index(member_name)
         base = np.asarray(pv.Color(self._model.bars[member_name].color).int_rgb, dtype=np.uint8)
         edge = np.clip(base.astype(float) * 0.65, 0, 255).astype(np.uint8)
@@ -2255,6 +3300,15 @@ class StructureScene(QWidget):
             mesh.cell_data["rgb"] = values
             mesh.GetCellData().Modified()
             mesh.Modified()
+        if member is not None and member.section in self._member_renderer._silhouette_sections:
+            self._member_renderer.update_silhouette_color(batch, member_name, base)
+            if self._member_silhouette_actor is not None:
+                silhouette = self._member_renderer.silhouette_mesh(
+                    batch, self.plotter.renderer.GetActiveCamera(),
+                )
+                mapper = self._member_silhouette_actor.GetMapper()
+                mapper.SetInputData(silhouette)
+                mapper.Modified()
         self.plotter.render()
 
     def update_member_releases(self, _member_name: str) -> None:
@@ -2390,6 +3444,8 @@ class StructureScene(QWidget):
         """Start a world-up orbit from the current cursor position."""
         if self._camera_drag_mode is not None:
             return
+        self._wheel_interaction_timer.stop()
+        self._camera_render_timer.stop()
         if self._orientation_widget.is_pointer_over(x, y):
             return
         if self._orientation_widget._camera_animation.isActive():
@@ -2402,6 +3458,8 @@ class StructureScene(QWidget):
     def _begin_camera_drag(self, mode: str, x: float, y: float) -> None:
         if self._camera_drag_mode is not None:
             return
+        self._wheel_interaction_timer.stop()
+        self._camera_render_timer.stop()
         self._camera_drag_mode = mode
         self._camera_drag_last_position = int(x), int(y)
         self._on_interaction()
@@ -2541,14 +3599,18 @@ class StructureScene(QWidget):
             focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
             position = np.asarray(camera.GetPosition(), dtype=float)
             camera.SetPosition(*(focal_point + (position - focal_point) / factor))
-        self.plotter.reset_camera_clipping_range()
-        self._orientation_widget.sync_from_camera()
         self._schedule_label_sync()
-        self.plotter.render()
+        # Right-button dolly is also a zoom gesture.  Keep it on the same
+        # coalesced render path as the wheel so every mouse-move does not
+        # rebuild camera-dependent overlays or block the interactor.
+        self._camera_render_timer.start()
 
     def _on_navigation_wheel(self, _caller, event) -> None:
         if self._camera_drag_mode is not None:
             return
+        if not self._camera_interacting:
+            self._on_interaction()
+        self._wheel_interaction_timer.start()
         factor = 1.0 / 1.05 if event == "MouseWheelForwardEvent" else 1.05
         camera = self.plotter.renderer.GetActiveCamera()
         if camera.GetParallelProjection():
@@ -2557,10 +3619,23 @@ class StructureScene(QWidget):
             focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
             position = np.asarray(camera.GetPosition(), dtype=float)
             camera.SetPosition(*(focal_point + (position - focal_point) * factor))
+        self._schedule_label_sync()
+        self._camera_render_timer.start()
+
+    def _render_camera_frame(self) -> None:
+        """Render at most once per frame while a zoom gesture is moving."""
+        if not self._camera_interacting:
+            self._camera_render_timer.stop()
+            return
         self.plotter.reset_camera_clipping_range()
         self._update_zoom_dependent_sizes()
-        self._schedule_label_sync()
         self.plotter.render()
+
+    def _finish_wheel_interaction(self) -> None:
+        """Finish a coalesced wheel gesture after the cursor stops scrolling."""
+        self._camera_render_timer.stop()
+        if self._camera_drag_mode is None and self._camera_interacting:
+            self._on_interaction_end()
 
     def _on_navigation_button_release(self, _caller, _event) -> None:
         self._finish_camera_drag()
@@ -2575,20 +3650,42 @@ class StructureScene(QWidget):
 
     def _on_interaction(self, *_args) -> None:
         self._camera_interacting = True
+        self._measurement_refresh_timer.stop()
+        if self._measurement_mode:
+            self._measurement_readout.hide()
+            self._snap_marker.hide()
+            self._measurement_start_marker.hide()
         self._schedule_label_sync()
         self._orientation_widget.sync_from_camera()
 
     def _on_interaction_end(self, *_args) -> None:
+        self._camera_render_timer.stop()
         self._camera_interacting = False
+        self._silhouette_timer.stop()
         # Orbiting and panning change the viewing direction but are not camera
         # resets.  Recalculate only the clipping planes so no geometry remains
         # hidden after a navigation gesture.
         self.plotter.reset_camera_clipping_range()
         self._update_zoom_dependent_sizes()
         self._update_depth_overlays()
+        if self._measurement_mode:
+            self._measurement_refresh_timer.start()
         self._sync_labels()
         self._update_coordinate_readout()
         self._orientation_widget.sync_from_camera()
+        # Silhouettes and snap candidates are view-dependent and can be
+        # expensive for a large model. Render the final camera pose first;
+        # the existing throttled path refreshes the contour once navigation
+        # has settled.
+        if self._member_batch is not None and self._member_batch.silhouette_sources:
+            self._silhouette_timer.start()
+        self.plotter.render()
+
+    def _refresh_measurement_after_navigation(self) -> None:
+        """Resolve one fresh snap after the camera and cursor settle."""
+        if self._camera_interacting or not self._measurement_mode:
+            return
+        self._update_measurement_readout()
         self.plotter.render()
 
     def _sync_labels(self) -> None:
@@ -2596,33 +3693,71 @@ class StructureScene(QWidget):
         self._elastic_support_overlay.sync(self.plotter.renderer)
         if hasattr(self, "_coordinate_readout"):
             self._update_coordinate_readout()
+            if (
+                not self._camera_interacting
+                and not self._measurement_refresh_timer.isActive()
+            ):
+                self._update_measurement_readout()
             if self._member_preview_start is not None:
                 self.plotter.render()
 
     def _on_camera_modified(self, *_args) -> None:
-        self._update_depth_overlays()
+        # Camera events can arrive hundreds of times during a wheel/dolly
+        # gesture.  Measurement visibility, depth offsets and profile
+        # silhouettes are deliberately deferred until the gesture ends;
+        # doing any of them here makes zoom fight the render loop.
+        if not self._camera_interacting:
+            self._update_depth_overlays()
+            if not self._silhouette_timer.isActive():
+                self._silhouette_timer.start()
+        else:
+            self._silhouette_timer.stop()
         self._schedule_label_sync()
 
-    def _update_depth_overlays(self) -> None:
-        """Move analytical axis strokes slightly toward the active camera.
+    def _refresh_member_silhouette_throttled(self) -> None:
+        if self._camera_interacting:
+            return
+        self._refresh_member_silhouette()
+        self.plotter.render()
 
-        The axes are batched into three actors, so one camera-facing offset is
-        applied to each actor.  This reproduces the previous per-member
-        overlay behavior while avoiding one actor per member.
-        """
+    def _refresh_member_silhouette(self) -> None:
+        """Refresh the screen-space contour after the camera changes."""
+        batch = self._member_batch
+        if batch is None or not batch.silhouette_sources:
+            return
+        mesh = self._member_renderer.silhouette_mesh(
+            batch, self.plotter.renderer.GetActiveCamera(),
+        )
+        if self._member_silhouette_actor is None:
+            if not mesh.n_cells:
+                return
+            self._member_silhouette_actor = self._add_colored_mesh(
+                mesh,
+                "batch:member-silhouette",
+                line_width=self._circular_silhouette_line_width,
+                lighting=False,
+            )
+            self._member_silhouette_actor.SetPickable(False)
+            self._member_silhouette_actor.SetVisibility(
+                self._solid_members_visible and not (
+                    self._analysis_visible and self._active_result_type.startswith("Deformação")
+                )
+            )
+            return
+        mapper = self._member_silhouette_actor.GetMapper()
+        mapper.SetInputData(mesh)
+        mapper.Modified()
+        self._member_silhouette_actor.SetVisibility(
+            self._solid_members_visible
+            and not (self._analysis_visible and self._active_result_type.startswith("Deformação"))
+        )
+
+    def _update_depth_overlays(self) -> None:
+        """Keep analytical axes aligned while the overlay layer owns depth."""
         if not self._local_axis_actors:
             return
-        camera = self.plotter.renderer.GetActiveCamera()
-        direction = np.asarray(camera.GetPosition(), dtype=float) - np.asarray(
-            camera.GetFocalPoint(), dtype=float,
-        )
-        length = float(np.linalg.norm(direction))
-        if length <= 1e-12:
-            return
-        direction /= length
-        offset = direction * (self._marker_radius_current * 0.25)
         for actor in self._local_axis_actors:
-            actor.SetPosition(*offset)
+            actor.SetPosition(0.0, 0.0, 0.0)
 
     def _reference_plane_levels(self) -> tuple[float, ...]:
         values = {0.0}
@@ -2669,7 +3804,10 @@ class StructureScene(QWidget):
             if actor is not None and (slot.startswith("selected") or slot == "hover"):
                 target = highlight_targets.get(slot)
                 kind = target[0] if target is not None else "bar"
-                actor.GetProperty().SetLineWidth(self._highlight_line_width(slot, kind))
+                member_name = target[1] if target is not None and target[0] == "bar" else None
+                actor.GetProperty().SetLineWidth(
+                    self._highlight_line_width(slot, kind, member_name),
+                )
 
     def _current_parallel_scale(self) -> float | None:
         camera = self.plotter.renderer.GetActiveCamera()
@@ -2711,13 +3849,17 @@ class StructureScene(QWidget):
         self._selected = self._selected_elements[-1] if self._selected_elements else None
 
     def _clear_actor_references(self) -> None:
+        for actor in self._local_axis_actors:
+            self._local_axes_renderer.RemoveActor(actor)
         self._grid_actor = None
         self._reference_axes_actor = None
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._member_silhouette_actor = None
         self._member_preview_actor = None
+        self._measurement_preview_actor = None
         self._perpendicular_guide_actor = None
         self._orthogonal_guide_actor = None
         self._rigid_bar_actor = None
@@ -2737,6 +3879,11 @@ class StructureScene(QWidget):
         self._highlight_actors.clear()
         self._member_batch = None
         self._node_batch = None
+        self._measurement_segments_cache = None
+        self._measurement_face_locator = None
+        self._measurement_face_locator_key = None
+        self._measurement_edge_faces = None
+        self._measurement_edge_faces_key = None
         self._rigid_bar_names = ()
         self._rigid_bar_mesh = None
 

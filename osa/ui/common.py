@@ -18,8 +18,19 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
+    QUrl,
 )
-from PySide6.QtGui import QAction, QColor, QIcon, QIntValidator, QKeySequence, QPainter, QPalette, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QIntValidator,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPixmap,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -46,6 +57,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QToolButton,
@@ -64,6 +76,7 @@ from osa.services import (
     ProjectService,
     SectionPropertyService,
     SectionService,
+    ThumbnailService,
 )
 
 from .theme import APP_STYLESHEET

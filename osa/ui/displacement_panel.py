@@ -509,7 +509,10 @@ class DisplacementPanel(QFrame):
     @staticmethod
     def _position_offsets(member, position: str) -> tuple[float, float] | None:
         try:
-            shape = section_shape(member.section, member.geometry_dict())
+            shape = section_shape(
+                member.section, member.geometry_dict(),
+                mirror_z=member.section_mirrored,
+            )
         except (KeyError, TypeError, ValueError):
             return None
         if shape is None:

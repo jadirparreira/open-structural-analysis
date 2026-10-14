@@ -1,10 +1,14 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
+import json
+import threading
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, Signal
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
+from osa.integrations import LocalMcpIntegration
+from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService
 
 from .analysis_panel import ProcessingPanel
@@ -13,6 +17,8 @@ from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
+    PROJECT_MANUAL_URL,
+    AboutDialog,
     ActionDialog,
     ActionGroupDialog,
     CombinationsDialog,
@@ -23,6 +29,8 @@ from .dialogs import (
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
+from .home import HomePage
+from .mcp_dispatcher import McpQtDispatcher
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -45,10 +53,17 @@ from .window_frame import TitleBar, WindowFrame
 
 
 class MainWindow(QMainWindow):
+    mcp_model_changed = Signal()
+    mcp_view_changed = Signal(str, bool)
+    mcp_active_action_changed = Signal(str)
+    mcp_analysis_view_changed = Signal(str, str)
+    mcp_analysis_diagrams_changed = Signal(bool)
+    mcp_session_changed = Signal(str)
+
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
-        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "axes",
+        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
         "referenceaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
@@ -58,6 +73,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.model = StructuralModel()
+        self._model_access_lock = threading.RLock()
         self.model_service = ModelService(self.model)
         self.material_service = MaterialService(self.model)
         self.action_service = ActionService(self.model)
@@ -94,8 +110,12 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
         self.scene = StructureScene(shell)
+        self.home = HomePage(shell)
+        self.view_stack = QStackedWidget(shell)
+        self.view_stack.addWidget(self.home)
+        self.view_stack.addWidget(self.scene)
         shell_layout.addWidget(self.title_bar)
-        shell_layout.addWidget(self.scene, 1)
+        shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self.selected: tuple[str, str] | None = None
@@ -106,6 +126,7 @@ class MainWindow(QMainWindow):
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_measurement_point)
         self._make_shortcuts()
         self.palette = FloatingPalette(self)
         self.palette.reposition()
@@ -234,6 +255,39 @@ class MainWindow(QMainWindow):
         self.command_bar.reposition()
         self.history.reposition()
         self.refresh_scene()
+        self.mcp_model_changed.connect(self._refresh_after_mcp_change)
+        self.mcp_view_changed.connect(self._apply_mcp_view_change)
+        self.mcp_active_action_changed.connect(self._select_active_action)
+        self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
+        self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
+        self.mcp_session_changed.connect(self.palette.show_group)
+        self._mcp_dispatcher = McpQtDispatcher(self)
+        self._mcp_dispatcher.suspend()
+        self._mcp_application = McpApplication(
+            self.model,
+            self.model_service,
+            analysis_engine=self.analysis_service.engine,
+            on_model_changed=self.mcp_model_changed.emit,
+            on_view_changed=self.mcp_view_changed.emit,
+            get_view_state=self.scene.view_state,
+            on_active_action_changed=self.mcp_active_action_changed.emit,
+            get_active_action=lambda: self.selected_action_name,
+            on_analysis_view_changed=self.mcp_analysis_view_changed.emit,
+            get_analysis_view_state=self.scene.analysis_view_state,
+            on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
+            on_session_changed=self.mcp_session_changed.emit,
+            get_session=lambda: self.palette.active_group,
+            model_lock=self._model_access_lock,
+            execute_on_model_thread=self._mcp_dispatcher.call,
+        )
+        self._mcp_server = LocalMcpServer(self._mcp_application)
+        self._mcp_integration = LocalMcpIntegration()
+        self._mcp_enabled = False
+        self.home.new_project_requested.connect(self.new_model)
+        self.home.open_project_requested.connect(self.open_model)
+        self.home.recent_project_requested.connect(self._open_recent_project)
+        self.home.manual_requested.connect(self.open_manual)
+        self.show_home()
 
     def process_analysis(self) -> None:
         """Run PyNite in the background after the progress card is painted."""
@@ -301,6 +355,84 @@ class MainWindow(QMainWindow):
         dialog = ProgramSettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+
+    def open_about(self) -> None:
+        dialog = AboutDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
+    @property
+    def mcp_enabled(self) -> bool:
+        """Indica se o servidor MCP foi ativado nesta execução do OpenSA."""
+        return self._mcp_enabled
+
+    @property
+    def mcp_endpoint(self) -> str:
+        return self._mcp_server.endpoint
+
+    def set_mcp_enabled(self, enabled: bool) -> None:
+        """Ativa ou desativa o servidor MCP a partir das configurações."""
+        enabled = bool(enabled)
+        if enabled == self._mcp_enabled:
+            return
+        if enabled:
+            try:
+                self._mcp_integration.ensure_installed()
+                self._mcp_dispatcher.resume()
+                self._mcp_server.start()
+            except (OSError, RuntimeError) as error:
+                self._mcp_dispatcher.suspend()
+                self._mcp_enabled = False
+                raise RuntimeError(f"Não foi possível ativar o servidor MCP: {error}") from error
+            self._mcp_enabled = True
+            return
+        self._mcp_dispatcher.suspend()
+        self._mcp_server.stop()
+        self._mcp_enabled = False
+
+    def mcp_status(self) -> dict[str, str]:
+        """Retorna o estado que deve ser apresentado na página MCP."""
+        if not self._mcp_enabled:
+            return {
+                "state": "disabled",
+                "text": "Servidor MCP desativado",
+                "detail": "Ative esta opção para permitir que um cliente MCP acesse o modelo aberto.",
+            }
+        if self._mcp_server.last_error:
+            return {
+                "state": "error",
+                "text": "Não foi possível iniciar o servidor MCP",
+                "detail": self._mcp_server.last_error,
+            }
+        if not self._mcp_server.is_running:
+            return {
+                "state": "starting",
+                "text": "Iniciando servidor MCP…",
+                "detail": "O OpenSA está preparando o endpoint local.",
+            }
+        if not self._mcp_server.is_listening():
+            return {
+                "state": "error",
+                "text": "O endpoint MCP não está acessível",
+                "detail": self._mcp_server.endpoint,
+            }
+        if self._mcp_integration.is_installed():
+            return {
+                "state": "ready",
+                "text": "Servidor MCP acessível",
+                "detail": (
+                    "ChatGPT Desktop: plugin registrado. Reinicie o cliente e selecione OpenSA em um chat Work.\n"
+                    f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+                ),
+            }
+        return {
+            "state": "ready",
+            "text": "Servidor MCP acessível",
+            "detail": (
+                "ChatGPT Desktop: registro não confirmado.\n"
+                f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+            ),
+        }
 
     @property
     def member_direction_normalization_enabled(self) -> bool:
@@ -550,6 +682,18 @@ class MainWindow(QMainWindow):
         self.scene.set_member_placement_mode(True)
         self.history.append(
             "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição inicial do membro)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_measurement(self) -> None:
+        """Start a transient two-point distance measurement in the viewport."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._command_mode = "measurement"
+        self.scene.set_measurement_mode(True)
+        self.history.append(
+            "> <b>Medir</b> "
+            "<span style='color:#57606a'>(Clique no ponto inicial da medição)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -984,6 +1128,7 @@ class MainWindow(QMainWindow):
             "rigid": ("Geometria", self.start_rigid_bar_placement),
             "copy": ("Geometria", self.start_copy_elements),
             "cprop": ("Geometria", self.start_copy_member_properties),
+            "measure": ("Geometria", self.start_measurement),
             "axes": ("Geometria", self.toggle_axes_panel),
             "group": ("Ações", self.open_action_groups),
             "action": ("Ações", self.start_load_command),
@@ -1196,6 +1341,23 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         QTimer.singleShot(0, self.refresh_scene)
 
+    def _handle_measurement_point(self, point: object) -> None:
+        """Collect two transient points and close the measurement tool."""
+        if self._command_mode != "measurement":
+            return
+        coordinates = tuple(float(value) for value in point)
+        if self.scene.measurement_start is None:
+            self.scene.set_measurement_start(coordinates)
+            self.history.append(
+                "> <b>Medir</b> "
+                "<span style='color:#57606a'>(Clique no ponto final da medição)</span>"
+            )
+            return
+
+        self._command_mode = None
+        self.scene.set_measurement_start(None)
+        self.scene.set_measurement_mode(False)
+
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         if self._command_mode == "action_selection":
@@ -1236,6 +1398,15 @@ class MainWindow(QMainWindow):
             self.history.append(
                 f"> <b>{label}</b> "
                 "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode == "measurement":
+            self._command_mode = None
+            self.scene.set_measurement_start(None)
+            self.scene.set_measurement_mode(False)
+            self.history.append(
+                "> <b>Medir</b> "
+                "<span style='color:#8c959f'>(Medição cancelada)</span>"
             )
             return
         if self._command_mode not in {
@@ -1532,6 +1703,17 @@ class MainWindow(QMainWindow):
     def new_model(self) -> None:
         if not self._confirm_pending_changes():
             return
+        self._reset_model_state()
+        self.show_editor()
+
+    def close_project(self) -> None:
+        """Fecha o modelo atual e retorna à Home, mantendo a aplicação aberta."""
+        if not self._confirm_pending_changes():
+            return
+        self._reset_model_state()
+        self.show_home()
+
+    def _reset_model_state(self) -> None:
         self.axes_panel.discard()
         self.model.clear()
         self.section_profiles.clear()
@@ -1576,48 +1758,58 @@ class MainWindow(QMainWindow):
 
     def _save_model_to(self, path: str | Path) -> None:
         try:
-            self.project_service.save(path)
+            thumbnail = ThumbnailService.generate(self.model)
+            self.project_service.save(path, thumbnail=thumbnail)
             self.current_path = Path(path)
             self._saved_revision = self.model.revision
+            self.home.store.add(self.current_path)
+            self.home.refresh()
         except OSError as error:
             self.show_error(f"Não foi possível salvar o arquivo: {error}")
 
     def open_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._project_file_filter)
         if path:
-            if Path(path).suffix.casefold() != ".osa":
-                self.show_error("Selecione um arquivo de modelo com extensão .osa.")
-                return
-            try:
-                self.axes_panel.discard()
-                self.project_service.load(path)
-                self.normalize_member_directions_if_enabled()
-                self.section_profiles = {
-                    name: member.profile for name, member in self.model.bars.items() if member.profile
-                }
-                self.section_geometry = {
-                    name: member.geometry_dict() for name, member in self.model.bars.items()
-                    if member.section_geometry
-                }
-                self.command_session.cancel()
-                self._command_mode = None
-                self._member_placement_start = None
-                self._join_member_first = None
-                self._copy_properties_reference = None
-                self._copy_elements_selection = []
-                self._copy_elements_reference = None
-                self._pending_action_launch = None
-                self.member_property_copy_panel.hide()
-                self.scene.set_member_placement_mode(False)
-                self.scene.set_selection_highlight(())
-                self.clear_selection()
-                self.current_path = Path(path)
-                self._saved_revision = self.model.revision
-                self.refresh_action_palette()
-                self.refresh_analysis_palette()
-                self.refresh_scene(fit_camera=True)
-            except (OSError, ValueError, KeyError) as error:
-                self.show_error(f"Não foi possível abrir o modelo: {error}")
+            self._open_model_path(path)
+
+    def _open_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if path.suffix.casefold() != ".osa":
+            self.show_error("Selecione um arquivo de modelo com extensão .osa.")
+            return
+        try:
+            self.axes_panel.discard()
+            self.project_service.load(path)
+            self.normalize_member_directions_if_enabled()
+            self.section_profiles = {
+                name: member.profile for name, member in self.model.bars.items() if member.profile
+            }
+            self.section_geometry = {
+                name: member.geometry_dict() for name, member in self.model.bars.items()
+                if member.section_geometry
+            }
+            self.command_session.cancel()
+            self._command_mode = None
+            self._member_placement_start = None
+            self._join_member_first = None
+            self._copy_properties_reference = None
+            self._copy_elements_selection = []
+            self._copy_elements_reference = None
+            self._pending_action_launch = None
+            self.member_property_copy_panel.hide()
+            self.scene.set_member_placement_mode(False)
+            self.scene.set_selection_highlight(())
+            self.clear_selection()
+            self.current_path = path
+            self._saved_revision = self.model.revision
+            self.home.store.add(self.current_path)
+            self.home.refresh()
+            self.refresh_action_palette()
+            self.refresh_analysis_palette()
+            self.refresh_scene(fit_camera=True)
+            self.show_editor()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            self.show_error(f"Não foi possível abrir o modelo: {error}")
 
     def _has_unsaved_changes(self) -> bool:
         return self.model.revision != self._saved_revision
@@ -1637,13 +1829,103 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._confirm_pending_changes():
+            self._mcp_dispatcher.suspend()
+            self._mcp_server.stop()
             event.accept()
         else:
             event.ignore()
 
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
-        self.scene.render_model(self.model, preserve_camera=not fit_camera)
+        with self._model_access_lock:
+            self.scene.render_model(self.model, preserve_camera=not fit_camera)
         self.properties.update_delete_button_state()
+
+    def show_home(self) -> None:
+        """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
+        self.view_stack.setCurrentWidget(self.home)
+        self.title_bar.set_project_actions_enabled(False)
+        self.home.refresh()
+        for widget in (
+            self.palette,
+            self.top_icon_palette,
+            self.action_top_palette,
+            self.analysis_top_palette,
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+            self.properties,
+            self.displacement_panel,
+            self.processing_panel,
+            self.command_bar,
+            self.history,
+        ):
+            widget.hide()
+
+    def show_editor(self) -> None:
+        """Retorna à cena 3D e restaura seus controles contextuais."""
+        self.view_stack.setCurrentWidget(self.scene)
+        self.title_bar.set_project_actions_enabled(True)
+        for widget in (
+            self.palette,
+            self.top_icon_palette,
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+            self.command_bar,
+        ):
+            widget.show()
+        self.palette.reposition()
+        self.top_icon_palette.reposition()
+        self.command_bar.reposition()
+        self._reposition_navigation_button()
+
+    def _open_recent_project(self, path: str) -> None:
+        self._open_model_path(path)
+
+    def open_manual(self) -> None:
+        """Abre a página pública do projeto, que concentra o manual atual."""
+        QDesktopServices.openUrl(QUrl(PROJECT_MANUAL_URL))
+
+    def _refresh_after_mcp_change(self) -> None:
+        """Atualiza a interface após uma operação recebida pelo MCP local."""
+        self.normalize_member_directions_if_enabled()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+
+    def _apply_mcp_view_change(self, option: str, visible: bool) -> None:
+        setters = {
+            "grid_visible": self.scene.set_grid_visible,
+            "reference_axes_visible": self.scene.set_reference_axes_visible,
+            "local_axes_visible": self.scene.set_local_axes_visible,
+            "nodes_visible": self.scene.set_nodes_visible,
+            "solid_members_visible": self.scene.set_solid_members_visible,
+            "member_releases_visible": self.scene.set_member_releases_visible,
+            "semirigid_links_visible": self.scene.set_semirigid_links_visible,
+            "node_supports_visible": self.scene.set_node_supports_visible,
+            "snap_enabled": self.scene.set_snap_enabled,
+        }
+        if option in setters:
+            setters[option](visible)
+        elif option == "node_labels_visible":
+            self.scene.set_labels_visible("node", visible)
+        elif option == "member_labels_visible":
+            self.scene.set_labels_visible("bar", visible)
+        elif option in {
+            "node_forces_visible", "node_moments_visible",
+            "member_forces_visible", "member_moments_visible",
+        }:
+            self.scene.set_action_visibility(option.removesuffix("_visible"), visible)
+        else:
+            raise ValueError(f"Opção visual desconhecida: {option}")
+        self.top_icon_palette.set_view_option(option, visible)
+        self.action_top_palette.set_view_option(option, visible)
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""
@@ -1697,6 +1979,19 @@ class MainWindow(QMainWindow):
     def _sync_analysis_result(self) -> None:
         if hasattr(self, "scene"):
             self.scene.set_analysis_result(self.selected_analysis_combination, self.selected_analysis_diagram)
+
+    def _apply_mcp_analysis_view(self, combination: str, diagram: str) -> None:
+        """Atualiza os seletores e o resultado visual após uma chamada MCP."""
+        self.selected_analysis_combination = combination or None
+        self.selected_analysis_diagram = diagram or "Normal"
+        self.analysis_top_palette.set_combinations(
+            tuple(result.load_reference for result in self.model.analysis_results),
+            self.selected_analysis_combination,
+        )
+        self.analysis_top_palette.diagram_selector.blockSignals(True)
+        self.analysis_top_palette.diagram_selector.setCurrentText(self.selected_analysis_diagram)
+        self.analysis_top_palette.diagram_selector.blockSignals(False)
+        self._sync_analysis_result()
 
     def _select_active_action(self, name: str) -> None:
         self.selected_action_name = name or None

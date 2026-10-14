@@ -35,7 +35,7 @@ def test_grid_uses_axis_positions_without_using_their_line_extensions():
         "Y": (ReferenceAxis("1", 10.0),),
     })
 
-    np.testing.assert_allclose(grid.mesh.bounds, (5.0, 15.0, 15.0, 25.0, 0.0, 0.0))
+    np.testing.assert_allclose(grid.mesh.bounds, (15.0, 25.0, 5.0, 15.0, 0.0, 0.0))
 
 
 def test_grid_stays_registered_to_the_origin_and_uses_one_metre_steps():
@@ -82,3 +82,27 @@ def test_grid_elevation_changes_without_rebuilding_the_xy_footprint():
     grid.set_elevation(8.0)
 
     np.testing.assert_allclose(grid.mesh.bounds, (*bounds[:4], 8.0, 8.0))
+
+
+def test_grid_xz_uses_x_and_z_axis_positions():
+    grid = GridRenderer()
+    grid.update((), {
+        "X": (ReferenceAxis("1", 10.0),),
+        "Y": (ReferenceAxis("A", 99.0),),
+        "Z": (ReferenceAxis("N1", 20.0),),
+    }, plane="XZ", offset=3.0)
+
+    np.testing.assert_allclose(grid.bounds, (5.0, 15.0, 15.0, 25.0))
+    np.testing.assert_allclose(grid.mesh.bounds, (5.0, 15.0, 3.0, 3.0, 15.0, 25.0))
+
+
+def test_grid_yz_uses_y_and_z_axis_positions():
+    grid = GridRenderer()
+    grid.update((), {
+        "X": (ReferenceAxis("1", 99.0),),
+        "Y": (ReferenceAxis("A", 20.0),),
+        "Z": (ReferenceAxis("N1", 30.0),),
+    }, plane="YZ", offset=4.0)
+
+    np.testing.assert_allclose(grid.bounds, (15.0, 25.0, 25.0, 35.0))
+    np.testing.assert_allclose(grid.mesh.bounds, (4.0, 4.0, 15.0, 25.0, 25.0, 35.0))

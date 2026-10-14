@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import vtk
 
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
 from osa.sections.geometry import section_shape
@@ -31,6 +32,20 @@ def test_section_shape_centers_hollow_section_at_its_composite_centroid():
     assert shape is not None
     assert len(shape.loops) == 2
     assert shape.centroid == pytest.approx((0.0, 0.0), abs=1e-10)
+
+
+def test_section_shape_mirror_z_reflects_the_centered_profile():
+    original = section_shape("L Formado", {"d": 60, "bf": 50, "t": 2})
+    mirrored = section_shape("L Formado", {"d": 60, "bf": 50, "t": 2}, mirror_z=True)
+
+    assert original is not None and mirrored is not None
+    assert mirrored.bounds == pytest.approx(
+        (-original.bounds[1], -original.bounds[0], original.bounds[2], original.bounds[3])
+    )
+    for original_loop, mirrored_loop in zip(original.loops, mirrored.loops):
+        for (original_y, original_z), (mirrored_y, mirrored_z) in zip(original_loop, mirrored_loop):
+            assert mirrored_y == pytest.approx(-original_y)
+            assert mirrored_z == pytest.approx(original_z)
 
 
 @pytest.mark.parametrize(
@@ -96,5 +111,53 @@ def test_solid_mesh_is_unit_length_and_cached_by_section_shape():
     assert first.bounds[0] == pytest.approx(0.0)
     assert first.bounds[1] == pytest.approx(1.0)
     assert first.n_cells > 0
-    assert edges.n_cells == 3 * len(shape.loops[0])
+    assert edges.n_cells < 3 * len(shape.loops[0])
     assert {edges.GetCellType(index) for index in range(edges.n_cells)} == {3}
+
+
+def test_feature_edges_remove_longitudinal_facets_from_circular_tubes():
+    renderer = SolidMemberRenderer()
+    shape = section_shape("Tubular Circular", {"D": 100, "t": 3})
+
+    assert shape is not None
+    edges = renderer._edge_mesh_for(shape)
+
+    # The outer and inner cap boundaries remain visible, while the small
+    # angular changes around the circular wall are below the feature limit.
+    assert edges.n_cells == 2 * sum(len(loop) for loop in shape.loops)
+    assert renderer._build_curve_transition_mesh(shape).n_lines == 0
+    assert renderer.longitudinal_edge_indices(shape) == ((), ())
+
+
+@pytest.mark.parametrize(
+    ("family", "geometry"),
+    (
+        ("W Laminado", {"d": 200, "bf": 100, "tw": 6, "tf": 8}),
+        ("U Formado", {"d": 100, "bf": 50, "t": 2}),
+    ),
+)
+def test_curved_profiles_keep_edges_at_curve_transitions(family, geometry):
+    renderer = SolidMemberRenderer()
+    shape = section_shape(family, geometry)
+
+    assert shape is not None
+    transition_edges = renderer._build_curve_transition_mesh(shape)
+
+    # Each profile has four curved runs, and every run contributes its start
+    # and end edge even when two runs share one smooth sequence of samples.
+    assert transition_edges.n_lines == 8
+    assert sum(map(len, renderer.longitudinal_edge_indices(shape))) > 8
+
+
+def test_circular_solid_has_a_camera_dependent_silhouette():
+    renderer = SolidMemberRenderer()
+    shape = section_shape("Barra Circular", {"d": 100})
+
+    assert shape is not None
+    camera = vtk.vtkCamera()
+    camera.SetPosition(4.0, 3.0, 2.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+    silhouette = renderer.silhouette_for(renderer._mesh_for(shape), camera)
+
+    assert silhouette.n_lines > 0
+    assert silhouette.n_cells == silhouette.n_lines

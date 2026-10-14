@@ -23,6 +23,16 @@ data_files.extend(
     for path in sorted((project_root / "osa/resources/icons").glob("*.svg"))
 )
 
+plugin_root = project_root / "plugins"
+data_files.extend(
+    (
+        str(path),
+        str(Path("plugins") / path.relative_to(plugin_root).parent),
+    )
+    for path in sorted(plugin_root.rglob("*"))
+    if path.is_file()
+)
+
 
 pyvista_datas, pyvista_binaries, pyvista_hiddenimports = collect_all("pyvista")
 pyvistaqt_datas, pyvistaqt_binaries, pyvistaqt_hiddenimports = collect_all("pyvistaqt")

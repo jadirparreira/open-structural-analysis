@@ -439,8 +439,8 @@ class CommandSession:
             configure_member(beam.name)
 
         self.service.set_reference_axes({
-            "X": (ReferenceAxis("A", 0.0), ReferenceAxis("B", span)),
-            "Y": (ReferenceAxis("1", 0.0), ReferenceAxis("2", span)),
+            "X": (ReferenceAxis("1", 0.0), ReferenceAxis("2", span)),
+            "Y": (ReferenceAxis("A", 0.0), ReferenceAxis("B", span)),
             "Z": (ReferenceAxis("0", 0.0), ReferenceAxis("400", height)),
         })
 
@@ -601,12 +601,12 @@ class CommandSession:
 
         self.service.set_reference_axes({
             "X": tuple(
-                ReferenceAxis(label, y)
-                for label, y in zip(("A", "B"), y_grid)
-            ),
-            "Y": tuple(
                 ReferenceAxis(str(index), x)
                 for index, x in enumerate(x_grid, start=1)
+            ),
+            "Y": tuple(
+                ReferenceAxis(label, y)
+                for label, y in zip(("A", "B"), y_grid)
             ),
             "Z": (
                 ReferenceAxis("0", 0.0),

@@ -34,6 +34,19 @@ def test_l_profile_uses_principal_inertias_for_an_unsymmetrical_section():
     assert properties.j_mm4 == pytest.approx((50 * 5**3 + 45 * 5**3) / 3)
 
 
+def test_mirroring_inverts_the_signed_product_of_inertia():
+    original = calculate_section_properties("L Laminado", {"b": 50, "t": 5}, 7850)
+    mirrored = calculate_section_properties(
+        "L Laminado", {"b": 50, "t": 5}, 7850, mirror_z=True,
+    )
+
+    assert mirrored.area_mm2 == pytest.approx(original.area_mm2)
+    assert mirrored.iy_mm4 == pytest.approx(original.iy_mm4)
+    assert mirrored.iz_mm4 == pytest.approx(original.iz_mm4)
+    assert mirrored.iyz_mm4 == pytest.approx(-original.iyz_mm4)
+    assert mirrored.principal_axis_angle_deg == pytest.approx(-original.principal_axis_angle_deg)
+
+
 def test_t_profile_uses_the_single_dimension_and_thickness():
     properties = calculate_section_properties("T Laminado", {"d": 50, "t": 5}, 7850)
 

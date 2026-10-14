@@ -1,10 +1,12 @@
 from itertools import product
+from types import SimpleNamespace
 
 import numpy as np
+import pyvista as pv
+import vtk
 
 from osa.commands import CommandSession
-from osa.domain import Action
-from osa.domain import Node
+from osa.domain import Action, Node
 from osa.model import StructuralModel
 from osa.rendering.action_renderer import ActionRenderer
 from osa.rendering.batched_renderer import (
@@ -12,6 +14,9 @@ from osa.rendering.batched_renderer import (
     BatchedNodeRenderer,
     has_semirigid_member_end,
 )
+from osa.rendering.scene_batched import StructureScene
+from osa.rendering.solid_member_renderer import SolidMemberRenderer
+from osa.sections.geometry import section_shape
 from osa.services import ModelService
 from osa.services.action_service import ActionService
 
@@ -25,7 +30,8 @@ def warehouse_model():
 
 def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     model = warehouse_model()
-    batch = BatchedMemberRenderer().build(model, 0.05)
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
 
     assert len(batch.names) == 839
     assert batch.lines.n_cells == 839
@@ -36,6 +42,221 @@ def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     assert set(np.unique(batch.lines.cell_data["element_index"])) == set(range(839))
     assert batch.faces.cell_data["rgb"].shape == (batch.faces.n_cells, 3)
     assert len(batch.outlines) == 839
+    expected_silhouette_members = {
+        name for name, member in model.bars.items()
+        if member.section in renderer._silhouette_sections
+    }
+    assert set(batch.silhouette_sources) == expected_silhouette_members
+    assert sum(mesh.n_cells for mesh in batch.silhouette_faces_by_color.values()) > 0
+
+
+def test_measurement_rejects_profile_edges_hidden_behind_front_face():
+    shape = section_shape(
+        "W Laminado", {"d": 200, "bf": 100, "tw": 6, "tf": 8}, arc_steps=12,
+    )
+    source = SolidMemberRenderer()._mesh_for(shape)
+    start = np.asarray((-2.0, 0.0, 0.0))
+    delta = np.asarray((4.0, 0.0, 0.0))
+    local_y = np.asarray((0.0, 1.0, 0.0))
+    local_z = np.asarray((0.0, 0.0, 1.0))
+    world_points = (
+        start
+        + source.points[:, 0, None] * delta
+        + source.points[:, 1, None] * local_y
+        + source.points[:, 2, None] * local_z
+    )
+    faces = pv.PolyData(world_points, faces=source.faces)
+    locator = vtk.vtkCellLocator()
+    locator.SetDataSet(faces)
+    locator.BuildLocator()
+
+    render_window = vtk.vtkRenderWindow()
+    render_window.SetSize(800, 600)
+    renderer = vtk.vtkRenderer()
+    render_window.AddRenderer(renderer)
+    camera = renderer.GetActiveCamera()
+    camera.SetPosition(0.0, -10.0, 0.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+    camera.SetViewUp(0.0, 0.0, 1.0)
+    camera.ParallelProjectionOn()
+    camera.SetParallelScale(5.0)
+    render_window.Render()
+
+    projection = camera.GetCompositeProjectionTransformMatrix(
+        renderer.GetTiledAspectRatio(), -1.0, 1.0,
+    )
+    matrix = np.asarray([
+        [projection.GetElement(row, column) for column in range(4)]
+        for row in range(4)
+    ])
+
+    def screen_point(point):
+        clip = matrix @ np.r_[point, 1.0]
+        normalized = clip[:3] / clip[3]
+        return (
+            (normalized[0] + 1.0) * 400.0,
+            (1.0 - normalized[1]) * 300.0,
+        )
+
+    class VisibleFaceActor:
+        def GetVisibility(self):
+            return True
+
+    class MeasurementProbe:
+        _member_face_actor = VisibleFaceActor()
+        _solid_members_visible = True
+        plotter = SimpleNamespace(renderer=renderer)
+
+        def _measurement_face_locator_for_current_batch(self):
+            return locator
+
+        _display_to_world = staticmethod(StructureScene._display_to_world)
+
+    front = np.asarray((0.0, -0.05, 0.10))
+    back = np.asarray((0.0, 0.05, 0.10))
+    front_screen = screen_point(front)
+    back_screen = screen_point(back)
+    visible = StructureScene._measurement_solid_visible_points(
+        MeasurementProbe(),
+        np.asarray((front, back)),
+        np.asarray((front_screen[0], back_screen[0])),
+        np.asarray((600.0 - front_screen[1], 600.0 - back_screen[1])),
+    )
+
+    assert visible.tolist() == [True, False]
+    render_window.Finalize()
+
+
+def test_measurement_keeps_visible_profile_edges_when_the_zbuffer_samples_a_neighbor():
+    """Feature edges use geometric visibility instead of one raster pixel.
+
+    The cursor may sit on the boundary between a solid face and the
+    background.  A Z-buffer lookup at that single pixel is not reliable there,
+    particularly while the member occupies only a few screen pixels.
+    """
+    shape = section_shape(
+        "W Laminado", {"d": 200, "bf": 100, "tw": 6, "tf": 8}, arc_steps=12,
+    )
+    source = SolidMemberRenderer()._mesh_for(shape)
+    start = np.asarray((-2.0, 0.0, 0.0))
+    delta = np.asarray((4.0, 0.0, 0.0))
+    local_y = np.asarray((0.0, 1.0, 0.0))
+    local_z = np.asarray((0.0, 0.0, 1.0))
+    world_points = (
+        start
+        + source.points[:, 0, None] * delta
+        + source.points[:, 1, None] * local_y
+        + source.points[:, 2, None] * local_z
+    )
+    faces = pv.PolyData(world_points, faces=source.faces)
+    locator = vtk.vtkCellLocator()
+    locator.SetDataSet(faces)
+    locator.BuildLocator()
+
+    render_window = vtk.vtkRenderWindow()
+    render_window.SetSize(800, 600)
+    renderer = vtk.vtkRenderer()
+    render_window.AddRenderer(renderer)
+    camera = renderer.GetActiveCamera()
+    camera.SetPosition(0.0, -10.0, 0.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+    camera.SetViewUp(0.0, 0.0, 1.0)
+    camera.ParallelProjectionOn()
+    camera.SetParallelScale(5.0)
+    render_window.Render()
+
+    projection = camera.GetCompositeProjectionTransformMatrix(
+        renderer.GetTiledAspectRatio(), -1.0, 1.0,
+    )
+    matrix = np.asarray([
+        [projection.GetElement(row, column) for column in range(4)]
+        for row in range(4)
+    ])
+
+    front = np.asarray((0.0, -0.05, 0.10))
+    clip = matrix @ np.r_[front, 1.0]
+    normalized = clip[:3] / clip[3]
+    screen = np.asarray(((normalized[0] + 1.0) * 400.0, (1.0 - normalized[1]) * 300.0))
+
+    class VisibleFaceActor:
+        def GetVisibility(self):
+            return True
+
+    class ZBufferFromNeighbor:
+        def GetSize(self):
+            return 800, 600
+
+        def GetZbufferDataAtPoint(self, _x, _y):
+            # Deliberately shallower than the visible candidate, as happens
+            # when the sampled pixel belongs to the adjacent face.
+            return 0.0
+
+    class Plotter:
+        def __init__(self):
+            self.renderer = renderer
+            self.render_window = ZBufferFromNeighbor()
+
+        @staticmethod
+        def width():
+            return 800
+
+        @staticmethod
+        def height():
+            return 600
+
+    class MeasurementProbe:
+        _member_face_actor = VisibleFaceActor()
+        _solid_members_visible = True
+        plotter = Plotter()
+
+        def _measurement_face_locator_for_current_batch(self):
+            return locator
+
+        _display_to_world = staticmethod(StructureScene._display_to_world)
+        _measurement_solid_visible_points = StructureScene._measurement_solid_visible_points
+
+    visible = StructureScene._measurement_visible_points(
+        MeasurementProbe(),
+        np.asarray([screen]),
+        np.asarray([front]),
+        matrix,
+        {},
+        surface_points=np.asarray([True]),
+    )
+
+    assert visible.tolist() == [True]
+    render_window.Finalize()
+
+
+def test_member_silhouette_batch_keeps_a_line_for_each_visible_contour():
+    model = warehouse_model()
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
+    camera = vtk.vtkCamera()
+    camera.SetPosition(20.0, 20.0, 15.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+
+    silhouettes = renderer.silhouette_mesh(batch, camera)
+
+    assert silhouettes.n_lines > 0
+    assert silhouettes.cell_data["rgb"].shape == (silhouettes.n_cells, 3)
+    assert np.all(silhouettes.cell_data["rgb"] == np.asarray((71, 77, 83), dtype=np.uint8))
+
+
+def test_member_silhouette_color_update_only_rebuilds_its_color_groups():
+    model = warehouse_model()
+    renderer = BatchedMemberRenderer()
+    batch = renderer.build(model, 0.05)
+    member_name = next(iter(batch.silhouette_sources))
+    camera = vtk.vtkCamera()
+    camera.SetPosition(20.0, 20.0, 15.0)
+    camera.SetFocalPoint(0.0, 0.0, 0.0)
+
+    renderer.update_silhouette_color(batch, member_name, np.asarray((9, 18, 27), dtype=np.uint8))
+    silhouettes = renderer.silhouette_mesh(batch, camera)
+
+    assert batch.silhouette_member_colors[member_name] == (9, 18, 27)
+    assert np.any(np.all(silhouettes.cell_data["rgb"] == (5, 11, 17), axis=1))
 
 
 def test_node_batch_keeps_spherical_markers_and_pick_identity():

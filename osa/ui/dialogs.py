@@ -1,15 +1,28 @@
 import math
 
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QListWidgetItem,
+    QStyle,
+    QStyleOptionSlider,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
+from .home import _brand_lockup
 from .profile_selector import ProfileComboBox
 
 PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
+PROJECT_SITE_URL = "https://www.opensa.com.br"
+PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
+PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
+PROJECT_VERSION = "2026.10"
 
 
 class UnsavedChangesDialog(QDialog):
@@ -523,6 +536,81 @@ class ErrorDialog(QDialog):
         self.adjustSize()
 
 
+class AboutDialog(QDialog):
+    """Informações do aplicativo no mesmo quadro dos demais diálogos."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sobre")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(480, 360)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-weight: 600; }"
+            "QLabel#aboutTitle { color: #24292f; font-size: 18px; font-weight: 700; }"
+            "QLabel#aboutVersion, QLabel#aboutDescription, QLabel#aboutLicense { color: #57606a; }"
+            "QLabel#aboutSection { color: #57606a; font-size: 12px; font-weight: 600; }"
+            "QLabel#aboutLink { color: #0969da; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 4, 8, 4)
+        title = QLabel("Sobre")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(22, 20, 22, 18)
+        content.setSpacing(8)
+        content.addWidget(_brand_lockup(self, f"Versão {PROJECT_VERSION}"))
+        content.addSpacing(6)
+
+        site_label = QLabel("Site do projeto")
+        site_label.setObjectName("aboutSection")
+        content.addWidget(site_label)
+        site_link = QLabel(f'<a href="{PROJECT_SITE_URL}">www.opensa.com.br</a>')
+        site_link.setObjectName("aboutLink")
+        site_link.setOpenExternalLinks(True)
+        site_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        content.addWidget(site_link)
+
+        github_label = QLabel("Código-fonte")
+        github_label.setObjectName("aboutSection")
+        content.addWidget(github_label)
+        github_link = QLabel(f'<a href="{PROJECT_GITHUB_URL}">github.com/jadirparreira/open-structural-analysis</a>')
+        github_link.setObjectName("aboutLink")
+        github_link.setOpenExternalLinks(True)
+        github_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        content.addWidget(github_link)
+
+        license_label = QLabel("Distribuído sob a licença GPL-3.0-or-later.")
+        license_label.setObjectName("aboutLicense")
+        content.addWidget(license_label)
+        content.addStretch(1)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("secondaryButton")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        content.addLayout(footer)
+        outer.addLayout(content, 1)
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -717,6 +805,50 @@ class SettingsDialog(QDialog):
         )
 
 
+class _SliderScale(QWidget):
+    """Draw quality markers at the actual centers of a slider's handles."""
+
+    def __init__(self, slider: QSlider):
+        super().__init__()
+        self._slider = slider
+        self.setFixedHeight(30)
+        slider.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched is self._slider and event.type() in (QEvent.Type.Resize, QEvent.Type.StyleChange):
+            self.update()
+        return super().eventFilter(watched, event)
+
+    def _marker_centers(self) -> tuple[int, ...]:
+        option = QStyleOptionSlider()
+        self._slider.initStyleOption(option)
+        centers = []
+        for position in range(self._slider.minimum(), self._slider.maximum() + 1):
+            option.sliderPosition = position
+            option.sliderValue = position
+            handle = self._slider.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                option,
+                QStyle.SubControl.SC_SliderHandle,
+                self._slider,
+            )
+            centers.append(handle.center().x())
+        return tuple(centers)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for center, text in zip(self._marker_centers(), ("0x", "2x", "4x", "8x")):
+            painter.setPen(QColor("#afb8c1"))
+            painter.drawLine(center, 0, center, 5)
+            painter.setPen(QColor("#57606a"))
+            painter.drawText(
+                QRectF(center - 25, 9, 50, 21),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                text,
+            )
+
+
 class ProgramSettingsDialog(QDialog):
     """Application settings window using the same navigation as properties."""
 
@@ -745,9 +877,24 @@ class ProgramSettingsDialog(QDialog):
             "border-radius: 5px; background: #ffffff; }"
             "QCheckBox::indicator:hover { border-color: #0969da; }"
             "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QLineEdit#mcpEndpoint { min-height: 32px; padding: 2px 9px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; color: #57606a; }"
+            "QPushButton#copyEndpoint { min-height: 32px; padding: 4px 12px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#copyEndpoint:hover { background: #eaeef2; }"
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
+            "QSlider#antialiasingSlider:horizontal { min-height: 26px; }"
+            "QSlider#antialiasingSlider::groove:horizontal { height: 6px; border-radius: 3px; "
+            "background: #d0d7de; }"
+            "QSlider#antialiasingSlider::sub-page:horizontal { background: #0969da; border-radius: 3px; }"
+            "QSlider#antialiasingSlider::add-page:horizontal { background: #d0d7de; border-radius: 3px; }"
+            "QSlider#antialiasingSlider::handle:horizontal { width: 18px; margin: -7px 0; "
+            "border: 2px solid #0969da; border-radius: 10px; background: #ffffff; }"
+            "QSlider#antialiasingSlider::handle:horizontal:hover { background: #ddf4ff; }"
+            "QSlider#antialiasingSlider::handle:horizontal:pressed { background: #0969da; }"
+            "QLabel#settingValue { color: #0969da; font-weight: 600; }"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -771,6 +918,8 @@ class ProgramSettingsDialog(QDialog):
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
         categories.addItem("Membros")
+        categories.addItem("Vídeo")
+        categories.addItem("MCP")
         pages = QStackedWidget()
         snaps_page = QWidget()
         page_layout = QVBoxLayout(snaps_page)
@@ -846,11 +995,136 @@ class ProgramSettingsDialog(QDialog):
         members_close_row.addWidget(members_close_button)
         members_layout.addLayout(members_close_row)
         pages.addWidget(members_page)
+
+        video_page = QWidget()
+        video_layout = QVBoxLayout(video_page)
+        video_layout.addSpacing(10)
+        video_hint = QLabel(
+            "Ajuste a suavidade das bordas dos membros, sólidos e eixos locais. "
+            "Valores maiores melhoram o acabamento, mas podem consumir mais recursos gráficos."
+        )
+        video_hint.setObjectName("hint")
+        video_hint.setWordWrap(True)
+        video_layout.addWidget(video_hint)
+        video_layout.addSpacing(10)
+
+        antialiasing_header = QHBoxLayout()
+        antialiasing_label = QLabel("Qualidade do antialiasing")
+        antialiasing_label.setObjectName("propertySection")
+        antialiasing_header.addWidget(antialiasing_label)
+        antialiasing_header.addStretch(1)
+        self._antialiasing_value = QLabel()
+        self._antialiasing_value.setObjectName("settingValue")
+        antialiasing_header.addWidget(self._antialiasing_value)
+        video_layout.addLayout(antialiasing_header)
+
+        self._antialiasing_slider = QSlider(Qt.Orientation.Horizontal)
+        self._antialiasing_slider.setObjectName("antialiasingSlider")
+        self._antialiasing_slider.setRange(0, 3)
+        self._antialiasing_slider.setSingleStep(1)
+        self._antialiasing_slider.setPageStep(1)
+        self._antialiasing_slider.setTickPosition(QSlider.TickPosition.NoTicks)
+        self._antialiasing_slider.setAccessibleName("Qualidade do antialiasing")
+        self._antialiasing_slider.setAccessibleDescription("Níveis disponíveis: 0x, 2x, 4x e 8x")
+        current_samples = self.window.scene.antialiasing_samples()
+        self._antialiasing_slider.setValue(self._antialiasing_index(current_samples))
+        self._set_antialiasing_label(current_samples)
+        self._antialiasing_slider.valueChanged.connect(self._set_antialiasing_level)
+        video_layout.addWidget(self._antialiasing_slider)
+
+        self._antialiasing_scale = _SliderScale(self._antialiasing_slider)
+        video_layout.addWidget(self._antialiasing_scale)
+        video_layout.addStretch(1)
+        video_close_button = QPushButton("Fechar")
+        video_close_button.setObjectName("closeProperties")
+        video_close_button.clicked.connect(self.accept)
+        video_close_row = QHBoxLayout()
+        video_close_row.addStretch()
+        video_close_row.addWidget(video_close_button)
+        video_layout.addLayout(video_close_row)
+        pages.addWidget(video_page)
+
+        mcp_page = QWidget()
+        mcp_layout = QVBoxLayout(mcp_page)
+        mcp_layout.addSpacing(10)
+        mcp_hint = QLabel(
+            "Permita que o ChatGPT Desktop, Claude ou outro cliente MCP compatível "
+            "acesse o modelo estrutural aberto no OpenSA."
+        )
+        mcp_hint.setObjectName("hint")
+        mcp_hint.setWordWrap(True)
+        mcp_layout.addWidget(mcp_hint)
+        self._mcp_checkbox = QCheckBox("Ativar servidor MCP")
+        self._mcp_checkbox.setAccessibleName("Ativar servidor MCP")
+        self._mcp_checkbox.setChecked(self.window.mcp_enabled)
+        self._mcp_checkbox.toggled.connect(self._toggle_mcp)
+        mcp_layout.addWidget(self._mcp_checkbox)
+
+        endpoint_label = QLabel("Endereço do servidor")
+        endpoint_label.setObjectName("propertySection")
+        mcp_layout.addWidget(endpoint_label)
+        endpoint_row = QHBoxLayout()
+        endpoint_row.setSpacing(8)
+        self._mcp_endpoint = QLineEdit(self.window.mcp_endpoint)
+        self._mcp_endpoint.setObjectName("mcpEndpoint")
+        self._mcp_endpoint.setReadOnly(True)
+        self._mcp_endpoint.setAccessibleName("Endereço do servidor MCP")
+        copy_button = QPushButton("Copiar")
+        copy_button.setObjectName("copyEndpoint")
+        copy_button.setAccessibleName("Copiar endereço do servidor MCP")
+        copy_button.clicked.connect(self._copy_mcp_endpoint)
+        endpoint_row.addWidget(self._mcp_endpoint, 1)
+        endpoint_row.addWidget(copy_button)
+        mcp_layout.addLayout(endpoint_row)
+
+        access_hint = QLabel(
+            "Enquanto ativo, programas neste computador podem consultar e alterar "
+            "o modelo pelo endereço local. Desative o servidor quando terminar."
+        )
+        access_hint.setObjectName("hint")
+        access_hint.setWordWrap(True)
+        mcp_layout.addWidget(access_hint)
+
+        mcp_layout.addStretch(1)
+        mcp_close_button = QPushButton("Fechar")
+        mcp_close_button.setObjectName("closeProperties")
+        mcp_close_button.clicked.connect(self.accept)
+        mcp_close_row = QHBoxLayout()
+        mcp_close_row.addStretch()
+        mcp_close_row.addWidget(mcp_close_button)
+        mcp_layout.addLayout(mcp_close_row)
+        pages.addWidget(mcp_page)
+
         categories.currentRowChanged.connect(pages.setCurrentIndex)
         categories.setCurrentRow(0)
         layout.addWidget(categories)
         layout.addWidget(pages, 1)
         outer.addLayout(layout, 1)
+
+    def _toggle_mcp(self, enabled: bool) -> None:
+        try:
+            self.window.set_mcp_enabled(enabled)
+        except RuntimeError as error:
+            self._mcp_checkbox.blockSignals(True)
+            self._mcp_checkbox.setChecked(False)
+            self._mcp_checkbox.blockSignals(False)
+            QMessageBox.warning(self, "Servidor MCP", str(error))
+
+    def _copy_mcp_endpoint(self) -> None:
+        QApplication.clipboard().setText(self.window.mcp_endpoint)
+
+    @staticmethod
+    def _antialiasing_index(samples: int) -> int:
+        levels = (0, 2, 4, 8)
+        return levels.index(samples)
+
+    def _set_antialiasing_label(self, samples: int) -> None:
+        self._antialiasing_value.setText(f"{samples}x")
+
+    def _set_antialiasing_level(self, index: int) -> None:
+        samples = (0, 2, 4, 8)[int(index)]
+        self._set_antialiasing_label(samples)
+        self.window.scene.set_antialiasing_samples(samples)
 
 
 class ActionGroupDialog(QDialog):

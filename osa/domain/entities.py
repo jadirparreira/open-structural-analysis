@@ -45,7 +45,7 @@ class Node:
 
 @dataclass(frozen=True, slots=True)
 class ReferenceAxis:
-    """A named reference line measured from a global coordinate axis."""
+    """A named reference line at a value on its global coordinate axis."""
 
     label: str
     value: float
@@ -61,6 +61,8 @@ class Member:
     section: str = ""
     profile: str = ""
     section_geometry: tuple[tuple[str, float], ...] = ()
+    # Espelhamento visual e geométrico da seção em torno do eixo local Z.
+    section_mirrored: bool = False
     rotation: int = 0
     releases: tuple[bool, ...] = (False,) * 12
     color: str = "#6e7781"

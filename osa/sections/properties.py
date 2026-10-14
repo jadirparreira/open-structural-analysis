@@ -6,7 +6,7 @@ mm⁴ até a conversão explícita feita pelo adaptador do solver.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import atan2, degrees, hypot, pi
 from typing import Mapping
 
@@ -584,6 +584,8 @@ def calculate_section_properties(
     family: str,
     geometry: Mapping[str, float],
     density_kg_m3: float = 7850.0,
+    *,
+    mirror_z: bool = False,
 ) -> SectionProperties:
     """Calcula propriedades da seção idealizada correspondente à família."""
     if density_kg_m3 <= 0:
@@ -624,4 +626,15 @@ def calculate_section_properties(
         calculator = calculators[family]
     except KeyError as error:
         raise ValueError(f"Cálculo paramétrico indisponível para '{family}'.") from error
-    return calculator(geometry, float(density_kg_m3))
+    properties = calculator(geometry, float(density_kg_m3))
+    if not mirror_z:
+        return properties
+    # Reflection at the local Z axis changes y to -y.  Area, both principal
+    # values and Saint-Venant torsion remain equal; the product of inertia and
+    # the signed principal-axis angle change sign.
+    return replace(
+        properties,
+        centroid_y_mm=-properties.centroid_y_mm,
+        iyz_mm4=-properties.iyz_mm4,
+        principal_axis_angle_deg=-properties.principal_axis_angle_deg,
+    )

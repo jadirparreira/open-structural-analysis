@@ -1072,10 +1072,10 @@ def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
         )
         for corner in corners
     }
-    assert [(axis.label, axis.value) for axis in model.axes["X"]] == [("A", 0.0), ("B", 4.0)]
-    assert [(axis.label, axis.value) for axis in model.axes["Y"]] == [
+    assert [(axis.label, axis.value) for axis in model.axes["X"]] == [
         ("1", 0.0), ("2", 7.0), ("3", 14.0), ("4", 21.0),
     ]
+    assert [(axis.label, axis.value) for axis in model.axes["Y"]] == [("A", 0.0), ("B", 4.0)]
     assert [(axis.label, axis.value) for axis in model.axes["Z"]] == [("0", 0.0), ("400", 4.0)]
 
 

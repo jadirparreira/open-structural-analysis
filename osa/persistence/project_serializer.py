@@ -39,8 +39,8 @@ class ProjectSerializer:
             )
         return elastic_modulus, shear_modulus, poisson_ratio, unit_weight
 
-    def dump(self, model: StructuralModel) -> dict[str, Any]:
-        return {
+    def dump(self, model: StructuralModel, thumbnail: str | None = None) -> dict[str, Any]:
+        data = {
             "format": FORMAT_V2,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "members": [asdict(member) for member in model.bars.values()],
@@ -62,6 +62,17 @@ class ProjectSerializer:
             "combination_groups_initialized": sorted(model.combination_groups_initialized),
             "results": [asdict(item) for item in model.analysis_results],
         }
+        if thumbnail:
+            data["thumbnail"] = {"format": "png", "data": thumbnail}
+        return data
+
+    @staticmethod
+    def thumbnail_from(data: dict[str, Any]) -> str | None:
+        value = data.get("thumbnail")
+        if not isinstance(value, dict) or value.get("format") != "png":
+            return None
+        thumbnail = value.get("data")
+        return thumbnail if isinstance(thumbnail, str) else None
 
     def load_into(self, model: StructuralModel, data: dict[str, Any]) -> None:
         file_format = data.get("format")
@@ -100,15 +111,16 @@ class ProjectSerializer:
                 self._material_values(item.get("material_values", (200000000.0, 76900000.0, 0.30, 76.9822025))),
                 item.get("section", ""), item.get("profile", ""),
                 tuple((str(key), float(value)) for key, value in geometry),
-                candidate._member_rotation(item.get("rotation", 0)),
-                releases,
-                candidate._member_color(item.get("color", "#6e7781")),
-                candidate._member_solid_face_offsets(
+                rotation=candidate._member_rotation(item.get("rotation", 0)),
+                releases=releases,
+                color=candidate._member_color(item.get("color", "#6e7781")),
+                solid_face_offsets=candidate._member_solid_face_offsets(
                     tuple(float(value) for value in item.get("solid_face_offsets", (0.0, 0.0)))
                 ),
-                candidate._member_solid_section_offsets(
+                solid_section_offsets=candidate._member_solid_section_offsets(
                     tuple(float(value) for value in item.get("solid_section_offsets", (0.0, 0.0)))
                 ),
+                section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
             )
             candidate.bars[member.name] = member

@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 from osa.domain import (
     Action,
@@ -53,6 +54,67 @@ class ActionService:
         self.model.actions[action.name] = action
         self.model._touch()
         return action
+
+    def remove_action(self, name: str) -> Action:
+        """Remove uma ação individual e retorna a ação removida."""
+        action = self.model.actions.pop(name, None)
+        if action is None:
+            raise ValueError(f"Ação '{name}' não encontrada.")
+        self.model._touch()
+        return action
+
+    def update_action(self, name: str, **changes: object) -> Action:
+        """Atualiza uma ação aplicada preservando seu identificador automático."""
+        current = self.model.actions.get(name)
+        if current is None:
+            raise ValueError(f"Ação '{name}' não encontrada.")
+        updated = replace(current, **changes)
+        conflict = next(
+            (
+                candidate for candidate_name, candidate in self.model.actions.items()
+                if candidate_name != name
+                and candidate.kind == updated.kind
+                and candidate.target == updated.target
+                and candidate.load_case == updated.load_case
+            ),
+            None,
+        )
+        if conflict is not None:
+            raise ValueError(
+                "Já existe uma ação equivalente para esse alvo, direção e caso de carregamento: "
+                f"'{conflict.name}'."
+            )
+        self.model.actions[name] = updated
+        self.model._touch()
+        return updated
+
+    def remove_actions(
+        self,
+        *,
+        target: str | None = None,
+        targets: tuple[str, ...] | None = None,
+        load_case: str | None = None,
+    ) -> tuple[str, ...]:
+        """Remove ações filtradas por um ou vários alvos e/ou caso de carregamento."""
+        target_filter = None
+        if target is not None:
+            target_filter = {target}
+        elif targets:
+            target_filter = set(targets)
+        names = tuple(
+            name for name, action in self.model.actions.items()
+            if (target_filter is None or action.target in target_filter)
+            and (load_case is None or action.load_case == load_case)
+        )
+        if names:
+            for name in names:
+                del self.model.actions[name]
+            self.model._touch()
+        return names
+
+    def action_group_names(self) -> tuple[str, ...]:
+        """Retorna grupos personalizados e modelos disponíveis."""
+        return tuple(dict.fromkeys((*self.model.action_groups, *self.templates())))
 
     def add_member_distributed_force(
         self, target: str, direction: str, initial: float, final: float, load_case: str,
@@ -190,8 +252,8 @@ class ActionService:
         name = self.model.selected_action_group
         return self.model.action_groups.get(name) or self.templates().get(name)
 
-    def add_action_group(self, group: ActionGroup) -> None:
-        self.model.add_action_group(group)
+    def add_action_group(self, group: ActionGroup) -> ActionGroup:
+        return self.model.add_action_group(group)
 
     def select_action_group(self, name: str) -> None:
         self.model.set_selected_action_group(name)
@@ -199,8 +261,8 @@ class ActionService:
     def set_action_group_alias(self, template_name: str, group_name: str) -> None:
         self.model.set_action_group_alias(template_name, group_name)
 
-    def update_action_group(self, old_name: str, group: ActionGroup) -> None:
-        self.model.update_action_group(old_name, group)
+    def update_action_group(self, old_name: str, group: ActionGroup) -> ActionGroup:
+        return self.model.update_action_group(old_name, group)
 
     def remove_action_group(self, name: str) -> None:
         self.model.remove_action_group(name)

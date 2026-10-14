@@ -115,6 +115,7 @@ def _member_properties(
             member.section,
             member.geometry_dict(),
             material[3] / _UNIT_WEIGHT_CONVERSION,
+            mirror_z=member.section_mirrored,
         )
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         return None

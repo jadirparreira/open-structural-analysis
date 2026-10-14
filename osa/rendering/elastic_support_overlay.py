@@ -37,6 +37,11 @@ class ElasticSupportOverlay(QWidget):
         self.raise_()
 
     def set_members(self, members, nodes, radius: float) -> None:
+        # ``model.bars.values()`` and ``model.nodes.values()`` are live views.
+        # MCP requests can update the model from another thread while the
+        # scene is being rebuilt, so never keep iterating those views directly.
+        members = tuple(members)
+        nodes = tuple(nodes)
         node_map = {node.name: node for node in nodes}
         positions = [
             position
