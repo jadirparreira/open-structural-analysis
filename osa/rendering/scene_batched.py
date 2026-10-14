@@ -2349,12 +2349,12 @@ class StructureScene(QWidget):
             midpoint_screens, midpoint_visible = project_world_to_screen(
                 midpoint_worlds, matrix, width, height, clip_to_viewport=False,
             )
-            for screen, (world, kind, priority, edge_start, edge_end), is_visible in zip(
+            for screen, (world, midpoint_type, midpoint_priority, edge_start, edge_end), is_visible in zip(
                 midpoint_screens, midpoint_records, midpoint_visible,
             ):
                 if is_visible:
                     discrete_points.append((
-                        screen, world, kind, priority, edge_start, edge_end,
+                        screen, world, midpoint_type, midpoint_priority, edge_start, edge_end,
                     ))
 
     def _snap_to_grid(self, position: np.ndarray) -> np.ndarray | None:

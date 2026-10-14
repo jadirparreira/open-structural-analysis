@@ -89,9 +89,12 @@ O servidor pode ser inspecionado com qualquer cliente MCP compatível. Para um
 teste de desenvolvimento, use o MCP Inspector e informe o endpoint acima como
 Streamable HTTP.
 
-O servidor não publica uma porta externa e não implementa ainda autenticação,
-histórico de alterações ou confirmação própria para operações de escrita. Por
-isso, esta versão deve ser usada apenas localmente durante o desenvolvimento.
+O servidor escuta somente em `127.0.0.1` e é ativado manualmente. Enquanto
+estiver ativo, outros programas no mesmo computador podem consultar e alterar
+o modelo pelo endpoint local, sem uma credencial adicional. Desative o servidor
+quando terminar. O servidor não mantém histórico de alterações nem solicita
+confirmação própria para cada operação de escrita; confira as ferramentas que
+o cliente pretende executar antes de autorizá-las.
 
 ## Ativação pelo usuário
 
@@ -110,7 +113,6 @@ para o marketplace pessoal e tenta registrar o plugin no ChatGPT Desktop. Se o
 ChatGPT Desktop já estiver aberto, é necessário reiniciá-lo para carregar o
 marketplace; depois, abra um chat Work e selecione `OpenSA` ou escreva
 `@OpenSA`.
-
 O mesmo endereço pode ser copiado para configurar manualmente outro cliente
 MCP, como o Claude, quando ele aceitar Streamable HTTP local. O OpenSA consegue
 confirmar que o endpoint está acessível e que o plugin do ChatGPT foi registrado,

@@ -22,10 +22,21 @@ class LocalMcpServer:
         host: str = "127.0.0.1",
         port: int = 8765,
     ) -> None:
+        if host != "127.0.0.1":
+            raise ValueError("O servidor MCP local deve usar 127.0.0.1.")
         self.application = application
         self.host = host
         self.port = port
-        self.server = FastMCP(
+        self.server = self._create_fastmcp()
+        self._thread: threading.Thread | None = None
+        self._uvicorn_server: Any | None = None
+        self._last_error: str | None = None
+        self._stop_requested = False
+        self._state_lock = threading.Lock()
+        self._register_tools()
+
+    def _create_fastmcp(self) -> FastMCP:
+        return FastMCP(
             "mcp-opensa",
             instructions=(
                 "Você está conectado ao Open Structural Analysis. "
@@ -38,17 +49,11 @@ class LocalMcpServer:
                 "As coordenadas do modelo usam as unidades do projeto; "
                 "se elas não estiverem claras, pergunte ao usuário."
             ),
-            host=host,
-            port=port,
+            host=self.host,
+            port=self.port,
             streamable_http_path="/mcp-opensa",
             stateless_http=True,
         )
-        self._thread: threading.Thread | None = None
-        self._uvicorn_server: Any | None = None
-        self._last_error: str | None = None
-        self._stop_requested = False
-        self._state_lock = threading.Lock()
-        self._register_tools()
 
     @property
     def endpoint(self) -> str:
@@ -58,7 +63,13 @@ class LocalMcpServer:
         """Inicia o servidor em uma thread daemon, se ainda não estiver ativo."""
         with self._state_lock:
             if self._thread is not None and self._thread.is_alive():
+                if self._stop_requested:
+                    raise RuntimeError("O servidor MCP ainda está encerrando. Tente ativá-lo novamente.")
                 return
+            if self._thread is not None:
+                # The SDK's StreamableHTTPSessionManager can run only once.
+                self.server = self._create_fastmcp()
+                self._register_tools()
             self._last_error = None
             self._stop_requested = False
             self._uvicorn_server = None

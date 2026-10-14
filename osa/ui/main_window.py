@@ -30,6 +30,7 @@ from .dialogs import (
 )
 from .displacement_panel import DisplacementPanel
 from .home import HomePage
+from .mcp_dispatcher import McpQtDispatcher
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -260,6 +261,8 @@ class MainWindow(QMainWindow):
         self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
         self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
         self.mcp_session_changed.connect(self.palette.show_group)
+        self._mcp_dispatcher = McpQtDispatcher(self)
+        self._mcp_dispatcher.suspend()
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
@@ -275,6 +278,7 @@ class MainWindow(QMainWindow):
             on_session_changed=self.mcp_session_changed.emit,
             get_session=lambda: self.palette.active_group,
             model_lock=self._model_access_lock,
+            execute_on_model_thread=self._mcp_dispatcher.call,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_integration = LocalMcpIntegration()
@@ -374,12 +378,15 @@ class MainWindow(QMainWindow):
         if enabled:
             try:
                 self._mcp_integration.ensure_installed()
+                self._mcp_dispatcher.resume()
                 self._mcp_server.start()
             except (OSError, RuntimeError) as error:
+                self._mcp_dispatcher.suspend()
                 self._mcp_enabled = False
                 raise RuntimeError(f"Não foi possível ativar o servidor MCP: {error}") from error
             self._mcp_enabled = True
             return
+        self._mcp_dispatcher.suspend()
         self._mcp_server.stop()
         self._mcp_enabled = False
 
@@ -412,15 +419,15 @@ class MainWindow(QMainWindow):
         if self._mcp_integration.is_installed():
             return {
                 "state": "ready",
-                "text": "MCP ativo e funcionando",
+                "text": "Servidor MCP acessível",
                 "detail": (
-                    "ChatGPT Desktop: plugin registrado.\n"
+                    "ChatGPT Desktop: plugin registrado. Reinicie o cliente e selecione OpenSA em um chat Work.\n"
                     f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
                 ),
             }
         return {
             "state": "ready",
-            "text": "MCP ativo e funcionando",
+            "text": "Servidor MCP acessível",
             "detail": (
                 "ChatGPT Desktop: registro não confirmado.\n"
                 f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
@@ -1822,6 +1829,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._confirm_pending_changes():
+            self._mcp_dispatcher.suspend()
             self._mcp_server.stop()
             event.accept()
         else:

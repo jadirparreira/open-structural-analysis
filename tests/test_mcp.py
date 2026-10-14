@@ -191,7 +191,7 @@ def test_mcp_application_exposes_geometry_operations():
     application.reverse_member("B1")
     joined = application.join_members("B1", "B2")
     assert joined["member"]["name"] == "B1"
-    assert set((joined["member"]["start_node"], joined["member"]["end_node"])) == {"N1", "N2"}
+    assert {joined["member"]["start_node"], joined["member"]["end_node"]} == {"N1", "N2"}
     assert "N3" not in model.nodes
 
     rigid = application.create_rigid_bar("N1", "N2")

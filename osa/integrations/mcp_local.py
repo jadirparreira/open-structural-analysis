@@ -11,7 +11,7 @@ from pathlib import Path
 
 MARKETPLACE_NAME = "open-structural-analysis-local"
 PLUGIN_NAME = "mcp-opensa"
-PLUGIN_VERSION = "0.1.2"
+PLUGIN_VERSION = "0.1.4"
 
 
 class LocalMcpIntegration:
@@ -82,7 +82,7 @@ class LocalMcpIntegration:
             / MARKETPLACE_NAME
             / PLUGIN_NAME
         )
-        if any((cache_root / version).is_dir() for version in ("local", PLUGIN_VERSION)):
+        if (cache_root / PLUGIN_VERSION).is_dir():
             return
         threading.Thread(
             target=self._install_with_client,
@@ -167,12 +167,17 @@ class LocalMcpIntegration:
         )
 
     def _configuration_matches(self, content: str) -> bool:
-        return (
-            self.is_installed()
-            and f'[plugins."{PLUGIN_NAME}@{MARKETPLACE_NAME}"]' in content
-            and 'enabled = true' in content
-            and f"[marketplaces.{MARKETPLACE_NAME}]" not in content
-        )
+        if not self.is_installed() or f"[marketplaces.{MARKETPLACE_NAME}]" in content:
+            return False
+        header = f'[plugins."{PLUGIN_NAME}@{MARKETPLACE_NAME}"]'
+        in_plugin = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_plugin = stripped == header
+            elif in_plugin and stripped == "enabled = true":
+                return True
+        return False
 
     def _without_osa_tables(self, content: str) -> str:
         headers = {

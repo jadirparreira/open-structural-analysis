@@ -22,7 +22,7 @@ PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
 PROJECT_SITE_URL = "https://www.opensa.com.br"
 PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
 PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
-PROJECT_VERSION = "2026.1"
+PROJECT_VERSION = "2026.10"
 
 
 class UnsavedChangesDialog(QDialog):
@@ -1076,6 +1076,14 @@ class ProgramSettingsDialog(QDialog):
         endpoint_row.addWidget(self._mcp_endpoint, 1)
         endpoint_row.addWidget(copy_button)
         mcp_layout.addLayout(endpoint_row)
+
+        access_hint = QLabel(
+            "Enquanto ativo, programas neste computador podem consultar e alterar "
+            "o modelo pelo endereço local. Desative o servidor quando terminar."
+        )
+        access_hint.setObjectName("hint")
+        access_hint.setWordWrap(True)
+        mcp_layout.addWidget(access_hint)
 
         mcp_layout.addStretch(1)
         mcp_close_button = QPushButton("Fechar")

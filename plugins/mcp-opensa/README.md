@@ -15,3 +15,5 @@ Analysis em execução no mesmo computador.
 O plugin não inicia o OpenSA nem o servidor MCP por conta própria. O aplicativo
 precisa estar aberto e o servidor precisa estar ativado nas configurações para
 que as ferramentas operem sobre o projeto estrutural ativo.
+Enquanto ativo, qualquer programa neste computador que alcance o endpoint local
+pode consultar e alterar o modelo. Desative o servidor ao terminar.

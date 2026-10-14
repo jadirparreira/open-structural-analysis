@@ -55,6 +55,7 @@ class McpApplication:
         on_session_changed: Callable[[str], None] | None = None,
         get_session: Callable[[], str | None] | None = None,
         model_lock=None,
+        execute_on_model_thread: Callable[..., Any] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
@@ -70,10 +71,11 @@ class McpApplication:
         self._on_analysis_diagrams_changed = on_analysis_diagrams_changed
         self._on_session_changed = on_session_changed
         self._get_session = get_session
-        # FastMCP may execute requests concurrently.  The model is shared with
-        # the Qt scene, so every public application call must use the same
-        # lock that protects scene rendering in MainWindow.
+        # FastMCP may execute requests concurrently. Standalone callers share
+        # the scene lock; the Qt executor additionally places live-model work
+        # on the GUI thread alongside ordinary user edits.
         self.model_lock = model_lock or threading.RLock()
+        self._execute_on_model_thread = execute_on_model_thread
         self._session = "Geometria"
         self._analysis_view = {
             "selected_combination": None,
@@ -85,20 +87,24 @@ class McpApplication:
         self._catalog = CatalogLoader()
 
     def __getattribute__(self, name):
-        """Serialize public MCP operations that access the shared model.
-
-        Keeping this at the application boundary covers both read and write
-        tools, including newly registered tools, without requiring every
-        method to remember a separate ``with self.model_lock`` block.
-        """
+        """Serialize public MCP operations and dispatch GUI-bound model access."""
         attribute = object.__getattribute__(self, name)
         if name.startswith("_") or name == "model_lock" or not callable(attribute):
             return attribute
         lock = object.__getattribute__(self, "model_lock")
+        executor = object.__getattribute__(self, "_execute_on_model_thread")
 
         def synchronized(*args, **kwargs):
-            with lock:
+            if executor is not None and name == "run_analysis":
                 return attribute(*args, **kwargs)
+
+            def invoke():
+                with lock:
+                    return attribute(*args, **kwargs)
+
+            if executor is not None:
+                return executor(invoke)
+            return invoke()
 
         return synchronized
 
@@ -355,6 +361,19 @@ class McpApplication:
 
     def run_analysis(self, combinations: list[str] | None = None) -> dict[str, Any]:
         """Executa a análise sobre uma cópia do modelo e publica os resultados."""
+        executor = self._execute_on_model_thread
+        if executor is not None:
+            snapshot, requested, orphaned_actions = executor(
+                self._prepare_analysis, combinations,
+            )
+            results = self._analysis_engine.run(snapshot, AnalysisRequest(requested))
+            return executor(self._publish_analysis, snapshot.revision, results, orphaned_actions)
+
+        snapshot, requested, orphaned_actions = self._prepare_analysis(combinations)
+        results = self._analysis_engine.run(snapshot, AnalysisRequest(requested))
+        return self._publish_analysis(snapshot.revision, results, orphaned_actions)
+
+    def _prepare_analysis(self, combinations):
         orphaned_actions = self.model.remove_orphaned_actions()
         if orphaned_actions:
             self._notify_model_changed()
@@ -366,9 +385,10 @@ class McpApplication:
             raise ValueError(
                 "Combinações não encontradas para análise: " + ", ".join(sorted(unknown)) + "."
             )
-        source_revision = self.model.revision
         snapshot = copy.deepcopy(self.model)
-        results = self._analysis_engine.run(snapshot, AnalysisRequest(requested))
+        return snapshot, requested, orphaned_actions
+
+    def _publish_analysis(self, source_revision, results, orphaned_actions):
         if self.model.revision != source_revision:
             raise ValueError("O modelo foi alterado durante a análise. Execute o processamento novamente.")
         self.model.analysis_results = list(results)
@@ -904,7 +924,7 @@ class McpApplication:
         }
         unknown = set(options) - available
         if unknown:
-            raise ValueError(f"Opção visual desconhecida: {sorted(unknown)[0]}")
+            raise ValueError(f"Opção visual desconhecida: {min(unknown)}")
         if not options:
             raise ValueError("Informe pelo menos uma opção visual.")
         if any(not isinstance(value, bool) for value in options.values()):
