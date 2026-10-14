@@ -80,7 +80,6 @@ def test_measurement_rejects_profile_edges_hidden_behind_front_face():
     camera.SetViewUp(0.0, 0.0, 1.0)
     camera.ParallelProjectionOn()
     camera.SetParallelScale(5.0)
-    render_window.Render()
 
     projection = camera.GetCompositeProjectionTransformMatrix(
         renderer.GetTiledAspectRatio(), -1.0, 1.0,
@@ -163,7 +162,6 @@ def test_measurement_keeps_visible_profile_edges_when_the_zbuffer_samples_a_neig
     camera.SetViewUp(0.0, 0.0, 1.0)
     camera.ParallelProjectionOn()
     camera.SetParallelScale(5.0)
-    render_window.Render()
 
     projection = camera.GetCompositeProjectionTransformMatrix(
         renderer.GetTiledAspectRatio(), -1.0, 1.0,
