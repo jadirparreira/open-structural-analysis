@@ -62,6 +62,11 @@ QLabel#paletteTooltip {
 }
 QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }
 QLabel#windowTitle { color: #24292f; font-weight: 600; }
+QWidget#modelInfoOverlay { background: transparent; }
+QLabel#modelNameOverlay {
+    color: #24292f; background: transparent; border: 0;
+    padding: 0; font-size: 15px; font-weight: 600;
+}
 QToolButton#windowControl {
     min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px;
     border: 0; border-radius: 16px; color: #24292f; background: #e1e4e8; font-size: 16px;

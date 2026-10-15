@@ -158,6 +158,24 @@ class StructureScene(QWidget):
         self._result_renderer = ResultRenderer()
         self._label_overlay = LabelOverlay(self.plotter)
         self._elastic_support_overlay = ElasticSupportOverlay(self.plotter)
+        self._model_info_overlay = QWidget(self.plotter)
+        self._model_info_overlay.setObjectName("modelInfoOverlay")
+        self._model_info_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._model_info_overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._model_info_overlay.setAutoFillBackground(False)
+        model_info_layout = QVBoxLayout(self._model_info_overlay)
+        model_info_layout.setContentsMargins(0, 0, 0, 0)
+        model_info_layout.setSpacing(0)
+        self._model_name_caption = QLabel("Modelo", self._model_info_overlay)
+        self._model_name_caption.setObjectName("propertySection")
+        model_info_layout.addWidget(self._model_name_caption)
+        self._model_name_overlay = QLabel("Novo modelo", self._model_info_overlay)
+        self._model_name_overlay.setObjectName("modelNameOverlay")
+        model_info_layout.addWidget(self._model_name_overlay)
+        self._model_info_overlay.adjustSize()
+        self._model_info_overlay.move(20, 14)
+        self._model_info_overlay.show()
+        self._model_info_overlay.raise_()
         self._coordinate_readout = QFrame(self.plotter)
         self._coordinate_readout.setObjectName("coordinateReadout")
         self._coordinate_readout.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -4695,6 +4713,7 @@ class StructureScene(QWidget):
         if hasattr(self, "_orientation_widget"):
             self._label_overlay.resize_to_parent()
             self._elastic_support_overlay.resize_to_parent()
+            self._model_info_overlay.raise_()
             self._sync_labels()
             self._orientation_widget.resize()
             self._orientation_widget.sync_from_camera()
@@ -4712,6 +4731,13 @@ class StructureScene(QWidget):
         self._orientation_widget.resize()
         self._orientation_widget.sync_from_camera()
         self.plotter.render()
+
+    def set_model_name(self, name: str) -> None:
+        self._model_name_overlay.setText(name.strip() or "Novo modelo")
+        self._model_info_overlay.adjustSize()
+        self._model_info_overlay.move(20, 14)
+        self._model_info_overlay.show()
+        self._model_info_overlay.raise_()
 
     def _node_marker_radius(self) -> float:
         return self._marker_radius_current

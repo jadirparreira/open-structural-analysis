@@ -1811,6 +1811,7 @@ class MainWindow(QMainWindow):
         self.scene.set_selection_highlight(())
         self.clear_selection()
         self.current_path = None
+        self.scene.set_model_name("Novo modelo")
         self._saved_revision = self.model.revision
         self.refresh_action_palette()
         self.refresh_analysis_palette()
@@ -1840,6 +1841,7 @@ class MainWindow(QMainWindow):
             thumbnail = ThumbnailService.generate(self.model)
             self.project_service.save(path, thumbnail=thumbnail)
             self.current_path = Path(path)
+            self.scene.set_model_name(self.current_path.stem)
             self._saved_revision = self.model.revision
             self.home.store.add(self.current_path)
             self.home.refresh()
@@ -1881,6 +1883,7 @@ class MainWindow(QMainWindow):
             self.scene.set_selection_highlight(())
             self.clear_selection()
             self.current_path = path
+            self.scene.set_model_name(path.stem)
             self._saved_revision = self.model.revision
             self.home.store.add(self.current_path)
             self.home.refresh()
