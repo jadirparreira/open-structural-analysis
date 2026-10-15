@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self._saved_revision = self.model.revision
         self._command_mode: str | None = None
+        self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
@@ -255,6 +256,8 @@ class MainWindow(QMainWindow):
         self.section_panel = self.section_panels["W Laminado"]
         self.history = CommandHistory(self)
         self.command_bar = CommandBar(self)
+        self.scene.plotter.installEventFilter(self)
+        self.command_bar.input.installEventFilter(self)
         self.command_bar.reposition()
         self.history.reposition()
         self.refresh_scene()
@@ -604,6 +607,24 @@ class MainWindow(QMainWindow):
         )
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        scene = getattr(self, "scene", None)
+        command_bar = getattr(self, "command_bar", None)
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self.view_stack.currentWidget() is self.scene
+            and self._command_mode is None
+            and self.command_session.pending is None
+        ):
+            if watched is command_bar.input and command_bar.input.text().strip():
+                return super().eventFilter(watched, event)
+            if self._last_command_callback is not None:
+                self._last_command_callback()
+                return True
+
         navigation_tooltips = {
             getattr(self, "navigation_button", None): "Enquadrar modelo",
             getattr(self, "sloped_plane_button", None): "Rotacionar +90°",
@@ -679,8 +700,13 @@ class MainWindow(QMainWindow):
         self.axes_panel.show()
         self.axes_panel.raise_()
 
+    def _remember_last_command(self, callback) -> None:
+        """Keep the most recently started graphical command for Enter to repeat."""
+        self._last_command_callback = callback
+
     def start_member_placement(self) -> None:
         """Start the graphical member-placement flow from the geometry palette."""
+        self._remember_last_command(self.start_member_placement)
         self.command_session.cancel()
         self._member_placement_start = None
         self._command_mode = "member_placement"
@@ -692,6 +718,7 @@ class MainWindow(QMainWindow):
 
     def start_measurement(self) -> None:
         """Start a transient two-point distance measurement in the viewport."""
+        self._remember_last_command(self.start_measurement)
         self.command_session.cancel()
         self._member_placement_start = None
         self._command_mode = "measurement"
@@ -704,6 +731,7 @@ class MainWindow(QMainWindow):
 
     def start_node_placement(self) -> None:
         """Start the single-click graphical node-placement flow."""
+        self._remember_last_command(self.start_node_placement)
         self.command_session.cancel()
         self._member_placement_start = None
         self._command_mode = "node_placement"
@@ -715,6 +743,7 @@ class MainWindow(QMainWindow):
 
     def start_rigid_bar_placement(self) -> None:
         """Start the graphical two-click rigid-bar placement flow."""
+        self._remember_last_command(self.start_rigid_bar_placement)
         self.command_session.cancel()
         self._member_placement_start = None
         self._command_mode = "rigid_bar_placement"
@@ -727,6 +756,7 @@ class MainWindow(QMainWindow):
 
     def start_load_command(self) -> None:
         """Open the graphical action launcher instead of the text command flow."""
+        self._remember_last_command(self.start_load_command)
         load_case = self.selected_action_name or ""
         if not load_case:
             self.show_error("Selecione uma ação ativa antes de lançar um carregamento.")
@@ -810,6 +840,7 @@ class MainWindow(QMainWindow):
 
     def start_split_member(self) -> None:
         """Open the modal split window for the selected member or request one."""
+        self._remember_last_command(self.start_split_member)
         self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
@@ -862,6 +893,7 @@ class MainWindow(QMainWindow):
         """Reverse the selected member or enter graphical member-selection mode."""
         if self.member_direction_normalization_enabled:
             return
+        self._remember_last_command(self.start_reverse_member)
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
         if self.selected is not None and self.selected[0] == "bar":
@@ -897,6 +929,7 @@ class MainWindow(QMainWindow):
 
     def start_join_members(self) -> None:
         """Start the graphical two-member selection flow for joining members."""
+        self._remember_last_command(self.start_join_members)
         self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
@@ -938,6 +971,7 @@ class MainWindow(QMainWindow):
 
     def start_copy_member_properties(self) -> None:
         """Choose a reference member and then any number of destination members."""
+        self._remember_last_command(self.start_copy_member_properties)
         self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
@@ -992,6 +1026,7 @@ class MainWindow(QMainWindow):
 
     def start_copy_elements(self) -> None:
         """Start selecting nodes and members for a translated copy."""
+        self._remember_last_command(self.start_copy_elements)
         self.command_session.cancel()
         self._member_placement_start = None
         self._copy_elements_selection = []
