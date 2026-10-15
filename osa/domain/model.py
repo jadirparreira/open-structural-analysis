@@ -89,6 +89,33 @@ class StructuralModel:
         self._touch()
         return node
 
+    def update_nodes_coordinates(
+        self, changes: dict[str, tuple[float, float, float]],
+    ) -> None:
+        """Apply a coordinate edit to several nodes as one validated change."""
+        if not changes:
+            return
+        for name in changes:
+            if name not in self.nodes:
+                raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        final = {
+            name: self._coordinates(*changes[name]) if name in changes
+            else (node.x, node.y, node.z)
+            for name, node in self.nodes.items()
+        }
+        for name in changes:
+            coordinates = final[name]
+            for other_name, other in final.items():
+                if other_name != name and all(
+                    math.isclose(a, b, abs_tol=self.coordinate_tolerance, rel_tol=0.0)
+                    for a, b in zip(coordinates, other)
+                ):
+                    raise DuplicateNodeCoordinatesError("Já existe um nó nessa coordenada.")
+        for name in changes:
+            self.nodes[name] = replace(self.nodes[name], x=final[name][0],
+                                       y=final[name][1], z=final[name][2])
+        self._touch()
+
     def remove_node(self, name: str) -> None:
         if name not in self.nodes:
             return

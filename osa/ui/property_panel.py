@@ -1,7 +1,8 @@
 from math import isfinite
 
-from PySide6.QtCore import QRegularExpression
-from PySide6.QtGui import QRegularExpressionValidator
+from PySide6.QtCore import QRegularExpression, Signal
+from PySide6.QtGui import QPen, QRegularExpressionValidator
+from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
 
@@ -26,6 +27,70 @@ class CompactDoubleSpinBox(QDoubleSpinBox):
         return text or "0"
 
 
+class MixedCheckBox(QCheckBox):
+    """Three-state checkbox whose mixed state uses the application's blue slash."""
+
+    def nextCheckState(self) -> None:
+        self.setCheckState(
+            Qt.CheckState.Unchecked if self.checkState() != Qt.CheckState.Unchecked
+            else Qt.CheckState.Checked
+        )
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.checkState() != Qt.CheckState.PartiallyChecked:
+            return
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        indicator = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#0969da"), 2))
+        painter.drawLine(indicator.left() + 4, indicator.bottom() - 4,
+                         indicator.right() - 4, indicator.top() + 4)
+
+
+class SelectionKindSwitch(QFrame):
+    """Two-position control for inspecting nodes or members in one selection."""
+
+    kind_changed = Signal(str)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("selectionKindSwitch")
+        self.setFixedHeight(34)
+        self.setStyleSheet(
+            "QFrame#selectionKindSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 16px; }"
+            "QFrame#selectionKindSwitch QToolButton { background: transparent; border: 0; "
+            "border-radius: 12px; color: #57606a; font-size: 12px; font-weight: 600; }"
+            "QFrame#selectionKindSwitch QToolButton:checked { background: #0969da; color: #ffffff; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        self._buttons: dict[str, QToolButton] = {}
+        for kind, label in (("node", "Nós"), ("bar", "Membros")):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setFixedHeight(26)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setAccessibleName(f"Exibir propriedades dos {label.lower()} selecionados")
+            button.clicked.connect(
+                lambda _checked=False, selected_kind=kind: self.kind_changed.emit(selected_kind)
+            )
+            group.addButton(button)
+            layout.addWidget(button, 1)
+            self._buttons[kind] = button
+
+    def set_selection(self, kind: str) -> None:
+        if kind in self._buttons:
+            self._buttons[kind].setChecked(True)
+
+
 class PropertyPanel(QFrame):
     """Floating inspector for the currently selected node or bar."""
 
@@ -35,11 +100,23 @@ class PropertyPanel(QFrame):
         self.setObjectName("propertyPanel")
         self.setFixedWidth(300)
         self._selected: tuple[str, str] | None = None
+        self._selection: tuple[tuple[str, str], ...] = ()
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(14, 14, 14, 14)
         self.layout.setSpacing(7)
         self.title = QLabel()
         self.title.setObjectName("propertyTitle")
+        self.kind_selector = QComboBox()
+        self.kind_selector.setAccessibleName("Propriedades dos elementos selecionados")
+        self.kind_selector.currentIndexChanged.connect(self._inspected_kind_changed)
+        self.kind_control = QWidget()
+        kind_control_layout = QVBoxLayout(self.kind_control)
+        kind_control_layout.setContentsMargins(0, 0, 0, 0)
+        kind_control_layout.setSpacing(0)
+        kind_control_layout.addWidget(self.kind_selector)
+        self.selection_kind_switch = SelectionKindSwitch(self.kind_control)
+        self.selection_kind_switch.kind_changed.connect(self._switch_inspected_kind)
+        kind_control_layout.addWidget(self.selection_kind_switch)
         self.name = QLabel()
         self.name.setObjectName("propertySection")
         self.identity_value = QLineEdit()
@@ -71,6 +148,7 @@ class PropertyPanel(QFrame):
         identity_layout.addWidget(self.delete_button)
         self._color_palette = HoneycombColorPalette(self.window, self._color_selected)
         self.layout.addWidget(self.title)
+        self.layout.addWidget(self.kind_control)
         self.layout.addWidget(self.name)
         self.layout.addWidget(identity_row)
         self.coordinates_title = QLabel("Coordenadas")
@@ -125,11 +203,58 @@ class PropertyPanel(QFrame):
         self.delete_button.setEnabled(False)
         self.hide()
 
-    def show_for(self, kind: str, name: str, section: str = "Geometria") -> None:
+    def _selected_names(self, kind: str) -> list[str]:
+        return [name for selected_kind, name in self._selection if selected_kind == kind]
+
+    def _inspected_kind_changed(self, _index: int) -> None:
+        self._switch_inspected_kind(self.kind_selector.currentData())
+
+    def _switch_inspected_kind(self, kind: str | None) -> None:
+        if kind is None or not self._selection:
+            return
+        name = self._selected_names(kind)[-1]
+        self.window.selected = kind, name
+        self.show_for(kind, name, self.window.palette.active_group or "Geometria",
+                      selection=self._selection)
+
+    @staticmethod
+    def _all_equal(values: list[object]) -> bool:
+        return bool(values) and all(value == values[0] for value in values[1:])
+
+    @staticmethod
+    def _check_state(values: list[bool]) -> Qt.CheckState:
+        if all(values):
+            return Qt.CheckState.Checked
+        if not any(values):
+            return Qt.CheckState.Unchecked
+        return Qt.CheckState.PartiallyChecked
+
+    def show_for(
+        self, kind: str, name: str, section: str = "Geometria",
+        *, selection: object = None,
+    ) -> None:
         """Show the inspector content that belongs to the open work section."""
         if self._selected != (kind, name):
             self._analysis_result_view = "A"
         self._selected = kind, name
+        self._selection = tuple(selection or ((kind, name),))
+        names = self._selected_names(kind)
+        kinds = [selected_kind for selected_kind in ("bar", "node", "rigid_bar")
+                 if self._selected_names(selected_kind)]
+        with QSignalBlocker(self.kind_selector):
+            self.kind_selector.clear()
+            for selected_kind in kinds:
+                label = {"bar": "Membros", "node": "Nós", "rigid_bar": "Barras rígidas"}[selected_kind]
+                self.kind_selector.addItem(
+                    f"{label} ({len(self._selected_names(selected_kind))})", selected_kind
+                )
+            if kind in kinds:
+                self.kind_selector.setCurrentIndex(kinds.index(kind))
+        node_member_selection = set(kinds) == {"node", "bar"}
+        self.selection_kind_switch.set_selection(kind)
+        self.selection_kind_switch.setVisible(node_member_selection)
+        self.kind_selector.setVisible(len(kinds) > 1 and not node_member_selection)
+        self.kind_control.setVisible(len(kinds) > 1)
         self._clear_form()
         self.coordinates_title.hide()
         self.nodes_title.hide()
@@ -139,11 +264,22 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         self.member_color_button.setVisible(kind == "bar")
         self.update_delete_button_state()
-        self.title.setText({"node": "Nó", "bar": "Membro", "rigid_bar": "Barra rígida"}.get(kind, "Elemento"))
+        title = {"node": "Nó", "bar": "Membro", "rigid_bar": "Barra rígida"}.get(kind, "Elemento")
+        if len(self._selection) > 1:
+            if len(kinds) > 1:
+                title = f"Elementos · {len(self._selection)} selecionados"
+            else:
+                plural = {"node": "Nós", "bar": "Membros", "rigid_bar": "Barras rígidas"}.get(kind, "Elementos")
+                title = f"{plural} · {len(names)} selecionados"
+        self.title.setText(title)
         self.name.setText("Identidade")
-        self.identity_value.setText(name)
+        self.identity_value.setText(name if len(names) == 1 else f"Variado ({len(names)})")
         if kind == "bar":
-            self._set_member_color_button(self.window.model.bars[name].color)
+            colors = [self.window.model.bars[member_name].color for member_name in names]
+            self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
+            self.member_color_button.setToolTip(
+                "Definir cor dos membros" if len(names) > 1 else "Definir cor do membro"
+            )
 
         # A rigid bar is an idealized connection, not a physical member.  Its
         # inspector is therefore informational and must be the same in every
@@ -157,15 +293,17 @@ class PropertyPanel(QFrame):
             self._show_analysis(kind, name)
         elif kind == "node":
             node = self.window.model.nodes[name]
-            self.layout.insertWidget(3, self.coordinates_title)
+            self.layout.insertWidget(4, self.coordinates_title)
             self.coordinates_title.show()
             for axis, value in zip(("X", "Y", "Z"), (node.x, node.y, node.z)):
                 field = CompactDoubleSpinBox()
                 field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-                field.setRange(-1_000_000.0, 1_000_000.0)
+                field.setRange(-1_000_001.0, 1_000_000.0)
+                field.setSpecialValueText("Variado")
                 field.setDecimals(3)
                 field.setSingleStep(0.1)
-                field.setValue(value)
+                values = [getattr(self.window.model.nodes[node_name], axis.lower()) for node_name in names]
+                field.setValue(value if self._all_equal(values) else field.minimum())
                 field.setAccessibleName(f"Coordenada {axis} (m)")
                 # Coordinates are committed as a complete edit.  Connecting
                 # to ``editingFinished`` prevents the model and scene from
@@ -176,7 +314,7 @@ class PropertyPanel(QFrame):
                 axis_label = QLabel(axis)
                 axis_label.setObjectName("propertySection")
                 self.form.addRow(axis_label, self._editable_unit_box(field, "m"))
-            self.layout.insertWidget(5, self.supports_title)
+            self.layout.insertWidget(6, self.supports_title)
             self.supports_title.show()
             supports = QWidget()
             self._supports_widget = supports
@@ -185,21 +323,32 @@ class PropertyPanel(QFrame):
             supports_layout.setContentsMargins(0, 0, 0, 0)
             supports_layout.setSpacing(4)
             for index, label in enumerate(("Dx", "Dy", "Dz", "Rx", "Ry", "Rz")):
-                checkbox = QCheckBox(label)
-                checkbox.setChecked(node.supports[index])
+                checkbox = MixedCheckBox(label)
+                checkbox.setTristate(True)
+                checkbox.setStyleSheet(
+                    "QCheckBox::indicator:indeterminate { background: #ffffff; "
+                    "border: 1px solid #0969da; border-radius: 5px; "
+                    "width: 18px; height: 18px; }"
+                )
+                support_values = [self.window.model.nodes[node_name].supports[index] for node_name in names]
+                checkbox.setCheckState(self._check_state(support_values))
                 checkbox.stateChanged.connect(lambda _state, idx=index: self._support_changed(idx))
                 value = CompactDoubleSpinBox()
                 value.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
                 value.setDecimals(3)
-                value.setRange(0.0, 1_000_000.0)
-                value.setSpecialValueText("")
-                value.setValue(node.support_stiffness[index])
+                value.setRange(-1.0, 1_000_000.0)
+                stiffness_values = [
+                    self.window.model.nodes[node_name].support_stiffness[index]
+                    for node_name in names
+                ]
+                value.setSpecialValueText("Variado" if not self._all_equal(stiffness_values) else "")
+                value.setValue(node.support_stiffness[index] if self._all_equal(stiffness_values) else -1.0)
                 # These values are spring stiffnesses, not DOF values:
                 # force/length for translations and moment/radian for rotations.
                 unit = "kN/m" if index < 3 else "kN·m/rad"
                 value.setAccessibleName(f"{label} ({unit})")
                 value_box = self._editable_unit_box(value, unit)
-                value.valueChanged.connect(lambda _value: self._support_stiffness_changed())
+                value.valueChanged.connect(lambda _value, idx=index: self._support_stiffness_changed(idx))
                 self._support_stiffness_inputs.append(value)
                 row = QHBoxLayout()
                 row.setContentsMargins(0, 0, 0, 0)
@@ -207,11 +356,11 @@ class PropertyPanel(QFrame):
                 row.addWidget(checkbox)
                 row.addWidget(value_box, 1)
                 supports_layout.addLayout(row)
-            self.layout.insertWidget(6, supports)
+            self.layout.insertWidget(7, supports)
         else:
             bar = self.window.model.bars[name]
             nodes = list(self.window.model.nodes)
-            self.layout.insertWidget(3, self.nodes_title)
+            self.layout.insertWidget(4, self.nodes_title)
             self.nodes_title.show()
             start, end = QComboBox(), QComboBox()
             start.addItems(nodes); end.addItems(nodes)
@@ -219,9 +368,21 @@ class PropertyPanel(QFrame):
                 combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 combo.view().setMinimumHeight(min(5, len(nodes)) * 28 + 2)
                 combo.view().setMaximumHeight(min(5, len(nodes)) * 28 + 2)
-            start.setCurrentText(bar.start_node); end.setCurrentText(bar.end_node)
-            start.currentTextChanged.connect(self._bar_changed)
-            end.currentTextChanged.connect(self._bar_changed)
+            for index, combo in enumerate((start, end)):
+                values = [
+                    (self.window.model.bars[member_name].start_node,
+                     self.window.model.bars[member_name].end_node)[index]
+                    for member_name in names
+                ]
+                if self._all_equal(values):
+                    combo.setCurrentText(values[0])
+                else:
+                    combo.setPlaceholderText("Variado")
+                    combo.setCurrentIndex(-1)
+                combo.currentTextChanged.connect(
+                    lambda _text, idx=index: self._bar_changed(idx)
+                )
+                combo.setEnabled(len(names) == 1)
             self.fields.extend((start, end))
             start_label = QLabel("A")
             start_label.setObjectName("propertySection")
@@ -248,9 +409,14 @@ class PropertyPanel(QFrame):
             material_layout.addWidget(material_title)
             material_combo = QComboBox()
             material_combo.addItems(self.window.model.materials)
-            material_combo.setPlaceholderText("Indefinido")
-            material_combo.setCurrentText(bar.material if bar.material in self.window.model.materials else "")
-            if bar.material not in self.window.model.materials:
+            materials = [self.window.model.bars[member_name].material for member_name in names]
+            material_combo.setPlaceholderText("Variado" if not self._all_equal(materials) else "Indefinido")
+            if self._all_equal(materials) and bar.material not in self.window.model.materials:
+                material_combo.addItem(bar.material)
+                material_combo.setEnabled(False)
+            if self._all_equal(materials):
+                material_combo.setCurrentText(bar.material)
+            else:
                 material_combo.setCurrentIndex(-1)
             material_layout.addWidget(material_combo)
             material_combo.currentTextChanged.connect(self._material_selected)
@@ -259,9 +425,20 @@ class PropertyPanel(QFrame):
             section_label.setObjectName("propertySection")
             section_combo = QComboBox()
             section_combo.setPlaceholderText("Indefinido")
-            section_combo.addItems(self._sections_for_material(bar.material))
-            if bar.section and bar.section in self._sections_for_material(bar.material):
+            sections = [self.window.model.bars[member_name].section for member_name in names]
+            available_sections = [
+                section for section in self._sections_for_material(materials[0])
+                if all(section in self._sections_for_material(material) for material in materials[1:])
+            ]
+            section_combo.addItems(available_sections)
+            section_combo.setPlaceholderText("Variado" if not self._all_equal(sections) else "Indefinido")
+            if self._all_equal(sections) and bar.section:
+                if bar.section not in available_sections:
+                    section_combo.addItem(bar.section)
+                    section_combo.setEnabled(False)
                 section_combo.setCurrentText(bar.section)
+            else:
+                section_combo.setCurrentIndex(-1)
             section_combo.currentTextChanged.connect(self._section_selected)
             section_container = QWidget()
             self._section_container = section_container
@@ -274,6 +451,7 @@ class PropertyPanel(QFrame):
             settings_button.setToolTip("Configurar seção")
             settings_button.setAccessibleName("Configurar seção")
             settings_button.setCheckable(True)
+            settings_button.setEnabled(len(names) == 1)
             settings_button.clicked.connect(lambda _checked=False, combo=section_combo, button=settings_button:
                                             self.window.toggle_section_panel(combo.currentText(), button))
             settings_button.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } QToolButton:hover, QToolButton:checked { background: #eaeef2; }")
@@ -283,8 +461,9 @@ class PropertyPanel(QFrame):
             section_profile_display = QLineEdit()
             section_profile_display.setReadOnly(True)
             section_profile_display.setObjectName("identityDisplay")
+            profiles = [self.window.section_profiles.get(member_name, "") for member_name in names]
             section_profile_display.setText(
-                self.window.section_profiles.get(name, "") or "Indefinido"
+                (profiles[0] or "Indefinido") if self._all_equal(profiles) else "Variado"
             )
             self.layout.addWidget(section_profile_display)
             self._show_member_solid_offsets(bar)
@@ -314,6 +493,7 @@ class PropertyPanel(QFrame):
                 "QCheckBox::indicator:hover { border-color: #d0d7de; }"
                 "QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover { "
                 "background: #0969da; border-color: #0969da; }"
+                "QCheckBox::indicator:indeterminate { background: #ffffff; border-color: #0969da; }"
             )
             endpoint_indices = {"A": (0, 6, 2, 8, 4, 10), "B": (1, 7, 3, 9, 5, 11)}
             self._release_stack = QStackedWidget()
@@ -332,20 +512,32 @@ class PropertyPanel(QFrame):
                     translation_index = indices[position * 2]
                     rotation_index = indices[position * 2 + 1]
                     translation_label = release_labels[translation_index]
-                    translation_checkbox = QCheckBox(translation_label)
+                    translation_checkbox = MixedCheckBox(translation_label)
+                    translation_checkbox.setTristate(True)
                     translation_checkbox.setToolTip(release_tooltips[translation_label])
                     translation_checkbox.setStyleSheet(checkbox_style)
-                    translation_checkbox.setChecked(not bar.releases[translation_index])
-                    translation_checkbox.stateChanged.connect(self._releases_changed)
+                    translation_checkbox.setCheckState(self._check_state([
+                        not self.window.model.bars[member_name].releases[translation_index]
+                        for member_name in names
+                    ]))
+                    translation_checkbox.stateChanged.connect(
+                        lambda state, idx=translation_index: self._releases_changed(idx, state)
+                    )
                     release_boxes[translation_index] = translation_checkbox
                     endpoint_layout.addWidget(translation_checkbox, position, 0)
 
                     rotation_label = release_labels[rotation_index]
-                    rotation_checkbox = QCheckBox(rotation_label)
+                    rotation_checkbox = MixedCheckBox(rotation_label)
+                    rotation_checkbox.setTristate(True)
                     rotation_checkbox.setToolTip(release_tooltips[rotation_label])
                     rotation_checkbox.setStyleSheet(checkbox_style)
-                    rotation_checkbox.setChecked(not bar.releases[rotation_index])
-                    rotation_checkbox.stateChanged.connect(self._releases_changed)
+                    rotation_checkbox.setCheckState(self._check_state([
+                        not self.window.model.bars[member_name].releases[rotation_index]
+                        for member_name in names
+                    ]))
+                    rotation_checkbox.stateChanged.connect(
+                        lambda state, idx=rotation_index: self._releases_changed(idx, state)
+                    )
                     release_boxes[rotation_index] = rotation_checkbox
                     endpoint_layout.addWidget(rotation_checkbox, position, 1)
 
@@ -355,11 +547,20 @@ class PropertyPanel(QFrame):
                     percent.setValidator(QRegularExpressionValidator(
                         QRegularExpression(r"\d*"), percent
                     ))
-                    stored_percent = bar.rotation_flexibility_percent[
-                        (rotation_index - 6) if rotation_index < 12 else 0
+                    percent_values = [
+                        self.window.model.bars[member_name].rotation_flexibility_percent[rotation_index - 6]
+                        for member_name in names
                     ]
-                    percent.setText(str(stored_percent) if not bar.releases[rotation_index] else "")
-                    percent.setEnabled(not bar.releases[rotation_index])
+                    rotation_states = [
+                        self.window.model.bars[member_name].releases[rotation_index]
+                        for member_name in names
+                    ]
+                    percent.setText(
+                        str(percent_values[0]) if self._all_equal(percent_values)
+                        and not any(rotation_states) else ""
+                    )
+                    percent.setPlaceholderText("Variado" if not self._all_equal(percent_values) else "")
+                    percent.setEnabled(not any(rotation_states))
                     percent.setAccessibleName(f"{rotation_label} (%)")
                     percent_box = self._percentage_unit_box(percent)
                     percent.editingFinished.connect(
@@ -407,7 +608,12 @@ class PropertyPanel(QFrame):
         status = QLineEdit()
         status.setReadOnly(True)
         status.setObjectName("identityDisplay")
-        status.setText(self._positioning_summary(bar))
+        members = [self.window.model.bars[member_name] for member_name in self._selected_names("bar")]
+        positioning = [self._positioning_summary(member) for member in members]
+        signatures = [(
+            member.rotation, member.solid_face_offsets, member.solid_section_offsets,
+        ) for member in members]
+        status.setText(positioning[0] if self._all_equal(signatures) else "Variado")
         status.setAccessibleName("Identificação do posicionamento")
         offset_layout.addWidget(status, 1)
 
@@ -420,6 +626,7 @@ class PropertyPanel(QFrame):
         configure_button.setToolTip("Configurar posicionamento")
         configure_button.setAccessibleName("Configurar posicionamento")
         configure_button.setCheckable(True)
+        configure_button.setEnabled(len(positioning) == 1)
         configure_button.clicked.connect(
             lambda _checked=False, button=configure_button: self.window.toggle_displacement_panel(button)
         )
@@ -616,7 +823,7 @@ class PropertyPanel(QFrame):
         header_layout.addWidget(self._node_action_switch(), 0, Qt.AlignmentFlag.AlignVCenter)
         self._add_context_widget(header)
 
-        for label, value, unit in self._node_action_fields(name, load_case):
+        for label, value, unit in self._selected_action_fields("node", load_case):
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
@@ -729,6 +936,56 @@ class PropertyPanel(QFrame):
             for label in values
         )
 
+    def _action_components_for_field(
+        self, kind: str, label: str, actions: list,
+    ) -> tuple[float, ...]:
+        """Compare effective loads, including missing and explicit zero loads."""
+        if kind == "node":
+            action_kinds = {
+                f"node_{'force' if label.startswith('F') else 'moment'}_{label[-1]}"
+            }
+        elif label.startswith("M"):
+            action_kinds = {f"member_moment_{label[-1]}"} if self._member_action_reference == "local" else set()
+        elif self._member_action_reference == "local":
+            action_kinds = {f"member_distributed_force_local_{label[-1]}"}
+        else:
+            action_kinds = {
+                f"member_distributed_force_{label[-1]}",
+                f"member_distributed_force_global_{label[-1]}",
+            }
+            if label == "FZ":
+                action_kinds.add("member_distributed_force_selfweight_Z")
+        components: tuple[float, ...] = ()
+        for action in actions:
+            if action.kind in action_kinds:
+                components = tuple(action.components)
+        return () if all(value == 0 for value in components) else components
+
+    def _selected_action_fields(
+        self, kind: str, load_case: str | None,
+    ) -> tuple[tuple[str, str, str], ...]:
+        names = self._selected_names(kind)
+        if not names:
+            return ()
+        fields = self._node_action_fields if kind == "node" else self._member_action_fields
+        rows = fields(names[0], load_case)
+        actions_by_target = {name: [] for name in names}
+        if load_case:
+            for action in self.window.model.actions.values():
+                if action.load_case == load_case and action.target in actions_by_target:
+                    actions_by_target[action.target].append(action)
+        return tuple(
+            (
+                label,
+                value if self._all_equal([
+                    self._action_components_for_field(kind, label, actions_by_target[name])
+                    for name in names
+                ]) else "Variado",
+                unit,
+            )
+            for label, value, unit in rows
+        )
+
     def _node_action_changed(self, label: str, field: QLineEdit) -> None:
         if not self._selected or self._selected[0] != "node":
             return
@@ -744,10 +1001,11 @@ class PropertyPanel(QFrame):
         except ValueError:
             self._update_node_action_fields()
             return
-        if label.startswith("F"):
-            self.window.action_service.add_node_force(self._selected[1], label[-1], value, load_case)
-        else:
-            self.window.action_service.add_node_moment(self._selected[1], label[-1], value, load_case)
+        for node_name in self._selected_names("node"):
+            if label.startswith("F"):
+                self.window.action_service.add_node_force(node_name, label[-1], value, load_case)
+            else:
+                self.window.action_service.add_node_moment(node_name, label[-1], value, load_case)
         self._update_node_action_fields()
         self.window.refresh_scene()
 
@@ -755,7 +1013,7 @@ class PropertyPanel(QFrame):
         if not self._selected or self._selected[0] != "node":
             return
         locked = self._is_selfweight_locked(self.window.selected_action_name)
-        for label, value, _unit in self._node_action_fields(self._selected[1], self.window.selected_action_name):
+        for label, value, _unit in self._selected_action_fields("node", self.window.selected_action_name):
             if input_field := self._node_action_inputs.get(label):
                 input_field.setReadOnly(locked)
                 input_field.setText(value)
@@ -782,7 +1040,7 @@ class PropertyPanel(QFrame):
         header_layout.addWidget(self._member_action_switch(), 0, Qt.AlignmentFlag.AlignVCenter)
         self._add_context_widget(header)
 
-        for label, value, unit in self._member_action_fields(name, load_case):
+        for label, value, unit in self._selected_action_fields("bar", load_case):
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1066,7 +1324,7 @@ class PropertyPanel(QFrame):
     def _update_member_action_fields(self) -> None:
         if not self._selected or self._selected[0] != "bar":
             return
-        fields = self._member_action_fields(self._selected[1], self.window.selected_action_name)
+        fields = self._selected_action_fields("bar", self.window.selected_action_name)
         for label, value, _unit in fields:
             if input_field := self._member_action_inputs.get(label):
                 global_moment = self._member_action_reference == "global" and label.startswith("M")
@@ -1109,37 +1367,34 @@ class PropertyPanel(QFrame):
             self._update_member_action_fields()
             return
 
-        member_name = self._selected[1]
         action_service = self.window.action_service
         if label.startswith("F"):
             initial, final = values if len(values) == 2 else (values[0], values[0])
             direction = label[-1]
-            selfweight = (
-                self._member_action_reference == "global"
-                and direction == "Z"
-                and any(
-                    action.target == member_name
-                    and action.load_case == load_case
-                    and action.kind == "member_distributed_force_selfweight_Z"
-                    for action in self.window.model.actions.values()
+            for member_name in self._selected_names("bar"):
+                selfweight = (
+                    self._member_action_reference == "global"
+                    and direction == "Z"
+                    and any(
+                        action.target == member_name
+                        and action.load_case == load_case
+                        and action.kind == "member_distributed_force_selfweight_Z"
+                        for action in self.window.model.actions.values()
+                    )
                 )
-            )
-            if selfweight:
-                action_service.add_member_selfweight(member_name, initial, load_case)
-            else:
-                action_service.add_member_distributed_force(
-                    member_name,
-                    direction,
-                    initial,
-                    final,
-                    load_case,
-                    self._member_action_reference,
-                )
+                if selfweight:
+                    action_service.add_member_selfweight(member_name, initial, load_case)
+                else:
+                    action_service.add_member_distributed_force(
+                        member_name, direction, initial, final, load_case,
+                        self._member_action_reference,
+                    )
         else:
             if len(values) != 1:
                 self._update_member_action_fields()
                 return
-            action_service.add_member_moment(member_name, label[-1], values[0], load_case)
+            for member_name in self._selected_names("bar"):
+                action_service.add_member_moment(member_name, label[-1], values[0], load_case)
         self._update_member_action_fields()
         self.window.refresh_scene()
 
@@ -1172,21 +1427,36 @@ class PropertyPanel(QFrame):
             results[0] if selected_reference is None else None,
         )
         data_key = "node_results" if kind == "node" else "member_results"
-        values = getattr(result, data_key).get(name) if result is not None else None
-        if values is None:
+        names = self._selected_names(kind) or [name]
+        values = [getattr(result, data_key).get(target) for target in names] if result is not None else []
+        if not any(isinstance(value, dict) for value in values):
             if kind == "node":
-                message = QLabel("Não há resultados para este nó.")
+                message = QLabel("Não há resultados para os nós selecionados." if len(names) > 1
+                                 else "Não há resultados para este nó.")
             else:
                 label = "barra rígida" if kind == "rigid_bar" else "membro"
-                message = QLabel(f"Não há resultados para esta {label}.")
+                message = QLabel(f"Não há resultados para os {label}s selecionados." if len(names) > 1
+                                 else f"Não há resultados para esta {label}.")
             message.setWordWrap(True)
             self._add_context_widget(message)
             return
 
         if kind == "node":
-            self._show_node_analysis_values(values)
+            self._show_node_analysis_values(self._common_analysis_values(values))
         else:
             self._show_member_analysis_values(values)
+
+    @staticmethod
+    def _common_analysis_values(values: list[dict | None]) -> dict:
+        """Retain shared result components and mark differing or missing ones."""
+        keys = dict.fromkeys(key for value in values if isinstance(value, dict) for key in value)
+        return {
+            key: next(value.get(key) for value in values if isinstance(value, dict) and key in value)
+            if all(isinstance(value, dict) and key in value and value[key] == values[0].get(key)
+                   for value in values)
+            else "Variado"
+            for key in keys
+        }
 
     def _analysis_result_switch(self) -> QFrame:
         switch = QFrame()
@@ -1269,7 +1539,7 @@ class PropertyPanel(QFrame):
             self._analysis_switch_animation = animation
             animation.start()
         self._update_analysis_switch_text()
-        self.show_for(self._selected[0], self._selected[1], "Análise")
+        self.show_for(self._selected[0], self._selected[1], "Análise", selection=self._selection)
 
     def _show_node_analysis_values(self, values: dict) -> None:
         """Render all nodal result components with their analysis units."""
@@ -1300,25 +1570,36 @@ class PropertyPanel(QFrame):
             ),
         )
 
-    def _show_member_analysis_values(self, values: dict) -> None:
+    def _show_member_analysis_values(self, values: list[dict | None]) -> None:
         """Render the selected member view for the active combination."""
         fields = self._member_analysis_fields()
         if self._analysis_result_view == "MAX":
-            samples = values.get("samples") or tuple(
-                endpoint for endpoint in (values.get("start"), values.get("end"))
-                if isinstance(endpoint, dict)
-            )
-            samples = tuple(self._member_analysis_display_values(sample) for sample in samples)
-            positive, negative = self._member_analysis_extrema(samples, fields)
+            extrema = []
+            for member_values in values:
+                if not isinstance(member_values, dict):
+                    extrema.append((None, None))
+                    continue
+                samples = member_values.get("samples") or tuple(
+                    endpoint for endpoint in (member_values.get("start"), member_values.get("end"))
+                    if isinstance(endpoint, dict)
+                )
+                samples = tuple(self._member_analysis_display_values(sample) for sample in samples)
+                extrema.append(self._member_analysis_extrema(samples, fields))
+            positive = self._common_analysis_values([pair[0] for pair in extrema])
+            negative = self._common_analysis_values([pair[1] for pair in extrema])
             self._add_analysis_extrema_values(positive, negative, fields)
             return
 
         endpoint = "start" if self._analysis_result_view == "A" else "end"
-        endpoint_values = values.get(endpoint)
-        if isinstance(endpoint_values, dict):
+        endpoint_values = [
+            self._member_analysis_display_values(value[endpoint])
+            if isinstance(value, dict) and isinstance(value.get(endpoint), dict) else None
+            for value in values
+        ]
+        if any(isinstance(value, dict) for value in endpoint_values):
             self._add_analysis_value_group(
                 None,
-                self._member_analysis_display_values(endpoint_values),
+                self._common_analysis_values(endpoint_values),
                 fields,
             )
 
@@ -1438,11 +1719,15 @@ class PropertyPanel(QFrame):
     @staticmethod
     def _format_analysis_value(value, unit: str) -> str:
         """Format solver values in the same compact, locale-aware style as diagrams."""
+        if value == "Variado":
+            return "Variado"
         return f"{PropertyPanel._format_analysis_number(value)} {unit}"
 
     @staticmethod
     def _format_analysis_number(value) -> str:
         """Format a result number without a unit for compact multi-column layouts."""
+        if value == "Variado":
+            return "Variado"
         try:
             rounded = round(float(value), 3)
         except (TypeError, ValueError):
@@ -1543,35 +1828,67 @@ class PropertyPanel(QFrame):
 
     def _node_changed(self, axis: str) -> None:
         if not self._selected or self._selected[0] != "node": return
-        values = [field.value() for field in self.fields if isinstance(field, QDoubleSpinBox)]
-        if len(values) == 3:
-            self.window.model_service.update_node(self._selected[1], *values)
-            self.window.refresh_node(self._selected[1])
+        index = ("X", "Y", "Z").index(axis)
+        field = self.fields[index]
+        if not isinstance(field, QDoubleSpinBox) or field.value() == field.minimum():
+            return
+        changes = {}
+        for name in self._selected_names("node"):
+            node = self.window.model.nodes[name]
+            values = [node.x, node.y, node.z]
+            values[index] = field.value()
+            changes[name] = tuple(values)
+        try:
+            self.window.model_service.update_nodes_coordinates(changes)
+        except ValueError as error:
+            self.window.show_error(str(error))
+            self.show_for("node", self._selected[1], self.window.palette.active_group or "Geometria",
+                          selection=self._selection)
+            return
+        for name in changes:
+            self.window.refresh_node(name)
 
     def _support_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "node" or self._supports_widget is None:
             return
-        values = [box.isChecked() for box in self._supports_widget.findChildren(QCheckBox)]
-        if len(values) == 6:
-            self.window.model_service.update_supports(self._selected[1], tuple(values))
-            self.window.refresh_node_visual(self._selected[1])
+        boxes = self._supports_widget.findChildren(QCheckBox)
+        if len(boxes) != 6 or boxes[index].checkState() == Qt.CheckState.PartiallyChecked:
+            return
+        for name in self._selected_names("node"):
+            values = list(self.window.model.nodes[name].supports)
+            values[index] = boxes[index].isChecked()
+            self.window.model_service.update_supports(name, tuple(values))
+            self.window.refresh_node_visual(name)
 
-    def _support_stiffness_changed(self) -> None:
+    def _support_stiffness_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "node" or len(self._support_stiffness_inputs) != 6:
             return
-        values = tuple(field.value() for field in self._support_stiffness_inputs)
-        self.window.model_service.update_support_stiffness(self._selected[1], values)
+        value = self._support_stiffness_inputs[index].value()
+        if value < 0:
+            return
+        for name in self._selected_names("node"):
+            values = list(self.window.model.nodes[name].support_stiffness)
+            values[index] = value
+            self.window.model_service.update_support_stiffness(name, tuple(values))
 
-    def _bar_changed(self) -> None:
+    def _bar_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self.fields) != 2: return
-        start, end = (field.currentText() for field in self.fields if isinstance(field, QComboBox))
+        field = self.fields[index]
+        if not isinstance(field, QComboBox) or not field.currentText():
+            return
         try:
-            self.window.model_service.update_member_nodes(self._selected[1], start, end)
+            for name in self._selected_names("bar"):
+                bar = self.window.model.bars[name]
+                nodes = [bar.start_node, bar.end_node]
+                nodes[index] = field.currentText()
+                self.window.model_service.update_member_nodes(name, *nodes)
             self.window.normalize_member_directions_if_enabled()
             self.window.refresh_scene()
-            self.show_for("bar", self._selected[1], self.window.palette.active_group or "Geometria")
+            self.show_for("bar", self._selected[1], self.window.palette.active_group or "Geometria",
+                          selection=self._selection)
         except ValueError:
-            pass
+            self.show_for("bar", self._selected[1], self.window.palette.active_group or "Geometria",
+                          selection=self._selection)
 
     def _rigid_bar_changed(self) -> None:
         if not self._selected or self._selected[0] != "rigid_bar" or len(self.fields) != 2:
@@ -1581,12 +1898,18 @@ class PropertyPanel(QFrame):
         try:
             rigid = self.window.model_service.update_rigid_bar_nodes(old_name, start, end)
         except ValueError:
-            self.show_for("rigid_bar", old_name, self.window.palette.active_group or "Geometria")
+            self.show_for("rigid_bar", old_name, self.window.palette.active_group or "Geometria",
+                          selection=self._selection)
             return
         self._selected = "rigid_bar", rigid.name
         self.window.selected = self._selected
+        self.window.selected_elements = [
+            ("rigid_bar", rigid.name) if target == ("rigid_bar", old_name) else target
+            for target in self.window.selected_elements
+        ]
         self.window.refresh_rigid_bar_name(old_name, rigid.name)
-        self.show_for("rigid_bar", rigid.name, self.window.palette.active_group or "Geometria")
+        self.show_for("rigid_bar", rigid.name, self.window.palette.active_group or "Geometria",
+                      selection=self.window.selected_elements)
 
     def _toggle_color_palette(self) -> None:
         if not self._selected or self._selected[0] != "bar":
@@ -1596,7 +1919,8 @@ class PropertyPanel(QFrame):
             return
         if self.window.section_panel.isVisible():
             self.window.close_section_panel(self._section_settings_button)
-        color = self.window.model.bars[self._selected[1]].color
+        colors = [self.window.model.bars[name].color for name in self._selected_names("bar")]
+        color = colors[0] if self._all_equal(colors) else ""
         self._color_palette.set_selected(color)
         self.reposition_color_palette()
         self._color_palette.show()
@@ -1615,10 +1939,10 @@ class PropertyPanel(QFrame):
     def _color_selected(self, color: str) -> None:
         if not self._selected or self._selected[0] != "bar":
             return
-        member_name = self._selected[1]
-        self.window.model_service.update_member_color(member_name, color)
+        for member_name in self._selected_names("bar"):
+            self.window.model_service.update_member_color(member_name, color)
+            self.window.refresh_member_color(member_name)
         self._set_member_color_button(color)
-        self.window.refresh_member_color(member_name)
 
     def _delete_requested(self) -> None:
         self.window.delete_selected()
@@ -1627,6 +1951,11 @@ class PropertyPanel(QFrame):
         """Keep node deletion disabled while members still reference it."""
         if self._selected is None or getattr(self.window, "selected", None) != self._selected:
             self.delete_button.setEnabled(False)
+            return
+        if len(self._selection) > 1:
+            self.delete_button.setEnabled(any(kind in {"bar", "rigid_bar"} for kind, _ in self._selection)
+                                          or any(kind == "node" for kind, _ in self._selection))
+            self.delete_button.setToolTip("Excluir elementos selecionados")
             return
         kind, name = self._selected
         if kind == "bar":
@@ -1659,24 +1988,27 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         super().hideEvent(event)
 
-    def _releases_changed(self, _state: int) -> None:
+    def _releases_changed(self, index: int, state: int) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self._release_boxes) != 12:
             return
-        releases = tuple(not checkbox.isChecked() for checkbox in self._release_boxes)
-        for index, percent in self._release_rotation_percent_inputs.items():
-            checkbox = self._release_boxes[index]
-            if checkbox.isChecked():
-                percent.setEnabled(True)
-                if not percent.text().strip():
-                    with QSignalBlocker(percent):
-                        percent.setText("0")
-            else:
-                with QSignalBlocker(percent):
-                    percent.setText("")
-                percent.setEnabled(False)
-        self.window.model_service.update_member_releases(self._selected[1], releases)
-        self._update_release_rotation_percent()
-        self.window.refresh_member_releases(self._selected[1])
+        if state == Qt.CheckState.PartiallyChecked.value:
+            return
+        checked = state == Qt.CheckState.Checked.value
+        for name in self._selected_names("bar"):
+            bar = self.window.model.bars[name]
+            releases = list(bar.releases)
+            releases[index] = not checked
+            self.window.model_service.update_member_releases(name, tuple(releases))
+            if index >= 6 and checked:
+                values = list(bar.rotation_flexibility_percent)
+                values[index - 6] = 0
+                self.window.model_service.update_member_rotation_flexibility_percent(name, tuple(values))
+            self.window.refresh_member_releases(name)
+        percent = self._release_rotation_percent_inputs.get(index)
+        if percent is not None:
+            with QSignalBlocker(percent):
+                percent.setText("0" if checked else "")
+            percent.setEnabled(checked)
 
     def _release_rotation_percent_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "bar":
@@ -1691,28 +2023,20 @@ class PropertyPanel(QFrame):
         checkbox = self._release_boxes[index]
         if value >= 100:
             with QSignalBlocker(checkbox):
-                checkbox.setChecked(False)
+                checkbox.setCheckState(Qt.CheckState.Unchecked)
             with QSignalBlocker(percent):
                 percent.setText("")
             percent.setEnabled(False)
-            self._releases_changed(0)
+            self._releases_changed(index, Qt.CheckState.Unchecked.value)
         else:
             value = max(value, 0)
             with QSignalBlocker(percent):
                 percent.setText(str(value))
-            self._update_release_rotation_percent()
-            self.window.refresh_member_releases(self._selected[1])
-
-    def _update_release_rotation_percent(self) -> None:
-        if not self._selected or len(self._release_rotation_percent_inputs) != 6:
-            return
-        values = tuple(
-            min(99, max(0, int(self._release_rotation_percent_inputs[index].text() or "0")))
-            for index in (6, 7, 8, 9, 10, 11)
-        )
-        self.window.model_service.update_member_rotation_flexibility_percent(
-            self._selected[1], values
-        )
+            for name in self._selected_names("bar"):
+                values = list(self.window.model.bars[name].rotation_flexibility_percent)
+                values[index - 6] = value
+                self.window.model_service.update_member_rotation_flexibility_percent(name, tuple(values))
+                self.window.refresh_member_releases(name)
 
     def _material_selected(self, material: str) -> None:
         # A section profile belongs to a material catalog. Changing material
@@ -1720,20 +2044,18 @@ class PropertyPanel(QFrame):
         # the available section-family list.
         if self.window.section_panel.isVisible():
             self.window.close_section_panel(self._section_settings_button)
-        if self._selected and self._selected[0] == "bar" and material in self.window.model.materials:
-            self.window.model_service.assign_material(self._selected[1], material)
-        if self._section_combo is not None:
-            current = self._section_combo.currentText()
-            self._section_combo.blockSignals(True)
-            self._section_combo.clear()
-            self._section_combo.setPlaceholderText("Indefinido")
-            self._section_combo.addItems(self._sections_for_material(material))
-            if current in self._sections_for_material(material):
-                self._section_combo.setCurrentText(current)
-            elif self._selected and self._selected[0] == "bar":
-                self.window.model_service.assign_section(self._selected[1], "")
-                self.window.refresh_member_geometry(self._selected[1])
-            self._section_combo.blockSignals(False)
+        if not self._selected or self._selected[0] != "bar" or material not in self.window.model.materials:
+            return
+        available = self._sections_for_material(material)
+        for name in self._selected_names("bar"):
+            self.window.model_service.assign_material(name, material)
+            if self.window.model.bars[name].section not in available:
+                self.window.model_service.assign_section(name, "")
+                self.window.section_profiles.pop(name, None)
+                self.window.section_geometry.pop(name, None)
+            self.window.refresh_member_geometry(name)
+        self.show_for("bar", self._selected[1], self.window.palette.active_group or "Geometria",
+                      selection=self._selection)
 
     def _sections_for_material(self, material: str) -> list[str]:
         if material == "Indefinido":
@@ -1742,20 +2064,17 @@ class PropertyPanel(QFrame):
         return list(self.window.model.sections.get(material_type, []))
 
     def _section_selected(self, section: str) -> None:
-        if self._selected and self._selected[0] == "bar":
-            member_name = self._selected[1]
+        if not self._selected or self._selected[0] != "bar" or not section:
+            return
+        for member_name in self._selected_names("bar"):
             self.window.model_service.assign_section(member_name, section)
             self.window.refresh_member_geometry(member_name)
-            # Selecting a section type starts a fresh profile selection.
             self.window.section_profiles.pop(member_name, None)
             self.window.section_geometry.pop(member_name, None)
-            if self._section_profile_display is not None:
-                self._section_profile_display.setText("Indefinido")
-            # A visible geometry editor belongs to the previously selected
-            # family. Rebind it immediately when the member's section family
-            # changes, preserving the open state and the checked button.
-            if section and self.window.section_panel.isVisible():
-                self.window.show_section_panel(section, self._section_settings_button)
+        if self._section_profile_display is not None:
+            self._section_profile_display.setText("Indefinido")
+        if len(self._selected_names("bar")) == 1 and section and self.window.section_panel.isVisible():
+            self.window.show_section_panel(section, self._section_settings_button)
 
     def reposition(self) -> None:
         margin = 0 if self.window.isMaximized() else WindowFrame.MARGIN

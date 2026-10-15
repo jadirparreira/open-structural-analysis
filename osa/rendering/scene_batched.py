@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pyvista as pv
 import vtk
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
@@ -82,6 +82,30 @@ class SnapMarker(QWidget):
             painter.end()
 
 
+class SelectionRectangle(QWidget):
+    """Screen-space marquee that never intercepts viewport input."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._crossing = False
+
+    def set_crossing(self, crossing: bool) -> None:
+        if self._crossing != crossing:
+            self._crossing = crossing
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        color = QColor("#2da44e" if self._crossing else "#0969da")
+        fill = QColor(color)
+        fill.setAlpha(45)
+        painter.fillRect(self.rect(), fill)
+        painter.setPen(QPen(color, 1))
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+
 class StructureScene(QWidget):
     """Render the full model with a small, stable number of VTK actors."""
 
@@ -90,6 +114,7 @@ class StructureScene(QWidget):
 
     element_clicked = Signal(str, str, object)
     empty_clicked = Signal()
+    selection_changed = Signal(object)
     placement_point_clicked = Signal(object)
     enter_pressed = Signal()
     # The wireframe member and local-axis strokes are intentionally separate.
@@ -125,6 +150,9 @@ class StructureScene(QWidget):
         layout.addWidget(self.plotter)
         self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plotter.installEventFilter(self)
+        self._selection_rectangle = SelectionRectangle(self.plotter)
+        self._selection_rectangle.hide()
+        self._ctrl_selection_press: tuple[int, int] | None = None
         self.plotter.set_background("#ffffff")
         self.plotter.enable_parallel_projection()
         # Terrain style orbits around the focal point with a stable world-up
@@ -361,6 +389,8 @@ class StructureScene(QWidget):
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
         self._selected_elements: tuple[tuple[str, str], ...] = ()
+        self._selection_press: tuple[int, int] | None = None
+        self._selection_dragged = False
         self._tab_hover_candidates: list[tuple[str, str]] = []
         self._tab_hover_position: tuple[int, int] | None = None
         self._pointer_position: tuple[float, float] | None = None
@@ -463,10 +493,15 @@ class StructureScene(QWidget):
         )
 
         self.plotter.iren.add_observer("MouseMoveEvent", self._on_mouse_move)
-        # Selection is observed before the camera controls. Member placement
-        # is finalized on mouse release, so a drag still orbits normally.
-        self._left_click_observer_id = self.plotter.iren.interactor.AddObserver(
-            "LeftButtonPressEvent", self._on_left_click, 1.0,
+        # Resolve selection on release, after distinguishing a click from an
+        # orbit or pan. Camera drags must leave the current selection intact.
+        self._selection_observer_ids = (
+            self.plotter.iren.interactor.AddObserver(
+                "LeftButtonPressEvent", self._on_selection_press, 1.0,
+            ),
+            self.plotter.iren.interactor.AddObserver(
+                "LeftButtonReleaseEvent", self._on_selection_release, 1.0,
+            ),
         )
         self._navigation_observer_ids = (
             self.plotter.iren.interactor.AddObserver(
@@ -1448,6 +1483,26 @@ class StructureScene(QWidget):
             over_navigation_cube = self._orientation_widget.is_pointer_over(
                 int(point.x()), int(point.y()),
             )
+            if self._ctrl_selection_press is not None:
+                if event.type() == QEvent.Type.MouseMove:
+                    self._update_selection_rectangle(int(point.x()), int(point.y()))
+                    event.accept()
+                    return True
+                if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                    self._finish_ctrl_selection(int(point.x()), int(point.y()))
+                    event.accept()
+                    return True
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                and not self._placement_active()
+                and getattr(self.window(), "_command_mode", None) is None
+                and not over_navigation_cube
+            ):
+                self._ctrl_selection_press = int(point.x()), int(point.y())
+                event.accept()
+                return True
             if (
                 event.type() == QEvent.Type.MouseButtonPress
                 and event.button() == Qt.MouseButton.LeftButton
@@ -1499,6 +1554,98 @@ class StructureScene(QWidget):
             event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def _update_selection_rectangle(self, x: int, y: int) -> None:
+        start = self._ctrl_selection_press
+        if start is None:
+            return
+        if np.hypot(x - start[0], y - start[1]) <= self._placement_drag_tolerance_pixels:
+            return
+        self._selection_rectangle.set_crossing(x < start[0])
+        left, right = sorted((start[0], x))
+        top, bottom = sorted((start[1], y))
+        rectangle = QRect(left, top, right - left + 1, bottom - top + 1)
+        self._selection_rectangle.setGeometry(rectangle)
+        self._selection_rectangle.show()
+        self._selection_rectangle.raise_()
+
+    def _finish_ctrl_selection(self, x: int, y: int) -> None:
+        start = self._ctrl_selection_press
+        self._ctrl_selection_press = None
+        self._selection_rectangle.hide()
+        if start is None:
+            return
+        selected = list(self._selected_elements)
+        if np.hypot(x - start[0], y - start[1]) <= self._placement_drag_tolerance_pixels:
+            picked = self._pick()
+            if picked in selected:
+                selected.remove(picked)
+            elif picked is not None:
+                selected.append(picked)
+        else:
+            for target in self._elements_in_rectangle(start, (x, y)):
+                if target not in selected:
+                    selected.append(target)
+        self.set_selection_highlight(selected)
+        self.selection_changed.emit(tuple(selected))
+
+    def _elements_in_rectangle(
+        self, start: tuple[int, int], end: tuple[int, int],
+    ) -> tuple[tuple[str, str], ...]:
+        """Select contained elements to the right and intersecting elements to the left."""
+        left, right = sorted((start[0], end[0]))
+        top, bottom = sorted((start[1], end[1]))
+        (
+            node_names, node_screens, node_visible,
+            member_targets, member_starts, member_deltas, member_visible,
+            *_bounds,
+        ) = self._pick_projection_data()
+        nodes_inside = (
+            node_visible
+            & (node_screens[:, 0] >= left) & (node_screens[:, 0] <= right)
+            & (node_screens[:, 1] >= top) & (node_screens[:, 1] <= bottom)
+        )
+        member_ends = member_starts + member_deltas
+        if end[0] < start[0]:
+            members_inside = member_visible & self._segments_touch_rectangle(
+                member_starts, member_ends, left, top, right, bottom,
+            )
+        else:
+            members_inside = (
+                member_visible
+                & (member_starts[:, 0] >= left) & (member_starts[:, 0] <= right)
+                & (member_starts[:, 1] >= top) & (member_starts[:, 1] <= bottom)
+                & (member_ends[:, 0] >= left) & (member_ends[:, 0] <= right)
+                & (member_ends[:, 1] >= top) & (member_ends[:, 1] <= bottom)
+            )
+        return (
+            *(("node", node_names[index]) for index in np.flatnonzero(nodes_inside)),
+            *(target for index, target in enumerate(member_targets)
+              if target[0] == "bar" and members_inside[index]),
+        )
+
+    @staticmethod
+    def _segments_touch_rectangle(
+        starts: np.ndarray, ends: np.ndarray,
+        left: float, top: float, right: float, bottom: float,
+    ) -> np.ndarray:
+        """Liang–Barsky clipping, including edges and segments crossing the whole box."""
+        delta = ends - starts
+        lower = np.zeros(len(starts), dtype=float)
+        upper = np.ones(len(starts), dtype=float)
+        outside = np.zeros(len(starts), dtype=bool)
+        for p, q in (
+            (-delta[:, 0], starts[:, 0] - left),
+            (delta[:, 0], right - starts[:, 0]),
+            (-delta[:, 1], starts[:, 1] - top),
+            (delta[:, 1], bottom - starts[:, 1]),
+        ):
+            parallel = np.abs(p) <= 1e-12
+            outside |= parallel & (q < 0)
+            fraction = np.divide(q, p, out=np.zeros_like(q), where=~parallel)
+            lower = np.maximum(lower, np.where(p < -1e-12, fraction, lower))
+            upper = np.minimum(upper, np.where(p > 1e-12, fraction, upper))
+        return ~outside & (lower <= upper)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -3060,11 +3207,28 @@ class StructureScene(QWidget):
         self._sync_highlights()
         self.plotter.render()
 
-    def _on_left_click(self, _caller, *_args) -> None:
+    def _on_selection_press(self, _caller, *_args) -> None:
+        self._selection_press = None
+        self._selection_dragged = False
         x, y = self.plotter.iren.get_event_position()
         if self._orientation_widget.is_pointer_over(x, y):
             return
         if self._placement_active():
+            return
+        self._selection_press = int(x), int(y)
+
+    def _on_selection_release(self, _caller, *_args) -> None:
+        start = self._selection_press
+        dragged = self._selection_dragged
+        self._selection_press = None
+        self._selection_dragged = False
+        if start is None or dragged or self._placement_active():
+            return
+        x, y = self.plotter.iren.get_event_position()
+        if (
+            self._orientation_widget.is_pointer_over(x, y)
+            or np.hypot(x - start[0], y - start[1]) > self._placement_drag_tolerance_pixels
+        ):
             return
         position = (int(x), int(y))
         picked = (
@@ -4349,6 +4513,10 @@ class StructureScene(QWidget):
         self._queue_camera_frame()
 
     def _on_navigation_mouse_move(self, caller, _event) -> None:
+        if self._selection_press is not None:
+            x, y = caller.GetEventPosition()
+            if np.hypot(x - self._selection_press[0], y - self._selection_press[1]) > self._placement_drag_tolerance_pixels:
+                self._selection_dragged = True
         if self._camera_drag_mode is None:
             return
         x, y = caller.GetEventPosition()

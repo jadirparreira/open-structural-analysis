@@ -152,6 +152,9 @@ class ModelService:
     def update_node(self, name: str, x: float, y: float, z: float):
         return self.model.update_node(name, x, y, z)
 
+    def update_nodes_coordinates(self, changes: dict[str, tuple[float, float, float]]) -> None:
+        self.model.update_nodes_coordinates(changes)
+
     def update_supports(self, name: str, supports: tuple[bool, ...]):
         return self.model.update_node_supports(name, supports)
 

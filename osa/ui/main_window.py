@@ -122,8 +122,10 @@ class MainWindow(QMainWindow):
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self.selected: tuple[str, str] | None = None
+        self.selected_elements: list[tuple[str, str]] = []
         self.scene.element_clicked.connect(self.select_element)
         self.scene.empty_clicked.connect(self.clear_selection)
+        self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
@@ -1639,6 +1641,8 @@ class MainWindow(QMainWindow):
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
         self.selected = kind, name
+        if self._command_mode != "copy_elements_selection":
+            self.selected_elements = [(kind, name)]
         if self._command_mode == "action_selection":
             self._apply_pending_action(kind, name)
             return
@@ -1726,7 +1730,21 @@ class MainWindow(QMainWindow):
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
         if self.selected is not None and self._command_mode != "split_member_selection":
-            self.properties.show_for(kind, name, self.palette.active_group or "Geometria")
+            self.properties.show_for(
+                kind, name, self.palette.active_group or "Geometria",
+                selection=self.selected_elements or [(kind, name)],
+            )
+
+    def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self._command_mode is not None:
+            return
+        self.selected_elements = list(elements)
+        self.selected = elements[-1] if elements else None
+        if self.selected is None:
+            self.clear_selection()
+        else:
+            self.axes_panel.hide()
+            self.refresh_selected_property_panel(self.palette.active_group)
 
     def refresh_selected_property_panel(self, section: str | None) -> None:
         """Rebuild the open inspector when the work section changes."""
@@ -1735,10 +1753,16 @@ class MainWindow(QMainWindow):
         if section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.close_displacement_panel()
         if self.selected is not None and hasattr(self, "properties"):
-            self.properties.show_for(*self.selected, section or "Geometria")
+            self.properties.show_for(
+                *self.selected, section or "Geometria",
+                selection=self.selected_elements or [self.selected],
+            )
 
     def clear_selection(self) -> None:
         self.selected = None
+        self.selected_elements = []
+        if self.scene._selected_elements:
+            self.scene.set_selection_highlight(())
         self.properties.hide()
         self.section_panel.hide()
         self.displacement_panel.hide()
@@ -1747,36 +1771,38 @@ class MainWindow(QMainWindow):
             self.scene.set_selection_highlight(self._copy_elements_selection)
 
     def delete_selected(self) -> None:
-        """Delete the selected element without rebuilding unrelated actors."""
+        """Delete selected elements, removing members before their endpoint nodes."""
         if self.selected is None:
             return
         focus = QApplication.focusWidget()
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
             return
-        kind, name = self.selected
-        if kind == "node" and any(
-            member.start_node == name or member.end_node == name
-            for member in self.model.bars.values()
-        ):
-            return
-        if kind == "node" and any(
-            rigid.start_node == name or rigid.end_node == name
-            for rigid in self.model.rigid_bars.values()
-        ):
-            return
-        try:
-            if kind == "node":
-                self.model_service.remove_node(name)
-            elif kind == "bar":
-                self.model_service.remove_member(name)
-            elif kind == "rigid_bar":
-                self.model_service.remove_rigid_bar(name)
-            else:
-                return
-        except ValueError as error:
-            self.show_error(str(error))
-            return
-        self.scene.remove_element(kind, name)
+        targets = self.selected_elements or [self.selected]
+        ordered = sorted(targets, key=lambda item: item[0] == "node")
+        for kind, name in ordered:
+            if kind == "node" and any(
+                member.start_node == name or member.end_node == name
+                for member in self.model.bars.values()
+            ):
+                continue
+            if kind == "node" and any(
+                rigid.start_node == name or rigid.end_node == name
+                for rigid in self.model.rigid_bars.values()
+            ):
+                continue
+            try:
+                if kind == "node":
+                    self.model_service.remove_node(name)
+                elif kind == "bar":
+                    self.model_service.remove_member(name)
+                elif kind == "rigid_bar":
+                    self.model_service.remove_rigid_bar(name)
+                else:
+                    continue
+            except ValueError as error:
+                self.show_error(str(error))
+                continue
+            self.scene.remove_element(kind, name)
         self.clear_selection()
 
 
