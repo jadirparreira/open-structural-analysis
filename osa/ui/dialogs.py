@@ -22,7 +22,7 @@ PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
 PROJECT_SITE_URL = "https://www.opensa.com.br"
 PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
 PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
-PROJECT_VERSION = "2026.2"
+PROJECT_VERSION = "2026.3-dev"
 
 
 class UnsavedChangesDialog(QDialog):
