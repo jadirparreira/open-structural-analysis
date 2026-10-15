@@ -266,14 +266,27 @@ class StructureScene(QWidget):
         self._model = StructuralModel()
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
-        self._base_geometry_cache_key: tuple[int, int, float] | None = None
-        self._base_geometry_cache: tuple[MemberBatch, NodeBatch, tuple[str, ...], pv.PolyData] | None = None
+        self._member_geometry_cache_key: tuple[object, ...] | None = None
+        self._member_geometry_cache: MemberBatch | None = None
+        self._pending_member_geometry_names: set[str] = set()
+        self._pending_member_full_names: set[str] = set()
+        self._silhouette_source_batch: MemberBatch | None = None
+        self._silhouette_camera_key: tuple[object, ...] | None = None
+        self._silhouette_mesh_cache: pv.PolyData | None = None
+        self._node_geometry_cache_key: tuple[object, ...] | None = None
+        self._node_geometry_cache: NodeBatch | None = None
+        self._rigid_geometry_cache_key: tuple[object, ...] | None = None
+        self._rigid_geometry_cache: tuple[tuple[str, ...], pv.PolyData] | None = None
+        self._rendered_nodes: dict[str, object] = {}
+        self._rendered_members: dict[str, object] = {}
+        self._rendered_rigid_bars: dict[str, object] = {}
+        self._rendered_axes: tuple[tuple[str, tuple[object, ...]], ...] = ()
+        self._rendered_actions: tuple[object, ...] = ()
+        self._rendered_revision = -1
         self._rigid_bar_names: tuple[str, ...] = ()
         self._rigid_bar_mesh: pv.PolyData | None = None
         self._measurement_face_locator: vtk.vtkCellLocator | None = None
         self._measurement_face_locator_key: tuple[int, int] | None = None
-        self._measurement_edge_faces: dict[tuple[float, ...], frozenset[int]] | None = None
-        self._measurement_edge_faces_key: tuple[int, int] | None = None
 
         self._member_line_actor = None
         self._member_fallback_actor = None
@@ -288,6 +301,7 @@ class StructureScene(QWidget):
         self._grid_actor = None
         self._reference_axes_actor = None
         self._node_actor = None
+        self._node_glyph_points: pv.PolyData | None = None
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors: list[object] = []
@@ -313,6 +327,9 @@ class StructureScene(QWidget):
             "member_moments": True,
         }
         self._highlight_actors: dict[str, object] = {}
+        self._highlight_targets: dict[str, tuple[str, str]] = {}
+        self._highlighted_node_colors: dict[str, str] = {}
+        self._highlight_state_key: tuple[object, ...] | None = None
 
         self._local_axes_visible = True
         self._grid_visible = True
@@ -337,11 +354,15 @@ class StructureScene(QWidget):
         self._measurement_start: np.ndarray | None = None
         self._measurement_start_snap_kind: str | None = None
         self._measurement_segments_cache: tuple[tuple[object, ...], tuple] | None = None
+        self._measurement_segment_bounds: tuple[np.ndarray, ...] | None = None
+        self._projected_snap_cache: tuple[tuple[object, ...], tuple[np.ndarray, ...]] | None = None
+        self._pick_projection_cache: tuple[tuple[object, ...], tuple] | None = None
         self._wheel_interaction_timer = QTimer(self)
         self._wheel_interaction_timer.setSingleShot(True)
         self._wheel_interaction_timer.setInterval(90)
         self._wheel_interaction_timer.timeout.connect(self._finish_wheel_interaction)
         self._camera_render_timer = QTimer(self)
+        self._camera_render_timer.setSingleShot(True)
         self._camera_render_timer.setInterval(16)
         self._camera_render_timer.timeout.connect(self._render_camera_frame)
         self._measurement_refresh_timer = QTimer(self)
@@ -367,6 +388,7 @@ class StructureScene(QWidget):
         self._marker_radius_locked = False
         self._zoom_reference_parallel_scale: float | None = None
         self._camera_interacting = False
+        self._last_interaction_render_state: tuple[object, ...] | None = None
         self._camera_drag_mode: str | None = None
         self._camera_drag_last_position: tuple[int, int] | None = None
         self._camera_initialized = False
@@ -381,7 +403,7 @@ class StructureScene(QWidget):
         self._solid_picker.PickFromListOn()
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
-        self._hover_timer.setInterval(32)
+        self._hover_timer.setInterval(16)
         self._hover_timer.timeout.connect(self._update_hover)
         self._label_timer = QTimer(self)
         self._label_timer.setSingleShot(True)
@@ -397,6 +419,18 @@ class StructureScene(QWidget):
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(24)
         self._rebuild_timer.timeout.connect(self._rebuild_scene)
+        self._member_update_timer = QTimer(self)
+        self._member_update_timer.setSingleShot(True)
+        self._member_update_timer.setInterval(24)
+        self._member_update_timer.timeout.connect(self._refresh_pending_member_update)
+        self._support_update_timer = QTimer(self)
+        self._support_update_timer.setSingleShot(True)
+        self._support_update_timer.setInterval(24)
+        self._support_update_timer.timeout.connect(self._refresh_support_batch)
+        self._clip_refresh_timer = QTimer(self)
+        self._clip_refresh_timer.setSingleShot(True)
+        self._clip_refresh_timer.setInterval(120)
+        self._clip_refresh_timer.timeout.connect(self._refresh_camera_clipping_range)
         self._navigation_viewport_timer = QTimer(self)
         self._navigation_viewport_timer.setSingleShot(True)
         self._navigation_viewport_timer.timeout.connect(self._sync_navigation_viewport)
@@ -457,6 +491,11 @@ class StructureScene(QWidget):
         placement must never reframe the user's view.
         """
         self._rebuild_timer.stop()
+        self._member_update_timer.stop()
+        self._support_update_timer.stop()
+        self._clip_refresh_timer.stop()
+        self._pending_member_geometry_names.clear()
+        self._pending_member_full_names.clear()
         camera_state = self._camera_state()
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
@@ -493,6 +532,7 @@ class StructureScene(QWidget):
             self._orientation_widget.sync_from_camera()
             self._sync_labels()
             self.plotter.render()
+            self._capture_rendered_state()
             return
 
         positions = np.asarray([(node.x, node.y, node.z) for node in model.nodes.values()])
@@ -501,16 +541,52 @@ class StructureScene(QWidget):
             self._marker_radius_locked = True
 
         node_radius = self._node_marker_radius()
-        cache_key = (id(model), model.revision, round(float(self._marker_radius_current), 12))
-        if cache_key != self._base_geometry_cache_key or self._base_geometry_cache is None:
-            member_batch = self._member_renderer.build(model, self._marker_radius_current)
-            node_batch = self._node_renderer.build(model, node_radius)
-            rigid_bar_names, rigid_bar_mesh = self._rigid_bar_renderer.build(model)
-            self._base_geometry_cache_key = cache_key
-            self._base_geometry_cache = member_batch, node_batch, rigid_bar_names, rigid_bar_mesh
-        self._member_batch, self._node_batch, self._rigid_bar_names, self._rigid_bar_mesh = (
-            self._base_geometry_cache
+        # A model revision is too broad a cache key: changing one support also
+        # advances it, even though member geometry is unchanged. Keep each
+        # rendered batch keyed by the domain data it actually consumes.
+        member_key = (
+            round(float(self._marker_radius_current), 12),
+            tuple(
+                (
+                    member,
+                    (model.nodes[member.start_node].x, model.nodes[member.start_node].y,
+                     model.nodes[member.start_node].z),
+                    (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
+                     model.nodes[member.end_node].z),
+                )
+                for member in model.bars.values()
+            ),
         )
+        if member_key != self._member_geometry_cache_key or self._member_geometry_cache is None:
+            self._member_geometry_cache = self._member_renderer.build(
+                model, self._marker_radius_current,
+            )
+            self._member_geometry_cache_key = member_key
+        self._member_batch = self._member_geometry_cache
+
+        node_key = (
+            round(float(node_radius), 12),
+            tuple(model.nodes.values()),
+        )
+        if node_key != self._node_geometry_cache_key or self._node_geometry_cache is None:
+            self._node_geometry_cache = self._node_renderer.build(model, node_radius)
+            self._node_geometry_cache_key = node_key
+        self._node_batch = self._node_geometry_cache
+
+        rigid_key = tuple(
+            (
+                rigid,
+                (model.nodes[rigid.start_node].x, model.nodes[rigid.start_node].y,
+                 model.nodes[rigid.start_node].z),
+                (model.nodes[rigid.end_node].x, model.nodes[rigid.end_node].y,
+                 model.nodes[rigid.end_node].z),
+            )
+            for rigid in model.rigid_bars.values()
+        )
+        if rigid_key != self._rigid_geometry_cache_key or self._rigid_geometry_cache is None:
+            self._rigid_geometry_cache = self._rigid_bar_renderer.build(model)
+            self._rigid_geometry_cache_key = rigid_key
+        self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_geometry_cache
         self._elastic_support_overlay.set_members(model.bars.values(), model.nodes.values(), node_radius)
         self._add_rigid_bar_batch()
         self._add_member_batches()
@@ -549,6 +625,201 @@ class StructureScene(QWidget):
         self._silhouette_timer.stop()
         self._refresh_member_silhouette()
         self.plotter.render()
+        self._capture_rendered_state()
+
+    def _capture_rendered_state(self) -> None:
+        """Remember immutable domain values represented by the current actors."""
+        self._rendered_nodes = dict(self._model.nodes)
+        self._rendered_members = dict(self._model.bars)
+        self._rendered_rigid_bars = dict(self._model.rigid_bars)
+        self._rendered_axes = tuple(
+            (direction, tuple(axes)) for direction, axes in self._model.axes.items()
+        )
+        self._rendered_actions = tuple(self._model.actions.values())
+        self._rendered_revision = self._model.revision
+
+    def refresh_model_changes(self, model: StructuralModel) -> None:
+        """Refresh only layers affected by edits to an existing structure."""
+        old_node_names = tuple(self._rendered_nodes)
+        old_member_names = tuple(self._rendered_members)
+        node_names = tuple(model.nodes)
+        member_names_now = tuple(model.bars)
+        old_node_set = set(old_node_names)
+        removed_nodes = tuple(name for name in old_node_names if name not in model.nodes)
+        added_nodes = tuple(name for name in node_names if name not in old_node_set)
+        old_member_positions = {
+            name: index for index, name in enumerate(old_member_names)
+        }
+        kept_count = 0
+        last_old_index = -1
+        for name in member_names_now:
+            old_index = old_member_positions.get(name, -1)
+            if old_index <= last_old_index:
+                break
+            kept_count += 1
+            last_old_index = old_index
+        kept_members = member_names_now[:kept_count]
+        kept_set = set(kept_members)
+        removed_members = tuple(name for name in old_member_names if name not in kept_set)
+        added_members = member_names_now[kept_count:]
+        if (
+            model is not self._model
+            or not self._camera_initialized
+            or self._node_batch is None
+            or not node_names
+            or node_names != tuple(name for name in old_node_names if name in model.nodes) + added_nodes
+            or len(removed_members) > 12
+        ):
+            self.render_model(model)
+            return
+        self._member_update_timer.stop()
+        self._support_update_timer.stop()
+        self._rebuild_timer.stop()
+        self._pending_member_geometry_names.clear()
+        self._pending_member_full_names.clear()
+        self._validate_selection()
+
+        changed_nodes = tuple(
+            name for name, node in model.nodes.items() if name in self._rendered_nodes
+            if node != self._rendered_nodes[name]
+        )
+        moved_nodes = tuple(
+            name for name in changed_nodes
+            if (model.nodes[name].x, model.nodes[name].y, model.nodes[name].z)
+            != (
+                self._rendered_nodes[name].x,
+                self._rendered_nodes[name].y,
+                self._rendered_nodes[name].z,
+            )
+        )
+        member_names = {
+            name for name, member in model.bars.items()
+            if name in self._rendered_members and name not in removed_members
+            if member != self._rendered_members[name]
+        }
+        if moved_nodes:
+            if removed_nodes:
+                self.render_model(model)
+                return
+            moved_set = set(moved_nodes)
+            member_names.update(
+                name for name, member in model.bars.items()
+                if (member.start_node in moved_set or member.end_node in moved_set)
+                and name not in removed_members and name not in added_members
+            )
+            if not self._node_renderer.update_node_positions_in_place(
+                self._node_batch, self._rendered_nodes, model, moved_nodes,
+                self._node_marker_radius(),
+            ):
+                self.render_model(model)
+                return
+            self._node_geometry_cache_key = (
+                round(float(self._node_marker_radius()), 12), tuple(model.nodes.values()),
+            )
+            self._update_node_glyph_positions(moved_nodes)
+            if self._node_actor is not None:
+                self._node_actor.GetMapper().Modified()
+            self._label_overlay.set_group(
+                "node", self._node_batch.label_positions, self._node_batch.names,
+                visible=self._labels_visibility["node"],
+            )
+
+        if removed_nodes:
+            self._refresh_node_batch()
+        elif added_nodes:
+            if not self._node_renderer.append_nodes(
+                self._node_batch, model, added_nodes, self._node_marker_radius(),
+            ):
+                self.render_model(model)
+                return
+            self._node_geometry_cache = self._node_batch
+            self._node_geometry_cache_key = (
+                round(float(self._node_marker_radius()), 12), tuple(model.nodes.values()),
+            )
+            if self._node_actor is not None:
+                self.plotter.renderer.RemoveActor(self._node_actor)
+            self._node_actor = self._add_node_glyph_actor(self._node_batch)
+            if self._node_actor is not None:
+                self._node_actor.SetVisibility(self._nodes_visible)
+            self._label_overlay.set_group(
+                "node", self._node_batch.label_positions, self._node_batch.names,
+                visible=self._labels_visibility["node"],
+            )
+
+        if member_names:
+            names = tuple(name for name in model.bars if name in member_names)
+            if not self._refresh_member_subset(names):
+                self._refresh_member_batch()
+        if removed_members:
+            batch = self._member_batch
+            had_silhouette = batch is not None and any(
+                name in batch.silhouette_sources for name in removed_members
+            )
+            if batch is None or any(
+                not self._member_renderer.remove_member(batch, name)
+                for name in removed_members
+            ):
+                self._refresh_member_batch()
+            else:
+                self._member_geometry_cache = batch
+                self._member_geometry_cache_key = self._member_cache_key(model)
+                if had_silhouette:
+                    self._silhouette_source_batch = None
+                self._display_member_batch(removed_names=removed_members)
+        if added_members:
+            batch = self._member_batch
+            if batch is None or not self._member_renderer.append_members(
+                batch, model, added_members, self._marker_radius_current,
+            ):
+                self._refresh_member_batch()
+            else:
+                self._member_geometry_cache = batch
+                self._member_geometry_cache_key = self._member_cache_key(model)
+                if any(name in batch.silhouette_sources for name in added_members):
+                    self._silhouette_source_batch = None
+                self._display_member_batch(added_members)
+        if (changed_nodes or added_nodes) and not removed_nodes:
+            self._refresh_support_batch(capture_state=False)
+
+        rigid_changed = (
+            self._rendered_rigid_bars != model.rigid_bars
+            or bool(moved_nodes) and any(
+                rigid.start_node in moved_nodes or rigid.end_node in moved_nodes
+                for rigid in model.rigid_bars.values()
+            )
+        )
+        if rigid_changed:
+            self._refresh_rigid_batch()
+
+        axes = tuple((direction, tuple(items)) for direction, items in model.axes.items())
+        if moved_nodes or added_nodes or removed_nodes or axes != self._rendered_axes:
+            self._refresh_reference_plane_renderers()
+            self._add_reference_axis_labels()
+            self._sync_labels()
+            self.plotter.render()
+
+        actions_changed = tuple(model.actions.values()) != self._rendered_actions
+        member_action_geometry_changed = any(
+            (
+                member.start_node, member.end_node, member.rotation,
+            ) != (
+                self._rendered_members[name].start_node,
+                self._rendered_members[name].end_node,
+                self._rendered_members[name].rotation,
+            )
+            for name, member in model.bars.items()
+            if name in member_names and name in self._rendered_members
+        )
+        if self._actions_visible and (
+            actions_changed or moved_nodes or member_action_geometry_changed
+            or removed_members or removed_nodes or added_members or added_nodes
+        ):
+            self._refresh_action_layer()
+        if self._rendered_revision != model.revision and self._analysis_visible:
+            self._refresh_result_layer()
+        elif self._rendered_revision != model.revision:
+            self._clear_result_layer()
+        self._capture_rendered_state()
 
     def antialiasing_samples(self) -> int:
         """Return the active multisampling level used by the viewport."""
@@ -599,9 +870,7 @@ class StructureScene(QWidget):
             edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
         self._member_silhouette_actor = self._add_colored_mesh(
-            self._member_renderer.silhouette_mesh(
-                batch, self.plotter.renderer.GetActiveCamera(),
-            ),
+            self._member_silhouette_mesh(batch),
             "batch:member-silhouette",
             line_width=self._circular_silhouette_line_width,
             lighting=False,
@@ -647,9 +916,7 @@ class StructureScene(QWidget):
         if batch is None:
             return
         if batch.geometry.n_cells:
-            self._node_actor = self._add_colored_mesh(
-                batch.geometry, "batch:nodes", smooth_shading=True,
-            )
+            self._node_actor = self._add_node_glyph_actor(batch)
             if self._node_actor is not None:
                 self._node_actor.SetVisibility(self._nodes_visible)
         if batch.supports.n_cells:
@@ -659,6 +926,57 @@ class StructureScene(QWidget):
                 reset_camera=False, render=False,
             )
             self._support_actor.SetVisibility(self._node_supports_visible)
+
+    def _add_node_glyph_actor(self, batch: NodeBatch) -> vtk.vtkActor | None:
+        """Draw identical node spheres as GPU instances instead of packed faces."""
+        if not batch.names:
+            self._node_glyph_points = None
+            return None
+        positions = np.asarray([
+            (self._model.nodes[name].x, self._model.nodes[name].y, self._model.nodes[name].z)
+            for name in batch.names
+        ], dtype=float)
+        glyph_points = pv.PolyData(positions)
+        cell_indices = np.asarray(batch.geometry.cell_data["element_index"])
+        cell_colors = np.asarray(batch.geometry.cell_data["rgb"])
+        first_cells = np.searchsorted(cell_indices, np.arange(len(batch.names)), side="left")
+        glyph_points.point_data["rgb"] = cell_colors[first_cells].copy()
+
+        sphere = pv.Sphere(
+            radius=self._node_marker_radius(), center=(0.0, 0.0, 0.0),
+            theta_resolution=20, phi_resolution=12,
+        )
+        mapper = vtk.vtkGlyph3DMapper()
+        mapper.SetInputData(glyph_points)
+        mapper.SetSourceData(sphere)
+        mapper.SetScaleModeToNoDataScaling()
+        mapper.OrientOff()
+        mapper.SetScalarModeToUsePointFieldData()
+        mapper.SelectColorArray("rgb")
+        mapper.SetColorModeToDirectScalars()
+        mapper.ScalarVisibilityOn()
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.SetPickable(False)
+        actor.SetObjectName("batch:nodes")
+        actor.GetProperty().SetInterpolationToPhong()
+        self.plotter.renderer.AddActor(actor)
+        self._node_glyph_points = glyph_points
+        return actor
+
+    def _update_node_glyph_positions(self, names: tuple[str, ...]) -> None:
+        points = self._node_glyph_points
+        batch = self._node_batch
+        if points is None or batch is None or not names:
+            return
+        indices = {name: index for index, name in enumerate(batch.names)}
+        for name in names:
+            index = indices.get(name)
+            if index is not None and name in self._model.nodes:
+                node = self._model.nodes[name]
+                points.points[index] = (node.x, node.y, node.z)
+        points.GetPoints().Modified()
+        points.Modified()
 
     def _add_rigid_bar_batch(self) -> None:
         mesh = self._rigid_bar_mesh
@@ -730,8 +1048,9 @@ class StructureScene(QWidget):
                 "action", self._action_label_positions, self._action_labels,
                 visible=True, deduplicate=True,
             )
-        self._sync_labels()
+        self._sync_labels(render_preview=False)
         self.plotter.render()
+        self._clip_refresh_timer.start()
 
     def _add_results(self) -> None:
         if not self._analysis_visible or self._active_analysis_combination is None:
@@ -791,6 +1110,7 @@ class StructureScene(QWidget):
         self._update_zoom_dependent_sizes()
         self._sync_labels()
         self.plotter.render()
+        self._clip_refresh_timer.start()
 
     def _add_labels(self) -> None:
         self._add_reference_axis_labels()
@@ -895,11 +1215,27 @@ class StructureScene(QWidget):
             (self.plotter.width(), self.plotter.height()),
             tuple(self.plotter.render_window.GetSize()),
         )
-        if not self._solid_picker.Pick(x, y, 0.0, self.plotter.renderer):
+        locator = self._measurement_face_locator_for_current_batch()
+        if locator is None:
             return None
-        if self._solid_picker.GetActor() is not actor:
+        renderer = self.plotter.renderer
+        near = self._display_to_world(renderer, x, y, 0.0)
+        far = self._display_to_world(renderer, x, y, 1.0)
+        if near is None or far is None:
             return None
-        cell_id = self._solid_picker.GetCellId()
+        hit_points = vtk.vtkPoints()
+        hit_cells = vtk.vtkIdList()
+        if not locator.IntersectWithLine(
+            tuple(near), tuple(far), 1e-9, hit_points, hit_cells,
+        ):
+            return None
+        ray = far - near
+        points = np.asarray(
+            [hit_points.GetPoint(index) for index in range(hit_points.GetNumberOfPoints())],
+            dtype=float,
+        )
+        closest = int(np.argmin((points - near) @ ray))
+        cell_id = hit_cells.GetId(closest)
         if cell_id < 0 or cell_id >= batch.faces.n_cells:
             return None
         element_index = int(batch.faces.cell_data["element_index"][cell_id])
@@ -932,69 +1268,93 @@ class StructureScene(QWidget):
         if self._pointer_position is None:
             return []
         cursor = np.asarray(self._pointer_position, dtype=float)
-        renderer = self.plotter.renderer
-        camera = renderer.GetActiveCamera()
-        vtk_matrix = camera.GetCompositeProjectionTransformMatrix(
-            renderer.GetTiledAspectRatio(), -1.0, 1.0,
-        )
-        matrix = np.asarray([
-            [vtk_matrix.GetElement(row, column) for column in range(4)]
-            for row in range(4)
-        ])
-
-        node_names = tuple(self._model.nodes)
-        node_positions = np.asarray([
-            (
-                self._model.nodes[name].x,
-                self._model.nodes[name].y,
-                self._model.nodes[name].z,
-            )
-            for name in node_names
-        ], dtype=float).reshape((-1, 3))
-        screen_positions, within_depth = project_world_to_screen(
-            node_positions, matrix, self.plotter.width(), self.plotter.height(),
-            clip_to_viewport=False,
-        )
-        width = float(self.plotter.width())
-        height = float(self.plotter.height())
-        on_screen = (
-            within_depth
-            & (screen_positions[:, 0] >= 0.0)
-            & (screen_positions[:, 0] <= width)
-            & (screen_positions[:, 1] >= 0.0)
-            & (screen_positions[:, 1] <= height)
-        )
-        projected_nodes = {
-            name: (screen_positions[index], bool(within_depth[index]), bool(on_screen[index]))
-            for index, name in enumerate(node_names)
-        }
+        (
+            node_names, node_screens, node_visible,
+            member_targets, member_starts, member_deltas, member_visible,
+            min_x, max_x, min_y, max_y,
+        ) = self._pick_projection_data()
 
         candidates: list[tuple[float, tuple[str, str]]] = []
         node_tolerance = 12.0
         member_tolerance = 10.0
-        for name in node_names:
-            display, _within_depth, visible = projected_nodes[name]
-            if not visible:
-                continue
-            distance = float(np.linalg.norm(cursor - display))
-            if distance <= node_tolerance:
-                candidates.append((distance, ("node", name)))
+        node_distances = np.linalg.norm(node_screens - cursor, axis=1)
+        for index in np.flatnonzero(node_visible & (node_distances <= node_tolerance)):
+            candidates.append((float(node_distances[index]), ("node", node_names[index])))
 
-        for kind, elements in (("bar", self._model.bars), ("rigid_bar", self._model.rigid_bars)):
-            for name, element in elements.items():
-                start_projection = projected_nodes.get(element.start_node)
-                end_projection = projected_nodes.get(element.end_node)
-                if start_projection is None or end_projection is None:
-                    continue
-                start, start_within_depth, _start_on_screen = start_projection
-                end, end_within_depth, _end_on_screen = end_projection
-                if not start_within_depth or not end_within_depth:
-                    continue
-                distance = self._distance_to_segment_2d(cursor, start, end)
-                if distance <= member_tolerance:
-                    candidates.append((distance, (kind, name)))
+        nearby = np.flatnonzero(
+            member_visible
+            & (cursor[0] >= min_x - member_tolerance)
+            & (cursor[0] <= max_x + member_tolerance)
+            & (cursor[1] >= min_y - member_tolerance)
+            & (cursor[1] <= max_y + member_tolerance)
+        )
+        starts = member_starts[nearby]
+        deltas = member_deltas[nearby]
+        lengths_squared = np.einsum("ij,ij->i", deltas, deltas)
+        fractions = np.divide(
+            np.einsum("ij,ij->i", cursor - starts, deltas),
+            lengths_squared,
+            out=np.zeros(len(nearby), dtype=float),
+            where=lengths_squared > 1e-12,
+        )
+        closest = starts + np.clip(fractions, 0.0, 1.0)[:, None] * deltas
+        distances = np.linalg.norm(cursor - closest, axis=1)
+        for local_index in np.flatnonzero(distances <= member_tolerance):
+            index = nearby[local_index]
+            candidates.append((float(distances[local_index]), member_targets[index]))
         candidates.sort(key=lambda item: item[0])
         return [candidate for _distance, candidate in candidates]
+
+    def _pick_projection_data(self) -> tuple:
+        """Cache projected node positions and member centrelines for hover and clicks."""
+        camera = self.plotter.renderer.GetActiveCamera()
+        width, height = self.plotter.width(), self.plotter.height()
+        key = (id(self._model), self._model.revision, int(camera.GetMTime()), width, height)
+        if self._pick_projection_cache is not None and self._pick_projection_cache[0] == key:
+            return self._pick_projection_cache[1]
+        matrix, _, _ = self._measurement_projection_context()
+        node_names = tuple(self._model.nodes)
+        node_indices = {name: index for index, name in enumerate(node_names)}
+        node_points = np.asarray(
+            [(node.x, node.y, node.z) for node in self._model.nodes.values()],
+            dtype=float,
+        ).reshape((-1, 3))
+        node_screens, within_depth = project_world_to_screen(
+            node_points, matrix, width, height, clip_to_viewport=False,
+        )
+        node_visible = (
+            within_depth
+            & (node_screens[:, 0] >= 0.0)
+            & (node_screens[:, 0] <= width)
+            & (node_screens[:, 1] >= 0.0)
+            & (node_screens[:, 1] <= height)
+        )
+        member_targets = []
+        starts = []
+        ends = []
+        for kind, elements in (("bar", self._model.bars), ("rigid_bar", self._model.rigid_bars)):
+            for name, element in elements.items():
+                first = node_indices.get(element.start_node)
+                last = node_indices.get(element.end_node)
+                if first is not None and last is not None:
+                    member_targets.append((kind, name))
+                    starts.append(first)
+                    ends.append(last)
+        start_indices = np.asarray(starts, dtype=np.intp)
+        end_indices = np.asarray(ends, dtype=np.intp)
+        member_starts = node_screens[start_indices]
+        member_ends = node_screens[end_indices]
+        data = (
+            node_names, node_screens, node_visible,
+            tuple(member_targets), member_starts, member_ends - member_starts,
+            within_depth[start_indices] & within_depth[end_indices],
+            np.minimum(member_starts[:, 0], member_ends[:, 0]),
+            np.maximum(member_starts[:, 0], member_ends[:, 0]),
+            np.minimum(member_starts[:, 1], member_ends[:, 1]),
+            np.maximum(member_starts[:, 1], member_ends[:, 1]),
+        )
+        self._pick_projection_cache = key, data
+        return data
 
     def _hover_candidates_near_cursor(self) -> list[tuple[str, str]]:
         return self._pick_candidates()
@@ -1140,12 +1500,7 @@ class StructureScene(QWidget):
         if self._camera_interacting:
             return
         self._update_coordinate_readout()
-        if self._measurement_refresh_timer.isActive():
-            # Keep postponing the expensive snap query until both the camera
-            # and pointer have been still briefly. The previous marker stays
-            # hidden during this short interval, avoiding a stale snap.
-            self._measurement_refresh_timer.start()
-        else:
+        if not self._measurement_refresh_timer.isActive():
             self._update_measurement_readout()
         if self._member_preview_start is not None or (
             self._measurement_start is not None
@@ -1160,6 +1515,10 @@ class StructureScene(QWidget):
         if position != self._tab_hover_position:
             self._tab_hover_candidates = []
             self._tab_hover_position = None
+        if self._placement_active():
+            # Placement has its own snap marker. A solid VTK hover pick can
+            # otherwise block the cursor for a full frame on a dense model.
+            return
         if self._orientation_widget.is_pointer_over(x, y):
             if self._hovered is not None:
                 self._hovered = None
@@ -1252,11 +1611,13 @@ class StructureScene(QWidget):
             self._hide_perpendicular_guide()
             self._hide_orthogonal_guide()
             return
+        self._hover_timer.stop()
+        if self._hovered is not None:
+            self._hovered = None
+            self._sync_highlights()
+            self.plotter.render()
         self._update_coordinate_readout()
-        if self._measurement_mode:
-            self._measurement_refresh_timer.start()
-        else:
-            self._update_measurement_readout()
+        self._update_measurement_readout()
 
     def set_member_preview_start(self, point: object | None) -> None:
         """Set the fixed 3D point from which the graphical preview begins."""
@@ -1660,47 +2021,34 @@ class StructureScene(QWidget):
         if not self._snap_enabled or self._pointer_position is None:
             return None
         candidates: list[tuple[float, int, str, np.ndarray]] = []
+        matrix, width, height = self._measurement_projection_context()
+        pointer = np.asarray(self._pointer_position, dtype=float)
 
         # The grid is the construction plane's visible representation.  It
         # must not exert an invisible magnetic pull when the user turns the
         # plane off in the viewport palette.
         if self._snap_types["grid"] and self._grid_visible:
-            grid_candidate = self._nearest_grid_candidate(position)
+            grid_candidate = self._nearest_grid_candidate(
+                position, projection=(matrix, width, height),
+            )
             if grid_candidate is not None:
                 candidate, distance = grid_candidate
                 candidates.append((distance, 2, "grid", candidate))
 
-        if self._snap_types["endpoint"]:
-            node_candidates = self._model.nodes.values()
-        else:
-            node_candidates = ()
-        for node in node_candidates:
-            candidate = np.asarray((node.x, node.y, node.z), dtype=float)
-            screen, visible = self._world_to_screen(candidate)
-            if not visible:
+        node_points, node_screens, node_visible, center_points, center_screens, center_visible = (
+            self._projected_snap_points(matrix, width, height)
+        )
+        for enabled, points, screens, visible, priority, kind in (
+            (self._snap_types["endpoint"], node_points, node_screens, node_visible, 0, "endpoint"),
+            (self._snap_types["center"], center_points, center_screens, center_visible, 1, "center"),
+        ):
+            if not enabled or not len(points):
                 continue
-            distance = float(np.linalg.norm(screen - np.asarray(self._pointer_position)))
-            candidates.append((distance, 0, "endpoint", candidate))
-
-        member_candidates = self._model.bars.values() if self._snap_types["center"] else ()
-        for member in member_candidates:
-            start = self._model.nodes.get(member.start_node)
-            end = self._model.nodes.get(member.end_node)
-            if start is None or end is None:
-                continue
-            candidate = np.asarray(
-                (
-                    (start.x + end.x) / 2.0,
-                    (start.y + end.y) / 2.0,
-                    (start.z + end.z) / 2.0,
-                ),
-                dtype=float,
-            )
-            screen, visible = self._world_to_screen(candidate)
-            if not visible:
-                continue
-            distance = float(np.linalg.norm(screen - np.asarray(self._pointer_position)))
-            candidates.append((distance, 1, "center", candidate))
+            distances = np.linalg.norm(screens - pointer, axis=1)
+            distances[~visible] = np.inf
+            index = int(np.argmin(distances))
+            if distances[index] <= self._snap_tolerance_pixels:
+                candidates.append((float(distances[index]), priority, kind, points[index]))
 
         candidates = [
             candidate for candidate in candidates
@@ -1712,6 +2060,46 @@ class StructureScene(QWidget):
             candidates, key=lambda item: (item[0], item[1])
         )
         return candidate, kind
+
+    def _projected_snap_points(
+        self, matrix: np.ndarray, width: int, height: int,
+    ) -> tuple[np.ndarray, ...]:
+        """Reuse node and member-centre projections while the camera is still."""
+        camera = self.plotter.renderer.GetActiveCamera()
+        key = (
+            id(self._model), self._model.revision, int(camera.GetMTime()),
+            width, height,
+        )
+        if self._projected_snap_cache is not None and self._projected_snap_cache[0] == key:
+            return self._projected_snap_cache[1]
+
+        node_points = np.asarray(
+            [(node.x, node.y, node.z) for node in self._model.nodes.values()],
+            dtype=float,
+        ).reshape((-1, 3))
+        node_screens, node_visible = project_world_to_screen(
+            node_points, matrix, width, height,
+        )
+        centers = []
+        for member in self._model.bars.values():
+            start = self._model.nodes.get(member.start_node)
+            end = self._model.nodes.get(member.end_node)
+            if start is not None and end is not None:
+                centers.append((
+                    (start.x + end.x) * 0.5,
+                    (start.y + end.y) * 0.5,
+                    (start.z + end.z) * 0.5,
+                ))
+        center_points = np.asarray(centers, dtype=float).reshape((-1, 3))
+        center_screens, center_visible = project_world_to_screen(
+            center_points, matrix, width, height,
+        )
+        projected = (
+            node_points, node_screens, node_visible,
+            center_points, center_screens, center_visible,
+        )
+        self._projected_snap_cache = key, projected
+        return projected
 
     def _measurement_target(self, position: np.ndarray) -> tuple[np.ndarray, str | None]:
         """Resolve a measurement point without changing the placement snaps."""
@@ -1742,14 +2130,10 @@ class StructureScene(QWidget):
                 ):
                     candidates.append((distance, 5, "grid", np.asarray(grid_point, dtype=float)))
 
+        node_points, node_screens, node_visible, center_points_array, center_screens, center_visible = (
+            self._projected_snap_points(matrix, width, height)
+        )
         if self._snap_types["endpoint"]:
-            node_points = np.asarray(
-                [(node.x, node.y, node.z) for node in self._model.nodes.values()],
-                dtype=float,
-            ).reshape((-1, 3))
-            node_screens, node_visible = project_world_to_screen(
-                node_points, matrix, width, height,
-            )
             node_distances = np.linalg.norm(node_screens - pointer, axis=1)
             node_indices = np.flatnonzero(
                 node_visible & (node_distances <= self._snap_tolerance_pixels)
@@ -1769,23 +2153,6 @@ class StructureScene(QWidget):
                 )
 
         if self._snap_types["center"]:
-            center_points = []
-            for member in self._model.bars.values():
-                start = self._model.nodes.get(member.start_node)
-                end = self._model.nodes.get(member.end_node)
-                if start is None or end is None:
-                    continue
-                center_points.append(
-                    (
-                        (start.x + end.x) / 2.0,
-                        (start.y + end.y) / 2.0,
-                        (start.z + end.z) / 2.0,
-                    )
-                )
-            center_points_array = np.asarray(center_points, dtype=float).reshape((-1, 3))
-            center_screens, center_visible = project_world_to_screen(
-                center_points_array, matrix, width, height,
-            )
             center_distances = np.linalg.norm(center_screens - pointer, axis=1)
             center_indices = np.flatnonzero(
                 center_visible & (center_distances <= self._snap_tolerance_pixels)
@@ -1807,26 +2174,35 @@ class StructureScene(QWidget):
         segment_data, point_data = self._measurement_segments(matrix, width, height)
         screen_starts, screen_ends, world_starts, world_ends, kinds, priorities = segment_data
         if len(screen_starts):
-            screen_deltas = screen_ends - screen_starts
+            min_x, max_x, min_y, max_y = self._measurement_segment_bounds
+            tolerance = self._snap_tolerance_pixels
+            nearby = np.flatnonzero(
+                (pointer[0] >= min_x - tolerance)
+                & (pointer[0] <= max_x + tolerance)
+                & (pointer[1] >= min_y - tolerance)
+                & (pointer[1] <= max_y + tolerance)
+            )
+            near_starts = screen_starts[nearby]
+            screen_deltas = screen_ends[nearby] - near_starts
             lengths_squared = np.einsum("ij,ij->i", screen_deltas, screen_deltas)
             fractions = np.divide(
-                np.einsum("ij,ij->i", pointer - screen_starts, screen_deltas),
+                np.einsum("ij,ij->i", pointer - near_starts, screen_deltas),
                 lengths_squared,
-                out=np.zeros(len(screen_starts), dtype=float),
+                out=np.zeros(len(nearby), dtype=float),
                 where=lengths_squared > 1e-12,
             )
             fractions = np.clip(fractions, 0.0, 1.0)
-            closest_screens = screen_starts + fractions[:, None] * screen_deltas
+            closest_screens = near_starts + fractions[:, None] * screen_deltas
             distances = np.linalg.norm(pointer - closest_screens, axis=1)
-            segment_indices = np.flatnonzero(
-                distances <= self._snap_tolerance_pixels
-            )
+            local_indices = np.flatnonzero(distances <= tolerance)
+            segment_indices = nearby[local_indices]
             if len(segment_indices):
-                segment_worlds = world_starts[segment_indices] + fractions[segment_indices, None] * (
+                segment_fractions = fractions[local_indices]
+                segment_worlds = world_starts[segment_indices] + segment_fractions[:, None] * (
                     world_ends[segment_indices] - world_starts[segment_indices]
                 )
                 segment_depth_visible = self._measurement_visible_points(
-                    closest_screens[segment_indices], segment_worlds,
+                    closest_screens[local_indices], segment_worlds,
                     matrix, depth_cache,
                     surface_points=np.asarray(
                         [str(kinds[index]).startswith(("edge", "silhouette"))
@@ -1838,17 +2214,19 @@ class StructureScene(QWidget):
                 )
                 visible_indices = segment_indices[segment_depth_visible]
                 if len(visible_indices):
+                    visible_distances = distances[local_indices][segment_depth_visible]
                     visible_order = np.lexsort(
-                        (priorities[visible_indices], distances[visible_indices])
+                        (priorities[visible_indices], visible_distances)
                     )
-                    segment_index = int(visible_indices[visible_order[0]])
+                    chosen = int(visible_order[0])
+                    segment_index = int(visible_indices[chosen])
                     candidates.append(
                         (
-                            float(distances[segment_index]),
+                            float(visible_distances[chosen]),
                             int(priorities[segment_index]),
                             kinds[segment_index],
                             world_starts[segment_index]
-                            + fractions[segment_index]
+                            + segment_fractions[segment_depth_visible][chosen]
                             * (world_ends[segment_index] - world_starts[segment_index]),
                         )
                     )
@@ -1857,10 +2235,13 @@ class StructureScene(QWidget):
             point_edge_starts, point_edge_ends,
         ) = point_data
         if len(point_screens):
-            point_distances = np.linalg.norm(point_screens - pointer, axis=1)
-            point_indices = np.flatnonzero(
-                point_distances <= self._snap_tolerance_pixels
+            nearby = np.flatnonzero(
+                (np.abs(point_screens[:, 0] - pointer[0]) <= self._snap_tolerance_pixels)
+                & (np.abs(point_screens[:, 1] - pointer[1]) <= self._snap_tolerance_pixels)
             )
+            point_distances = np.linalg.norm(point_screens[nearby] - pointer, axis=1)
+            local_indices = np.flatnonzero(point_distances <= self._snap_tolerance_pixels)
+            point_indices = nearby[local_indices]
             if len(point_indices):
                 point_depth_visible = self._measurement_visible_points(
                     point_screens[point_indices], point_worlds[point_indices],
@@ -1875,13 +2256,15 @@ class StructureScene(QWidget):
                 )
                 visible_indices = point_indices[point_depth_visible]
                 if len(visible_indices):
+                    visible_distances = point_distances[local_indices][point_depth_visible]
                     visible_order = np.lexsort(
-                        (point_priorities[visible_indices], point_distances[visible_indices])
+                        (point_priorities[visible_indices], visible_distances)
                     )
-                    point_index = int(visible_indices[visible_order[0]])
+                    chosen = int(visible_order[0])
+                    point_index = int(visible_indices[chosen])
                     candidates.append(
                         (
-                            float(point_distances[point_index]),
+                            float(visible_distances[chosen]),
                             int(point_priorities[point_index]),
                             point_kinds[point_index],
                             point_worlds[point_index],
@@ -2103,14 +2486,12 @@ class StructureScene(QWidget):
             if starts.shape == (len(world_points), 3) and ends.shape == starts.shape:
                 rejected = np.flatnonzero(valid_depth & ~visible)
                 if len(rejected):
-                    edge_faces = self._measurement_edge_faces_for_current_batch()
+                    faces = self._member_batch.faces
                     for point_index in rejected:
                         hit_cell = int(hit_cell_ids[inverse[point_index]])
-                        incident_faces = edge_faces.get(
-                            self._measurement_edge_key(starts[point_index], ends[point_index]),
-                            frozenset(),
-                        )
-                        if hit_cell in incident_faces:
+                        if hit_cell >= 0 and self._measurement_face_contains_edge(
+                            faces, hit_cell, starts[point_index], ends[point_index],
+                        ):
                             visible[point_index] = True
         return visible
 
@@ -2121,37 +2502,20 @@ class StructureScene(QWidget):
         second = tuple(np.round(np.asarray(end, dtype=float), decimals=9))
         return (*first, *second) if first <= second else (*second, *first)
 
-    def _measurement_edge_faces_for_current_batch(self) -> dict[tuple[float, ...], frozenset[int]]:
-        """Map each solid edge to its incident face cells, cached per batch."""
-        batch = self._member_batch
-        if batch is None or not batch.faces.n_cells:
-            return {}
-        key = id(batch.faces), self._model.revision
-        if self._measurement_edge_faces_key == key and self._measurement_edge_faces is not None:
-            return self._measurement_edge_faces
-
-        edge_faces: dict[tuple[float, ...], set[int]] = {}
-        encoded = np.asarray(batch.faces.faces, dtype=np.int64)
-        cursor = 0
-        cell_id = 0
-        while cursor < len(encoded):
-            count = int(encoded[cursor])
-            point_ids = encoded[cursor + 1:cursor + count + 1]
-            cursor += count + 1
-            if count >= 2:
-                for first_id, second_id in zip(point_ids, np.roll(point_ids, -1)):
-                    edge_faces.setdefault(
-                        self._measurement_edge_key(
-                            batch.faces.points[int(first_id)], batch.faces.points[int(second_id)],
-                        ),
-                        set(),
-                    ).add(cell_id)
-            cell_id += 1
-        self._measurement_edge_faces = {
-            edge: frozenset(face_ids) for edge, face_ids in edge_faces.items()
-        }
-        self._measurement_edge_faces_key = key
-        return self._measurement_edge_faces
+    def _measurement_face_contains_edge(
+        self, faces: pv.PolyData, cell_id: int,
+        start: np.ndarray, end: np.ndarray,
+    ) -> bool:
+        """Check only the face hit by the camera ray for a shared edge."""
+        target = self._measurement_edge_key(start, end)
+        point_ids = faces.GetCell(cell_id).GetPointIds()
+        count = point_ids.GetNumberOfIds()
+        for index in range(count):
+            first = faces.points[point_ids.GetId(index)]
+            second = faces.points[point_ids.GetId((index + 1) % count)]
+            if self._measurement_edge_key(first, second) == target:
+                return True
+        return False
 
     def _measurement_face_locator_for_current_batch(self) -> vtk.vtkCellLocator | None:
         """Return a cached locator for all visible solid member faces."""
@@ -2220,7 +2584,6 @@ class StructureScene(QWidget):
                 return cached_segments
 
         meshes: list[tuple[pv.PolyData, str, int, bool]] = []
-        discrete_points: list[tuple] = []
         if solid_visible and self._member_batch is not None:
             meshes.append((self._member_batch.edges, "edge", 1, True))
             if silhouette_visible and self._member_silhouette_actor is not None:
@@ -2232,17 +2595,104 @@ class StructureScene(QWidget):
         if self._rigid_bar_mesh is not None:
             meshes.append((self._rigid_bar_mesh, "line", 2, True))
 
-        segments: list[tuple] = []
+        segment_groups = []
+        point_groups = []
         for mesh, kind, priority, discrete in meshes:
-            self._append_measurement_mesh_segments(
-                segments, mesh, kind, priority, matrix, width, height,
-                discrete_points if discrete else None,
+            arrays = self._measurement_mesh_arrays(
+                mesh, kind, priority, matrix, width, height,
+                discrete=discrete,
             )
-        segment_arrays = self._measurement_segment_arrays(segments)
-        point_arrays = self._measurement_point_arrays(discrete_points)
+            if arrays is None:
+                # Polyline cells are uncommon here, but retain their original
+                # per-segment behaviour for arbitrary imported line meshes.
+                segments: list[tuple] = []
+                points: list[tuple] = []
+                self._append_measurement_mesh_segments(
+                    segments, mesh, kind, priority, matrix, width, height,
+                    points if discrete else None,
+                )
+                arrays = self._measurement_segment_arrays(segments), self._measurement_point_arrays(points)
+            segment_groups.append(arrays[0])
+            point_groups.append(arrays[1])
+        segment_arrays = self._combine_measurement_arrays(
+            segment_groups, self._measurement_segment_arrays([]),
+        )
+        point_arrays = self._combine_measurement_arrays(
+            point_groups, self._measurement_point_arrays([]),
+        )
+        starts, ends = segment_arrays[:2]
+        self._measurement_segment_bounds = (
+            np.minimum(starts[:, 0], ends[:, 0]),
+            np.maximum(starts[:, 0], ends[:, 0]),
+            np.minimum(starts[:, 1], ends[:, 1]),
+            np.maximum(starts[:, 1], ends[:, 1]),
+        )
         cached_segments = segment_arrays, point_arrays
         self._measurement_segments_cache = key, cached_segments
         return cached_segments
+
+    @staticmethod
+    def _combine_measurement_arrays(groups: list[tuple], empty: tuple) -> tuple:
+        if not groups:
+            return empty
+        return tuple(
+            tuple(value for group in groups for value in group[index])
+            if isinstance(empty[index], tuple)
+            else np.concatenate([group[index] for group in groups], axis=0)
+            for index in range(len(empty))
+        )
+
+    def _measurement_mesh_arrays(
+        self, mesh: pv.PolyData, kind: str, priority: int,
+        matrix: np.ndarray, width: int, height: int, *, discrete: bool,
+    ) -> tuple[tuple, tuple] | None:
+        """Project the usual two-point VTK lines without a Python loop per edge."""
+        if mesh is None or not mesh.n_lines or not mesh.n_points:
+            return self._measurement_segment_arrays([]), self._measurement_point_arrays([])
+        encoded = np.asarray(mesh.lines, dtype=np.int64)
+        if len(encoded) % 3 or not np.all(encoded[::3] == 2):
+            return None
+        point_ids = encoded.reshape((-1, 3))[:, 1:]
+        world = np.asarray(mesh.points, dtype=float)
+        screen, visible = project_world_to_screen(
+            world, matrix, width, height, clip_to_viewport=False,
+        )
+        point_ids = point_ids[visible[point_ids].all(axis=1)]
+        starts = world[point_ids[:, 0]]
+        ends = world[point_ids[:, 1]]
+        screen_starts = screen[point_ids[:, 0]]
+        screen_ends = screen[point_ids[:, 1]]
+        count = len(point_ids)
+        segments = (
+            screen_starts, screen_ends, starts, ends,
+            (kind,) * count,
+            np.full(count, priority, dtype=np.int8),
+        )
+        if not discrete or not count:
+            return segments, self._measurement_point_arrays([])
+
+        midpoints = (starts + ends) * 0.5
+        midpoint_screens, midpoint_visible = project_world_to_screen(
+            midpoints, matrix, width, height, clip_to_viewport=False,
+        )
+        visible_midpoints = np.flatnonzero(midpoint_visible)
+        endpoint_screens = np.stack((screen_starts, screen_ends), axis=1).reshape((-1, 2))
+        endpoint_worlds = np.stack((starts, ends), axis=1).reshape((-1, 3))
+        repeated_starts = np.repeat(starts, 2, axis=0)
+        repeated_ends = np.repeat(ends, 2, axis=0)
+        points = (
+            np.concatenate((endpoint_screens, midpoint_screens[visible_midpoints])),
+            np.concatenate((endpoint_worlds, midpoints[visible_midpoints])),
+            (f"{kind}-endpoint",) * (2 * count)
+            + (f"{kind}-midpoint",) * len(visible_midpoints),
+            np.concatenate((
+                np.zeros(2 * count, dtype=np.int8),
+                np.ones(len(visible_midpoints), dtype=np.int8),
+            )),
+            np.concatenate((repeated_starts, starts[visible_midpoints])),
+            np.concatenate((repeated_ends, ends[visible_midpoints])),
+        )
+        return segments, points
 
     @staticmethod
     def _measurement_segment_arrays(segments: list[tuple]) -> tuple:
@@ -2583,7 +3033,7 @@ class StructureScene(QWidget):
         return np.asarray(world[:3], dtype=float) / float(world[3])
 
     def _update_hover(self) -> None:
-        if self._camera_interacting:
+        if self._camera_interacting or self._placement_active():
             return
         picked = self._pick()
         if picked == self._hovered:
@@ -2898,19 +3348,51 @@ class StructureScene(QWidget):
             self.placement_point_clicked.emit(tuple(float(value) for value in position))
 
     def _sync_highlights(self) -> None:
-        self._reset_node_highlight_colors()
-        for slot in tuple(slot for slot in self._highlight_actors if slot.startswith("selected")):
-            self._replace_highlight(slot, None, "#0969da")
         selected_elements = self._selected_elements or (
             (self._selected,) if self._selected is not None else ()
         )
+        desired: dict[str, tuple[str, str]] = {}
         for index, target in enumerate(selected_elements):
             slot = "selected" if len(selected_elements) == 1 else f"selected:{index}"
-            self._replace_highlight(slot, target, "#0969da")
+            desired[slot] = target
         selected_targets = set(selected_elements)
         hover = None if self._hovered in selected_targets else self._hovered
-        hover_color = "#4b5563" if hover is not None and hover[0] == "node" else "#24292f"
-        self._replace_highlight("hover", hover, hover_color)
+        if hover is not None:
+            desired["hover"] = hover
+
+        state_key = (
+            id(self._model), self._model.revision,
+            id(self._member_batch),
+            id(self._node_batch.geometry) if self._node_batch is not None else None,
+            id(self._rigid_bar_mesh), self._solid_members_visible,
+        )
+        force = state_key != self._highlight_state_key
+        if not force and desired == self._highlight_targets:
+            return
+        changed = {
+            slot for slot in self._highlight_targets.keys() | desired.keys()
+            if force or self._highlight_targets.get(slot) != desired.get(slot)
+        }
+        for slot in changed:
+            self._replace_highlight(slot, None, "#0969da")
+        for slot, target in desired.items():
+            if slot in changed:
+                color = "#0969da" if slot.startswith("selected") else (
+                    "#4b5563" if target[0] == "node" else "#24292f"
+                )
+                self._replace_highlight(slot, target, color)
+
+        node_colors = {
+            target[1]: ("#0969da" if slot.startswith("selected") else "#4b5563")
+            for slot, target in desired.items() if target[0] == "node"
+        }
+        for name in self._highlighted_node_colors.keys() | node_colors.keys():
+            color = node_colors.get(name, "#000000")
+            if force or self._highlighted_node_colors.get(name) != color:
+                self._set_node_highlight_color(name, color)
+        self._highlight_targets = desired
+        self._highlighted_node_colors = node_colors
+        self._highlight_state_key = state_key
 
     def _replace_highlight(
         self, slot: str, target: tuple[str, str] | None, color: str,
@@ -2925,7 +3407,6 @@ class StructureScene(QWidget):
         # node should therefore only update that marker's color; creating a
         # second actor here makes the selected node appear as a larger sphere.
         if kind == "node":
-            self._set_node_highlight_color(name, color)
             return
         if kind in {"bar", "rigid_bar"}:
             mesh = self._member_highlight_mesh(name)
@@ -2954,18 +3435,6 @@ class StructureScene(QWidget):
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
 
-    def _reset_node_highlight_colors(self) -> None:
-        batch = self._node_batch
-        if batch is None or not batch.geometry.n_cells:
-            return
-        values = batch.geometry.cell_data.get("rgb")
-        if values is None:
-            return
-        values[...] = np.asarray(pv.Color("#000000").int_rgb, dtype=np.uint8)
-        batch.geometry.cell_data["rgb"] = values
-        batch.geometry.GetCellData().Modified()
-        batch.geometry.Modified()
-
     def _set_node_highlight_color(self, name: str, color: str) -> None:
         batch = self._node_batch
         if batch is None or name not in batch.names:
@@ -2974,10 +3443,18 @@ class StructureScene(QWidget):
         indices = batch.geometry.cell_data.get("element_index")
         if values is None or indices is None:
             return
-        values[np.asarray(indices) == batch.names.index(name)] = np.asarray(
+        element_index = batch.names.index(name)
+        first = int(np.searchsorted(indices, element_index, side="left"))
+        last = int(np.searchsorted(indices, element_index, side="right"))
+        values[first:last] = np.asarray(
             pv.Color(color).int_rgb, dtype=np.uint8,
         )
-        batch.geometry.cell_data["rgb"] = values
+        if self._node_glyph_points is not None:
+            glyph_colors = self._node_glyph_points.point_data["rgb"]
+            glyph_colors[element_index] = np.asarray(pv.Color(color).int_rgb, dtype=np.uint8)
+            self._node_glyph_points.GetPointData().GetArray("rgb").Modified()
+            self._node_glyph_points.Modified()
+        batch.geometry.GetCellData().GetArray("rgb").Modified()
         batch.geometry.GetCellData().Modified()
         batch.geometry.Modified()
 
@@ -3244,7 +3721,7 @@ class StructureScene(QWidget):
         self._reference_plane_z = target
         self._refresh_reference_plane_renderers()
         self._add_reference_axis_labels()
-        self._sync_labels()
+        self._sync_labels(render_preview=False)
         self._update_coordinate_readout()
         self.plotter.render()
 
@@ -3270,15 +3747,43 @@ class StructureScene(QWidget):
             self._reference_plane_mode, self._reference_plane_z,
         )
         if self._grid_actor is not None:
-            self._grid_actor.GetMapper().SetInputData(self._grid_renderer.mesh)
-            self._grid_actor.GetMapper().Modified()
-        if self._reference_axes_actor is not None:
-            self._reference_axes_actor.GetMapper().SetInputData(self._reference_axes_renderer.mesh)
-            self._reference_axes_actor.GetMapper().Modified()
+            old_grid = self._grid_actor.GetMapper().GetInput()
+            if (
+                old_grid.GetNumberOfPoints() != self._grid_renderer.mesh.n_points
+                or old_grid.GetNumberOfCells() != self._grid_renderer.mesh.n_cells
+            ):
+                self.plotter.renderer.RemoveActor(self._grid_actor)
+                self._grid_actor = self.plotter.add_mesh(
+                    self._grid_renderer.mesh, scalars="rgba", rgb=True,
+                    line_width=1, pickable=False, name="reference-grid",
+                    reset_camera=False, render=False,
+                )
+                self._grid_actor.SetVisibility(self._grid_visible)
+            else:
+                self._grid_actor.GetMapper().SetInputData(self._grid_renderer.mesh)
+                self._grid_actor.GetMapper().Modified()
+        if self._reference_axes_actor is not None and not self._reference_axes_renderer.mesh.n_cells:
+            self.plotter.renderer.RemoveActor(self._reference_axes_actor)
+            self._reference_axes_actor = None
+        elif self._reference_axes_actor is not None:
+            old_axes = self._reference_axes_actor.GetMapper().GetInput()
+            if old_axes.GetNumberOfCells() != self._reference_axes_renderer.mesh.n_cells:
+                self.plotter.renderer.RemoveActor(self._reference_axes_actor)
+                self._reference_axes_actor = None
+            else:
+                self._reference_axes_actor.GetMapper().SetInputData(self._reference_axes_renderer.mesh)
+                self._reference_axes_actor.GetMapper().Modified()
+        if self._reference_axes_actor is None and self._reference_axes_renderer.mesh.n_cells:
+            self._reference_axes_actor = self.plotter.add_mesh(
+                self._reference_axes_renderer.mesh, color="#57606a", line_width=1.5,
+                pickable=False, render_lines_as_tubes=True, lighting=False,
+                name="reference-axes", reset_camera=False, render=False,
+            )
+            self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
         # Moving the construction plane changes visible bounds.  Update only
         # the near/far range; the user's position, orientation and zoom stay
         # untouched.
-        self.plotter.reset_camera_clipping_range()
+        self._clip_refresh_timer.start()
 
     def update_member_color(self, member_name: str) -> None:
         batch = self._member_batch
@@ -3303,28 +3808,32 @@ class StructureScene(QWidget):
         if member is not None and member.section in self._member_renderer._silhouette_sections:
             self._member_renderer.update_silhouette_color(batch, member_name, base)
             if self._member_silhouette_actor is not None:
-                silhouette = self._member_renderer.silhouette_mesh(
-                    batch, self.plotter.renderer.GetActiveCamera(),
-                )
+                self._silhouette_source_batch = None
+                silhouette = self._member_silhouette_mesh(batch)
                 mapper = self._member_silhouette_actor.GetMapper()
                 mapper.SetInputData(silhouette)
                 mapper.Modified()
         self.plotter.render()
+        self._capture_rendered_state()
 
     def update_member_releases(self, _member_name: str) -> None:
-        self._schedule_rebuild()
+        self._pending_member_full_names.add(_member_name)
+        self._schedule_member_update()
 
     def update_member_axes(self, _member_name: str) -> None:
-        self._schedule_rebuild()
+        self._pending_member_full_names.add(_member_name)
+        self._schedule_member_update()
 
     def update_member_rotation(self, _member_name: str) -> None:
-        self._schedule_rebuild()
+        self._pending_member_full_names.add(_member_name)
+        self._schedule_member_update()
 
     def update_member_geometry(self, _member_name: str) -> None:
-        self._schedule_rebuild()
+        self._pending_member_geometry_names.add(_member_name)
+        self._schedule_member_update()
 
     def update_node_visual(self, _node_name: str) -> None:
-        self._schedule_rebuild()
+        self._support_update_timer.start()
 
     def update_node(self, _node_name: str) -> None:
         self._schedule_rebuild()
@@ -3339,14 +3848,289 @@ class StructureScene(QWidget):
         )
         if self._hovered == ("rigid_bar", old_name):
             self._hovered = "rigid_bar", new_name
-        self.render_model(self._model)
+        self._refresh_rigid_batch()
+        self._capture_rendered_state()
 
     def _schedule_rebuild(self) -> None:
         """Coalesce rapid property edits into one batch reconstruction."""
         self._rebuild_timer.start()
 
+    def _schedule_member_update(self) -> None:
+        """Coalesce member property edits without rebuilding unrelated layers."""
+        self._member_update_timer.start()
+
+    def _refresh_pending_member_update(self) -> None:
+        full_names = tuple(self._pending_member_full_names)
+        names = tuple(self._pending_member_geometry_names | self._pending_member_full_names)
+        self._pending_member_geometry_names.clear()
+        self._pending_member_full_names.clear()
+        if not full_names and len(names) == 1 and self._member_batch is not None:
+            member_name = names[0]
+            member = self._model.bars.get(member_name)
+            silhouette_changed = (
+                member_name in self._member_batch.silhouette_sources
+                or (
+                    member is not None
+                    and member.section in self._member_renderer._silhouette_sections
+                )
+            )
+            if self._member_renderer.update_member_section_in_place(
+                self._member_batch, self._model, member_name,
+            ):
+                self._member_geometry_cache_key = self._member_cache_key(self._model)
+                for actor in (self._member_face_actor, self._member_edge_actor):
+                    if actor is not None:
+                        actor.GetMapper().Modified()
+                if silhouette_changed:
+                    if self._member_silhouette_actor is not None:
+                        self.plotter.renderer.RemoveActor(self._member_silhouette_actor)
+                        self._member_silhouette_actor = None
+                    self._silhouette_source_batch = None
+                    self._silhouette_camera_key = None
+                    self._silhouette_mesh_cache = None
+                    self._refresh_member_silhouette()
+                self._clear_result_layer()
+                self._configure_solid_picker()
+                self._sync_highlights()
+                self._sync_labels()
+                self.plotter.render()
+                self._clip_refresh_timer.start()
+                self._capture_rendered_state()
+                return
+        if names and self._refresh_member_subset(names):
+            self._capture_rendered_state()
+            return
+        self._refresh_member_batch()
+        self._capture_rendered_state()
+
+    def _refresh_member_subset(self, names: tuple[str, ...]) -> bool:
+        batch = self._member_batch
+        if batch is None or len(names) > 12:
+            return False
+        if any(name not in batch.names or name not in self._model.bars for name in names):
+            return False
+        prior_silhouettes = set(batch.silhouette_sources)
+        needs_actor_rebind = False
+        for name in names:
+            if not self._member_renderer.update_member_in_place(
+                batch, self._model, name, self._marker_radius_current,
+            ):
+                if not self._member_renderer.update_member_in_batch(
+                    batch, self._model, name, self._marker_radius_current,
+                ):
+                    return False
+                needs_actor_rebind = True
+        silhouette_changed = any(
+            name in prior_silhouettes or name in batch.silhouette_sources for name in names
+        )
+        if silhouette_changed:
+            self._silhouette_source_batch = None
+            self._silhouette_camera_key = None
+            self._silhouette_mesh_cache = None
+        self._member_geometry_cache = batch
+        self._member_geometry_cache_key = self._member_cache_key(self._model)
+        if needs_actor_rebind:
+            self._display_member_batch(names)
+            return True
+        for actor in (
+            self._member_line_actor, self._member_fallback_actor,
+            self._member_face_actor, self._member_edge_actor, self._release_actor,
+            *self._local_axis_actors,
+        ):
+            if actor is not None:
+                actor.GetMapper().Modified()
+        if silhouette_changed:
+            if self._member_silhouette_actor is not None:
+                self.plotter.renderer.RemoveActor(self._member_silhouette_actor)
+                self._member_silhouette_actor = None
+            self._refresh_member_silhouette()
+        for name in names:
+            self._elastic_support_overlay.update_member(
+                self._model.bars[name], self._model.nodes, self._node_marker_radius(),
+            )
+        self._label_overlay.set_group(
+            "bar", batch.label_positions, batch.names,
+            visible=self._labels_visibility["bar"],
+        )
+        self._clear_result_layer()
+        self._configure_solid_picker()
+        self._sync_highlights()
+        self._sync_labels()
+        self.plotter.render()
+        self._clip_refresh_timer.start()
+        return True
+
+    def _member_cache_key(self, model: StructuralModel) -> tuple[object, ...]:
+        return (
+            round(float(self._marker_radius_current), 12),
+            tuple(
+                (
+                    member,
+                    (model.nodes[member.start_node].x, model.nodes[member.start_node].y,
+                     model.nodes[member.start_node].z),
+                    (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
+                     model.nodes[member.end_node].z),
+                )
+                for member in model.bars.values()
+            ),
+        )
+
+    def _refresh_node_batch(self) -> None:
+        """Rebuild only node markers and supports after node removal."""
+        radius = self._node_marker_radius()
+        batch = self._node_renderer.build(self._model, radius)
+        self._node_batch = batch
+        self._node_geometry_cache = batch
+        self._node_geometry_cache_key = (
+            round(float(radius), 12), tuple(self._model.nodes.values()),
+        )
+        for actor in (self._node_actor, self._support_actor):
+            if actor is not None:
+                self.plotter.renderer.RemoveActor(actor)
+        self._node_actor = None
+        self._node_glyph_points = None
+        self._support_actor = None
+        self._add_node_batches()
+        self._label_overlay.set_group(
+            "node", batch.label_positions, batch.names,
+            visible=self._labels_visibility["node"],
+        )
+        self._sync_highlights()
+        self._sync_labels()
+        self.plotter.render()
+        self._clip_refresh_timer.start()
+
+    def _refresh_support_batch(self, *, capture_state: bool = True) -> None:
+        """Replace only support geometry after a restraint toggle."""
+        batch = self._node_batch
+        if batch is None:
+            self.render_model(self._model)
+            return
+        batch.supports = self._node_renderer.build_supports(
+            self._model, self._node_marker_radius(),
+        )
+        self._node_geometry_cache = batch
+        self._node_geometry_cache_key = (
+            round(float(self._node_marker_radius()), 12),
+            tuple(self._model.nodes.values()),
+        )
+        if not batch.supports.n_cells:
+            if self._support_actor is not None:
+                self.plotter.renderer.RemoveActor(self._support_actor)
+                self._support_actor = None
+        else:
+            if self._support_actor is not None:
+                self.plotter.renderer.RemoveActor(self._support_actor)
+            self._support_actor = self.plotter.add_mesh(
+                batch.supports, color="#a8b0b9", edge_color="#6e7781",
+                show_edges=True, line_width=1.5, pickable=False,
+                reset_camera=False, render=False,
+            )
+            self._support_actor.SetVisibility(self._node_supports_visible)
+        self.plotter.render()
+        self._clip_refresh_timer.start()
+        if capture_state:
+            self._capture_rendered_state()
+
+    def _refresh_rigid_batch(self) -> None:
+        """Replace only idealized rigid bars when their endpoints change."""
+        self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_bar_renderer.build(self._model)
+        self._rigid_geometry_cache = self._rigid_bar_names, self._rigid_bar_mesh
+        self._rigid_geometry_cache_key = tuple(
+            (
+                rigid,
+                (self._model.nodes[rigid.start_node].x, self._model.nodes[rigid.start_node].y,
+                 self._model.nodes[rigid.start_node].z),
+                (self._model.nodes[rigid.end_node].x, self._model.nodes[rigid.end_node].y,
+                 self._model.nodes[rigid.end_node].z),
+            )
+            for rigid in self._model.rigid_bars.values()
+        )
+        if self._rigid_bar_actor is not None:
+            self.plotter.renderer.RemoveActor(self._rigid_bar_actor)
+            self._rigid_bar_actor = None
+        self._add_rigid_bar_batch()
+        self._sync_highlights()
+        self.plotter.render()
+        self._clip_refresh_timer.start()
+
+    def _refresh_camera_clipping_range(self) -> None:
+        """Recalculate camera depth bounds after the immediate edit frame."""
+        self.plotter.reset_camera_clipping_range()
+        self.plotter.render()
+
+    def _refresh_member_batch(self) -> None:
+        """Rebuild member meshes and update their actors in place."""
+        batch = self._member_renderer.build(self._model, self._marker_radius_current)
+        self._member_batch = batch
+        self._member_geometry_cache = batch
+        self._member_geometry_cache_key = self._member_cache_key(self._model)
+
+        self._display_member_batch()
+
+    def _display_member_batch(
+        self, changed_names: tuple[str, ...] = (), removed_names: tuple[str, ...] = (),
+    ) -> None:
+        """Rebind changed member meshes with the original actor styling."""
+        batch = self._member_batch
+        if batch is None:
+            return
+
+        # VTK mappers can retain scalar-array state when their input is swapped
+        # after construction. Recreate just these few batched actors so the
+        # replacement meshes receive the same mapper configuration as on open.
+        for actor in (
+            self._member_line_actor, self._member_fallback_actor,
+            self._member_face_actor, self._member_edge_actor,
+            self._member_silhouette_actor, self._release_actor,
+        ):
+            if actor is not None:
+                self.plotter.renderer.RemoveActor(actor)
+        for actor in self._local_axis_actors:
+            self._local_axes_renderer.RemoveActor(actor)
+        self._member_line_actor = None
+        self._member_fallback_actor = None
+        self._member_face_actor = None
+        self._member_edge_actor = None
+        self._member_silhouette_actor = None
+        self._release_actor = None
+        self._local_axis_actors = []
+        self._add_member_batches()
+
+        self._label_overlay.set_group(
+            "bar", batch.label_positions, batch.names,
+            visible=self._labels_visibility["bar"],
+        )
+        self._clear_result_layer()
+        if batch.silhouette_sources:
+            self._refresh_member_silhouette()
+        elif self._member_silhouette_actor is not None:
+            self.plotter.renderer.RemoveActor(self._member_silhouette_actor)
+            self._member_silhouette_actor = None
+            self._silhouette_source_batch = None
+            self._silhouette_camera_key = None
+            self._silhouette_mesh_cache = None
+        self._apply_representation_visibility()
+        self._configure_solid_picker()
+        self._sync_highlights()
+        if changed_names or removed_names:
+            for name in changed_names:
+                self._elastic_support_overlay.update_member(
+                    self._model.bars[name], self._model.nodes, self._node_marker_radius(),
+                )
+            for name in removed_names:
+                self._elastic_support_overlay.remove_member(name)
+        else:
+            self._elastic_support_overlay.set_members(
+                self._model.bars.values(), self._model.nodes.values(), self._node_marker_radius(),
+            )
+        self._update_zoom_dependent_sizes()
+        self._sync_labels()
+        self.plotter.render()
+        self._clip_refresh_timer.start()
+
     def _rebuild_scene(self) -> None:
-        self.render_model(self._model)
+        self.refresh_model_changes(self._model)
 
     def remove_element(self, kind: str, name: str) -> None:
         target = kind, name
@@ -3357,7 +4141,7 @@ class StructureScene(QWidget):
         )
         if self._hovered == target:
             self._hovered = None
-        self.render_model(self._model)
+        self.refresh_model_changes(self._model)
 
     def element_center(self, kind: str, name: str) -> tuple[float, float, float]:
         if kind == "node":
@@ -3544,10 +4328,7 @@ class StructureScene(QWidget):
             # oblique view, even when the cube selected a corner.
             camera.SetViewUp(*world_up)
 
-        self.plotter.reset_camera_clipping_range()
-        self._orientation_widget.sync_from_camera()
-        self._schedule_label_sync()
-        self.plotter.render()
+        self._queue_camera_frame()
 
     def _on_navigation_mouse_move(self, caller, _event) -> None:
         if self._camera_drag_mode is None:
@@ -3578,10 +4359,7 @@ class StructureScene(QWidget):
         movement = previous - current
         camera.SetPosition(*(np.asarray(camera.GetPosition(), dtype=float) + movement))
         camera.SetFocalPoint(*(focal_point + movement))
-        self.plotter.reset_camera_clipping_range()
-        self._orientation_widget.sync_from_camera()
-        self._schedule_label_sync()
-        self.plotter.render()
+        self._queue_camera_frame()
 
     def _dolly_camera(self, y: int) -> None:
         if self._camera_drag_last_position is None:
@@ -3599,11 +4377,7 @@ class StructureScene(QWidget):
             focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
             position = np.asarray(camera.GetPosition(), dtype=float)
             camera.SetPosition(*(focal_point + (position - focal_point) / factor))
-        self._schedule_label_sync()
-        # Right-button dolly is also a zoom gesture.  Keep it on the same
-        # coalesced render path as the wheel so every mouse-move does not
-        # rebuild camera-dependent overlays or block the interactor.
-        self._camera_render_timer.start()
+        self._queue_camera_frame()
 
     def _on_navigation_wheel(self, _caller, event) -> None:
         if self._camera_drag_mode is not None:
@@ -3619,17 +4393,23 @@ class StructureScene(QWidget):
             focal_point = np.asarray(camera.GetFocalPoint(), dtype=float)
             position = np.asarray(camera.GetPosition(), dtype=float)
             camera.SetPosition(*(focal_point + (position - focal_point) * factor))
-        self._schedule_label_sync()
-        self._camera_render_timer.start()
+        self._queue_camera_frame()
+
+    def _queue_camera_frame(self) -> None:
+        """Coalesce pointer and wheel changes into one render of the latest pose."""
+        if not self._camera_render_timer.isActive():
+            self._camera_render_timer.start()
 
     def _render_camera_frame(self) -> None:
-        """Render at most once per frame while a zoom gesture is moving."""
+        """Render the latest camera pose once, including its screen overlays."""
         if not self._camera_interacting:
-            self._camera_render_timer.stop()
             return
         self.plotter.reset_camera_clipping_range()
         self._update_zoom_dependent_sizes()
+        self._orientation_widget.sync_from_camera()
+        self._sync_labels(render_preview=False)
         self.plotter.render()
+        self._last_interaction_render_state = self._camera_state()
 
     def _finish_wheel_interaction(self) -> None:
         """Finish a coalesced wheel gesture after the cursor stops scrolling."""
@@ -3649,28 +4429,32 @@ class StructureScene(QWidget):
         self._on_interaction_end()
 
     def _on_interaction(self, *_args) -> None:
+        if not self._camera_interacting:
+            self._last_interaction_render_state = None
         self._camera_interacting = True
+        self._label_timer.stop()
         self._measurement_refresh_timer.stop()
         if self._measurement_mode:
             self._measurement_readout.hide()
             self._snap_marker.hide()
             self._measurement_start_marker.hide()
-        self._schedule_label_sync()
         self._orientation_widget.sync_from_camera()
 
     def _on_interaction_end(self, *_args) -> None:
         self._camera_render_timer.stop()
         self._camera_interacting = False
         self._silhouette_timer.stop()
+        final_camera_state = self._camera_state()
         # Orbiting and panning change the viewing direction but are not camera
         # resets.  Recalculate only the clipping planes so no geometry remains
         # hidden after a navigation gesture.
         self.plotter.reset_camera_clipping_range()
+        self._label_timer.stop()
         self._update_zoom_dependent_sizes()
         self._update_depth_overlays()
         if self._measurement_mode:
             self._measurement_refresh_timer.start()
-        self._sync_labels()
+        self._sync_labels(render_preview=False)
         self._update_coordinate_readout()
         self._orientation_widget.sync_from_camera()
         # Silhouettes and snap candidates are view-dependent and can be
@@ -3679,7 +4463,9 @@ class StructureScene(QWidget):
         # has settled.
         if self._member_batch is not None and self._member_batch.silhouette_sources:
             self._silhouette_timer.start()
-        self.plotter.render()
+        if final_camera_state != self._last_interaction_render_state:
+            self.plotter.render()
+        self._last_interaction_render_state = final_camera_state
 
     def _refresh_measurement_after_navigation(self) -> None:
         """Resolve one fresh snap after the camera and cursor settle."""
@@ -3688,7 +4474,7 @@ class StructureScene(QWidget):
         self._update_measurement_readout()
         self.plotter.render()
 
-    def _sync_labels(self) -> None:
+    def _sync_labels(self, *, render_preview: bool = True) -> None:
         self._label_overlay.sync(self.plotter.renderer)
         self._elastic_support_overlay.sync(self.plotter.renderer)
         if hasattr(self, "_coordinate_readout"):
@@ -3698,7 +4484,7 @@ class StructureScene(QWidget):
                 and not self._measurement_refresh_timer.isActive()
             ):
                 self._update_measurement_readout()
-            if self._member_preview_start is not None:
+            if render_preview and self._member_preview_start is not None:
                 self.plotter.render()
 
     def _on_camera_modified(self, *_args) -> None:
@@ -3712,6 +4498,7 @@ class StructureScene(QWidget):
                 self._silhouette_timer.start()
         else:
             self._silhouette_timer.stop()
+            return
         self._schedule_label_sync()
 
     def _refresh_member_silhouette_throttled(self) -> None:
@@ -3725,9 +4512,7 @@ class StructureScene(QWidget):
         batch = self._member_batch
         if batch is None or not batch.silhouette_sources:
             return
-        mesh = self._member_renderer.silhouette_mesh(
-            batch, self.plotter.renderer.GetActiveCamera(),
-        )
+        mesh = self._member_silhouette_mesh(batch)
         if self._member_silhouette_actor is None:
             if not mesh.n_cells:
                 return
@@ -3751,6 +4536,19 @@ class StructureScene(QWidget):
             self._solid_members_visible
             and not (self._analysis_visible and self._active_result_type.startswith("Deformação"))
         )
+
+    def _member_silhouette_mesh(self, batch: MemberBatch) -> pv.PolyData:
+        camera = self.plotter.renderer.GetActiveCamera()
+        camera_key = self._camera_state()
+        if (
+            self._silhouette_source_batch is not batch
+            or self._silhouette_camera_key != camera_key
+            or self._silhouette_mesh_cache is None
+        ):
+            self._silhouette_mesh_cache = self._member_renderer.silhouette_mesh(batch, camera)
+            self._silhouette_source_batch = batch
+            self._silhouette_camera_key = camera_key
+        return self._silhouette_mesh_cache
 
     def _update_depth_overlays(self) -> None:
         """Keep analytical axes aligned while the overlay layer owns depth."""
@@ -3864,6 +4662,7 @@ class StructureScene(QWidget):
         self._orthogonal_guide_actor = None
         self._rigid_bar_actor = None
         self._node_actor = None
+        self._node_glyph_points = None
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors = []
@@ -3877,13 +4676,17 @@ class StructureScene(QWidget):
         self._result_labels = ()
         self._solid_picker.InitializePickList()
         self._highlight_actors.clear()
+        self._highlight_targets.clear()
+        self._highlighted_node_colors.clear()
+        self._highlight_state_key = None
         self._member_batch = None
         self._node_batch = None
         self._measurement_segments_cache = None
+        self._measurement_segment_bounds = None
+        self._projected_snap_cache = None
+        self._pick_projection_cache = None
         self._measurement_face_locator = None
         self._measurement_face_locator_key = None
-        self._measurement_edge_faces = None
-        self._measurement_edge_faces_key = None
         self._rigid_bar_names = ()
         self._rigid_bar_mesh = None
 

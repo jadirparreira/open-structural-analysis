@@ -25,6 +25,7 @@ class ElasticSupportOverlay(QWidget):
         icon_path = Path(__file__).parents[1] / "resources" / "icons" / "elastic-support.svg"
         self._renderer = QSvgRenderer(str(icon_path), self)
         self._positions = np.empty((0, 3), dtype=float)
+        self._member_positions: dict[str, list[np.ndarray]] = {}
         self._screen = np.empty((0, 2), dtype=float)
         self._on_screen = np.empty(0, dtype=bool)
         self._visible = True
@@ -43,11 +44,31 @@ class ElasticSupportOverlay(QWidget):
         members = tuple(members)
         nodes = tuple(nodes)
         node_map = {node.name: node for node in nodes}
-        positions = [
-            position
+        self._member_positions = {
+            member.name: positions
             for member in members
-            for position in self._member_end_positions(member, node_map, radius)
-        ]
+            if (positions := self._member_end_positions(member, node_map, radius))
+        }
+        self._rebuild_positions()
+
+    def update_member(self, member, nodes, radius: float) -> None:
+        """Update only one member's spring markers after a property edit."""
+        positions = self._member_end_positions(member, nodes, radius)
+        if not positions and member.name not in self._member_positions:
+            return
+        if positions:
+            self._member_positions[member.name] = positions
+        else:
+            self._member_positions.pop(member.name, None)
+        self._rebuild_positions()
+
+    def remove_member(self, name: str) -> None:
+        if name in self._member_positions:
+            self._member_positions.pop(name)
+            self._rebuild_positions()
+
+    def _rebuild_positions(self) -> None:
+        positions = [point for points in self._member_positions.values() for point in points]
         self._positions = np.asarray(positions, dtype=float).reshape((-1, 3))
         self._screen = np.empty((len(positions), 2), dtype=float)
         self._on_screen = np.zeros(len(positions), dtype=bool)

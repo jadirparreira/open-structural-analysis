@@ -1837,7 +1837,10 @@ class MainWindow(QMainWindow):
 
     def refresh_scene(self, *, fit_camera: bool = False) -> None:
         with self._model_access_lock:
-            self.scene.render_model(self.model, preserve_camera=not fit_camera)
+            if fit_camera:
+                self.scene.render_model(self.model, preserve_camera=False)
+            else:
+                self.scene.refresh_model_changes(self.model)
         self.properties.update_delete_button_state()
 
     def show_home(self) -> None:

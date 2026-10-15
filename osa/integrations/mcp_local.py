@@ -11,7 +11,7 @@ from pathlib import Path
 
 MARKETPLACE_NAME = "open-structural-analysis-local"
 PLUGIN_NAME = "mcp-opensa"
-PLUGIN_VERSION = "0.1.4"
+PLUGIN_VERSION = "0.1.5"
 
 
 class LocalMcpIntegration:
