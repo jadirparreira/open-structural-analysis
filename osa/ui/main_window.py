@@ -1,6 +1,7 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
 import json
+import math
 import threading
 
 from PySide6.QtCore import QThread, Signal
@@ -49,6 +50,7 @@ from .section_panel import (
     ULaminadoSectionPanel,
     WLaminadoSectionPanel,
 )
+from .split_member_dialog import SplitMemberDialog
 from .window_frame import TitleBar, WindowFrame
 
 
@@ -238,6 +240,7 @@ class MainWindow(QMainWindow):
         self.displacement_panel = DisplacementPanel(self)
         self.processing_panel = ProcessingPanel(self)
         self.axes_panel = AxesPanel(self)
+        self.split_member_dialog = SplitMemberDialog(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
             "I Laminado": ILaminadoSectionPanel(self),
@@ -512,6 +515,8 @@ class MainWindow(QMainWindow):
                 self.properties.reposition_color_palette()
         if hasattr(self, "axes_panel") and self.axes_panel.isVisible():
             self.axes_panel.reposition()
+        if hasattr(self, "split_member_dialog") and self.split_member_dialog.isVisible():
+            self.split_member_dialog.reposition()
         if hasattr(self, "command_bar"):
             self.command_bar.reposition()
         if hasattr(self, "history"):
@@ -804,35 +809,54 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
 
     def start_split_member(self) -> None:
-        """Start the split-member flow from the geometry toolbar."""
+        """Open the modal split window for the selected member or request one."""
+        self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
         if self.selected is not None and self.selected[0] == "bar":
-            self._begin_member_split(self.selected[1])
+            self._command_mode = None
+            self.split_member_dialog.open_for_member(self.selected[1])
             return
 
-        self.command_session.cancel()
         self._command_mode = "split_member_selection"
         self.history.append(
             "> <b>Dividir membro</b> "
-            "<span style='color:#57606a'>(Selecione um membro)</span>"
+            "<span style='color:#57606a'>(Selecione um membro na estrutura)</span>"
         )
         self.scene.plotter.setFocus()
 
-    def _begin_member_split(self, member_name: str) -> None:
-        try:
-            self.command_session.start_member_split(member_name)
-        except ValueError as error:
-            self.history.append(
-                f"> <b>Dividir membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
-            )
+    def apply_split_member(self) -> None:
+        """Apply the segment lengths entered in the modal split window."""
+        configuration = self.split_member_dialog.split_configuration()
+        if configuration is None:
             return
-        self._command_mode = "split_parts"
+        member_name, segment_lengths = configuration
+        try:
+            _node_names, member_names = self.model_service.split_member_by_lengths(
+                member_name, segment_lengths,
+            )
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+
+        self.command_session.cancel()
+        self._command_mode = None
+        if self.selected == ("bar", member_name):
+            self.clear_selection()
         self.history.append(
             f"> <b>Dividir membro</b> <span style='color:#57606a'>"
-            f"(Informe em quantas partes o membro {escape(member_name)} será dividido; inteiro maior que 1)</span>"
+            f"(Membro {escape(member_name)} dividido em {len(member_names)} segmentos)</span>"
         )
-        self.command_bar.input.setFocus()
+        self.normalize_member_directions_if_enabled()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+        self.split_member_dialog.accept()
 
     def start_reverse_member(self) -> None:
         """Reverse the selected member or enter graphical member-selection mode."""
@@ -1011,7 +1035,7 @@ class MainWindow(QMainWindow):
             self.scene.set_member_preview_start(self._copy_elements_reference)
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
-                "(Selecione a posição de destino)</span>"
+                "(Selecione a posição de destino; pressione ESC para encerrar)</span>"
             )
             return
         if self._command_mode != "copy_elements_destination_placement":
@@ -1047,22 +1071,18 @@ class MainWindow(QMainWindow):
             if copied_member.section_geometry:
                 self.section_geometry[member_name] = copied_member.geometry_dict()
 
-        self._copy_elements_selection = []
-        self._copy_elements_reference = None
-        self._command_mode = None
-        self.scene.set_member_preview_start(None)
-        self.scene.set_member_placement_mode(False)
-        self.scene.set_selection_highlight(())
-        self.clear_selection()
+        self._command_mode = "copy_elements_destination_placement"
         if copied_nodes or copied_members:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
-                f"({len(copied_nodes)} nó(s) e {len(copied_members)} membro(s) criado(s))</span>"
+                f"({len(copied_nodes)} nó(s) e {len(copied_members)} membro(s) criado(s); "
+                "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
         else:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
-                "(Nenhum elemento novo: os elementos já existiam na posição de destino)</span>"
+                "(Nenhum elemento novo: os elementos já existiam na posição de destino; "
+                "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
         self.refresh_action_palette()
         self.refresh_analysis_palette()
@@ -1354,6 +1374,21 @@ class MainWindow(QMainWindow):
             )
             return
 
+        start = self.scene.measurement_start
+        if start is not None:
+            delta = tuple(end - begin for begin, end in zip(start, coordinates))
+            length = math.hypot(*delta)
+            values = (length, *delta)
+            formatted = tuple(
+                f"{0.0 if abs(value) < 0.0005 else value:.3f} m"
+                for value in values
+            )
+            self.history.append(
+                "> <b>Medir</b> "
+                "<span style='color:#57606a'>"
+                f"(Δ: {formatted[0]}; ΔX: {formatted[1]}; "
+                f"ΔY: {formatted[2]}; ΔZ: {formatted[3]})</span>"
+            )
         self._command_mode = None
         self.scene.set_measurement_start(None)
         self.scene.set_measurement_mode(False)
@@ -1369,7 +1404,7 @@ class MainWindow(QMainWindow):
             )
             return
         if self._command_mode in {
-            "split_member_selection", "split_parts", "reverse_member_selection", "join_member_selection",
+            "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "copy_elements_selection",
             "copy_elements_reference_placement", "copy_elements_destination_placement",
         }:
@@ -1382,6 +1417,7 @@ class MainWindow(QMainWindow):
                 "copy_elements_destination_placement": "Copiar",
             }
             copy_elements_active = self._command_mode.startswith("copy_elements_")
+            split_member_active = self._command_mode == "split_member_selection"
             label = labels.get(self._command_mode, "Dividir membro")
             self.command_session.cancel()
             self._command_mode = None
@@ -1390,14 +1426,19 @@ class MainWindow(QMainWindow):
             self._copy_elements_selection = []
             self._copy_elements_reference = None
             self.member_property_copy_panel.hide()
+            if split_member_active:
+                self.split_member_dialog.hide()
             if copy_elements_active:
                 self.scene.set_member_preview_start(None)
                 self.scene.set_member_placement_mode(False)
                 self.scene.set_selection_highlight(())
                 self.clear_selection()
+            result_message = (
+                "Comando encerrado" if copy_elements_active else "Operação cancelada"
+            )
             self.history.append(
                 f"> <b>{label}</b> "
-                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+                f"<span style='color:#8c959f'>({result_message})</span>"
             )
             return
         if self._command_mode == "measurement":
@@ -1567,10 +1608,12 @@ class MainWindow(QMainWindow):
             if kind != "bar":
                 self.history.append(
                     "> <b>Dividir membro</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou uma barra rígida)</span>"
                 )
             else:
-                self._begin_member_split(name)
+                self._command_mode = None
+                self.split_member_dialog.open_for_member(name)
+                return
         elif self._command_mode == "reverse_member_selection":
             if kind != "bar":
                 self.history.append(
@@ -1644,7 +1687,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
-        if self.selected is not None:
+        if self.selected is not None and self._command_mode != "split_member_selection":
             self.properties.show_for(kind, name, self.palette.active_group or "Geometria")
 
     def refresh_selected_property_panel(self, section: str | None) -> None:
@@ -1714,6 +1757,7 @@ class MainWindow(QMainWindow):
         self.show_home()
 
     def _reset_model_state(self) -> None:
+        self.split_member_dialog.hide()
         self.axes_panel.discard()
         self.model.clear()
         self.section_profiles.clear()
@@ -1796,6 +1840,7 @@ class MainWindow(QMainWindow):
             self._copy_elements_selection = []
             self._copy_elements_reference = None
             self._pending_action_launch = None
+            self.split_member_dialog.hide()
             self.member_property_copy_panel.hide()
             self.scene.set_member_placement_mode(False)
             self.scene.set_selection_highlight(())
@@ -1861,6 +1906,7 @@ class MainWindow(QMainWindow):
             self.next_plane_button,
             self.properties,
             self.displacement_panel,
+            self.split_member_dialog,
             self.processing_panel,
             self.command_bar,
             self.history,

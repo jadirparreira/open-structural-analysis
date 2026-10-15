@@ -54,6 +54,40 @@ class ModelService:
                 member_names.append(candidate)
         return self.model.split_bar(name, tuple(node_names), tuple(member_names))
 
+    def split_member_by_lengths(
+        self,
+        name: str,
+        segment_lengths: tuple[float, ...],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Divide a member at user-specified consecutive segment lengths."""
+        member = self.model.bars.get(name)
+        if member is None:
+            raise ValueError(f"Membro '{name}' não encontrado.")
+        if len(segment_lengths) < 2:
+            raise ValueError("Informe pelo menos dois segmentos.")
+
+        node_names: list[str] = []
+        node_index = 1
+        while len(node_names) < len(segment_lengths) - 1:
+            candidate = f"N{node_index}"
+            node_index += 1
+            if candidate not in self.model.nodes:
+                node_names.append(candidate)
+
+        member_names: list[str] = []
+        member_index = 1
+        while len(member_names) < len(segment_lengths):
+            candidate = f"B{member_index}"
+            member_index += 1
+            if candidate not in self.model.bars or candidate == name:
+                member_names.append(candidate)
+        return self.model.split_bar(
+            name,
+            tuple(node_names),
+            tuple(member_names),
+            segment_lengths=segment_lengths,
+        )
+
     def reverse_member(self, name: str):
         """Swap a member's start and end nodes without changing its identity."""
         member = self.model.bars.get(name)

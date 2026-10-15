@@ -198,6 +198,8 @@ class StructuralModel:
         name: str,
         node_names: tuple[str, ...],
         member_names: tuple[str, ...],
+        *,
+        segment_lengths: tuple[float, ...] | None = None,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace one bar with collinear segments and intermediate nodes.
 
@@ -221,13 +223,29 @@ class StructuralModel:
         source = self.bars[name]
         start = self.nodes[source.start_node]
         end = self.nodes[source.end_node]
-        coordinates = tuple(
-            (
-                start.x + (end.x - start.x) * index / len(member_names),
-                start.y + (end.y - start.y) * index / len(member_names),
-                start.z + (end.z - start.z) * index / len(member_names),
+        start_coordinates = (start.x, start.y, start.z)
+        direction = (end.x - start.x, end.y - start.y, end.z - start.z)
+        member_length = math.hypot(*direction)
+        if segment_lengths is None:
+            positions = tuple(index / len(member_names) for index in range(1, len(member_names)))
+        else:
+            if len(segment_lengths) != len(member_names):
+                raise ValueError("Informe um comprimento para cada segmento.")
+            if any(not math.isfinite(value) or value <= self.coordinate_tolerance for value in segment_lengths):
+                raise ValueError("Os comprimentos dos segmentos devem ser positivos.")
+            total_length = math.fsum(segment_lengths)
+            tolerance = max(
+                self.coordinate_tolerance,
+                member_length * 1e-9,
+                0.0000005 * len(segment_lengths),
             )
-            for index in range(1, len(member_names))
+            if not math.isclose(total_length, member_length, rel_tol=1e-9, abs_tol=tolerance):
+                raise ValueError("A soma dos segmentos deve corresponder ao comprimento do membro.")
+            cumulative_lengths = tuple(math.fsum(segment_lengths[:index]) for index in range(1, len(segment_lengths)))
+            positions = tuple(distance / total_length for distance in cumulative_lengths)
+        coordinates = tuple(
+            tuple(start_coordinates[axis] + direction[axis] * ratio for axis in range(3))
+            for ratio in positions
         )
         for coordinate in coordinates:
             self._ensure_unique_coordinates(coordinate)
