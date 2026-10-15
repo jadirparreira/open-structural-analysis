@@ -84,11 +84,13 @@ class ElasticSupportOverlay(QWidget):
         if basis is None:
             return []
         local_x = basis[0]
+        length = float(np.linalg.norm(np.asarray((end.x - start.x, end.y - start.y, end.z - start.z))))
+        offset = LocalAxesRenderer.end_indicator_offset(length, radius)
         positions = []
         if has_semirigid_member_end(member, "start"):
-            positions.append(np.asarray((start.x, start.y, start.z), dtype=float) + local_x * radius * 4.0)
+            positions.append(np.asarray((start.x, start.y, start.z), dtype=float) + local_x * offset)
         if has_semirigid_member_end(member, "end"):
-            positions.append(np.asarray((end.x, end.y, end.z), dtype=float) - local_x * radius * 4.0)
+            positions.append(np.asarray((end.x, end.y, end.z), dtype=float) - local_x * offset)
         return positions
 
     def set_visible(self, visible: bool) -> None:

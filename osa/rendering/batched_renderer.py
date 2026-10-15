@@ -956,13 +956,14 @@ class BatchedMemberRenderer:
         if len(releases) != 12 or not any(releases):
             return
         local_x, local_y, local_z = basis
+        offset = LocalAxesRenderer.end_indicator_offset(float(np.linalg.norm(end - start)), radius)
         for endpoint, inward, has_release in (
             (start, local_x, any(releases[index] for index in (0, 2, 4, 6, 8, 10))),
             (end, -local_x, any(releases[index] for index in (1, 3, 5, 7, 9, 11))),
         ):
             if not has_release:
                 continue
-            center = endpoint + inward * radius * 4.0
+            center = endpoint + inward * offset
             circle_radius = radius * 1.05
             angles = np.linspace(0.0, 2.0 * pi, 32)
             destination.append(np.asarray([

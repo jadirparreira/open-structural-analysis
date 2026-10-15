@@ -18,6 +18,7 @@ class ReleaseRenderer:
         x_axis, y_axis, z_axis = basis
         start_point = np.array((start.x, start.y, start.z), dtype=float)
         end_point = np.array((end.x, end.y, end.z), dtype=float)
+        offset = LocalAxesRenderer.end_indicator_offset(float(np.linalg.norm(end_point - start_point)), radius)
         actors: list[object] = []
         for endpoint, inward, has_release in (
             (start_point, x_axis, any(releases[index] for index in (0, 2, 4, 6, 8, 10))),
@@ -25,7 +26,7 @@ class ReleaseRenderer:
         ):
             if not has_release:
                 continue
-            center = endpoint + inward * radius * 4.0
+            center = endpoint + inward * offset
             points = []
             circle_radius = radius * 1.05
             for angle in np.linspace(0.0, 2.0 * np.pi, 32):

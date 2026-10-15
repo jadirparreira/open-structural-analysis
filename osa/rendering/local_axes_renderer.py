@@ -4,6 +4,11 @@ import pyvista as pv
 
 class LocalAxesRenderer:
     @staticmethod
+    def end_indicator_offset(length: float, radius: float) -> float:
+        """Keep end markers inside their member, even for short members."""
+        return min(max(float(radius), 0.0) * 4.0, max(float(length), 0.0) * 0.2)
+
+    @staticmethod
     def basis(start, end, rotation: int = 0):
         x_axis = np.array((end.x - start.x, end.y - start.y, end.z - start.z), dtype=float)
         length = np.linalg.norm(x_axis)
