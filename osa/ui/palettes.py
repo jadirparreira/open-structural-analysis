@@ -404,13 +404,14 @@ class TopIconPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
         self._visibility_buttons: dict[str, QToolButton] = {}
+        self._solid_visibility_previous_states: dict[str, tuple[bool, bool]] | None = None
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
+                                        ("box.svg", "Seções sólidas", "solid"),
+                                        ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores dos membros", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
-                                        ("node-circle.svg", "Nós", "nodes"),
-                                        ("box.svg", "Seções sólidas", "solid"),
                                         ("release.svg", "Vinculações dos membros", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
                                         ("support-3d.svg", "Apoios dos nós", "supports")):
@@ -436,7 +437,7 @@ class TopIconPalette(QFrame):
             button.setAccessibleName(tooltip)
             button.installEventFilter(self)
             button.setCheckable(True)
-            button.setChecked(True)
+            button.setChecked(kind != "solid")
             if kind == "grid":
                 button.toggled.connect(window.scene.set_grid_visible)
             elif kind == "reference-axes":
@@ -446,7 +447,7 @@ class TopIconPalette(QFrame):
             elif kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
             elif kind == "solid":
-                button.toggled.connect(window.scene.set_solid_members_visible)
+                button.toggled.connect(self._on_solid_visibility_toggled)
             elif kind == "releases":
                 button.toggled.connect(window.scene.set_member_releases_visible)
             elif kind == "semirigid":
@@ -673,6 +674,32 @@ class TopIconPalette(QFrame):
         layout.insertWidget(layout.indexOf(copy_properties_button), copy_elements_button)
         self.copy_elements_button = copy_elements_button
         self.adjustSize()
+
+    def _on_solid_visibility_toggled(self, visible: bool) -> None:
+        dependent_kinds = ("nodes", "node", "axes", "releases", "semirigid")
+        if visible:
+            if self._solid_visibility_previous_states is not None:
+                return
+            self._solid_visibility_previous_states = {
+                kind: (self._visibility_buttons[kind].isChecked(),
+                       self._visibility_buttons[kind].isEnabled())
+                for kind in dependent_kinds
+            }
+            for kind in dependent_kinds:
+                button = self._visibility_buttons[kind]
+                button.setChecked(False)
+                button.setEnabled(False)
+            self.window().scene.set_solid_members_visible(True)
+            return
+
+        self.window().scene.set_solid_members_visible(False)
+        if self._solid_visibility_previous_states is None:
+            return
+        for kind, (was_checked, was_enabled) in self._solid_visibility_previous_states.items():
+            button = self._visibility_buttons[kind]
+            button.setEnabled(was_enabled)
+            button.setChecked(was_checked)
+        self._solid_visibility_previous_states = None
 
     def toggle_visibility_command(self, kind: str) -> None:
         button = self._visibility_buttons.get(kind)

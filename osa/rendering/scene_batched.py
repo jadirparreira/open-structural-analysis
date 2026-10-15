@@ -354,7 +354,7 @@ class StructureScene(QWidget):
         self._reference_axes_visible = True
         self._nodes_visible = True
         self._labels_visibility = {"node": True, "bar": True}
-        self._solid_members_visible = True
+        self._solid_members_visible = False
         self._member_releases_visible = True
         self._semirigid_links_visible = True
         self._node_supports_visible = True
