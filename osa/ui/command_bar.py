@@ -15,6 +15,11 @@ class CommandInput(QLineEdit):
         super().focusOutEvent(event)
         self.owner.window.history.schedule_fade()
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self.owner, "mcp_working_indicator"):
+            self.owner._position_mcp_working_indicator()
+
 
 class CommandHistory(QFrame):
     """Independent translucent, scrollable history panel."""
@@ -151,6 +156,8 @@ class CommandHistory(QFrame):
 
 
 class CommandBar(QFrame):
+    _mcp_idle_grace_ms = 10_000
+
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self.window = window
@@ -162,8 +169,50 @@ class CommandBar(QFrame):
         self.input.setPlaceholderText("Digite um comando…")
         self.input.returnPressed.connect(self.submit)
         self.input.textEdited.connect(self.window.history._scroll_to_latest)
+        self.mcp_working_indicator = QLabel(self.input)
+        self.mcp_working_indicator.setObjectName("mcpWorkingIndicator")
+        self.mcp_working_indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.mcp_working_indicator.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.mcp_working_indicator.setAccessibleName("MCP Trabalhando")
+        self.mcp_working_indicator.setFixedSize(32, 28)
+        self.mcp_working_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bot_icon = Path(__file__).parents[1] / "resources" / "icons" / "bot-white.svg"
+        self.mcp_working_indicator.setPixmap(QIcon(str(bot_icon)).pixmap(QSize(18, 18)))
+        self.mcp_working_indicator.hide()
+        self._mcp_indicator_active = False
+        self._mcp_idle_timer = QTimer(self)
+        self._mcp_idle_timer.setSingleShot(True)
+        self._mcp_idle_timer.setInterval(self._mcp_idle_grace_ms)
+        self._mcp_idle_timer.timeout.connect(self._hide_mcp_working_indicator)
         layout.addWidget(self.input)
         self.adjustSize()
+
+    def set_mcp_busy(self, busy: bool) -> None:
+        if busy:
+            self._mcp_idle_timer.stop()
+            self._mcp_indicator_active = True
+            self.mcp_working_indicator.setVisible(True)
+            self.input.setTextMargins(0, 0, self.mcp_working_indicator.width() + 18, 0)
+            self._position_mcp_working_indicator()
+            self.mcp_working_indicator.raise_()
+            self.mcp_working_indicator.repaint()
+        elif self._mcp_indicator_active:
+            # MCP does not expose an agent-turn-complete event. Keep the icon
+            # through the gaps between tool calls and clear it after inactivity.
+            self._mcp_idle_timer.start()
+
+    def _hide_mcp_working_indicator(self) -> None:
+        self._mcp_indicator_active = False
+        self.mcp_working_indicator.hide()
+        self.input.setTextMargins(0, 0, 0, 0)
+
+    def _position_mcp_working_indicator(self) -> None:
+        indicator = self.mcp_working_indicator
+        vertical_inset = (self.input.height() - indicator.height()) // 2
+        indicator.move(
+            max(vertical_inset, self.input.width() - indicator.width() - vertical_inset),
+            vertical_inset,
+        )
 
     def submit(self) -> None:
         command = self.input.text().strip()

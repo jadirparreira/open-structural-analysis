@@ -100,6 +100,10 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
 QLabel#historyLine { color: #57606a; padding: 1px 8px; }
 QLineEdit#commandInput { min-height: 36px; border: 1px solid #d0d7de; border-radius: 8px; background: #ffffff; color: #24292f; padding: 0 10px; }
 QLineEdit#commandInput:focus { border: 2px solid #0969da; }
+QLabel#mcpWorkingIndicator {
+    color: #ffffff; background: #0969da; border: 0;
+    border-radius: 6px; padding: 0;
+}
 QToolTip { background: #24292f; color: #ffffff; border: 1px solid #57606a; }
 QWidget#homePage { background: #ffffff; }
 QFrame#homeRecentPanel { background: #f6f8fa; border-right: 1px solid #d0d7de; }

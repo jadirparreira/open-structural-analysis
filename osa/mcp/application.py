@@ -56,6 +56,8 @@ class McpApplication:
         get_session: Callable[[], str | None] | None = None,
         model_lock=None,
         execute_on_model_thread: Callable[..., Any] | None = None,
+        on_operation_started: Callable[[], None] | None = None,
+        on_operation_finished: Callable[[], None] | None = None,
     ) -> None:
         self.model = model
         self.model_service = model_service
@@ -76,6 +78,8 @@ class McpApplication:
         # on the GUI thread alongside ordinary user edits.
         self.model_lock = model_lock or threading.RLock()
         self._execute_on_model_thread = execute_on_model_thread
+        self._on_operation_started = on_operation_started
+        self._on_operation_finished = on_operation_finished
         self._session = "Geometria"
         self._analysis_view = {
             "selected_combination": None,
@@ -95,16 +99,24 @@ class McpApplication:
         executor = object.__getattribute__(self, "_execute_on_model_thread")
 
         def synchronized(*args, **kwargs):
-            if executor is not None and name == "run_analysis":
-                return attribute(*args, **kwargs)
-
-            def invoke():
-                with lock:
+            on_started = object.__getattribute__(self, "_on_operation_started")
+            on_finished = object.__getattribute__(self, "_on_operation_finished")
+            if on_started is not None:
+                on_started()
+            try:
+                if executor is not None and name == "run_analysis":
                     return attribute(*args, **kwargs)
 
-            if executor is not None:
-                return executor(invoke)
-            return invoke()
+                def invoke():
+                    with lock:
+                        return attribute(*args, **kwargs)
+
+                if executor is not None:
+                    return executor(invoke)
+                return invoke()
+            finally:
+                if on_finished is not None:
+                    on_finished()
 
         return synchronized
 

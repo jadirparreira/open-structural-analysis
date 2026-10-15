@@ -269,6 +269,7 @@ class MainWindow(QMainWindow):
         self.mcp_session_changed.connect(self.palette.show_group)
         self._mcp_dispatcher = McpQtDispatcher(self)
         self._mcp_dispatcher.suspend()
+        self._mcp_dispatcher.busy_changed.connect(self.command_bar.set_mcp_busy)
         self._mcp_application = McpApplication(
             self.model,
             self.model_service,
@@ -285,6 +286,8 @@ class MainWindow(QMainWindow):
             get_session=lambda: self.palette.active_group,
             model_lock=self._model_access_lock,
             execute_on_model_thread=self._mcp_dispatcher.call,
+            on_operation_started=self._mcp_dispatcher.begin_operation,
+            on_operation_finished=self._mcp_dispatcher.end_operation,
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_integration = LocalMcpIntegration()

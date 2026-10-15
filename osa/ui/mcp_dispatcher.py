@@ -24,13 +24,33 @@ class McpQtDispatcher(QObject):
     """Serialize MCP access with ordinary GUI edits on Qt's event thread."""
 
     requested = Signal(object)
+    busy_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._state_lock = threading.Lock()
         self._active = True
         self._pending: list[_Call] = []
+        self._operation_count = 0
         self.requested.connect(self._execute)
+
+    def begin_operation(self) -> None:
+        """Show busy state for the full lifetime of an MCP tool call."""
+        with self._state_lock:
+            became_busy = self._operation_count == 0
+            self._operation_count += 1
+        if became_busy:
+            self.busy_changed.emit(True)
+
+    def end_operation(self) -> None:
+        """Hide busy state once every concurrent MCP tool call has finished."""
+        with self._state_lock:
+            if self._operation_count == 0:
+                return
+            self._operation_count -= 1
+            became_idle = self._operation_count == 0
+        if became_idle:
+            self.busy_changed.emit(False)
 
     def resume(self) -> None:
         with self._state_lock:
