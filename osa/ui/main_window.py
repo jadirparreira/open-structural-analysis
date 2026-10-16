@@ -1730,10 +1730,7 @@ class MainWindow(QMainWindow):
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
         if self.selected is not None and self._command_mode != "split_member_selection":
-            self.properties.show_for(
-                kind, name, self.palette.active_group or "Geometria",
-                selection=self.selected_elements or [(kind, name)],
-            )
+            self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
         if self._command_mode is not None:
@@ -1748,15 +1745,32 @@ class MainWindow(QMainWindow):
 
     def refresh_selected_property_panel(self, section: str | None) -> None:
         """Rebuild the open inspector when the work section changes."""
-        if section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
+        active_section = section or "Geometria"
+        if active_section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.close_section_panel()
-        if section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
+        if active_section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.close_displacement_panel()
         if self.selected is not None and hasattr(self, "properties"):
             self.properties.show_for(
-                *self.selected, section or "Geometria",
+                *self.selected, active_section,
                 selection=self.selected_elements or [self.selected],
             )
+            if active_section == "Geometria" and self.selected[0] == "bar":
+                member_name = self.selected[1]
+                if self.section_panel.isVisible():
+                    family = self.section_panel._section_family
+                    names = self.properties._selected_names("bar")
+                    if names and all(self.model.bars[name].section == family for name in names):
+                        self.section_panel.configure_for(member_name, family)
+                        self.properties._section_settings_button.setChecked(True)
+                    else:
+                        self.close_section_panel()
+                if self.displacement_panel.isVisible():
+                    self.displacement_panel.configure_for(member_name)
+                    self.properties._displacement_settings_button.setChecked(True)
+            elif active_section == "Geometria":
+                self.close_section_panel()
+                self.close_displacement_panel()
 
     def clear_selection(self) -> None:
         self.selected = None
@@ -2129,6 +2143,9 @@ class MainWindow(QMainWindow):
 
     def refresh_member_color(self, member_name: str) -> None:
         self.scene.update_member_color(member_name)
+
+    def refresh_member_colors(self, member_names: tuple[str, ...] | list[str]) -> None:
+        self.scene.update_member_colors(member_names)
 
     def refresh_member_releases(self, member_name: str) -> None:
         self.scene.update_member_releases(member_name)

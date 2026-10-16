@@ -37,6 +37,7 @@ class SectionPanel(QFrame):
         self.setMinimumHeight(0)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         self._member_name = ""
+        self._member_names: tuple[str, ...] = ()
         self._section_family = ""
         self._section_mirrored = False
         self._decimals = {
@@ -204,15 +205,25 @@ class SectionPanel(QFrame):
 
     def configure_for(self, member_name: str, section: str) -> None:
         self._member_name = member_name
+        selected = self.window.properties._selected_names("bar")
+        self._member_names = tuple(
+            name for name in selected if name in self.window.model.bars
+        ) if member_name in selected else ((member_name,) if member_name in self.window.model.bars else ())
         self._section_family = section
         self._set_geometry_layout(section)
         self._set_mechanical_visibility()
         # Each member opens with the optional mechanical block collapsed.
         self.mechanical_toggle.setChecked(False)
         member = self.window.model.bars.get(member_name)
-        self._section_mirrored = bool(getattr(member, "section_mirrored", False)) if member else False
+        members = [self.window.model.bars[name] for name in self._member_names]
+        mirrored_values = [item.section_mirrored for item in members]
+        self._section_mirrored = bool(member.section_mirrored) if member else False
         with QSignalBlocker(self.mirror_toggle):
-            self.mirror_toggle.setChecked(self._section_mirrored)
+            self.mirror_toggle.setChecked(bool(mirrored_values) and all(mirrored_values))
+        self.mirror_toggle.setToolTip(
+            "Espelhar seção em torno do eixo Z · Variado"
+            if len(set(mirrored_values)) > 1 else "Espelhar seção em torno do eixo Z"
+        )
         if member is not None:
             if member.profile:
                 self.window.section_profiles[member_name] = member.profile
@@ -226,7 +237,10 @@ class SectionPanel(QFrame):
         # Keep the popup compact: eight rows are visible, with the remainder
         # available through the native popup scrollbar.
         profile = self.window.section_profiles.get(member_name, "")
-        if profile in profile_options:
+        profiles = [item.profile for item in members]
+        mixed_profile = len(set(profiles)) > 1
+        self.profile.setPlaceholderText("Variado" if mixed_profile else "Indefinido")
+        if not mixed_profile and profile in profile_options:
             self.profile.setCurrentText(profile)
         else:
             self.profile.setCurrentIndex(-1)
@@ -251,7 +265,7 @@ class SectionPanel(QFrame):
         # generated from the dimensions entered by the user, so old projects
         # that still contain the former generic label are normalized as soon
         # as the geometry panel is opened.
-        if is_manual and values and all(
+        if len(self._member_names) == 1 and is_manual and values and all(
             values.get(name, 0) > 0 for name, _tooltip, _unit in SECTION_PARAMETRIC_SPECS[section]
         ):
             generated_profile = self._manual_profile_name(values)
@@ -264,18 +278,24 @@ class SectionPanel(QFrame):
             if display is not None:
                 display.setText(profile)
         if is_manual:
-            self.profile.setPlaceholderText(profile or "Indefinido")
-        has_profile = is_manual or bool(profile and profile in profile_options)
+            self.profile.setPlaceholderText("Variado" if mixed_profile else (profile or "Indefinido"))
+        has_profile = is_manual or bool(profile and profile in profile_options and not mixed_profile)
         if has_profile:
             if is_manual:
                 values = values or {}
             else:
                 values = self.window.section_geometry.setdefault(member_name, self._default_geometry(profile))
         for label, field in self.fields.items():
+            member_values = [item.geometry_dict().get(label) for item in members]
+            varied = len(set(member_values)) > 1
             field.blockSignals(True)
             field.setEnabled(has_profile)
             field.setReadOnly(not is_manual)
-            field.setText(self._format_value(values[label], label) if values and label in values else "")
+            field.setPlaceholderText("Variado" if varied else "")
+            field.setText(
+                self._format_value(member_values[0], label)
+                if member_values and not varied and member_values[0] is not None else ""
+            )
             field.blockSignals(False)
         self.weight_value.setEnabled(has_profile)
         self.area_value.setEnabled(has_profile)
@@ -299,6 +319,17 @@ class SectionPanel(QFrame):
             elif any(float(values.get(name, 0)) <= 0 for name in required):
                 preview_invalid = True
         self._populate_calculated_values(properties, has_profile)
+        signatures = [
+            (item.material_values, item.section_mirrored, item.section_geometry)
+            for item in members
+        ]
+        varied_properties = len(signatures) > 1 and any(
+            signature != signatures[0] for signature in signatures[1:]
+        )
+        for field in self.mechanical_fields.values():
+            if varied_properties:
+                field.clear()
+            field.setPlaceholderText("Variado" if varied_properties else "")
         preview_values = values if has_profile else None
         if not has_profile and profile_options:
             # Keep the selector and fields undefined while showing the first
@@ -320,21 +351,16 @@ class SectionPanel(QFrame):
         self.resize(self.width(), self.sizeHint().height())
 
     def _section_mirrored_changed(self, mirrored: bool) -> None:
-        if not self._member_name:
+        if not self._member_names:
             return
-        self._section_mirrored = bool(mirrored)
-        self.window.model_service.set_section_mirrored(self._member_name, self._section_mirrored)
-        values = self.window.section_geometry.get(self._member_name)
-        properties = None
-        invalid = False
-        if values:
-            try:
-                properties = self._calculate_properties(values)
-            except ValueError:
-                invalid = True
-        self._populate_calculated_values(properties, bool(values))
-        self._update_preview(values, invalid=invalid)
-        self.window.refresh_member_geometry(self._member_name)
+        mechanical_visible = self.mechanical_toggle.isChecked()
+        for name in self._member_names:
+            self.window.model_service.set_section_mirrored(name, bool(mirrored))
+        for name in self._member_names:
+            self.window.refresh_member_geometry(name)
+        self.configure_for(self._member_name, self._section_family)
+        if mechanical_visible:
+            self.mechanical_toggle.setChecked(True)
 
     def _default_geometry(self, profile: str) -> dict[str, float]:
         # Defaults are kept in the catalog and copied into the member-specific
@@ -349,27 +375,25 @@ class SectionPanel(QFrame):
         }
 
     def _profile_changed(self, value: str) -> None:
-        if not self._member_name:
+        if not self._member_names:
             return
-        self.window.section_profiles[self._member_name] = value
         # Keep the member's selected section in sync with the geometry editor.
         # The geometry data itself remains keyed by member, so another member
         # can safely use a different profile and dimensions.
         profile_options = SECTION_PROFILE_OPTIONS.get(self._section_family, [])
         if value not in profile_options:
             return
-        if self._member_name in self.window.model.bars:
-            display = getattr(self.window.properties, "_section_profile_display", None)
-            if display is not None:
-                display.setText(value)
+        display = getattr(self.window.properties, "_section_profile_display", None)
+        if display is not None:
+            display.setText(value)
         # A profile change initializes that member's dimensions only; it never
         # reuses or mutates another member's geometry values.
-        values = self.window.section_geometry.setdefault(
-            self._member_name, self._default_geometry(value)
-        )
-        values.update(self._default_geometry(value))
-        self.window.model_service.assign_profile(self._member_name, value, values)
-        self.window.refresh_member_geometry(self._member_name)
+        values = self._default_geometry(value)
+        for name in self._member_names:
+            self.window.section_profiles[name] = value
+            self.window.section_geometry[name] = dict(values)
+            self.window.model_service.assign_profile(name, value, values)
+            self.window.refresh_member_geometry(name)
         for key, field in self.fields.items():
             field.setEnabled(True)
             field.setText(self._format_value(values.get(key, 0.0), key))
@@ -383,6 +407,9 @@ class SectionPanel(QFrame):
     def _manual_geometry_changed(self) -> None:
         """Persist editable dimensions for non-catalogued section families."""
         if self._section_family not in SECTION_PARAMETRIC_SPECS or not self._member_name:
+            return
+        if len(self._member_names) > 1:
+            self._manual_geometry_changed_for_selection()
             return
         values: dict[str, float] = {}
         entered = [field.text().strip() for field in self.fields.values()]
@@ -415,28 +442,12 @@ class SectionPanel(QFrame):
         # Normalize the stored geometry as well as its visual representation.
         # Formed and tubular dimensions use whole millimetres (with two
         # decimals for t); bar dimensions use one decimal place.
-        bar_families = {"Barra Circular", "Barra Quadrada", "Barra Retangular"}
-        concrete_families = {
-            "Retangular", "Circular", "Tipo +", "Tipo L", "Tipo T", "Tipo U",
-            "Tipo I", "Retangular Vazado", "Circular Vazado",
-        }
-        wood_families = {"Circular", "Quadrada", "Retangular"}
         member = self.window.model.bars.get(self._member_name)
         material_type = (
             self.window.model.material_types.get(member.material)
             if member is not None else None
         )
-        for name in values:
-            if self._section_family in wood_families and material_type == "Madeira":
-                values[name] = round(values[name], 1)
-            elif self._section_family in concrete_families:
-                # Concrete dimensions accept at most one decimal when the
-                # user explicitly enters it; integer input remains integer.
-                values[name] = round(values[name], 1)
-            elif self._section_family in bar_families:
-                values[name] = round(values[name], 1)
-            else:
-                values[name] = round(values[name], 2) if name == "t" else round(values[name])
+        self._normalize_manual_values(values, material_type)
         square_family = {
             "Tubular Retangular": "Tubular Quadrado",
             "Barra Retangular": "Barra Quadrada",
@@ -472,19 +483,122 @@ class SectionPanel(QFrame):
         self._update_preview(values)
         self.window.refresh_member_geometry(self._member_name)
 
-    def _switch_to_square_family(self, family: str, geometry: dict[str, float]) -> None:
+    def _manual_geometry_changed_for_selection(self) -> None:
+        """Change the edited dimension in every member, preserving other values."""
+        edited = next(
+            (name for name, field in self.fields.items() if field is self.sender()), None
+        )
+        if edited is None:
+            return
+        try:
+            value = float(self.fields[edited].text().strip().replace(",", "."))
+        except ValueError:
+            self.configure_for(self._member_name, self._section_family)
+            return
+        if not 0 < value < float("inf"):
+            self.configure_for(self._member_name, self._section_family)
+            return
+
+        candidates: dict[str, dict[str, float]] = {}
+        for name in self._member_names:
+            member = self.window.model.bars[name]
+            values = dict(member.geometry_dict())
+            values[edited] = value
+            for parameter, field in self.fields.items():
+                if parameter in values:
+                    continue
+                text = field.text().strip().replace(",", ".")
+                if text:
+                    try:
+                        values[parameter] = float(text)
+                    except ValueError:
+                        return
+            if any(parameter not in values for parameter in self.fields):
+                self._update_preview(None, pending=True)
+                return
+            material_type = self.window.model.material_types.get(member.material)
+            self._normalize_manual_values(values, material_type)
+            try:
+                self._calculate_properties(values)
+            except ValueError:
+                self._update_preview(None, invalid=True)
+                return
+            candidates[name] = values
+
+        square_family = {
+            "Tubular Retangular": "Tubular Quadrado",
+            "Barra Retangular": "Barra Quadrada",
+        }.get(self._section_family)
+        material_types = {
+            self.window.model.material_types.get(self.window.model.bars[name].material)
+            for name in self._member_names
+        }
+        if self._section_family == "Retangular" and material_types == {"Madeira"}:
+            square_family = "Quadrada"
+        if square_family and all(values.get("b") == values.get("h") for values in candidates.values()):
+            square_values = {
+                name: {key: values[key] for key in ("b", "t") if key in values}
+                for name, values in candidates.items()
+            }
+            self._switch_to_square_family(square_family, square_values)
+            return
+
+        profiles = []
+        for name, values in candidates.items():
+            profile = self._manual_profile_name(values, name)
+            profiles.append(profile)
+            self.window.section_profiles[name] = profile
+            self.window.section_geometry[name] = dict(values)
+            self.window.model_service.assign_profile(name, profile, values)
+            self.window.refresh_member_geometry(name)
+        mechanical_visible = self.mechanical_toggle.isChecked()
+        self.configure_for(self._member_name, self._section_family)
+        if mechanical_visible:
+            self.mechanical_toggle.setChecked(True)
+        display = getattr(self.window.properties, "_section_profile_display", None)
+        if display is not None:
+            display.setText(profiles[0] if len(set(profiles)) == 1 else "Variado")
+
+    def _normalize_manual_values(self, values: dict[str, float], material_type: str | None) -> None:
+        bar_families = {"Barra Circular", "Barra Quadrada", "Barra Retangular"}
+        concrete_families = {
+            "Retangular", "Circular", "Tipo +", "Tipo L", "Tipo T", "Tipo U",
+            "Tipo I", "Retangular Vazado", "Circular Vazado",
+        }
+        wood_families = {"Circular", "Quadrada", "Retangular"}
+        for name in values:
+            if self._section_family in wood_families and material_type == "Madeira":
+                values[name] = round(values[name], 1)
+            elif self._section_family in concrete_families:
+                values[name] = round(values[name], 1)
+            elif self._section_family in bar_families:
+                values[name] = round(values[name], 1)
+            else:
+                values[name] = round(values[name], 2) if name == "t" else round(values[name])
+
+    def _switch_to_square_family(
+        self, family: str, geometry: dict[str, float] | dict[str, dict[str, float]],
+    ) -> None:
         """Replace an equal-sided rectangular family without losing input."""
         if not self._member_name:
             return
-        self.window.model_service.assign_section(self._member_name, family)
-        member = self.window.model.bars.get(self._member_name)
-        if member is not None:
+        self._section_family = family
+        profiles = []
+        for name in self._member_names:
+            self.window.model_service.assign_section(name, family)
+            member = self.window.model.bars.get(name)
             material_type = self.window.model.material_types.get(member.material, "Aço")
             sections = self.window.model.sections.setdefault(material_type, [])
             if family not in sections:
                 sections.append(family)
-        self.window.section_profiles.pop(self._member_name, None)
-        self.window.section_geometry[self._member_name] = geometry
+            self.window.section_profiles.pop(name, None)
+            selected_geometry = geometry.get(name, geometry) if isinstance(geometry, dict) else geometry
+            self.window.section_geometry[name] = dict(selected_geometry)
+            profile = self._manual_profile_name(selected_geometry, name)
+            profiles.append(profile)
+            self.window.section_profiles[name] = profile
+            self.window.model_service.assign_profile(name, profile, selected_geometry)
+            self.window.refresh_member_geometry(name)
         combo = getattr(self.window.properties, "_section_combo", None)
         if combo is not None:
             combo.blockSignals(True)
@@ -492,11 +606,13 @@ class SectionPanel(QFrame):
                 combo.addItem(family)
             combo.setCurrentText(family)
             combo.blockSignals(False)
+        display = getattr(self.window.properties, "_section_profile_display", None)
+        if display is not None and profiles:
+            display.setText(profiles[0] if len(set(profiles)) == 1 else "Variado")
         button = getattr(self.window.properties, "_section_settings_button", None)
         self.window.show_section_panel(family, button)
-        self.window.refresh_member_geometry(self._member_name)
 
-    def _manual_profile_name(self, values: dict[str, float]) -> str:
+    def _manual_profile_name(self, values: dict[str, float], member_name: str | None = None) -> str:
         """Build the catalog-style identity for a manual section."""
         if self._section_family == "Tubular Circular":
             return f"TC {float(values['D']):.0f} x {float(values['t']):.2f}"
@@ -510,7 +626,7 @@ class SectionPanel(QFrame):
             return f"BQ {float(values['b']):.1f}"
         if self._section_family == "Barra Retangular":
             return f"BR {float(values['b']):.1f} x {float(values['h']):.1f}"
-        member = self.window.model.bars.get(self._member_name)
+        member = self.window.model.bars.get(member_name or self._member_name)
         material_type = (
             self.window.model.material_types.get(member.material)
             if member is not None else None

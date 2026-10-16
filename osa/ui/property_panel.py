@@ -1,7 +1,7 @@
 from math import isfinite
 
 from PySide6.QtCore import QRegularExpression, Signal
-from PySide6.QtGui import QPen, QRegularExpressionValidator
+from PySide6.QtGui import QPainterPath, QPen, QRegularExpressionValidator
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
@@ -28,7 +28,7 @@ class CompactDoubleSpinBox(QDoubleSpinBox):
 
 
 class MixedCheckBox(QCheckBox):
-    """Three-state checkbox whose mixed state uses the application's blue slash."""
+    """Three-state checkbox with a hatched indicator for mixed values."""
 
     def nextCheckState(self) -> None:
         self.setCheckState(
@@ -45,9 +45,22 @@ class MixedCheckBox(QCheckBox):
         indicator = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#0969da"), 2))
-        painter.drawLine(indicator.left() + 4, indicator.bottom() - 4,
-                         indicator.right() - 4, indicator.top() + 4)
+        box = indicator.adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(box, 4, 4)
+        painter.setPen(QPen(QColor("#0969da"), 1.2))
+        painter.setBrush(QColor("#eaf3ff"))
+        painter.drawPath(path)
+        painter.save()
+        painter.setClipPath(path)
+        painter.setPen(QPen(QColor("#0969da"), 1))
+        for offset in range(-box.height(), box.width(), 4):
+            painter.drawLine(
+                box.left() + offset, box.bottom(),
+                box.left() + offset + box.height(), box.top(),
+            )
+        painter.restore()
+        painter.end()
 
 
 class SelectionKindSwitch(QFrame):
@@ -214,8 +227,7 @@ class PropertyPanel(QFrame):
             return
         name = self._selected_names(kind)[-1]
         self.window.selected = kind, name
-        self.show_for(kind, name, self.window.palette.active_group or "Geometria",
-                      selection=self._selection)
+        self.window.refresh_selected_property_panel(self.window.palette.active_group)
 
     @staticmethod
     def _all_equal(values: list[object]) -> bool:
@@ -451,7 +463,7 @@ class PropertyPanel(QFrame):
             settings_button.setToolTip("Configurar seção")
             settings_button.setAccessibleName("Configurar seção")
             settings_button.setCheckable(True)
-            settings_button.setEnabled(len(names) == 1)
+            settings_button.setEnabled(bool(section_combo.currentText()))
             settings_button.clicked.connect(lambda _checked=False, combo=section_combo, button=settings_button:
                                             self.window.toggle_section_panel(combo.currentText(), button))
             settings_button.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } QToolButton:hover, QToolButton:checked { background: #eaeef2; }")
@@ -461,7 +473,11 @@ class PropertyPanel(QFrame):
             section_profile_display = QLineEdit()
             section_profile_display.setReadOnly(True)
             section_profile_display.setObjectName("identityDisplay")
-            profiles = [self.window.section_profiles.get(member_name, "") for member_name in names]
+            profiles = [
+                self.window.section_profiles.get(member_name)
+                or self.window.model.bars[member_name].profile
+                for member_name in names
+            ]
             section_profile_display.setText(
                 (profiles[0] or "Indefinido") if self._all_equal(profiles) else "Variado"
             )
@@ -626,7 +642,7 @@ class PropertyPanel(QFrame):
         configure_button.setToolTip("Configurar posicionamento")
         configure_button.setAccessibleName("Configurar posicionamento")
         configure_button.setCheckable(True)
-        configure_button.setEnabled(len(positioning) == 1)
+        configure_button.setEnabled(bool(positioning))
         configure_button.clicked.connect(
             lambda _checked=False, button=configure_button: self.window.toggle_displacement_panel(button)
         )
@@ -643,10 +659,18 @@ class PropertyPanel(QFrame):
 
     def update_positioning_status(self, member_name: str) -> None:
         """Synchronize the compact positioning summary after an offset change."""
-        if self._selected != ("bar", member_name) or self._positioning_status is None:
+        if self._selected is None or self._selected[0] != "bar" or self._positioning_status is None:
             return
-        member = self.window.model.bars[member_name]
-        self._positioning_status.setText(self._positioning_summary(member))
+        names = self._selected_names("bar")
+        if member_name not in names:
+            return
+        members = [self.window.model.bars[name] for name in names]
+        signatures = [(
+            member.rotation, member.solid_face_offsets, member.solid_section_offsets,
+        ) for member in members]
+        self._positioning_status.setText(
+            self._positioning_summary(members[0]) if self._all_equal(signatures) else "Variado"
+        )
 
     @staticmethod
     def _positioning_summary(member) -> str:
@@ -1939,9 +1963,10 @@ class PropertyPanel(QFrame):
     def _color_selected(self, color: str) -> None:
         if not self._selected or self._selected[0] != "bar":
             return
-        for member_name in self._selected_names("bar"):
+        member_names = self._selected_names("bar")
+        for member_name in member_names:
             self.window.model_service.update_member_color(member_name, color)
-            self.window.refresh_member_color(member_name)
+        self.window.refresh_member_colors(member_names)
         self._set_member_color_button(color)
 
     def _delete_requested(self) -> None:
@@ -2064,6 +2089,8 @@ class PropertyPanel(QFrame):
         return list(self.window.model.sections.get(material_type, []))
 
     def _section_selected(self, section: str) -> None:
+        if self._section_settings_button is not None:
+            self._section_settings_button.setEnabled(bool(section))
         if not self._selected or self._selected[0] != "bar" or not section:
             return
         for member_name in self._selected_names("bar"):
@@ -2073,7 +2100,7 @@ class PropertyPanel(QFrame):
             self.window.section_geometry.pop(member_name, None)
         if self._section_profile_display is not None:
             self._section_profile_display.setText("Indefinido")
-        if len(self._selected_names("bar")) == 1 and section and self.window.section_panel.isVisible():
+        if section and self.window.section_panel.isVisible():
             self.window.show_section_panel(section, self._section_settings_button)
 
     def reposition(self) -> None:

@@ -227,6 +227,7 @@ class DisplacementPanel(QFrame):
         layout.addWidget(values)
         layout.addStretch()
         self._member_name = ""
+        self._member_names: tuple[str, ...] = ()
         self.hide()
 
     @staticmethod
@@ -302,10 +303,17 @@ class DisplacementPanel(QFrame):
     def configure_for(self, member_name: str) -> None:
         """Load the selected member's positioning values before displaying the panel."""
         self._member_name = member_name
-        member = self.window.model.bars.get(member_name)
+        selected = self.window.properties._selected_names("bar")
+        self._member_names = tuple(
+            name for name in selected if name in self.window.model.bars
+        ) if member_name in selected else ((member_name,) if member_name in self.window.model.bars else ())
+        members = self._members()
+        member = members[0] if members else None
         self.rotation_input.setEnabled(member is not None)
         self.center_button.setEnabled(member is not None)
-        self.rotation_input.setText(str(member.rotation) if member is not None else "")
+        rotations = [item.rotation for item in members]
+        self.rotation_input.setPlaceholderText("Variado" if len(set(rotations)) > 1 else "")
+        self.rotation_input.setText(str(member.rotation) if member is not None and len(set(rotations)) == 1 else "")
         if member is None:
             for field in self._solid_offset_inputs.values():
                 field.clear()
@@ -318,131 +326,147 @@ class DisplacementPanel(QFrame):
                 field.setEnabled(True)
             for field in self._position_parameter_inputs.values():
                 field.setEnabled(True)
-            self._update_section_offset_inputs(member)
-            self._update_position_buttons(member)
+            self._update_section_offset_inputs()
+            self._update_position_buttons()
             self._update_solid_offset_inputs()
         self.layout().activate()
         self.adjustSize()
         self.resize(self.width(), self.sizeHint().height())
 
+    def _members(self) -> list:
+        return [self.window.model.bars[name] for name in self._member_names
+                if name in self.window.model.bars]
+
+    def _refresh_positioning_status(self) -> None:
+        self.window.properties.update_positioning_status(self._member_name)
+
     def _rotation_changed(self) -> None:
-        if not self._member_name:
-            return
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
+        members = self._members()
+        if not members:
             return
         value = self.rotation_input.text().strip()
         if not value:
-            self.rotation_input.setText(str(member.rotation))
+            self.configure_for(self._member_name)
             return
         try:
-            member = self.window.model_service.update_member_rotation(self._member_name, int(value))
+            for member in members:
+                self.window.model_service.update_member_rotation(member.name, int(value))
         except ValueError:
-            self.rotation_input.setText(str(member.rotation))
+            self.configure_for(self._member_name)
             return
-        self.rotation_input.setText(str(member.rotation))
-        self.window.refresh_member_rotation(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        self.rotation_input.setText(str(int(value)))
+        self.rotation_input.setPlaceholderText("")
+        for member in members:
+            self.window.refresh_member_rotation(member.name)
+        self._refresh_positioning_status()
 
     def _rotate_45_requested(self, _checked: bool = False) -> None:
         """Increase the analytical member rotation by 45 degrees."""
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
+        members = self._members()
+        if not members:
             return
         try:
-            member = self.window.model_service.update_member_rotation(
-                self._member_name, member.rotation + 45
-            )
+            for member in members:
+                self.window.model_service.update_member_rotation(member.name, member.rotation + 45)
         except ValueError:
             return
-        self.rotation_input.setText(str(member.rotation))
-        self.window.refresh_member_rotation(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        for member in members:
+            self.window.refresh_member_rotation(member.name)
+        rotations = {member.rotation for member in self._members()}
+        self.rotation_input.setPlaceholderText("Variado" if len(rotations) > 1 else "")
+        self.rotation_input.setText(str(next(iter(rotations))) if len(rotations) == 1 else "")
+        self._refresh_positioning_status()
 
     def _center_requested(self, _checked: bool) -> None:
         """Select the member's original geometric-center position."""
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
+        members = self._members()
+        if not members:
             return
         try:
-            member = self.window.model_service.update_member_solid_section_offsets(
-                self._member_name, (0.0, 0.0)
-            )
+            for member in members:
+                self.window.model_service.update_member_solid_section_offsets(
+                    member.name, (0.0, 0.0)
+                )
         except ValueError:
             return
-        self._update_section_offset_inputs(member)
-        self._update_position_buttons(member)
-        self.window.refresh_member_geometry(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        self._update_section_offset_inputs()
+        self._update_position_buttons()
+        for member in members:
+            self.window.refresh_member_geometry(member.name)
+        self._refresh_positioning_status()
 
     def _position_requested(self, position: str) -> None:
         """Align the requested solid-section face or corner with the line."""
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
+        members = self._members()
+        if not members:
             return
-        offsets = self._position_offsets(member, position)
-        if offsets is None:
+        offsets = [self._position_offsets(member, position) for member in members]
+        if any(value is None for value in offsets):
             return
         try:
-            member = self.window.model_service.update_member_solid_section_offsets(
-                self._member_name, offsets
-            )
+            for member, value in zip(members, offsets):
+                self.window.model_service.update_member_solid_section_offsets(member.name, value)
         except ValueError:
             return
-        self._update_section_offset_inputs(member)
-        self._update_position_buttons(member)
-        self.window.refresh_member_geometry(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        self._update_section_offset_inputs()
+        self._update_position_buttons()
+        for member in members:
+            self.window.refresh_member_geometry(member.name)
+        self._refresh_positioning_status()
 
     def _fine_adjustment_requested(self, delta_y: float, delta_z: float) -> None:
         """Move the solid section by one millimetre in local Y/Z."""
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
+        members = self._members()
+        if not members:
             return
-        offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
-        if len(offsets) != 2:
-            offsets = [0.0, 0.0]
-        offsets[0] += delta_y
-        offsets[1] += delta_z
         try:
-            member = self.window.model_service.update_member_solid_section_offsets(
-                self._member_name, tuple(offsets)
-            )
+            for member in members:
+                offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
+                if len(offsets) != 2:
+                    offsets = [0.0, 0.0]
+                offsets[0] += delta_y
+                offsets[1] += delta_z
+                self.window.model_service.update_member_solid_section_offsets(
+                    member.name, tuple(offsets)
+                )
         except ValueError:
             return
-        self._update_section_offset_inputs(member)
-        self._update_position_buttons(member)
-        self.window.refresh_member_geometry(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        self._update_section_offset_inputs()
+        self._update_position_buttons()
+        for member in members:
+            self.window.refresh_member_geometry(member.name)
+        self._refresh_positioning_status()
 
     def _section_offset_changed(self, parameter: str) -> None:
         """Apply a direct Y/Z value entered in millimetres."""
-        member = self.window.model.bars.get(self._member_name)
+        members = self._members()
         field = self._position_parameter_inputs.get(parameter)
-        if member is None or field is None or parameter not in {"Y", "Z"}:
+        if not members or field is None or parameter not in {"Y", "Z"}:
             return
         try:
             value_mm = float(field.text().strip().replace(",", "."))
             if not isfinite(value_mm):
                 raise ValueError
         except ValueError:
-            self._update_section_offset_inputs(member)
+            self._update_section_offset_inputs()
             return
-        offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
-        if len(offsets) != 2:
-            offsets = [0.0, 0.0]
-        offsets[0 if parameter == "Y" else 1] = value_mm / 1000.0
         try:
-            member = self.window.model_service.update_member_solid_section_offsets(
-                self._member_name, tuple(offsets)
-            )
+            for member in members:
+                offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
+                if len(offsets) != 2:
+                    offsets = [0.0, 0.0]
+                offsets[0 if parameter == "Y" else 1] = value_mm / 1000.0
+                self.window.model_service.update_member_solid_section_offsets(
+                    member.name, tuple(offsets)
+                )
         except ValueError:
-            self._update_section_offset_inputs(member)
+            self._update_section_offset_inputs()
             return
-        self._update_section_offset_inputs(member)
-        self._update_position_buttons(member)
-        self.window.refresh_member_geometry(self._member_name)
-        self.window.properties.update_positioning_status(self._member_name)
+        self._update_section_offset_inputs()
+        self._update_position_buttons()
+        for member in members:
+            self.window.refresh_member_geometry(member.name)
+        self._refresh_positioning_status()
 
     @staticmethod
     def _format_solid_offset(value: float) -> str:
@@ -452,9 +476,9 @@ class DisplacementPanel(QFrame):
         return formatted or "0"
 
     def _solid_offset_changed(self, endpoint: str) -> None:
-        member = self.window.model.bars.get(self._member_name)
+        members = self._members()
         field = self._solid_offset_inputs.get(endpoint)
-        if member is None or field is None or endpoint not in {"A", "B"}:
+        if not members or field is None or endpoint not in {"A", "B"}:
             return
         try:
             value_mm = float(field.text().strip().replace(",", "."))
@@ -463,51 +487,62 @@ class DisplacementPanel(QFrame):
         except ValueError:
             self._update_solid_offset_inputs()
             return
-        offsets = list(getattr(member, "solid_face_offsets", (0.0, 0.0)))
-        offsets[0 if endpoint == "A" else 1] = value_mm / 1000.0
         try:
-            member = self.window.model_service.update_member_solid_face_offsets(
-                self._member_name, tuple(offsets)
-            )
+            for member in members:
+                offsets = list(getattr(member, "solid_face_offsets", (0.0, 0.0)))
+                offsets[0 if endpoint == "A" else 1] = value_mm / 1000.0
+                self.window.model_service.update_member_solid_face_offsets(
+                    member.name, tuple(offsets)
+                )
         except ValueError:
             self._update_solid_offset_inputs()
             return
-        field.setText(
-            self._format_solid_offset(member.solid_face_offsets[0 if endpoint == "A" else 1])
-        )
-        self._update_position_buttons(member)
-        self.window.properties.update_positioning_status(self._member_name)
-        self.window.refresh_member_geometry(self._member_name)
+        self._update_solid_offset_inputs()
+        self._update_position_buttons()
+        self._refresh_positioning_status()
+        for member in members:
+            self.window.refresh_member_geometry(member.name)
 
     def _update_solid_offset_inputs(self) -> None:
-        member = self.window.model.bars.get(self._member_name)
-        if member is None:
-            return
-        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
-        if len(offsets) != 2:
+        members = self._members()
+        if not members:
             return
         for index, endpoint in enumerate(("A", "B")):
+            values = [
+                (member.solid_face_offsets if len(member.solid_face_offsets) == 2 else (0.0, 0.0))[index]
+                for member in members
+            ]
             field = self._solid_offset_inputs[endpoint]
-            field.setText(self._format_solid_offset(offsets[index]))
+            field.setPlaceholderText("Variado" if len(set(values)) > 1 else "")
+            field.setText(self._format_solid_offset(values[0]) if len(set(values)) == 1 else "")
 
-    def _update_position_buttons(self, member) -> None:
-        section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        centered = len(section_offsets) == 2 and all(
-            abs(float(value)) <= 1e-12 for value in section_offsets
+    def _update_position_buttons(self) -> None:
+        members = self._members()
+        bounds = [self._section_bounds(item) for item in members]
+        centered = bool(members) and all(
+            len(item.solid_section_offsets) == 2
+            and all(abs(float(value)) <= 1e-12 for value in item.solid_section_offsets)
+            for item in members
         )
         with QSignalBlocker(self.center_button):
             self.center_button.setChecked(centered)
         for position, button in self._position_buttons.items():
-            offsets = self._position_offsets(member, position)
-            active = offsets is not None and len(section_offsets) == 2 and all(
-                abs(float(current) - float(expected)) <= 1e-12
-                for current, expected in zip(section_offsets, offsets)
+            positions = [
+                self._position_offsets_from_bounds(value, position) if value is not None else None
+                for value in bounds
+            ]
+            available = bool(positions) and all(offsets is not None for offsets in positions)
+            active = available and all(
+                all(abs(float(current) - float(expected)) <= 1e-12
+                    for current, expected in zip(item.solid_section_offsets, offsets))
+                for item, offsets in zip(members, positions)
             )
+            button.setEnabled(available)
             with QSignalBlocker(button):
                 button.setChecked(active)
 
     @staticmethod
-    def _position_offsets(member, position: str) -> tuple[float, float] | None:
+    def _section_bounds(member) -> tuple[float, float, float, float] | None:
         try:
             shape = section_shape(
                 member.section, member.geometry_dict(),
@@ -515,9 +550,13 @@ class DisplacementPanel(QFrame):
             )
         except (KeyError, TypeError, ValueError):
             return None
-        if shape is None:
-            return None
-        min_y, max_y, min_z, max_z = shape.bounds
+        return shape.bounds if shape is not None else None
+
+    @staticmethod
+    def _position_offsets_from_bounds(
+        bounds: tuple[float, float, float, float], position: str,
+    ) -> tuple[float, float] | None:
+        min_y, max_y, min_z, max_z = bounds
         horizontal = {
             "esquerdo": -float(min_y),
             "direito": -float(max_y),
@@ -548,10 +587,20 @@ class DisplacementPanel(QFrame):
             vertical[vertical_position] * 1e-3,
         )
 
-    def _update_section_offset_inputs(self, member) -> None:
-        offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        if len(offsets) != 2:
+    @classmethod
+    def _position_offsets(cls, member, position: str) -> tuple[float, float] | None:
+        bounds = cls._section_bounds(member)
+        return cls._position_offsets_from_bounds(bounds, position) if bounds is not None else None
+
+    def _update_section_offset_inputs(self) -> None:
+        members = self._members()
+        if not members:
             return
-        for value, parameter in zip(offsets, ("Y", "Z")):
+        for index, parameter in enumerate(("Y", "Z")):
+            values = [
+                (item.solid_section_offsets if len(item.solid_section_offsets) == 2 else (0.0, 0.0))[index]
+                for item in members
+            ]
             field = self._position_parameter_inputs[parameter]
-            field.setText(self._format_solid_offset(float(value)))
+            field.setPlaceholderText("Variado" if len(set(values)) > 1 else "")
+            field.setText(self._format_solid_offset(float(values[0])) if len(set(values)) == 1 else "")
