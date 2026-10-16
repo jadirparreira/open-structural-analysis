@@ -41,6 +41,8 @@ class StructuralModel:
         self.load_combinations: dict[str, LoadCombination] = {}
         self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
+        # Proveniência e pendências de conversores externos, persistidas no .osa.
+        self.import_metadata: dict = {}
         self.revision = 0
 
     @property
@@ -859,6 +861,7 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
+        self.import_metadata.clear()
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()

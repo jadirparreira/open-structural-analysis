@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import copy
 from typing import Any
 
 from osa.domain import (
@@ -62,6 +63,8 @@ class ProjectSerializer:
             "combination_groups_initialized": sorted(model.combination_groups_initialized),
             "results": [asdict(item) for item in model.analysis_results],
         }
+        if model.import_metadata:
+            data["import_metadata"] = copy.deepcopy(model.import_metadata)
         if thumbnail:
             data["thumbnail"] = {"format": "png", "data": thumbnail}
         return data
@@ -218,4 +221,6 @@ class ProjectSerializer:
         model.load_combinations = candidate.load_combinations
         model.combination_groups_initialized = candidate.combination_groups_initialized
         model.analysis_results = candidate.analysis_results
+        metadata = data.get("import_metadata", {})
+        model.import_metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
         model.revision += 1

@@ -22,6 +22,8 @@ class TitleBar(QFrame):
         new_model_action.triggered.connect(window.new_model)
         open_model_action = file_menu.addAction("Abrir modelo…")
         open_model_action.triggered.connect(window.open_model)
+        self.import_model_action = file_menu.addAction("Importar modelo…")
+        self.import_model_action.triggered.connect(window.import_model)
         self.save_model_action = file_menu.addAction("Salvar")
         self.save_model_action.triggered.connect(window.save_model)
         self.save_model_as_action = file_menu.addAction("Salvar como…")

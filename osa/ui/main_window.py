@@ -10,6 +10,8 @@ from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService
+from osa.transcriptions import is_import_path
+from osa.transcriptions.plates import require_no_pending_plates
 
 from .analysis_panel import ProcessingPanel
 from .analysis_worker import AnalysisWorker
@@ -30,6 +32,7 @@ from .dialogs import (
 )
 from .displacement_panel import DisplacementPanel
 from .home import HomePage
+from .import_dialogs import EberickImportDialog, ImportReportDialog
 from .mcp_dispatcher import McpQtDispatcher
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
@@ -62,6 +65,8 @@ class MainWindow(QMainWindow):
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
+    _open_file_filter = _project_file_filter
+    _import_file_filter = "Projeto Eberick (*.prj *.prj.zip)"
     _interface_commands = frozenset({
         "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
@@ -88,6 +93,7 @@ class MainWindow(QMainWindow):
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
         self.current_path: Path | None = None
+        self._import_save_path: Path | None = None
         self._saved_revision = self.model.revision
         self._command_mode: str | None = None
         self._member_placement_start: tuple[float, float, float] | None = None
@@ -285,6 +291,7 @@ class MainWindow(QMainWindow):
         self._mcp_enabled = False
         self.home.new_project_requested.connect(self.new_model)
         self.home.open_project_requested.connect(self.open_model)
+        self.home.import_project_requested.connect(self.import_model)
         self.home.recent_project_requested.connect(self._open_recent_project)
         self.home.manual_requested.connect(self.open_manual)
         self.show_home()
@@ -293,6 +300,16 @@ class MainWindow(QMainWindow):
         """Run PyNite in the background after the progress card is painted."""
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
+        try:
+            require_no_pending_plates(self.model.import_metadata)
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+        if self.model.import_metadata.get("requires_review"):
+            dialog = ImportReportDialog(self.model.import_metadata, self, review=True)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            self.project_service.confirm_import_review()
         orphaned_actions = self.model.remove_orphaned_actions()
         if orphaned_actions:
             self.history.append(
@@ -478,6 +495,7 @@ class MainWindow(QMainWindow):
         actions = (
             ("Novo modelo", QKeySequence.StandardKey.New, self.new_model),
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
+            ("Importar modelo", "Ctrl+I", self.import_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Excluir elemento selecionado", "Delete", self.delete_selected),
             ("Cancelar lançamento", "Escape", self.cancel_member_placement),
@@ -1732,6 +1750,7 @@ class MainWindow(QMainWindow):
         self.scene.set_selection_highlight(())
         self.clear_selection()
         self.current_path = None
+        self._import_save_path = None
         self._saved_revision = self.model.revision
         self.refresh_action_palette()
         self.refresh_analysis_palette()
@@ -1745,7 +1764,10 @@ class MainWindow(QMainWindow):
 
     def save_model_as(self) -> None:
         """Escolhe um novo caminho e salva o modelo nesse arquivo."""
-        suggested_name = self.current_path.name if self.current_path else "modelo.osa"
+        suggested_name = (
+            str(self.current_path) if self.current_path else
+            str(self._import_save_path) if self._import_save_path else "modelo.osa"
+        )
         path, _ = QFileDialog.getSaveFileName(
             self, "Salvar modelo como", suggested_name, self._project_file_filter,
         )
@@ -1764,22 +1786,45 @@ class MainWindow(QMainWindow):
             self._saved_revision = self.model.revision
             self.home.store.add(self.current_path)
             self.home.refresh()
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self.show_error(f"Não foi possível salvar o arquivo: {error}")
 
     def open_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._project_file_filter)
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._open_file_filter)
         if path:
             self._open_model_path(path)
 
     def _open_model_path(self, path: str | Path) -> None:
         path = Path(path)
         if path.suffix.casefold() != ".osa":
-            self.show_error("Selecione um arquivo de modelo com extensão .osa.")
+            self.show_error("Abrir modelo aceita arquivos .osa. Para projetos de outros softwares, use Importar modelo.")
             return
+        self._load_model_path(path, importing=False)
+
+    def import_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Importar modelo", "", self._import_file_filter)
+        if path:
+            self._import_model_path(path)
+
+    def _import_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if not is_import_path(path):
+            self.show_error("Selecione um projeto Eberick .prj/.prj.zip. Para arquivos .osa, use Abrir modelo.")
+            return
+        self._load_model_path(path, importing=True)
+
+    def _load_model_path(self, path: Path, *, importing: bool) -> None:
+        if not self._confirm_pending_changes():
+            return
+        import_options = None
+        if importing:
+            dialog = EberickImportDialog(path, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            import_options = dialog.options()
         try:
+            report = self.project_service.load(path, import_options=import_options)
             self.axes_panel.discard()
-            self.project_service.load(path)
             self.normalize_member_directions_if_enabled()
             self.section_profiles = {
                 name: member.profile for name, member in self.model.bars.items() if member.profile
@@ -1800,16 +1845,32 @@ class MainWindow(QMainWindow):
             self.scene.set_member_placement_mode(False)
             self.scene.set_selection_highlight(())
             self.clear_selection()
-            self.current_path = path
-            self._saved_revision = self.model.revision
-            self.home.store.add(self.current_path)
+            self.current_path = None if importing else path
+            if importing:
+                original_name = path.name[:-4] if path.name.casefold().endswith(".zip") else path.name
+                self._import_save_path = path.with_name(Path(original_name).stem + ".osa")
+            else:
+                self._import_save_path = None
+            self._saved_revision = self.model.revision - 1 if importing else self.model.revision
+            if self.current_path is not None:
+                self.home.store.add(self.current_path)
             self.home.refresh()
             self.refresh_action_palette()
             self.refresh_analysis_palette()
             self.refresh_scene(fit_camera=True)
             self.show_editor()
+            if report:
+                counts = report["counts"]
+                self.history.append(
+                    "> <b>Importação Eberick</b> "
+                    f"{escape(path.name)} — {counts['nodes']} nós, "
+                    f"{counts['members']} barras, {counts['rigid_links']} ligações rígidas. "
+                    "Salvar cria um modelo .osa."
+                )
+                ImportReportDialog(report, self).exec()
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-            self.show_error(f"Não foi possível abrir o modelo: {error}")
+            operation = "importar" if importing else "abrir"
+            self.show_error(f"Não foi possível {operation} o modelo: {error}")
 
     def _has_unsaved_changes(self) -> bool:
         return self.model.revision != self._saved_revision
