@@ -1,4 +1,4 @@
-"""Transcrição experimental do lançamento PRJ (perfil interno 3419) para OSA.
+"""Transcrição experimental do lançamento PRJ por compatibilidade de layout.
 
 Não utiliza executáveis, DLLs ou bibliotecas do Eberick. Os vínculos e as
 cargas ainda não calibrados ficam no relatório, sem serem apresentados como
@@ -17,6 +17,22 @@ from pathlib import Path
 
 from .contracts import ImportOptions, ImportResult, ProjectImportError
 from .eberick_reader import LayoutError, Reader, extract, load_stream
+from .eberick_reader.slabs import is_slab_element_class
+from .plates import prepare_plate_transfer
+
+_REFERENCE_CODE = 3419
+# Estes dados não geram ações no OSA. Se um deles falhar dentro de uma viga
+# ou pilar, o decodificador do elemento também falha e impede a importação.
+_EVIDENCE_ONLY_CLASSES = frozenset(
+    {
+        "AcaoPermanente",
+        "AcaoAcidental",
+        "Combinacao",
+        "GrupoAcoes",
+        "TCarregamentosAtivos",
+        "TIdCarregamento",
+    }
+)
 
 
 class EberickImporter:
@@ -28,18 +44,24 @@ class EberickImporter:
         try:
             raw, source = load_stream(path)
             reader = Reader(raw, source)
-            if reader.version != 3419:
+            if len(reader.classes.get("Projeto", ())) != 1:
                 raise ProjectImportError(
-                    f"O PRJ usa o código interno {reader.version}. Esta primeira "
-                    "integração suporta o lançamento do perfil 3419. O arquivo "
-                    "original não foi alterado."
+                    "Não foi identificado um único registro de projeto no PRJ. "
+                    "O modelo aberto foi mantido."
                 )
             data = extract(reader)
         except (LayoutError, struct.error, zipfile.BadZipFile) as error:
             raise ProjectImportError(
                 f"Não foi possível interpretar o PRJ: {error}"
             ) from error
-        return self.convert(data, options)
+        try:
+            return self.convert(data, options)
+        except ProjectImportError as error:
+            raise ProjectImportError(
+                f"PRJ com código interno {reader.version}: {error} "
+                "O modelo aberto foi mantido. O registro indicado precisa "
+                "ser conferido antes de ampliar o mapeamento desse layout."
+            ) from error
 
     def convert(self, data: dict, options: ImportOptions) -> ImportResult:
         """Recebe evidências do leitor; permite testes sem dependências gráficas."""
@@ -54,26 +76,69 @@ class EberickImporter:
 
     @staticmethod
     def _validate_launch(data: dict) -> None:
-        if data.get("internal_version_code") != 3419:
-            raise ProjectImportError("Perfil de lançamento não suportado.")
-        if data.get("decode_errors"):
-            first = data["decode_errors"][0]
+        blocking_errors = [
+            item
+            for item in data.get("decode_errors", ())
+            if item["class_name"] not in _EVIDENCE_ONLY_CLASSES
+        ]
+        if blocking_errors:
+            first = blocking_errors[0]
             raise ProjectImportError(
-                f"O lançamento contém um layout não suportado: {first['class_name']} "
-                f"em {first['offset_hex']}. Nenhum modelo foi substituído."
+                f"O layout de {first['class_name']} não foi reconhecido "
+                f"em {first['offset_hex']}: {first.get('error', 'registro incompatível')}."
             )
-        if not data.get("beams") or not data.get("floors"):
+        if not data.get("beams") or not data.get("floors") or not data.get("croquis"):
             raise ProjectImportError(
-                "Não foram recuperados pavimentos e vigas para importar."
+                "Não foi possível recuperar o lançamento com pavimentos, croquis "
+                "e vigas no layout conhecido."
             )
         inventory = {
             item["class_name"]: item["count"] for item in data.get("inventory", ())
         }
-        if inventory.get("ElementoViga", 0) != len(data["beams"]):
-            raise ProjectImportError(
-                "Nem todas as vigas foram lidas; importação cancelada."
-            )
-        unsupported = ("Laje", "ElementoLaje", "Escada", "TRampa", "ElementoEscada")
+        expected = {
+            "pavimentos": (inventory.get("Pavimento", 0), data["floors"]),
+            "croquis": (inventory.get("CroquiPavimento", 0), data["croquis"]),
+            "vigas": (
+                inventory.get("ElementoViga", 0),
+                data.get("beam_groups", data["beams"]),
+            ),
+            "pontos intermediários": (
+                inventory.get("ElementoNo", 0),
+                data.get("points", ()),
+            ),
+            "pilares": (
+                inventory.get("ElementoPilar", 0) + inventory.get("ElPilarFundacao", 0),
+                data.get("columns", ()),
+            ),
+            "registros de laje": (
+                sum(
+                    count
+                    for name, count in inventory.items()
+                    if is_slab_element_class(name)
+                ),
+                data.get("slabs", ()),
+            ),
+        }
+        for label, (count, records) in expected.items():
+            if count != len(records):
+                raise ProjectImportError(
+                    f"A contagem de {label} não confere: {len(records)} lidos "
+                    f"de {count} registros. Importação cancelada para evitar omissões."
+                )
+        if "beam_groups" in data:
+            declared = sum(beam["segment_count"] for beam in data["beam_groups"])
+            if declared != len(data["beams"]) or inventory.get(
+                "ElementoTrecho", 0
+            ) != len(data["beams"]):
+                raise ProjectImportError(
+                    "A contagem dos trechos de viga não confere com o lançamento."
+                )
+            segment_ids = [beam["segment_id"] for beam in data["beams"]]
+            if len(set(segment_ids)) != len(segment_ids):
+                raise ProjectImportError(
+                    "Um trecho de viga foi associado a mais de uma posição do lançamento."
+                )
+        unsupported = ("Escada", "TRampa", "ElementoEscada")
         present = [name for name in unsupported if inventory.get(name, 0)]
         if present:
             raise ProjectImportError(
@@ -83,8 +148,23 @@ class EberickImporter:
         floors = {f["floor_id"] for f in data["floors"]}
         if len(floors) != len(data["floors"]):
             raise ProjectImportError("IDs de pavimento repetidos não são suportados.")
-        for sketch in data.get("croquis", ()):
-            count = sum(b.get("floor_id") == sketch["floor_id"] for b in data["beams"])
+        sketch_floors = [item["floor_id"] for item in data["croquis"]]
+        if len(set(sketch_floors)) != len(sketch_floors):
+            raise ProjectImportError("Mais de um croqui para o mesmo pavimento.")
+        for record in (
+            *data["beams"],
+            *data.get("columns", ()),
+            *data.get("points", ()),
+        ):
+            if record.get("floor_id") not in floors:
+                raise ProjectImportError("Há elementos sem pavimento identificado.")
+            if record["floor_id"] not in sketch_floors:
+                raise ProjectImportError("Há elementos sem croqui identificado.")
+        for sketch in data["croquis"]:
+            count = sum(
+                b.get("floor_id") == sketch["floor_id"]
+                for b in data.get("beam_groups", data["beams"])
+            )
             if sketch["floor_id"] not in floors or count != sketch["beam_count"]:
                 raise ProjectImportError(
                     "A contagem de vigas/pavimentos do croqui não confere."
@@ -94,6 +174,24 @@ class EberickImporter:
             for column in data.get("columns", ())
             if column.get("referenced_by_beam")
         ]
+        anchor_records = [
+            *active,
+            *(
+                point
+                for point in data.get("points", ())
+                if point.get("referenced_by_beam")
+            ),
+        ]
+        columns_by_id = {column["object_id"]: column for column in anchor_records}
+        if len(columns_by_id) != len(anchor_records):
+            raise ProjectImportError("Referências de pilares/pontos repetidas.")
+        for beam in data["beams"]:
+            for endpoint in ("support_i_id", "support_j_id"):
+                column = columns_by_id.get(beam[endpoint])
+                if column is None or column["floor_id"] != beam["floor_id"]:
+                    raise ProjectImportError(
+                        "Referência entre trecho, pilar/ponto e pavimento não resolvida."
+                    )
         for column in data.get("columns", ()):
             if column.get("referenced_by_beam"):
                 continue
@@ -146,7 +244,8 @@ class _LaunchBuilder:
         self.names: set[str] = set()
         self.materials: dict[str, dict] = {}
         self.member_sources: dict[str, dict] = {}
-        self.column_nodes: dict[int, str] = {}
+        self.anchor_nodes: dict[int, str] = {}
+        self.support_candidates: list[dict] = []
         self.warnings = [
             "Unidades e cotas foram interpretadas segundo as opções desta importação.",
             (
@@ -162,10 +261,31 @@ class _LaunchBuilder:
                 "seção, eixos locais e rotações das seções ainda exigem revisão."
             ),
         ]
+        source_code = data.get("internal_version_code")
+        if source_code != _REFERENCE_CODE:
+            self.warnings.insert(
+                0,
+                f"O código interno {source_code} foi lido por reconhecimento de layout. "
+                "A validação de uma amostra real não garante cobertura de todos os "
+                "projetos desse código nem equivalência entre versões.",
+            )
+        optional_errors = data.get("decode_errors", ())
+        if optional_errors:
+            names = sorted({item["class_name"] for item in optional_errors})
+            self.warnings.append(
+                f"{len(optional_errors)} registros auxiliares não foram interpretados "
+                f"({', '.join(names)}). Esses dados não foram aplicados ao modelo; "
+                "os detalhes das falhas acompanham o relatório salvo no .osa."
+            )
 
     @staticmethod
     def _number(value, label):
-        result = float(value)
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ProjectImportError(
+                f"{label}: valor numérico ausente ou inválido."
+            ) from error
         if not math.isfinite(result):
             raise ProjectImportError(f"{label}: valor não finito.")
         return result
@@ -234,6 +354,8 @@ class _LaunchBuilder:
             "floor_id": floor["floor_id"],
             "original_name": record["name"],
             "kind": kind,
+            "segment_id": record.get("segment_id"),
+            "beam_object_id": record.get("beam_object_id"),
         }
 
     def _material(self, floor, kind):
@@ -292,9 +414,7 @@ class _LaunchBuilder:
             height = (
                 self._number(floor["height_raw"], "Altura do pavimento") * self.length
             )
-            if height < 0 or (
-                height == 0 and (index > 0 or self.options.include_lower_columns)
-            ):
+            if height < 0 or (height == 0 and index > 0):
                 raise ProjectImportError(
                     "Alturas nulas/negativas não são suportadas nesta importação."
                 )
@@ -315,28 +435,65 @@ class _LaunchBuilder:
                 raise ProjectImportError("Pilar sem pavimento resolvido.")
             x, y = (value * self.length for value in column["xy_raw"])
             z = elevations[floor["floor_id"]]
-            self.column_nodes[column["object_id"]] = self._node(
+            self.anchor_nodes[column["object_id"]] = self._node(
                 (x, y, z), f"{self._floor_name(floor)}_{column['name']}"
             )
+        for point in self.data.get("points", ()):
+            if point.get("referenced_by_beam"):
+                floor = by_floor[point["floor_id"]]
+                x, y = (value * self.length for value in point["xy_raw"])
+                self.anchor_nodes[point["object_id"]] = self._node(
+                    (x, y, elevations[point["floor_id"]]),
+                    f"{self._floor_name(floor)}_{point['name']}",
+                )
         for index, floor in enumerate(floors):
             for column in (c for c in active if c["floor_id"] == floor["floor_id"]):
-                end = self.column_nodes[column["object_id"]]
+                end = self.anchor_nodes[column["object_id"]]
                 if index == 0:
                     if not self.options.include_lower_columns:
                         continue
-                    if not column.get("foundation_raw"):
+                    foundation = column.get("foundation_raw") or {}
+                    if (
+                        foundation.get("kind") != "pad_footing"
+                        or foundation.get("depth_reference")
+                        != "baldrame_top_to_footing_bottom"
+                    ):
                         raise ProjectImportError(
-                            "Trecho inferior sem fundação reconhecida; desative essa opção para importar somente os pavimentos."
+                            "Trecho inferior sem profundidade de sapata reconhecida; "
+                            "blocos e outros tipos ainda não foram mapeados. Desative "
+                            "essa opção para importar somente os pavimentos."
+                        )
+                    depth = (
+                        self._number(
+                            foundation.get("settlement_depth_raw"),
+                            "Profundidade de assentamento",
+                        )
+                        * self.length
+                    )
+                    if depth <= 0:
+                        raise ProjectImportError(
+                            "A profundidade de assentamento da sapata deve ser positiva."
                         )
                     x, y = (value * self.length for value in column["xy_raw"])
+                    support_z = elevations[floor["floor_id"]] - depth
                     start = self._node(
-                        (
-                            x,
-                            y,
-                            elevations[floor["floor_id"]]
-                            - floor["height_raw"] * self.length,
-                        ),
+                        (x, y, support_z),
                         f"Base_{column['name']}",
+                    )
+                    self.support_candidates.append(
+                        {
+                            "node_name": start,
+                            "column_name": column["name"],
+                            "source_object_id": column["object_id"],
+                            "floor_id": floor["floor_id"],
+                            "foundation_kind": "pad_footing",
+                            "baldrame_top_elevation_m": elevations[floor["floor_id"]],
+                            "settlement_depth_m": depth,
+                            "elevation_m": support_z,
+                            "mapping_status": "pending_support_calibration",
+                            "source_flags_raw": foundation.get("six_flags_raw", []),
+                            "source_values_raw": foundation.get("six_values_raw", []),
+                        }
                     )
                 else:
                     previous = lookup.get(
@@ -346,7 +503,7 @@ class _LaunchBuilder:
                         raise ProjectImportError(
                             f"Continuidade de {column['name']} não identificada; importação cancelada."
                         )
-                    start = self.column_nodes[previous["object_id"]]
+                    start = self.anchor_nodes[previous["object_id"]]
                 self._member(
                     f"{self._floor_name(floor)}_{column['name']}",
                     start,
@@ -362,11 +519,11 @@ class _LaunchBuilder:
                 raise ProjectImportError("Viga sem pavimento resolvido.")
             label = f"{self._floor_name(floor)}_{beam['name']}"
             try:
-                start = self.column_nodes[beam["support_i_id"]]
-                end = self.column_nodes[beam["support_j_id"]]
+                start = self.anchor_nodes[beam["support_i_id"]]
+                end = self.anchor_nodes[beam["support_j_id"]]
             except KeyError as error:
                 raise ProjectImportError(
-                    "Referência de pilar da viga não resolvida."
+                    "Referência de pilar/ponto da viga não resolvida."
                 ) from error
             if self.options.preserve_end_offsets:
                 z = elevations[floor["floor_id"]]
@@ -396,11 +553,13 @@ class _LaunchBuilder:
             )
         else:
             self.warnings.append(
-                "Vigas foram ligadas diretamente às inserções dos pilares; os deslocamentos de extremidade não foram aplicados."
+                "Vigas foram ligadas diretamente às inserções dos pilares/pontos; os deslocamentos de extremidade não foram aplicados."
             )
         if self.options.include_lower_columns:
             self.warnings.append(
-                "A altura do primeiro pavimento foi usada para o trecho inferior dos pilares. A cota de apoio é uma hipótese geométrica a conferir."
+                "As bases dos pilares de sapata usam a profundidade individual de assentamento "
+                "lida do PRJ. A cota do primeiro pavimento é a referência de topo do baldrame; "
+                "desníveis precisam ser conferidos. Os tipos de vínculo permanecem pendentes de calibração."
             )
         self.warnings.append(
             "Materiais usam configurações de pavimento, sem mapear sobreposições por elemento. O coeficiente de Poisson é informado nesta importação."
@@ -413,20 +572,61 @@ class _LaunchBuilder:
             for key in (
                 "columns",
                 "beams",
+                "beam_groups",
+                "points",
                 "walls",
                 "actions",
                 "concretes",
                 "floors",
                 "sections",
                 "active_action_keys",
+                "slabs",
             )
         }
+        plate_transfer = prepare_plate_transfer(
+            self.data.get("slabs", ()), elevations, self.length
+        )
+        boundary_members = {}
+        for name, source_record in self.member_sources.items():
+            for ident in {
+                source_record["object_id"],
+                source_record.get("segment_id"),
+                source_record.get("beam_object_id"),
+            } - {None}:
+                boundary_members.setdefault(ident, []).append(name)
+        for plate in plate_transfer["records"]:
+            plate["boundary_members"] = [
+                {
+                    "source_object_id": ident,
+                    "member_names": boundary_members.get(ident, []),
+                    "member_name": boundary_members[ident][0]
+                    if len(boundary_members.get(ident, ())) == 1
+                    else None,
+                }
+                for ident in plate["boundary_element_ids"]
+            ]
+        if plate_transfer["records"]:
+            self.warnings.insert(
+                0,
+                f"{len(plate_transfer['records'])} registro(s) de laje preservado(s) para a futura "
+                "integração com elementos de placa. As lajes ainda não participam do modelo "
+                "de cálculo e não geram ações. O processamento permanece pendente dessa integração.",
+            )
         report = {
             "schema": "osa-import/v1",
             "importer": "eberick",
-            "importer_version": "0.1",
+            "importer_version": "0.5",
             "source": source,
-            "internal_version_code": 3419,
+            "internal_version_code": self.data.get("internal_version_code"),
+            "compatibility": {
+                "layout": self.data.get("launch_layout", "eberick-native-launch-v1"),
+                "reference_internal_code": _REFERENCE_CODE,
+                "mode": "reference_code"
+                if self.data.get("internal_version_code") == _REFERENCE_CODE
+                else "structural_probe",
+                "status": "matched_known_layout",
+            },
+            "decode_warnings": list(self.data.get("decode_errors", ())),
             "imported_at": datetime.now(UTC).isoformat(),
             "options": asdict(self.options),
             "requires_review": True,
@@ -434,9 +634,17 @@ class _LaunchBuilder:
                 "nodes": len(self.nodes),
                 "members": len(self.members),
                 "beams": len(self.data["beams"]),
+                "beam_groups": len(self.data.get("beam_groups", self.data["beams"])),
+                "beam_segments": len(self.data["beams"]),
+                "intermediate_points": sum(
+                    point.get("referenced_by_beam", False)
+                    for point in self.data.get("points", ())
+                ),
                 "columns": len(self.members) - len(self.data["beams"]),
                 "rigid_links": len(self.rigid),
                 "applied_loads": 0,
+                "support_candidates": len(self.support_candidates),
+                "pending_plates": len(plate_transfer["records"]),
                 "preserved_wall_records": len(evidence["walls"]),
             },
             "floor_elevations_m": [
@@ -445,6 +653,8 @@ class _LaunchBuilder:
             ],
             "warnings": self.warnings,
             "member_sources": self.member_sources,
+            "support_candidates": self.support_candidates,
+            "plate_transfer": plate_transfer,
             "source_evidence": evidence,
             "omitted": {
                 "combinations": len(self.data.get("combinations", ())),

@@ -45,11 +45,24 @@ def test_cancel_pending_changes_does_not_load_another_project():
     assert errors == []
 
 
-@pytest.mark.skipif(
-    not os.environ.get("OSA_EBERICK_PRJ"),
-    reason="Defina OSA_EBERICK_PRJ para a abertura real pela interface.",
+@pytest.mark.parametrize(
+    "source_env,node_count,bar_count,save_name",
+    [
+        ("OSA_EBERICK_PRJ", 28, 16, "teste_conv.osa"),
+        (
+            "OSA_EBERICK_FOUNDATIONS_PRJ",
+            225,
+            145,
+            "Arara Azul - Ampliação.osa",
+        ),
+    ],
 )
-def test_real_window_import_save_and_reopen(qt_app, monkeypatch, tmp_path):
+def test_real_window_import_save_and_reopen(
+    qt_app, monkeypatch, tmp_path, source_env, node_count, bar_count, save_name
+):
+    if not os.environ.get(source_env):
+        pytest.skip(f"Defina {source_env} para a abertura real pela interface.")
+
     class AcceptedImport:
         def __init__(self, *args, **kwargs):
             pass
@@ -75,17 +88,17 @@ def test_real_window_import_save_and_reopen(qt_app, monkeypatch, tmp_path):
     monkeypatch.setattr(window, "show_error", errors.append)
     monkeypatch.setattr(window.home.store, "add", recents.append)
     try:
-        source = Path(os.environ["OSA_EBERICK_PRJ"])
+        source = Path(os.environ[source_env])
         monkeypatch.setattr(
             main_window.QFileDialog, "getOpenFileName", lambda *args: (str(source), "")
         )
         window.home.import_model_button.click()
         assert errors == []
-        assert len(window.model.nodes) == 28
-        assert len(window.model.bars) == 16
+        assert len(window.model.nodes) == node_count
+        assert len(window.model.bars) == bar_count
         assert window.current_path is None
         assert window._has_unsaved_changes()
-        assert window._import_save_path.name == "teste_conv.osa"
+        assert window._import_save_path.name == save_name
         assert recents == []
         assert window.view_stack.currentWidget() is window.scene
         target = tmp_path / "converted.osa"
@@ -97,13 +110,13 @@ def test_real_window_import_save_and_reopen(qt_app, monkeypatch, tmp_path):
         assert recents == [target]
         window._open_model_path(target)
         assert errors == []
-        assert len(window.model.bars) == 16
+        assert len(window.model.bars) == bar_count
         assert window.model.import_metadata["requires_review"] is True
         assert window.current_path == target
         window.title_bar.import_model_action.trigger()
         assert errors == []
         assert window.current_path is None
-        assert len(window.model.bars) == 16
+        assert len(window.model.bars) == bar_count
     finally:
         window._saved_revision = window.model.revision
         window.close()
@@ -144,6 +157,62 @@ def test_file_choosers_use_separate_format_filters(monkeypatch):
     assert "*.prj" in requests[1][3] and "*.osa" not in requests[1][3]
 
 
+def test_analysis_stops_before_starting_for_pending_plates():
+    errors = []
+    window = SimpleNamespace(
+        _analysis_thread=None,
+        model=SimpleNamespace(
+            import_metadata={
+                "plate_transfer": {"records": [{"status": "pending_plate_support"}]}
+            }
+        ),
+        show_error=errors.append,
+    )
+    main_window.MainWindow.process_analysis(window)
+    assert len(errors) == 1 and "placas" in errors[0]
+
+
+def test_report_shows_footing_position_and_plate_pending_state(qt_app):
+    report = ImportReportDialog(
+        {
+            "counts": {
+                "support_candidates": 1,
+                "pending_plates": 1,
+                "beams": 101,
+                "beam_groups": 30,
+                "beam_segments": 101,
+            },
+            "support_candidates": [
+                {"column_name": "P1", "settlement_depth_m": 1.5, "elevation_m": -1.5}
+            ],
+            "plate_transfer": {
+                "records": [
+                    {
+                        "name": "L1",
+                        "floor_name": "Térreo",
+                        "status": "pending_plate_support",
+                    }
+                ]
+            },
+        }
+    )
+    plain = "\n".join(
+        browser.toPlainText() for browser in report.report_sections.values()
+    )
+    lines = [line.strip() for line in plain.splitlines() if line.strip()]
+    assert lines[lines.index("Vigas") + 1] == "30"
+    assert lines[lines.index("Trechos de viga") + 1] == "101"
+    assert "Assentamento das sapatas" in plain
+    assert "-1.500" in plain
+    assert "L1 — Térreo" in plain
+    assert "Geometria de placa pendente" in plain
+    options = EberickImportDialog("example.prj")
+    assert "assentamento das sapatas" in options.lower_columns.text()
+    assert "altura do primeiro pavimento" not in options.lower_columns.text()
+    report.close()
+    options.close()
+
+
 def _luminance(color):
     def channel(value):
         value /= 255
@@ -179,6 +248,8 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
     report = ImportReportDialog(
         {
             "source": {"filename": "teste.prj"},
+            "internal_version_code": 2281,
+            "compatibility": {"mode": "structural_probe"},
             "options": {"length_unit": "cm", "force_unit": "kgf"},
             "counts": {"nodes": 28, "members": 16},
             "warnings": [
@@ -199,7 +270,11 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
             )
             >= 7
         )
-        plain = text.toPlainText()
+        plain = "\n".join(
+            browser.toPlainText() for browser in report.report_sections.values()
+        )
+        assert "Código interno do PRJ: 2281" in plain
+        assert "Compatibilidade experimental" in plain
         assert "O peso próprio é aplicado pelas ferramentas do OSA." in plain
         assert "Cargas, peso próprio" not in plain
         image = text.viewport().grab().toImage()

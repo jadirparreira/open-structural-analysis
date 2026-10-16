@@ -1,6 +1,8 @@
-"""Layouts observados: dados comuns 3028/3419; lançamento detalhado 3419.
+"""Layouts observados: dados comuns 3028/3419; lançamento de referência 3419.
 
 Não se atribui significado estrutural a um enum só porque seu valor é 0 ou 1.
+Os códigos de serialização são registrados; a compatibilidade é verificada
+pelas posições, delimitadores, referências e relações entre os registros.
 Não gera automaticamente modelo de cálculo nem escreve PRJ.
 """
 
@@ -8,9 +10,11 @@ from __future__ import annotations
 
 import collections
 import math
+import sys
 import uuid
 
 from .core import LayoutError
+from .slabs import collect_slabs
 
 
 class Decoder:
@@ -28,7 +32,7 @@ class Decoder:
         def parse(h):
             r = self.r
             p = h.data_offset
-            r.require(r.u32(p) == 105, "Versão QiUUID diferente de 105")
+            r.field(h, "serialization_code_raw", p, "I", status="raw")
             r.close(p + 20)
             raw = r.bytes(p + 4, 16)
             value = r.field(h, "uuid_bytes", p + 4, value=raw.hex(), size=16)
@@ -45,7 +49,6 @@ class Decoder:
         def parse(h):
             r = self.r
             p = h.data_offset
-            r.require(r.u32(p) in (3028, 3419), "Versão TIdCarregamento não estudada")
             val = r.field(h, "version_type_subtype", p, "3I")
             r.close(p + 12)
             return dict(**r.identity(h), key=val[1:], end=p + 13)
@@ -55,7 +58,7 @@ class Decoder:
     def action(self, h):
         r = self.r
         p = h.data_offset
-        r.require(r.u32(p) in (3028, 3419), "Versão de ação não estudada")
+        r.field(h, "serialization_code_raw", p, "I", status="raw")
         name, q = r.text_field(h, "name", p + 8)
         symbol, q = r.text_field(h, "symbol", q)
         flags = r.field(h, "three_flags_raw", q, "3I", status="raw")
@@ -93,10 +96,7 @@ class Decoder:
         def parse(h):
             r = self.r
             p = h.data_offset
-            r.require(
-                r.u32(p) == 105 and r.u32(p + 4) == 105,
-                "Versão da seção diferente de 105",
-            )
+            r.field(h, "serialization_codes_raw", p, "2I", status="raw")
             r.close(p + 105)
             dims = r.field(h, "seven_geometric_values_raw", p + 8, "7d", status="raw")
             code = r.field(h, "shape_code_raw", p + 64, "I", status="raw")
@@ -154,6 +154,7 @@ class Decoder:
         uid = self.uuid(r.header_at(p + 4, "QiUUID"))
         q = uid["end"]
         vals = r.field(h, "floor_id_list_version_count_capacity", q, "4I")
+        r.require(vals[2] <= vals[3], "Contagem do croqui excede a capacidade da lista")
         return dict(
             **r.identity(h),
             floor_id=vals[0],
@@ -165,10 +166,7 @@ class Decoder:
     def basic_cad(self, h, version_count):
         r = self.r
         p = h.data_offset
-        r.require(
-            all(r.u32(p + 4 * k) == 3419 for k in range(version_count)),
-            "Herança CAD não reconhecida",
-        )
+        r.field(h, "serialization_codes_raw", p, f"{version_count}I", status="raw")
         uid = self.uuid(r.header_at(p + 4 * version_count, "QiUUID"))
         q = uid["end"]
         level, q2 = r.ref(h, "drawing_level_reference", q, "TNivel")
@@ -187,9 +185,12 @@ class Decoder:
             r = self.r
             common = self.basic_cad(h, 2)
             q = common["common_offset"]
-            r.raw(h, "line_attributes_raw", q + 38, q + 47)
-            xy2 = r.field(h, "endpoint_xy", q + 47, "2d")
-            end = r.close(q + 63)
+            sizes = [size for size in (1, 9) if r.bytes(q + 38 + size + 16, 1) == b"]"]
+            r.require(len(sizes) == 1, "Formato da linha não reconhecido ou ambíguo")
+            p = q + 38 + sizes[0]
+            r.raw(h, "line_attributes_raw", q + 38, p)
+            xy2 = r.field(h, "endpoint_xy", p, "2d")
+            end = r.close(p + 16)
             return dict(
                 **r.identity(h),
                 **common,
@@ -272,23 +273,52 @@ class Decoder:
             r = self.r
             common = self.basic_cad(h, 3)
             q = common["common_offset"]
-            r.raw(h, "line_attributes_raw", q + 38, q + 47)
-            xy2 = r.field(h, "endpoint_xy", q + 47, "2d")
+            sizes = [
+                size
+                for size in (1, 9)
+                if (candidate := r.by_offset.get(q + 38 + size + 40)) is not None
+                and candidate.class_name == "TextoDoElemento"
+            ]
+            r.require(
+                len(sizes) == 1,
+                "Prefixo geométrico da parede não reconhecido ou ambíguo",
+            )
+            p = q + 38 + sizes[0]
+            r.raw(h, "line_attributes_raw", q + 38, p)
+            xy2 = r.field(h, "endpoint_xy", p, "2d")
             vals = r.field(
                 h,
                 "height_thickness_specific_weight_candidates",
-                q + 63,
+                p + 16,
                 "3d",
                 status="inferred",
             )
-            text = r.header_at(q + 87, "TextoDoElemento")
+            text = r.header_at(p + 40, "TextoDoElemento")
             font = r.after(text, "AtributosFonte", 100)
             endtext = r.close(self.font_end(font))
             r.raw(h, "wall_flags_before_actions", endtext, endtext + 12)
             entries, endmap = self.scalar_map(h, endtext + 12, "wall_action_scalars")
             flags = r.field(h, "wall_tail_u32_raw", endmap, "I", status="raw")
             byte = r.field(h, "wall_tail_u8_raw", endmap + 4, "B", status="raw")
-            end = r.close(endmap + 5)
+            load_data_id = None
+            if byte == 0:
+                p = endmap + 5
+            elif byte == 2:
+                child = r.header_at(endmap + 5, "TDadosCargasPlacasParedes")
+                p = self.wall_load_data(child)["end"]
+                load_data_id = child.serial_id
+            elif byte == 1:
+                child, p = r.ref(
+                    h,
+                    "wall_load_data_reference",
+                    endmap + 4,
+                    "TDadosCargasPlacasParedes",
+                )
+                self.wall_load_data(child)
+                load_data_id = child.serial_id
+            else:
+                raise LayoutError("Ponteiro dos dados de parede não reconhecido")
+            end = r.close(p)
             return dict(
                 **r.identity(h),
                 **common,
@@ -301,11 +331,134 @@ class Decoder:
                 geometric_weight_per_length_candidate_raw=vals[0] * vals[1] * vals[2],
                 action_scalars=entries,
                 tail_raw=[flags, byte],
+                load_data_id=load_data_id,
+                load_data_raw=self.wall_load_data(r.by_id[load_data_id])
+                if load_data_id is not None
+                else None,
                 end=end,
                 status="geometria decodificada; unidades e semântica dos escalares precisam de confirmação",
             )
 
         return self.cached("wall", h, parse)
+
+    def wall_load_data(self, h):
+        def parse(h):
+            r = self.r
+            r.field(h, "serialization_codes_raw", h.data_offset, "2I", status="raw")
+            key = r.header_at(h.data_offset + 8, "TIdCargasPlacas")
+            name, q = r.text_field(key, "name", key.data_offset + 4)
+            q = r.close(q)
+            raw = r.raw(h, "wall_load_properties_raw", q, q + 92)
+            return dict(
+                **r.identity(h), name=name, properties_raw=raw, end=r.close(q + 92)
+            )
+
+        return self.cached("wall_load_data", h, parse)
+
+    def structural_bar_pointer(self, owner, p, depth=0):
+        r = self.r
+        r.require(depth < 100, "Árvore de barras excede a profundidade permitida")
+        marker = r.bytes(p, 1)[0]
+        if marker == 0:
+            return p + 1
+        if marker == 1:
+            _, end = r.ref(
+                owner, "processed_bar_reference_" + hex(p), p, "TBarraEstrutura"
+            )
+            return end
+        r.require(marker == 2, "Ponteiro de barras processadas não reconhecido")
+        h = r.header_at(p + 1, "TBarraEstrutura")
+        cached = self.cache.get(("structural_bar_end", h.serial_id))
+        if cached is not None:
+            return cached
+        values = r.field(
+            h, "processed_bar_list_raw", h.data_offset + 4, "3I", status="raw"
+        )
+        count = values[1]
+        r.require(
+            count <= values[2] and count <= 10000,
+            "Lista de barras processadas inválida",
+        )
+        q = h.data_offset + 16
+        for index in range(count):
+            _, q = r.ref(h, f"processed_bar_{index}", q, "Barra")
+        q = self.structural_bar_pointer(h, q, depth + 1)
+        q = self.structural_bar_pointer(h, q, depth + 1)
+        r.raw(h, "processed_bar_tail_raw", q, q + 9)
+        end = r.close(q + 9)
+        self.cache[("structural_bar_end", h.serial_id)] = end
+        return end
+
+    def point(self, h):
+        def parse(h):
+            r = self.r
+            common = self.basic_cad(h, 2)
+            q = common["common_offset"]
+            r.field(h, "point_flag_raw", q + 38, "B", status="raw")
+            _, p = r.ref(h, "processed_point_reference", q + 39, "No")
+            counts = r.field(h, "point_action_list_raw", p, "2I", status="raw")
+            r.require(counts[1] <= 10000, "Lista de dados de ação de nó excessiva")
+            p += 8
+            actions = []
+            for index in range(counts[1]):
+                key = self.load_key(r.header_at(p, "TIdCarregamento"))
+                load = r.header_at(key["end"], "CargaNo")
+                values = r.field(
+                    load, "six_components_raw", load.data_offset + 4, "6d", status="raw"
+                )
+                inner_key = self.load_key(
+                    r.header_at(load.data_offset + 52, "TIdCarregamento")
+                )
+                r.require(
+                    key["key"] == inner_key["key"],
+                    "Identificadores de ação de nó não conferem",
+                )
+                p = r.close(inner_key["end"])
+                actions.append(
+                    {
+                        "key": key["key"],
+                        "components_raw": values,
+                        "object_id": load.serial_id,
+                    }
+                )
+            r.raw(h, "point_attributes_raw", p, p + 10)
+            r.require(r.bytes(p + 10, 1) == b"\2", "Dados de nó inline esperados")
+            group = r.header_at(p + 11, "TConjuntoElemConsolo")
+            p = group.data_offset
+            values = r.field(group, "console_list_raw", p + 4, "3I", status="raw")
+            count = values[1]
+            r.require(
+                count <= values[2] and count <= 10000, "Lista de dados de nó inválida"
+            )
+            p += 16
+            for index in range(count):
+                r.require(r.bytes(p, 1) == b"\2", "Dado de nó inline esperado")
+                item = r.header_at(p + 1, "TElementoConsolo")
+                child = r.header_at(item.data_offset + 95, "TElNoDoConsolo")
+                r.raw(item, "console_attributes_raw", item.data_offset, child.offset)
+                end = self.point_console(child)
+                r.field(item, "console_flag_raw", end, "I", status="raw")
+                p = r.close(end + 4)
+            r.require(r.bytes(p, 1) == b"\2", "Identificador do nó inline esperado")
+            p = self.point_console(r.header_at(p + 1, "TElNoDoConsolo"))
+            p = r.close(p)
+            r.raw(h, "point_tail_raw", p, p + 16)
+            end = r.close(p + 16)
+            return dict(
+                **r.identity(h),
+                **common,
+                name=f"No{h.occurrence}",
+                action_records_raw=actions,
+                end=end,
+            )
+
+        return self.cached("point", h, parse)
+
+    def point_console(self, h):
+        r = self.r
+        r.field(h, "serialization_codes_raw", h.data_offset, "2I", status="raw")
+        _, p = r.ref(h, "point_reference", h.data_offset + 8, "ElementoNo")
+        return r.close(p)
 
     def column(self, h):
         def parse(h):
@@ -348,58 +501,19 @@ class Decoder:
             temp_h = r.after(font, "TDadosTemperatura", 1000)
             r.raw(h, "column_fields_before_temperature_raw", endtext, temp_h.offset)
             temp = self.temperature(temp_h)
-            r.raw(
-                h, "column_fields_after_temperature_raw", temp["end"], temp["end"] + 29
-            )
             foundation = None
             if h.class_name == "ElementoPilar":
-                end = r.close(temp["end"] + 29)
+                ends = [
+                    p
+                    for size in (25, 29)
+                    if r.bytes(p := temp["end"] + size, 1) == b"]"
+                ]
+                r.require(len(ends) == 1, "Cauda do pilar não reconhecida ou ambígua")
+                r.raw(h, "column_fields_after_temperature_raw", temp["end"], ends[0])
+                end = r.close(ends[0])
             else:
-                t = temp["end"] - 42  # TRetracao.data_offset; layout delimitado acima.
-                r.require(
-                    r.header_at(t - 14, "TRetracao").data_offset == t,
-                    "Âncora de retração da fundação",
-                )
-                foundation = {
-                    "code_raw": r.field(
-                        h, "foundation_code_raw", t + 71, "I", status="raw"
-                    ),
-                    "value_raw": r.field(
-                        h, "foundation_value_raw", t + 75, "d", status="raw"
-                    ),
-                    "switch_raw": r.field(
-                        h, "foundation_switch_raw", t + 83, "I", status="raw"
-                    ),
-                    "six_flags_raw": r.field(
-                        h,
-                        "foundation_six_flags_raw",
-                        t + 87,
-                        "6I",
-                        status="inferred",
-                        interpretation="Candidatos a restrições; ordem e significado não calibrados.",
-                    ),
-                    "six_values_raw": r.field(
-                        h, "foundation_six_values_raw", t + 111, "6d", status="raw"
-                    ),
-                }
-                soil = r.after(temp_h, "TCamadaSolo", 2000)
-                r.close(soil.data_offset + 36)
-                r.raw(h, "foundation_before_soil_raw", t + 159, soil.offset)
-                r.field(
-                    soil,
-                    "four_soil_values_raw",
-                    soil.data_offset + 4,
-                    "4d",
-                    status="raw",
-                )
-                r.raw(
-                    h,
-                    "foundation_after_soil_raw",
-                    soil.data_offset + 37,
-                    soil.data_offset + 141,
-                )
-                end = r.close(soil.data_offset + 141)
-                foundation["soil_object_id"] = soil.serial_id
+                foundation = self.pad_footing(h, temp_h, temp["end"])
+                end = foundation["end"]
             dims = section["geometric_values_raw"]
             return dict(
                 **r.identity(h),
@@ -415,6 +529,92 @@ class Decoder:
 
         return self.cached("column", h, parse)
 
+    def pad_footing(self, h, temp_h, temp_end):
+        """Dois prefixos observados; o bloco opcional de sapata tem tamanho conferido.
+
+        O código 1 é o perfil de sapata observado nos registros com
+        TDadosGravSapata. Outros tipos exigem calibração própria.
+        """
+        r = self.r
+        candidates = []
+        for prefix_size in (25, 29):
+            q = temp_end + prefix_size
+            (code,) = r.unpack("I", q)
+            (depth,) = r.unpack("d", q + 4)
+            if (
+                code == 1
+                and math.isfinite(depth)
+                # A leitura desalinhada do outro prefixo gera um subnormal.
+                # Nenhum código de apoio é usado para escolher o layout.
+                and depth >= sys.float_info.min
+            ):
+                candidates.append((q, prefix_size))
+        r.require(
+            len(candidates) == 1,
+            "Perfil de sapata/profundidade não reconhecido; blocos e outros tipos ainda não foram mapeados",
+        )
+        q, prefix_size = candidates[0]
+        r.raw(h, "column_fields_after_temperature_raw", temp_end, q)
+        foundation = {
+            "kind": "pad_footing",
+            "layout_prefix_size": prefix_size,
+            "code_raw": r.field(h, "foundation_code_raw", q, "I", status="raw"),
+            "settlement_depth_raw": r.field(
+                h,
+                "settlement_depth",
+                q + 4,
+                "d",
+                status="inferred",
+                interpretation="Distância do topo do baldrame ao assentamento da sapata, conforme definição do projeto.",
+            ),
+            "depth_reference": "baldrame_top_to_footing_bottom",
+            "switch_raw": r.field(
+                h, "foundation_switch_raw", q + 12, "I", status="raw"
+            ),
+            "six_flags_raw": r.field(
+                h, "foundation_six_flags_raw", q + 16, "6I", status="raw"
+            ),
+            "six_values_raw": r.field(
+                h, "foundation_six_values_raw", q + 40, "6d", status="raw"
+            ),
+            "support_mapping": "pending",
+        }
+        # Chave de evidência mantida para consumidores da primeira integração.
+        foundation["value_raw"] = foundation["settlement_depth_raw"]
+        soil = r.after(temp_h, "TCamadaSolo", 2000)
+        r.raw(h, "foundation_before_soil_raw", q + 88, soil.offset)
+        r.field(soil, "four_soil_values_raw", soil.data_offset + 4, "4d", status="raw")
+        p = r.close(soil.data_offset + 36)
+        marker = r.bytes(p, 1)
+        gravity = None
+        if marker == b"\0":
+            p += 1
+        elif marker == b"\2":
+            gravity = r.header_at(p + 1, "TDadosGravSapata")
+            p = self.footing_gravity(gravity)["end"]
+        elif marker == b"\1":
+            gravity, p = r.ref(h, "footing_gravity_reference", p, "TDadosGravSapata")
+            self.footing_gravity(gravity)
+        else:
+            raise LayoutError("Ponteiro dos dados de sapata não reconhecido")
+        r.raw(h, "foundation_after_soil_raw", p, p + 103)
+        foundation.update(
+            soil_object_id=soil.serial_id,
+            gravity_object_id=gravity.serial_id if gravity else None,
+            end=r.close(p + 103),
+        )
+        return foundation
+
+    def footing_gravity(self, h):
+        def parse(h):
+            r = self.r
+            p = h.data_offset
+            r.field(h, "serialization_codes_raw", p, "3I", status="raw")
+            r.raw(h, "footing_design_data_raw", p + 12, p + 148)
+            return dict(**r.identity(h), end=r.close(p + 148))
+
+        return self.cached("footing_gravity", h, parse)
+
     def element_pointer(self, owner, p, allowed):
         r = self.r
         marker = r.bytes(p, 1)[0]
@@ -424,11 +624,7 @@ class Decoder:
         r.require(marker == 2, "Ponteiro de elemento não reconhecido")
         h = r.header_at(p + 1)
         r.require(h.class_name in allowed, "Classe do ponteiro não permitida")
-        value = (
-            self.column(h)
-            if h.class_name in ("ElementoPilar", "ElPilarFundacao")
-            else self.wall(h)
-        )
+        value = self.anchor(h) if h.class_name != "Parede" else self.wall(h)
         r.field(
             owner,
             "inline_element_" + hex(p),
@@ -437,6 +633,9 @@ class Decoder:
             size=1,
         )
         return h, value["end"]
+
+    def anchor(self, h):
+        return self.point(h) if h.class_name == "ElementoNo" else self.column(h)
 
     def endpoint(self, h):
         r = self.r
@@ -449,10 +648,7 @@ class Decoder:
     def grav_endpoint(self, h):
         r = self.r
         p = h.data_offset
-        r.require(
-            r.unpack("3I", p) == (3419, 3419, 3419),
-            "Versões grav extremidade não reconhecidas",
-        )
+        r.field(h, "serialization_codes_raw", p, "3I", status="raw")
         vals = r.field(h, "five_values_raw", p + 12, "5d", status="raw")
         end = r.close(p + 52)
         return dict(**r.identity(h), values_raw=vals, end=end)
@@ -464,20 +660,59 @@ class Decoder:
         lst = r.field(h, "segment_list_version_count_capacity", q, "3I")
         q += 12
         r.require(
-            lst == [1, 1, 1],
-            "Amostra de lançamento suporta uma lista com um trecho por viga; demais preservadas sem extrapolar",
+            1 <= lst[1] <= lst[2] and lst[1] <= 10000,
+            "Lista de trechos da viga inválida",
         )
-        r.require(r.bytes(q, 1) == b"\2", "Trecho inline esperado")
-        seg = r.header_at(q + 1, "ElementoTrecho")
+        segments = []
+        for index in range(lst[1]):
+            marker = r.bytes(q, 1)
+            if marker == b"\2":
+                seg = r.header_at(q + 1, "ElementoTrecho")
+                value = self.beam_segment(seg)
+                q = value["end"]
+            elif marker == b"\1":
+                seg, q = r.ref(h, f"segment_{index}", q, "ElementoTrecho")
+                value = self.beam_segment(seg)
+            else:
+                raise LayoutError("Ponteiro de trecho da viga não reconhecido")
+            segments.append(value)
+        group = dict(
+            **r.identity(h),
+            name=name,
+            segments=segments,
+            segment_count=len(segments),
+            launch_end=q,
+            object_end_known=False,
+        )
+        # Dados Viga/TDadosGravViga posteriores são resultados/configurações de
+        # dimensionamento. Não delimitam nem alteram o lançamento transcrito.
+        if len(segments) == 1:
+            group.update(
+                {
+                    k: v
+                    for k, v in segments[0].items()
+                    if k
+                    not in ("object_id", "class_name", "offset", "offset_hex", "end")
+                }
+            )
+        return group
+
+    def beam_segment(self, seg):
+        return self.cached("beam_segment", seg, self._beam_segment)
+
+    def _beam_segment(self, seg):
+        r = self.r
         common = self.basic_cad(seg, 3)
         fmt = r.after(seg, "FormatoElementoBarraReta", 200)
         r.require(r.bytes(fmt.data_offset + 8, 1) == b"\2", "Linha inline esperada")
         ln = self.line(r.header_at(fmt.data_offset + 9, "EL_Linha"))
         q = r.close(ln["end"])  # FormatoElementoBarraReta
-        r.field(seg, "before_supports_raw", q, "BI", status="raw")
-        q += 5
-        a, q = self.element_pointer(seg, q, ("ElementoPilar", "ElPilarFundacao"))
-        c, q = self.element_pointer(seg, q, ("ElementoPilar", "ElPilarFundacao"))
+        q = self.structural_bar_pointer(seg, q)
+        r.field(seg, "before_supports_code_raw", q, "I", status="raw")
+        q += 4
+        anchors = ("ElementoPilar", "ElPilarFundacao", "ElementoNo")
+        a, q = self.element_pointer(seg, q, anchors)
+        c, q = self.element_pointer(seg, q, anchors)
         r.field(seg, "codes_before_wall_pointer_raw", q, "4I", status="raw")
         q += 16
         walls = []
@@ -500,8 +735,17 @@ class Decoder:
             interpretation="Conferido por posição de extremidade menos ponto de inserção do pilar.",
         )
         q += 32
-        r.raw(seg, "after_offsets_raw", q, q + 29)
-        q += 29
+        sizes = [
+            size
+            for size in (10, 29)
+            if (candidate := r.by_offset.get(q + size)) is not None
+            and candidate.class_name == "TextoDoElemento"
+        ]
+        r.require(
+            len(sizes) == 1, "Campos do trecho após excentricidades não reconhecidos"
+        )
+        r.raw(seg, "after_offsets_raw", q, q + sizes[0])
+        q += sizes[0]
         text = r.header_at(q, "TextoDoElemento")
         font = r.after(text, "AtributosFonte", 100)
         q = r.close(self.font_end(font))
@@ -535,27 +779,13 @@ class Decoder:
         temp_h = r.header_at(q, "TDadosTemperatura")
         temp = self.temperature(temp_h)
         q = temp["end"]
-        r.raw(seg, "temperature_to_segment_end_raw", q, q + 13)
-        q = r.close(q + 13)
-        r.raw(h, "segment_end_to_gravity_raw", q, q + 33)
-        q += 33
-        r.require(r.bytes(q, 1) == b"\2", "TDadosGravViga inline esperado")
-        grav = r.header_at(q + 1, "TDadosGravViga")
-        r.raw(grav, "prefix_raw", grav.data_offset, grav.data_offset + 128)
-        q = grav.data_offset + 128
-        r.require(r.bytes(q, 1) == b"\2", "Extremidade gravidade i esperada")
-        gi = self.grav_endpoint(r.header_at(q + 1, "TDadosGravExtremTrecho"))
-        q = gi["end"]
-        r.require(r.bytes(q, 1) == b"\2", "Extremidade gravidade j esperada")
-        gj = self.grav_endpoint(r.header_at(q + 1, "TDadosGravExtremTrecho"))
-        q = gj["end"]
-        r.raw(grav, "gravity_tail_raw", q, q + 22)
-        q = r.close(q + 22)
-        r.raw(h, "beam_tail_raw", q, q + 96)
-        end = r.close(q + 96)
+        sizes = [size for size in (9, 13) if r.bytes(q + size, 1) == b"]"]
+        r.require(len(sizes) == 1, "Fechamento do trecho não reconhecido ou ambíguo")
+        r.raw(seg, "temperature_to_segment_end_raw", q, q + sizes[0])
+        end = r.close(q + sizes[0])
         dims = section["geometric_values_raw"]
-        ca = self.column(a)
-        cc = self.column(c)
+        ca = self.anchor(a)
+        cc = self.anchor(c)
         expected = [ln["xy_i_raw"][i] - ca["xy_raw"][i] for i in range(2)] + [
             ln["xy_j_raw"][i] - cc["xy_raw"][i] for i in range(2)
         ]
@@ -564,13 +794,12 @@ class Decoder:
         r.checks.append(
             {
                 "check": "beam_end_offsets_match_coordinates",
-                "object_id": h.serial_id,
+                "object_id": seg.serial_id,
                 "passed": True,
             }
         )
         return dict(
-            **r.identity(h),
-            name=name,
+            **r.identity(seg),
             segment_id=seg.serial_id,
             uuid=common["uuid"],
             line_id=ln["object_id"],
@@ -587,7 +816,6 @@ class Decoder:
             end_offsets_xy_raw=offsets,
             offsets_geometry_check=ok,
             endpoint_records=[ei, ej],
-            gravity_endpoint_records=[gi, gj],
             end_parameter_pair_raw=end_pair,
             post_section_codes_raw=section_codes,
             wall_ids=walls,
@@ -600,11 +828,20 @@ class Decoder:
 def extract(reader):
     r = reader
     d = Decoder(r)
+    native_launch = any(
+        r.classes.get(name)
+        for name in (
+            "CroquiPavimento",
+            "ElementoViga",
+            "ElementoPilar",
+            "ElPilarFundacao",
+        )
+    )
     out = {
         "source": r.source,
         "internal_version_code": r.version,
-        "native_launch_profile_supported": r.version == 3419,
-        "legacy_analytical_profile_supported": r.version == 3028,
+        "launch_layout": "eberick-native-launch-v1",
+        "native_launch_profile_attempted": native_launch,
     }
 
     def allof(name, fn):
@@ -677,17 +914,51 @@ def extract(reader):
             out["drawing_levels"].append(v)
     out["croquis"] = []
     out["columns"] = []
+    out["points"] = []
     out["beams"] = []
+    out["beam_groups"] = []
     out["walls"] = []
     out["temperature_records"] = []
     out["floor_material_settings"] = []
-    if r.version == 3419:
+    if native_launch:
         out["croquis"] = allof("CroquiPavimento", d.croqui)
         out["columns"] = allof("ElPilarFundacao", d.column) + allof(
             "ElementoPilar", d.column
         )
         out["walls"] = allof("Parede", d.wall)
-        out["beams"] = allof("ElementoViga", d.beam)
+        out["points"] = allof("ElementoNo", d.point)
+        beam_groups = allof("ElementoViga", d.beam)
+        for beam in beam_groups:
+            summary = {
+                key: beam[key]
+                for key in (
+                    "object_id",
+                    "class_name",
+                    "offset",
+                    "offset_hex",
+                    "name",
+                    "segment_count",
+                    "launch_end",
+                    "object_end_known",
+                )
+            }
+            summary["segment_ids"] = [
+                segment["object_id"] for segment in beam["segments"]
+            ]
+            out["beam_groups"].append(summary)
+            for index, segment in enumerate(beam["segments"], 1):
+                out["beams"].append(
+                    {
+                        **segment,
+                        "beam_object_id": beam["object_id"],
+                        "beam_name": beam["name"],
+                        "name": beam["name"]
+                        if beam["segment_count"] == 1
+                        else f"{beam['name']}_T{index}",
+                        "segment_index": index,
+                        "segment_count": beam["segment_count"],
+                    }
+                )
         for name in ("TDadosTemperatura", "TVariacaoDeTemperatura", "TRetracao"):
             out["temperature_records"].extend(allof(name, d.temperature))
         floors_by_id = {x["floor_id"]: x for x in out["floors"]}
@@ -704,7 +975,7 @@ def extract(reader):
             c["region_end"] = end
             c["base_cad_offset"] = base[0].offset if base else end
             c["floor_name"] = floors_by_id.get(c["floor_id"], {}).get("name")
-            for group in ("columns", "beams", "walls"):
+            for group in ("columns", "points", "beams", "beam_groups", "walls"):
                 for v in out[group]:
                     if c["offset"] <= v["offset"] < end:
                         v["floor_id"] = c["floor_id"]
@@ -724,6 +995,9 @@ def extract(reader):
         for col in out["columns"]:
             col["referenced_by_beam"] = col["object_id"] in referenced
             col["drawing_level"] = levels.get(col["drawing_level_id"])
+        for point in out["points"]:
+            point["referenced_by_beam"] = point["object_id"] in referenced
+            point["drawing_level"] = levels.get(point["drawing_level_id"])
         for wall in out["walls"]:
             wall["beam_owner_id"] = wall_owner.get(wall["object_id"])
             wall["drawing_level"] = levels.get(wall["drawing_level_id"])
@@ -761,6 +1035,7 @@ def extract(reader):
                 for x in out["floor_material_settings"]
                 if x["floor_id"] == f["floor_id"]
             }
+    out["slabs"] = collect_slabs(r, d, out["croquis"])
     out["file_prefix_hex"] = (
         r.data[: r.headers[0].offset].hex() if r.headers else r.data.hex()
     )
@@ -786,6 +1061,8 @@ def extract(reader):
         "floor_count": len(out["floors"]),
         "beam_headers": counts.get("ElementoViga", 0),
         "beam_records": len(out["beams"]),
+        "beam_groups": len(out["beam_groups"]),
+        "point_records": len(out["points"]),
         "column_records": len(out["columns"]),
         "columns_referenced_by_beams": sum(
             c.get("referenced_by_beam", False) for c in out["columns"]
@@ -795,6 +1072,7 @@ def extract(reader):
         "combination_records": len(out["combinations"]),
         "concrete_records": len(out["concretes"]),
         "section_records": len(out["sections"]),
+        "slab_records_preserved": len(out["slabs"]),
         "analytical_node_headers": counts.get("No", 0),
         "analytical_bar_headers": counts.get("Barra", 0),
         "decode_errors": len(r.errors),

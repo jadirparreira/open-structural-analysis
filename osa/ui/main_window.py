@@ -11,6 +11,7 @@ from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService
 from osa.transcriptions import is_import_path
+from osa.transcriptions.plates import require_no_pending_plates
 
 from .analysis_panel import ProcessingPanel
 from .analysis_worker import AnalysisWorker
@@ -298,6 +299,11 @@ class MainWindow(QMainWindow):
     def process_analysis(self) -> None:
         """Run PyNite in the background after the progress card is painted."""
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
+            return
+        try:
+            require_no_pending_plates(self.model.import_metadata)
+        except ValueError as error:
+            self.show_error(str(error))
             return
         if self.model.import_metadata.get("requires_review"):
             dialog = ImportReportDialog(self.model.import_metadata, self, review=True)
@@ -1863,7 +1869,8 @@ class MainWindow(QMainWindow):
                 )
                 ImportReportDialog(report, self).exec()
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-            self.show_error(f"Não foi possível abrir o modelo: {error}")
+            operation = "importar" if importing else "abrir"
+            self.show_error(f"Não foi possível {operation} o modelo: {error}")
 
     def _has_unsaved_changes(self) -> bool:
         return self.model.revision != self._saved_revision

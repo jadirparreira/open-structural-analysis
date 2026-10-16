@@ -58,7 +58,10 @@ class ProjectImporter(Protocol):
 
 
 def require_import_review(model) -> None:
+    from .plates import require_no_pending_plates
+
     report = getattr(model, "import_metadata", {})
+    require_no_pending_plates(report)
     if report.get("requires_review"):
         raise ValueError(
             "Este modelo veio de uma importação experimental. Revise unidades, "
