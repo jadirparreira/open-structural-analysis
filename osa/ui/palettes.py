@@ -408,7 +408,7 @@ class TopIconPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
         self._visibility_buttons: dict[str, QToolButton] = {}
-        self._solid_visibility_previous_states: dict[str, tuple[bool, bool]] | None = None
+        self._solid_node_states: dict[str, tuple[bool, bool]] | None = None
         self._window = window
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
@@ -871,34 +871,26 @@ class TopIconPalette(QFrame):
             self.reload_scene_views()
 
     def _on_solid_visibility_toggled(self, visible: bool) -> None:
-        dependent_kinds = ("nodes", "node", "axes", "releases", "semirigid")
         if visible:
-            if self._solid_visibility_previous_states is not None:
-                return
-            self._solid_visibility_previous_states = {
-                kind: (self._visibility_buttons[kind].isChecked(),
-                       self._visibility_buttons[kind].isEnabled())
-                for kind in dependent_kinds
+            self._solid_node_states = {
+                kind: (self._visibility_buttons[kind].isChecked(), self._visibility_buttons[kind].isEnabled())
+                for kind in ("nodes", "node")
             }
-            for kind in dependent_kinds:
+            for kind in self._solid_node_states:
                 button = self._visibility_buttons[kind]
                 button.setChecked(False)
                 button.setEnabled(False)
-            self.window().scene.set_solid_members_visible(True)
-            return
-
-        self.window().scene.set_solid_members_visible(False)
-        if self._solid_visibility_previous_states is None:
-            return
-        for kind, (was_checked, was_enabled) in self._solid_visibility_previous_states.items():
-            button = self._visibility_buttons[kind]
-            button.setEnabled(was_enabled)
-            button.setChecked(was_checked)
-        self._solid_visibility_previous_states = None
+        self._window.scene.set_solid_members_visible(visible)
+        if not visible and self._solid_node_states is not None:
+            for kind, (checked, enabled) in self._solid_node_states.items():
+                button = self._visibility_buttons[kind]
+                button.setEnabled(enabled)
+                button.setChecked(checked)
+            self._solid_node_states = None
 
     def toggle_visibility_command(self, kind: str) -> None:
         button = self._visibility_buttons.get(kind)
-        if button is not None:
+        if button is not None and button.isEnabled():
             button.setChecked(not button.isChecked())
 
     def set_view_option(self, option: str, visible: bool) -> None:
@@ -916,7 +908,7 @@ class TopIconPalette(QFrame):
         }.get(option)
         if kind is not None:
             button = self._visibility_buttons.get(kind)
-            if button is not None:
+            if button is not None and button.isEnabled():
                 button.setChecked(bool(visible))
         elif option == "snap_enabled":
             self.snap_button.setChecked(bool(visible))

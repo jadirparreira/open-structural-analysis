@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
         self.scene.enter_pressed.connect(self._confirm_scene_view_selection)
+        self.scene.enter_pressed.connect(self._confirm_command_selection)
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
@@ -785,8 +786,14 @@ class MainWindow(QMainWindow):
         self._command_mode = "action_selection"
         self.history.append(
             "> <b>Adicionar ação</b> "
-            f"<span style='color:#57606a'>(Selecione {target_label}; pressione Esc para encerrar)</span>"
+            f"<span style='color:#57606a'>(Selecione {target_label}; use Ctrl e ENTER para multiseleção; Esc para encerrar)</span>"
         )
+        targets = tuple(target for target in self.selected_elements if target[0] == self._pending_action_launch[0])
+        self.clear_selection()
+        if targets:
+            self.scene.set_selection_highlight(targets)
+            self._selection_changed(targets)
+            self._confirm_command_selection()
         self.scene.plotter.setFocus()
 
     def start_selfweight_command(self) -> None:
@@ -856,17 +863,22 @@ class MainWindow(QMainWindow):
         self.close_section_panel()
         self.close_displacement_panel()
         self.axes_panel.hide()
-        if self.selected is not None and self.selected[0] == "bar":
+        members = self._selected_command_members()
+        if len(members) == 1:
             self._command_mode = None
-            self.split_member_dialog.open_for_member(self.selected[1])
+            self.split_member_dialog.open_for_member(members[0])
             return
 
         self._command_mode = "split_member_selection"
         self.history.append(
             "> <b>Dividir membro</b> "
-            "<span style='color:#57606a'>(Selecione um membro na estrutura)</span>"
+            "<span style='color:#57606a'>(Selecione apenas um membro para dividir)</span>"
         )
         self.scene.plotter.setFocus()
+
+    def _selected_command_members(self) -> tuple[str, ...]:
+        targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
+        return tuple(dict.fromkeys(name for kind, name in targets if kind == "bar" and name in self.model.bars))
 
     def apply_split_member(self) -> None:
         """Apply the segment lengths entered in the modal split window."""
@@ -903,25 +915,30 @@ class MainWindow(QMainWindow):
         self._remember_last_command(self.start_reverse_member)
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
-        if self.selected is not None and self.selected[0] == "bar":
-            self._reverse_member(self.selected[1])
+        members = self._selected_command_members()
+        if members:
+            self._reverse_members(members)
             return
 
         self.command_session.cancel()
         self._command_mode = "reverse_member_selection"
         self.history.append(
             "> <b>Inverter membro</b> "
-            "<span style='color:#57606a'>(Selecione o membro que deseja inverter)</span>"
+            "<span style='color:#57606a'>(Selecione um membro ou use Ctrl para selecionar vários e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
     def _reverse_member(self, member_name: str) -> None:
+        self._reverse_members((member_name,))
+
+    def _reverse_members(self, member_names: tuple[str, ...]) -> None:
         if self.member_direction_normalization_enabled:
             return
         self.command_session.cancel()
         self._command_mode = None
         try:
-            self.model_service.reverse_member(member_name)
+            for member_name in member_names:
+                self.model_service.reverse_member(member_name)
         except ValueError as error:
             self.history.append(
                 f"> <b>Inverter membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
@@ -929,36 +946,40 @@ class MainWindow(QMainWindow):
             return
         self.history.append(
             f"> <b>Inverter membro</b> <span style='color:#57606a'>"
-            f"(Membro {escape(member_name)} invertido)</span>"
+            f"({len(member_names)} membro(s) invertido(s))</span>"
         )
         self.refresh_selected_property_panel(self.palette.active_group)
         self.refresh_scene()
 
     def start_join_members(self) -> None:
-        """Start the graphical two-member selection flow for joining members."""
+        """Join the selection or request connected collinear members."""
         self._remember_last_command(self.start_join_members)
         self.command_session.cancel()
         self._member_placement_start = None
         self.scene.set_member_placement_mode(False)
+        self._command_mode = "join_member_selection"
+        members = self._selected_command_members()
         self._join_member_first = (
-            self.selected[1]
-            if self.selected is not None and self.selected[0] == "bar"
+            members[0]
+            if len(members) == 1
             else None
         )
-        self._command_mode = "join_member_selection"
+        if len(members) >= 2:
+            self._join_members(*members)
+            return
         if self._join_member_first is None:
-            message = "Selecione o primeiro membro"
+            message = "Selecione membros na mesma reta com Ctrl e pressione ENTER"
         else:
-            message = "Selecione o segundo membro"
+            message = "Selecione outro membro ou use Ctrl e ENTER para unir vários na mesma reta"
         self.history.append(
             "> <b>Unir membros</b> "
             f"<span style='color:#57606a'>({message})</span>"
         )
         self.scene.plotter.setFocus()
 
-    def _join_members(self, first_name: str, second_name: str) -> None:
+    def _join_members(self, *member_names: str) -> None:
         try:
-            joined = self.model_service.join_members(first_name, second_name)
+            joined = self.model_service.join_selected_members(member_names)
         except ValueError as error:
             self.history.append(
                 f"> <b>Unir membros</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
@@ -984,16 +1005,20 @@ class MainWindow(QMainWindow):
         self.scene.set_member_placement_mode(False)
         self._copy_elements_selection = []
         self._copy_elements_reference = None
-        self.scene.set_selection_highlight(())
+        members = self._selected_command_members()
         self._copy_properties_reference = (
-            self.selected[1]
-            if self.selected is not None and self.selected[0] == "bar"
+            members[0]
+            if members
             else None
         )
         self._command_mode = "copy_member_properties_selection"
+        targets = tuple(("bar", name) for name in members[1:])
+        self.scene.set_selection_highlight(targets)
+        self.selected_elements = list(targets)
+        self.selected = targets[-1] if targets else None
         self.member_property_copy_panel.begin(self.top_icon_palette.copy_properties_button)
         message = (
-            "Selecione o membro de destino"
+            f"Referência: {escape(self._copy_properties_reference)}; selecione destinos com Ctrl e pressione ENTER"
             if self._copy_properties_reference is not None
             else "Selecione o membro de referência"
         )
@@ -1003,7 +1028,7 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
-    def _copy_member_properties(self, source_name: str, target_name: str) -> None:
+    def _copy_member_properties(self, source_name: str, target_name: str, *, refresh: bool = True) -> None:
         properties = self.member_property_copy_panel.selected_properties()
         try:
             copied = self.model_service.copy_member_properties(
@@ -1028,25 +1053,31 @@ class MainWindow(QMainWindow):
             f"(Propriedades copiadas para {escape(target_name)}; "
             "selecione outro destino ou pressione ESC)</span>"
         )
-        self.refresh_selected_property_panel(self.palette.active_group)
-        self.refresh_scene()
+        if refresh:
+            self.refresh_selected_property_panel(self.palette.active_group)
+            self.refresh_scene()
 
     def start_copy_elements(self) -> None:
         """Start selecting nodes and members for a translated copy."""
         self._remember_last_command(self.start_copy_elements)
         self.command_session.cancel()
         self._member_placement_start = None
-        self._copy_elements_selection = []
+        targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
+        self._copy_elements_selection = [target for target in targets if target[0] in {"node", "bar"}]
         self._copy_elements_reference = None
         self._copy_properties_reference = None
         self.member_property_copy_panel.hide()
         self._command_mode = "copy_elements_selection"
         self.scene.set_member_placement_mode(False)
-        self.scene.set_selection_highlight(())
-        self.clear_selection()
+        self.scene.set_selection_highlight(self._copy_elements_selection)
+        self.selected_elements = list(self._copy_elements_selection)
+        self.selected = self.selected_elements[-1] if self.selected_elements else None
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
-            "(Selecione nós e membros; pressione ENTER para confirmar)</span>"
+            "(Selecione nós e membros; use Ctrl para multiseleção e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1122,6 +1153,7 @@ class MainWindow(QMainWindow):
         """Confirm the element set and begin the two-point copy placement."""
         if self._command_mode != "copy_elements_selection":
             return
+        self._copy_elements_selection = [target for target in self.selected_elements if target[0] in {"node", "bar"}]
         if not self._copy_elements_selection:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#8c959f'>"
@@ -1136,6 +1168,81 @@ class MainWindow(QMainWindow):
             "(Selecione a posição de referência)</span>"
         )
         self.scene.plotter.setFocus()
+
+    def _confirm_command_selection(self) -> None:
+        """Apply commands to the shared Ctrl selection when ENTER is pressed."""
+        mode = self._command_mode
+        if mode not in {
+            "split_member_selection", "reverse_member_selection", "join_member_selection",
+            "copy_member_properties_selection", "action_selection",
+        }:
+            return
+        members = self._selected_command_members()
+        if mode == "action_selection":
+            if self._pending_action_launch is None:
+                return
+            targets = tuple(target for target in self.selected_elements if target[0] == self._pending_action_launch[0])
+            if not targets:
+                self.history.append(
+                    "> <b>Adicionar ação</b> <span style='color:#8c959f'>(Selecione os elementos e pressione ENTER)</span>"
+                )
+                return
+            for kind, name in targets:
+                self._apply_pending_action(kind, name, refresh=False)
+            self.clear_selection()
+            self.refresh_action_palette()
+            self.refresh_scene()
+            return
+        if not members:
+            self.history.append(
+                "> <span style='color:#8c959f'>(Selecione pelo menos um membro e pressione ENTER)</span>"
+            )
+            return
+        if mode == "split_member_selection":
+            if len(members) != 1:
+                self.history.append(
+                    "> <b>Dividir membro</b> <span style='color:#8c959f'>(Selecione apenas um membro para dividir)</span>"
+                )
+                return
+            self._command_mode = None
+            self.split_member_dialog.open_for_member(members[0])
+        elif mode == "reverse_member_selection":
+            self._reverse_members(members)
+        elif mode == "join_member_selection":
+            if len(members) < 2:
+                self.history.append(
+                    "> <b>Unir membros</b> <span style='color:#8c959f'>(Selecione pelo menos dois membros e pressione ENTER)</span>"
+                )
+                return
+            self._join_members(*members)
+        elif self._copy_properties_reference is None:
+            if len(members) != 1:
+                self.history.append(
+                    "> <b>Copiar propriedades</b> <span style='color:#8c959f'>(Selecione apenas um membro de referência)</span>"
+                )
+                return
+            self._copy_properties_reference = members[0]
+            self.clear_selection()
+            self.history.append(
+                "> <b>Copiar propriedades</b> <span style='color:#57606a'>"
+                f"(Referência: {escape(members[0])}; selecione destinos com Ctrl e pressione ENTER)</span>"
+            )
+        else:
+            targets = tuple(name for name in members if name != self._copy_properties_reference)
+            if not targets:
+                self.history.append(
+                    "> <b>Copiar propriedades</b> <span style='color:#8c959f'>(Selecione destinos diferentes da referência)</span>"
+                )
+                return
+            if not self.member_property_copy_panel.selected_properties():
+                self.history.append(
+                    "> <b>Copiar propriedades</b> <span style='color:#8c959f'>(Selecione pelo menos uma propriedade para copiar)</span>"
+                )
+                return
+            for name in targets:
+                self._copy_member_properties(self._copy_properties_reference, name, refresh=False)
+            self.clear_selection()
+            self.refresh_scene()
 
     def _handle_copy_placement_point(self, point: object) -> None:
         """Collect the reference/destination points and copy the selection."""
@@ -1656,7 +1763,7 @@ class MainWindow(QMainWindow):
         return None
 
 
-    def _apply_pending_action(self, kind: str, name: str) -> None:
+    def _apply_pending_action(self, kind: str, name: str, *, refresh: bool = True) -> None:
         launch = self._pending_action_launch
         if launch is None:
             return
@@ -1712,19 +1819,20 @@ class MainWindow(QMainWindow):
             f"> <b>Adicionar ação</b> <span style='color:#57606a'>"
             f"(Ação lançada em {escape(name)})</span>"
         )
-        self.refresh_action_palette()
-        self.refresh_scene()
+        if refresh:
+            self.refresh_action_palette()
+            self.refresh_scene()
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
         self.selected = kind, name
-        if self._command_mode != "copy_elements_selection":
-            self.selected_elements = [(kind, name)]
+        self.selected_elements = [(kind, name)]
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             return
         if self._command_mode == "action_selection":
             self._apply_pending_action(kind, name)
+            self.clear_selection()
             return
         if self._command_mode == "split_member_selection":
             if kind != "bar":
@@ -1764,31 +1872,7 @@ class MainWindow(QMainWindow):
             else:
                 self._join_members(self._join_member_first, name)
         elif self._command_mode == "copy_elements_selection":
-            if kind not in {"node", "bar"}:
-                self.scene.set_selection_highlight(self._copy_elements_selection)
-                self.history.append(
-                    "> <b>Copiar</b> "
-                    "<span style='color:#8c959f'>(Selecione apenas nós ou membros)</span>"
-                )
-            else:
-                target = kind, name
-                if target in self._copy_elements_selection:
-                    self._copy_elements_selection.remove(target)
-                    action = "removido da seleção"
-                else:
-                    self._copy_elements_selection.append(target)
-                    action = "adicionado à seleção"
-                self.scene.set_selection_highlight(self._copy_elements_selection)
-                if self._copy_elements_selection:
-                    self.selected = self._copy_elements_selection[-1]
-                else:
-                    self.selected = None
-                    self.properties.hide()
-                self.history.append(
-                    f"> <b>Copiar</b> <span style='color:#57606a'>"
-                    f"({escape(kind)} {escape(name)} {action}; "
-                    f"{len(self._copy_elements_selection)} selecionado(s))</span>"
-                )
+            self._selection_changed(((kind, name),))
             return
         elif self._command_mode == "copy_member_properties_selection":
             if kind != "bar":
@@ -1798,9 +1882,10 @@ class MainWindow(QMainWindow):
                 )
             elif self._copy_properties_reference is None:
                 self._copy_properties_reference = name
+                self.clear_selection()
                 self.history.append(
                     "> <b>Copiar propriedades</b> "
-                    "<span style='color:#57606a'>(Selecione o membro de destino)</span>"
+                    "<span style='color:#57606a'>(Selecione um destino ou use Ctrl e ENTER para vários destinos)</span>"
                 )
             elif name == self._copy_properties_reference:
                 self.history.append(
@@ -1809,6 +1894,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
+                self.clear_selection()
         if self.selected is not None and self._command_mode != "split_member_selection":
             self.refresh_selected_property_panel(self.palette.active_group)
 
@@ -1816,6 +1902,25 @@ class MainWindow(QMainWindow):
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             self.selected_elements = [target for target in elements if target[0] == "bar"]
             self.selected = self.selected_elements[-1] if self.selected_elements else None
+            return
+        if self._command_mode in {
+            "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
+            "reverse_member_selection", "join_member_selection", "action_selection",
+        }:
+            kinds = {"node", "bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
+            if self._command_mode == "action_selection" and self._pending_action_launch is not None:
+                kinds = {self._pending_action_launch[0]}
+            targets = tuple(target for target in elements if target[0] in kinds)
+            self.selected_elements = list(targets)
+            self.selected = targets[-1] if targets else None
+            if self._command_mode == "copy_elements_selection":
+                self._copy_elements_selection = list(targets)
+            self.scene.set_selection_highlight(targets)
+            self.properties.hide()
+            self.history.append(
+                "> <span style='color:#57606a'>"
+                f"({len(targets)} elemento(s) selecionado(s); pressione ENTER para confirmar)</span>"
+            )
             return
         if self._command_mode is not None:
             return
@@ -1866,7 +1971,7 @@ class MainWindow(QMainWindow):
         self.displacement_panel.hide()
         self.axes_panel.hide()
         if self._command_mode == "copy_elements_selection":
-            self.scene.set_selection_highlight(self._copy_elements_selection)
+            self._copy_elements_selection = []
 
     def delete_selected(self) -> None:
         """Delete selected elements, removing members before their endpoint nodes."""

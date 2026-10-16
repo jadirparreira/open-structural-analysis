@@ -125,6 +125,9 @@ class ModelService:
         """Merge two adjacent collinear members into the first selected one."""
         return self.model.join_bars(first_name, second_name)
 
+    def join_selected_members(self, member_names: tuple[str, ...]):
+        return self.model.join_selected_members(member_names)
+
     def copy_member_properties(
         self,
         source_name: str,

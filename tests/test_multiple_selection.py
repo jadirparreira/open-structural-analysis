@@ -287,6 +287,29 @@ def test_mixed_member_release_click_disables_all(qt_app):
     assert model.bars["B2"].releases[0]
 
 
+def test_undefined_member_material_can_be_assigned_from_inspector(qt_app):
+    model = _model()
+    model.materials.update({"A": (1, 1, 1, 1), "B": (2, 2, 2, 2)})
+    window = InspectorWindow(model)
+    window.selected = ("bar", "B1")
+    panel = PropertyPanel(window)
+    panel.show_for("bar", "B1")
+
+    material = panel._material_widget.findChild(QComboBox)
+    assert material.isEnabled()
+    assert material.currentIndex() == -1
+    assert material.placeholderText() == "Indefinido"
+    assert [material.itemText(index) for index in range(material.count())] == list(model.materials)
+    assert model.bars["B1"].material == "Indefinido"
+
+    material.setCurrentText("B")
+
+    assert model.bars["B1"].material == "B"
+    material = panel._material_widget.findChild(QComboBox)
+    assert material.currentText() == "B"
+    assert material.isEnabled()
+
+
 def test_member_fields_show_common_or_varied_values(qt_app):
     model = _model()
     model.materials.update({"A": (1, 1, 1, 1), "B": (2, 2, 2, 2)})
@@ -444,6 +467,51 @@ def test_color_batch_updates_only_the_edited_members(qt_app):
     assert tuple(colors[2]) == unchanged_color
     scene.plotter.close()
     scene.close()
+
+
+def test_positioning_edit_refreshes_all_member_indicators(qt_app):
+    model = _model()
+    model.update_bar_section("B1", "Barra Retangular")
+    model.update_member_profile("B1", "R", {"b": 100.0, "h": 200.0})
+    model.update_member_releases("B1", (True,) * 12)
+    model.update_member_rotation_flexibility_percent("B1", (15,) * 6)
+    scene = StructureScene()
+    scene.render_model(model)
+    scene.set_solid_members_visible(True)
+    try:
+        batch = scene._member_batch
+        labels_before = batch.label_positions.copy()
+        springs_before = scene._elastic_support_overlay._positions.copy()
+        axes_before = [mesh.points.copy() for mesh in batch.axes]
+        releases_before = batch.releases.points.copy()
+        for offsets in ((0.3, -0.2), (0.0, 0.0), (0.3, -0.2)):
+            model.update_member_solid_section_offsets("B1", offsets)
+            scene.update_member_geometry("B1")
+            scene._refresh_pending_member_update()
+            delta = np.asarray((-offsets[0] / np.sqrt(2), offsets[0] / np.sqrt(2), offsets[1]))
+            assert scene._member_batch is batch
+            np.testing.assert_allclose(batch.label_positions[0], labels_before[0] + delta)
+            np.testing.assert_allclose(batch.label_positions[1], labels_before[1])
+            np.testing.assert_allclose(scene._label_overlay._groups["bar"].positions, batch.label_positions)
+            np.testing.assert_allclose(scene._elastic_support_overlay._positions, springs_before + delta)
+            np.testing.assert_allclose(batch.releases.points, releases_before + delta, atol=1e-7)
+            for mesh, original in zip(batch.axes, axes_before):
+                np.testing.assert_allclose(mesh.points[:2], original[:2] + delta, atol=1e-7)
+                np.testing.assert_allclose(mesh.points[2:], original[2:])
+        for solid in (False, True, False):
+            scene.set_solid_members_visible(solid)
+            offset = delta if solid else np.zeros(3)
+            current = scene._member_batch
+            np.testing.assert_allclose(current.label_positions[0], labels_before[0] + offset)
+            np.testing.assert_allclose(scene._label_overlay._groups["bar"].positions, current.label_positions)
+            np.testing.assert_allclose(scene._elastic_support_overlay._positions, springs_before + offset)
+            np.testing.assert_allclose(current.releases.points, releases_before + offset, atol=1e-7)
+            for mesh, original in zip(current.axes, axes_before):
+                np.testing.assert_allclose(mesh.points[:2], original[:2] + offset, atol=1e-7)
+                np.testing.assert_allclose(mesh.points[2:], original[2:])
+    finally:
+        scene.plotter.close()
+        scene.close()
 
 
 def test_multiple_profile_edits_keep_the_member_batch_when_topology_matches(qt_app):

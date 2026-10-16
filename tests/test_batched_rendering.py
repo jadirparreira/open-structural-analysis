@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pyvista as pv
+import pytest
 import vtk
 
 from osa.commands import CommandSession
@@ -15,6 +16,7 @@ from osa.rendering.batched_renderer import (
     has_semirigid_member_end,
 )
 from osa.rendering.scene_batched import StructureScene
+from osa.rendering.elastic_support_overlay import ElasticSupportOverlay
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
 from osa.sections.geometry import section_shape
 from osa.services import ModelService
@@ -475,6 +477,36 @@ def test_every_support_pattern_has_a_model_except_the_free_node():
             assert mesh.bounds[5] <= expected_bounds[5] + 1e-6
         else:
             assert mesh is None
+
+
+@pytest.mark.parametrize("rotation", [0, 45, 90])
+@pytest.mark.parametrize("end, translation", [
+    ((5.0, 0.0, 0.0), (0.0, 0.3, -0.2)),
+    ((0.0, 0.0, 5.0), (0.3, -0.2, 0.0)),
+])
+def test_member_indicators_follow_section_positioning(rotation, end, translation):
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", *end)
+    model.add_bar("B1", "N1", "N2")
+    model.update_bar_section("B1", "Barra Retangular")
+    model.update_member_profile("B1", "R", {"b": 100.0, "h": 200.0})
+    model.update_member_rotation("B1", rotation)
+    model.update_member_releases("B1", (True,) * 12)
+    model.update_member_rotation_flexibility_percent("B1", (15,) * 6)
+    renderer = BatchedMemberRenderer()
+    before = renderer.build(model, 0.05)
+    springs_before = np.asarray(ElasticSupportOverlay._member_end_positions(model.bars["B1"], model.nodes, 0.05))
+
+    model.update_member_solid_section_offsets("B1", (0.3, -0.2))
+    after = renderer.build(model, 0.05)
+    springs_after = np.asarray(ElasticSupportOverlay._member_end_positions(model.bars["B1"], model.nodes, 0.05))
+
+    np.testing.assert_allclose(after.label_positions, before.label_positions + translation)
+    for old, new in zip((*before.axes, before.releases, before.faces), (*after.axes, after.releases, after.faces)):
+        np.testing.assert_allclose(new.points, old.points + translation, atol=1e-7)
+    np.testing.assert_allclose(springs_after, springs_before + translation)
+    np.testing.assert_array_equal(after.lines.points, before.lines.points)
 
 
 def test_semirigid_indicator_requires_active_rotation_at_the_member_end():

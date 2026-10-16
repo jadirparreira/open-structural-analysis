@@ -183,6 +183,7 @@ class StructureScene(QWidget):
         self._grid_renderer = GridRenderer()
         self._reference_axes_renderer = ReferenceAxesRenderer()
         self._member_renderer = BatchedMemberRenderer()
+        self._member_renderer.position_indicators_with_section = False
         self._node_renderer = BatchedNodeRenderer()
         self._rigid_bar_renderer = BatchedRigidBarRenderer()
         self._action_renderer = ActionRenderer()
@@ -611,6 +612,7 @@ class StructureScene(QWidget):
         # rendered batch keyed by the domain data it actually consumes.
         member_key = (
             round(float(self._marker_radius_current), 12),
+            self._solid_members_visible,
             tuple(
                 (
                     member,
@@ -1619,6 +1621,9 @@ class StructureScene(QWidget):
                 and not self._placement_active()
                 and getattr(self.window(), "_command_mode", None) in (
                     None, "scene_hide_selection", "scene_reveal_selection",
+                    "copy_elements_selection", "copy_member_properties_selection",
+                    "reverse_member_selection", "split_member_selection",
+                    "join_member_selection", "action_selection",
                 )
                 and not over_navigation_cube
             ):
@@ -4058,16 +4063,12 @@ class StructureScene(QWidget):
         if visible == self._solid_members_visible:
             return
         self._solid_members_visible = visible
+        self._member_renderer.position_indicators_with_section = visible
+        self._elastic_support_overlay.follow_section = visible
         self._hovered = None
         self._tab_hover_candidates = []
         self._tab_hover_position = None
-        self._apply_representation_visibility()
-        if self._analysis_visible and self._active_result_type.startswith("Deformação"):
-            self._refresh_result_layer()
-            return
-        self._configure_solid_picker()
-        self._sync_highlights()
-        self.plotter.render()
+        self.render_model(self._model)
 
     def set_labels_visible(self, kind: str, visible: bool) -> None:
         self._labels_visibility[kind] = bool(visible)
@@ -4456,8 +4457,11 @@ class StructureScene(QWidget):
                 self._clip_refresh_timer.start()
                 self._capture_rendered_state()
                 return
-            # A changed section family may alter its cell topology. The full
-            # rebuild also replaces any earlier in-place edits in this batch.
+            # Positioning edits move indicators too; section-family changes
+            # may alter topology. Rebuild the affected members in either case.
+            if self._refresh_member_subset(names):
+                self._capture_rendered_state()
+                return
             self._refresh_member_batch()
             self._capture_rendered_state()
             return
@@ -4527,6 +4531,7 @@ class StructureScene(QWidget):
     def _member_cache_key(self, model: StructuralModel) -> tuple[object, ...]:
         return (
             round(float(self._marker_radius_current), 12),
+            self._solid_members_visible,
             tuple(
                 (
                     member,

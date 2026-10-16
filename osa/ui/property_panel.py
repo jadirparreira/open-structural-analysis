@@ -423,10 +423,7 @@ class PropertyPanel(QFrame):
             material_combo.addItems(self.window.model.materials)
             materials = [self.window.model.bars[member_name].material for member_name in names]
             material_combo.setPlaceholderText("Variado" if not self._all_equal(materials) else "Indefinido")
-            if self._all_equal(materials) and bar.material not in self.window.model.materials:
-                material_combo.addItem(bar.material)
-                material_combo.setEnabled(False)
-            if self._all_equal(materials):
+            if self._all_equal(materials) and bar.material in self.window.model.materials:
                 material_combo.setCurrentText(bar.material)
             else:
                 material_combo.setCurrentIndex(-1)

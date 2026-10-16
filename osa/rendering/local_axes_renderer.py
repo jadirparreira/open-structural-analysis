@@ -4,6 +4,15 @@ import pyvista as pv
 
 class LocalAxesRenderer:
     @staticmethod
+    def section_offset(member, start, end) -> np.ndarray:
+        """Translate visual member details in the positioning Y/Z frame."""
+        offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+        basis = LocalAxesRenderer.basis(start, end, rotation=0)
+        if basis is None or len(offsets) != 2:
+            return np.zeros(3, dtype=float)
+        return basis[1] * float(offsets[0]) + basis[2] * float(offsets[1])
+
+    @staticmethod
     def end_indicator_offset(length: float, radius: float) -> float:
         """Keep end markers inside their member, even for short members."""
         return min(max(float(radius), 0.0) * 4.0, max(float(length), 0.0) * 0.2)

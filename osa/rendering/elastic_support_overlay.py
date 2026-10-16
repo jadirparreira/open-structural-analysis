@@ -29,6 +29,7 @@ class ElasticSupportOverlay(QWidget):
         self._screen = np.empty((0, 2), dtype=float)
         self._on_screen = np.empty(0, dtype=bool)
         self._visible = True
+        self.follow_section = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -47,13 +48,13 @@ class ElasticSupportOverlay(QWidget):
         self._member_positions = {
             member.name: positions
             for member in members
-            if (positions := self._member_end_positions(member, node_map, radius))
+            if (positions := self._member_end_positions(member, node_map, radius, self.follow_section))
         }
         self._rebuild_positions()
 
     def update_member(self, member, nodes, radius: float) -> None:
         """Update only one member's spring markers after a property edit."""
-        positions = self._member_end_positions(member, nodes, radius)
+        positions = self._member_end_positions(member, nodes, radius, self.follow_section)
         if not positions and member.name not in self._member_positions:
             return
         if positions:
@@ -75,7 +76,7 @@ class ElasticSupportOverlay(QWidget):
         self.update()
 
     @staticmethod
-    def _member_end_positions(member, nodes, radius: float) -> list[np.ndarray]:
+    def _member_end_positions(member, nodes, radius: float, follow_section: bool = True) -> list[np.ndarray]:
         start = nodes.get(member.start_node)
         end = nodes.get(member.end_node)
         if start is None or end is None:
@@ -86,11 +87,12 @@ class ElasticSupportOverlay(QWidget):
         local_x = basis[0]
         length = float(np.linalg.norm(np.asarray((end.x - start.x, end.y - start.y, end.z - start.z))))
         offset = LocalAxesRenderer.end_indicator_offset(length, radius)
+        section_offset = LocalAxesRenderer.section_offset(member, start, end) if follow_section else np.zeros(3)
         positions = []
         if has_semirigid_member_end(member, "start"):
-            positions.append(np.asarray((start.x, start.y, start.z), dtype=float) + local_x * offset)
+            positions.append(np.asarray((start.x, start.y, start.z), dtype=float) + local_x * offset + section_offset)
         if has_semirigid_member_end(member, "end"):
-            positions.append(np.asarray((end.x, end.y, end.z), dtype=float) - local_x * offset)
+            positions.append(np.asarray((end.x, end.y, end.z), dtype=float) - local_x * offset + section_offset)
         return positions
 
     def set_visible(self, visible: bool) -> None:

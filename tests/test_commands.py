@@ -156,6 +156,50 @@ def test_join_members_rejects_members_that_are_not_collinear():
     assert tuple(model.nodes) == ("N1", "N2", "N3")
 
 
+@pytest.mark.parametrize("names", [("B1", "B3", "B2"), ("B2", "B3", "B1"), ("B3", "B1", "B2")])
+def test_join_selected_members_merges_full_chain_independently_of_selection_order(names):
+    model, _commands = session()
+    for index in range(4):
+        model.add_node(f"N{index + 1}", index, index * 2, index * 3)
+    for index in range(1, 4):
+        model.add_bar(f"B{index}", f"N{index}", f"N{index + 1}")
+    ModelService(model).reverse_member("B2")
+    joined = ModelService(model).join_selected_members(names)
+    assert tuple(model.bars) == (names[0],)
+    assert {joined.start_node, joined.end_node} == {"N1", "N4"}
+    assert set(model.nodes) == {"N1", "N4"}
+
+
+@pytest.mark.parametrize("failure", ["noncollinear", "gap", "support", "nodal_load", "branch"])
+def test_join_selected_members_validates_entire_group_before_changing_model(failure):
+    model, _commands = session()
+    for index in range(5):
+        model.add_node(f"N{index + 1}", index, 0, 0)
+    for index in range(1, 4):
+        model.add_bar(f"B{index}", f"N{index}", f"N{index + 1}")
+    names = ("B1", "B2", "B3")
+    if failure == "noncollinear":
+        model.update_node("N4", 3, 1, 0)
+    elif failure == "gap":
+        names = ("B1", "B3")
+    elif failure == "support":
+        model.update_node_supports("N3", (True, False, False, False, False, False))
+    elif failure == "nodal_load":
+        ActionService(model).add_node_force("N3", "Z", -5, "Caso")
+    else:
+        model.add_node("N6", 2, 1, 0)
+        model.add_bar("B4", "N3", "N6")
+    model.add_scene_view("Vista")
+    model.set_scene_members_hidden({"B2", "B3"}, True)
+    before = (
+        model.bars.copy(), model.nodes.copy(), model.actions.copy(), model.revision,
+        {name: hidden.copy() for name, hidden in model.scene_views.items()},
+    )
+    with pytest.raises(ValueError):
+        ModelService(model).join_selected_members(names)
+    assert (model.bars, model.nodes, model.actions, model.revision, model.scene_views) == before
+
+
 def test_copy_member_properties_copies_only_the_selected_member_fields():
     model, _commands = session()
     model.add_node("N1", 0, 0, 0)

@@ -530,6 +530,44 @@ class StructuralModel:
 
     join_members = join_bars
 
+    def join_selected_members(self, member_names: tuple[str, ...]) -> Bar:
+        """Merge a connected collinear chain, committing only after all checks pass."""
+        names = tuple(dict.fromkeys(member_names))
+        if len(names) < 2:
+            raise ValueError("Selecione pelo menos dois membros diferentes para unir.")
+        if any(name not in self.bars for name in names):
+            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+
+        # Join in an isolated model so a failure at the last interface cannot
+        # leave the earlier members merged or discard loads/results/views.
+        candidate = StructuralModel()
+        candidate.nodes = self.nodes.copy()
+        candidate.bars = self.bars.copy()
+        candidate.rigid_bars = self.rigid_bars.copy()
+        candidate.actions = self.actions.copy()
+        first_name = names[0]
+        remaining = list(names[1:])
+        while remaining:
+            first = candidate.bars[first_name]
+            endpoints = {first.start_node, first.end_node}
+            next_name = next((
+                name for name in remaining
+                if endpoints.intersection((candidate.bars[name].start_node, candidate.bars[name].end_node))
+            ), None)
+            if next_name is None:
+                raise ValueError("Os membros devem formar uma sequência conectada na mesma reta.")
+            candidate.join_bars(first_name, next_name)
+            remaining.remove(next_name)
+
+        self.nodes.clear()
+        self.nodes.update(candidate.nodes)
+        self.bars.clear()
+        self.bars.update(candidate.bars)
+        self.actions.clear()
+        self.actions.update(candidate.actions)
+        self._touch()
+        return self.bars[first_name]
+
     def copy_bar_properties(
         self,
         source_name: str,

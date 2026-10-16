@@ -223,6 +223,7 @@ class BatchedMemberRenderer:
 
     def __init__(self, solid_renderer: SolidMemberRenderer | None = None) -> None:
         self.solids = solid_renderer or SolidMemberRenderer()
+        self.position_indicators_with_section = True
 
     def build(self, model, marker_radius: float) -> MemberBatch:
         names = tuple(model.bars)
@@ -256,38 +257,38 @@ class BatchedMemberRenderer:
             end_node = model.nodes[member.end_node]
             start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
             end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
+            section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+            indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
             delta = end - start
             color = _rgb(member.color)
             line_segments.append((start, end, element_index, color))
-            label_positions[element_index] = (start + end) / 2.0 + (0.0, 0.0, marker_radius * 2.2)
+            label_positions[element_index] = (
+                (start + end) / 2.0 + indicator_offset + (0.0, 0.0, marker_radius * 2.2)
+            )
 
             basis = LocalAxesRenderer.basis(start_node, end_node, rotation=member.rotation)
             if basis is None:
                 fallback_segments.append((start, end, element_index, color))
                 continue
             local_x, local_y, local_z = basis
-            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
-            if base_basis is None:
-                fallback_segments.append((start, end, element_index, color))
-                continue
-            _base_x, base_local_y, base_local_z = base_basis
             length = float(np.linalg.norm(delta))
             axis_scale = min(max(length * 0.2, 0.15), 1.0)
-            midpoint = (start + end) / 2.0
+            midpoint = (start + end) / 2.0 + indicator_offset
             for axis_index, axis in enumerate((local_x, local_y, local_z)):
                 axis_segments[axis_index].append(
                     (midpoint, midpoint + axis * axis_scale, element_index, np.zeros(3, dtype=np.uint8))
                 )
             release_start = len(release_polylines)
             self._append_release_polylines(
-                release_polylines, start, end, member.releases, marker_radius, basis,
+                release_polylines, start + indicator_offset, end + indicator_offset,
+                member.releases, marker_radius, basis,
             )
             release_indices.extend([element_index] * (len(release_polylines) - release_start))
 
             # Os deslocamentos das faces sólidas são exclusivamente visuais:
             # valores positivos aumentam o comprimento nas extremidades e
-            # valores negativos o reduzem. Linhas, eixos locais e liberações
-            # continuam referenciando os nós analíticos originais.
+            # valores negativos o reduzem. As linhas continuam referenciando
+            # os nós analíticos; os indicadores acompanham apenas Y/Z.
             solid_start = start.copy()
             solid_end = end.copy()
             offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
@@ -296,13 +297,7 @@ class BatchedMemberRenderer:
                 candidate_end = end + local_x * float(offsets[1])
                 if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
                     solid_start, solid_end = candidate_start, candidate_end
-            section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-            solid_origin = solid_start.copy()
-            if len(section_offsets) == 2:
-                solid_origin += (
-                    base_local_y * float(section_offsets[0])
-                    + base_local_z * float(section_offsets[1])
-                )
+            solid_origin = solid_start + section_offset
             solid_delta = solid_end - solid_start
 
             try:
@@ -428,11 +423,20 @@ class BatchedMemberRenderer:
         start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
         end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
         basis = LocalAxesRenderer.basis(start_node, end_node, rotation=member.rotation)
-        base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
-        if basis is None or base_basis is None:
+        if basis is None:
             return False
         local_x, local_y, local_z = basis
-        _base_x, base_local_y, base_local_z = base_basis
+        section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+        indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
+        # Y/Z edits also move labels and end markers. Rebuild this member's
+        # complete subset instead of updating only its section vertices.
+        element_index = batch.names.index(member_name)
+        axis_cells = np.flatnonzero(batch.axes[0].cell_data["element_index"] == element_index)
+        if not len(axis_cells) or not np.allclose(
+            batch.axes[0].points[2 * axis_cells[0]],
+            (start + end) / 2.0 + indicator_offset, rtol=0.0, atol=1e-12,
+        ):
+            return False
         solid_start, solid_end = start.copy(), end.copy()
         offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         if len(offsets) == 2:
@@ -440,13 +444,7 @@ class BatchedMemberRenderer:
             candidate_end = end + local_x * float(offsets[1])
             if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
                 solid_start, solid_end = candidate_start, candidate_end
-        solid_origin = solid_start.copy()
-        section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        if len(section_offsets) == 2:
-            solid_origin += (
-                base_local_y * float(section_offsets[0])
-                + base_local_z * float(section_offsets[1])
-            )
+        solid_origin = solid_start + section_offset
         solid_delta = solid_end - solid_start
 
         try:
