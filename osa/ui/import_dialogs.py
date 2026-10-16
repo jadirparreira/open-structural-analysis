@@ -4,7 +4,7 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,13 +24,77 @@ _ICON = Path(__file__).resolve().parents[1] / "resources" / "icons" / "eberick.p
 _STYLE = """
 QDialog { background: #ffffff; color: #24292f; }
 QLabel, QCheckBox { color: #24292f; }
-QComboBox, QDoubleSpinBox { min-height: 28px; padding: 2px 6px; }
+QComboBox, QDoubleSpinBox, QLineEdit {
+    min-height: 28px; padding: 2px 6px; background: #ffffff; color: #24292f;
+    border: 1px solid #d0d7de; border-radius: 5px;
+    selection-background-color: #0969da; selection-color: #ffffff;
+}
+QComboBox:disabled, QDoubleSpinBox:disabled { background: #f6f8fa; color: #8c959f; }
+QComboBox QAbstractItemView {
+    background: #ffffff; color: #24292f; border: 1px solid #d0d7de;
+    selection-background-color: #0969da; selection-color: #ffffff;
+    outline: 0;
+}
+QComboBox QAbstractItemView::item { min-height: 28px; padding: 3px 8px; }
+QComboBox QAbstractItemView::item:selected { background: #0969da; color: #ffffff; }
 QPushButton { min-height: 32px; padding: 4px 16px; border: 1px solid #d0d7de;
               border-radius: 6px; background: #f6f8fa; color: #24292f; }
 QPushButton#primary { background: #0969da; color: white; border: none; }
 QPushButton:disabled { background: #eaeef2; color: #8c959f; }
-QTextBrowser { border: 1px solid #d0d7de; background: #ffffff; padding: 8px; }
+QTextBrowser {
+    border: 1px solid #d0d7de; background: #ffffff; color: #24292f; padding: 8px;
+    selection-background-color: #0969da; selection-color: #ffffff;
+}
+QScrollBar:vertical { background: #f6f8fa; width: 12px; margin: 0; }
+QScrollBar::handle:vertical { background: #afb8c1; min-height: 24px; border-radius: 5px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
+
+
+def _light_palette():
+    """Paleta local dos diálogos claros, independente da aparência do sistema."""
+    palette = QPalette()
+    colors = {
+        QPalette.ColorRole.Window: "#ffffff",
+        QPalette.ColorRole.WindowText: "#24292f",
+        QPalette.ColorRole.Base: "#ffffff",
+        QPalette.ColorRole.AlternateBase: "#f6f8fa",
+        QPalette.ColorRole.Text: "#24292f",
+        QPalette.ColorRole.Button: "#f6f8fa",
+        QPalette.ColorRole.ButtonText: "#24292f",
+        QPalette.ColorRole.Highlight: "#0969da",
+        QPalette.ColorRole.HighlightedText: "#ffffff",
+        QPalette.ColorRole.PlaceholderText: "#6e7781",
+        QPalette.ColorRole.ToolTipBase: "#ffffff",
+        QPalette.ColorRole.ToolTipText: "#24292f",
+    }
+    for group in (
+        QPalette.ColorGroup.Active,
+        QPalette.ColorGroup.Inactive,
+        QPalette.ColorGroup.Disabled,
+    ):
+        for role, color in colors.items():
+            palette.setColor(group, role, QColor(color))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#8c959f"))
+    return palette
+
+
+def _apply_dialog_theme(dialog):
+    dialog.setPalette(_light_palette())
+    dialog.setStyleSheet(_STYLE)
+
+
+def _style_combo_popup(combo):
+    # O popup é uma janela própria em alguns temas e não herda a paleta do pai.
+    combo.setPalette(_light_palette())
+    combo.view().setPalette(_light_palette())
+    combo.view().viewport().setPalette(_light_palette())
+    combo.view().setStyleSheet(
+        "QAbstractItemView { background: #ffffff; color: #24292f; "
+        "selection-background-color: #0969da; selection-color: #ffffff; }"
+        "QAbstractItemView::item:selected { background: #0969da; color: #ffffff; }"
+    )
 
 
 def _header(layout, title, subtitle):
@@ -64,7 +128,7 @@ class EberickImportDialog(QDialog):
         self.setWindowTitle("Importar projeto Eberick")
         self.setWindowIcon(QIcon(str(_ICON)))
         self.setMinimumWidth(540)
-        self.setStyleSheet(_STYLE)
+        _apply_dialog_theme(self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
@@ -80,9 +144,11 @@ class EberickImportDialog(QDialog):
         form = QFormLayout()
         self.length_unit = QComboBox()
         self.length_unit.addItems(["cm", "mm", "m"])
+        _style_combo_popup(self.length_unit)
         form.addRow("Comprimento no PRJ", self.length_unit)
         self.force_unit = QComboBox()
         self.force_unit.addItems(["kgf", "tf", "kN", "N"])
+        _style_combo_popup(self.force_unit)
         form.addRow("Força no PRJ", self.force_unit)
         self.first_floor_z = QDoubleSpinBox()
         self.first_floor_z.setRange(-100000, 100000)
@@ -154,7 +220,7 @@ class ImportReportDialog(QDialog):
         )
         self.setWindowIcon(QIcon(str(_ICON)))
         self.resize(660, 590)
-        self.setStyleSheet(_STYLE)
+        _apply_dialog_theme(self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
         _header(
@@ -188,20 +254,33 @@ class ImportReportDialog(QDialog):
         html += (
             "<table cellpadding='5'>"
             + "".join(
-                f"<tr><td>{escape(name)}</td><td><b>{value}</b></td></tr>"
+                f"<tr><td>{escape(name)}</td><td><b>{escape(str(value))}</b></td></tr>"
                 for name, value in rows
             )
             + "</table><h3>Dados que exigem conferência</h3><ul>"
         )
-        html += "".join(
-            "<li>" + escape(str(warning)) + "</li>"
-            for warning in report.get("warnings", ())
-        )
+        for warning in report.get("warnings", ()):
+            # Compatibilidade com relatórios salvos pela primeira integração.
+            warning = str(warning).replace(
+                "Cargas, peso próprio, paredes e combinações",
+                "Cargas, paredes e combinações",
+            )
+            html += "<li>" + escape(warning) + "</li>"
         html += "</ul><p>O modelo é editável e pode ser salvo como .osa. A importação "
         html += "não comprova equivalência estrutural com o projeto original.</p>"
-        text = QTextBrowser()
-        text.setHtml(html)
-        layout.addWidget(text, 1)
+        html += "<p>O peso próprio é aplicado pelas ferramentas do OSA.</p>"
+        self.report_text = QTextBrowser()
+        self.report_text.setPalette(_light_palette())
+        self.report_text.viewport().setPalette(_light_palette())
+        self.report_text.document().setDefaultStyleSheet(
+            "body, p, li, td, h3 { color: #24292f; } h3 { margin-top: 14px; }"
+        )
+        self.report_text.setHtml(
+            '<html><body style="color: #24292f; background-color: #ffffff;">'
+            + html
+            + "</body></html>"
+        )
+        layout.addWidget(self.report_text, 1)
         if review:
             self.reviewed = QCheckBox(
                 "Revisei unidades, geometria, materiais, apoios, vínculos e cargas no OSA."

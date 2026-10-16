@@ -154,7 +154,7 @@ class _LaunchBuilder:
                 "barras sem liberações até a revisão no OSA."
             ),
             (
-                "Cargas, peso próprio, paredes e combinações não foram aplicados ao modelo "
+                "Cargas, paredes e combinações não foram aplicados ao modelo "
                 "de cálculo. As evidências recuperadas permanecem neste relatório."
             ),
             (

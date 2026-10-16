@@ -64,10 +64,8 @@ class MainWindow(QMainWindow):
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
-    _open_file_filter = (
-        "Modelos estruturais (*.osa *.prj *.prj.zip);;Modelo OSA (*.osa);;"
-        "Projeto Eberick (*.prj *.prj.zip)"
-    )
+    _open_file_filter = _project_file_filter
+    _import_file_filter = "Projeto Eberick (*.prj *.prj.zip)"
     _interface_commands = frozenset({
         "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
@@ -292,6 +290,7 @@ class MainWindow(QMainWindow):
         self._mcp_enabled = False
         self.home.new_project_requested.connect(self.new_model)
         self.home.open_project_requested.connect(self.open_model)
+        self.home.import_project_requested.connect(self.import_model)
         self.home.recent_project_requested.connect(self._open_recent_project)
         self.home.manual_requested.connect(self.open_manual)
         self.show_home()
@@ -490,6 +489,7 @@ class MainWindow(QMainWindow):
         actions = (
             ("Novo modelo", QKeySequence.StandardKey.New, self.new_model),
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
+            ("Importar modelo", "Ctrl+I", self.import_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Excluir elemento selecionado", "Delete", self.delete_selected),
             ("Cancelar lançamento", "Escape", self.cancel_member_placement),
@@ -1790,10 +1790,24 @@ class MainWindow(QMainWindow):
 
     def _open_model_path(self, path: str | Path) -> None:
         path = Path(path)
-        importing = is_import_path(path)
-        if path.suffix.casefold() != ".osa" and not importing:
-            self.show_error("Selecione um modelo .osa ou um projeto Eberick .prj/.prj.zip.")
+        if path.suffix.casefold() != ".osa":
+            self.show_error("Abrir modelo aceita arquivos .osa. Para projetos de outros softwares, use Importar modelo.")
             return
+        self._load_model_path(path, importing=False)
+
+    def import_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Importar modelo", "", self._import_file_filter)
+        if path:
+            self._import_model_path(path)
+
+    def _import_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if not is_import_path(path):
+            self.show_error("Selecione um projeto Eberick .prj/.prj.zip. Para arquivos .osa, use Abrir modelo.")
+            return
+        self._load_model_path(path, importing=True)
+
+    def _load_model_path(self, path: Path, *, importing: bool) -> None:
         if not self._confirm_pending_changes():
             return
         import_options = None

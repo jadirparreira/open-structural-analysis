@@ -1,10 +1,10 @@
 # Importação experimental de projetos Eberick
 
-A opção **Abrir modelo** aceita `.osa`, `.prj` e `.prj.zip`. O PRJ pode ser binário direto ou um ZIP com o membro `__DADOS__`; o leitor verifica os bytes, não apenas a extensão.
+A opção **Abrir modelo** aceita somente `.osa`. Use **Importar modelo** para `.prj` e `.prj.zip`; ela está na tela inicial, no menu Arquivo e no atalho `Ctrl+I`. O PRJ pode ser binário direto ou um ZIP com o membro `__DADOS__`; o leitor verifica os bytes, não apenas a extensão.
 
 ## Primeiro teste
 
-1. Abra o OSA normalmente e use **Abrir modelo** (`Ctrl+O`).
+1. Abra o OSA normalmente e use **Importar modelo** (`Ctrl+I`).
 2. Selecione o arquivo `teste_conv.prj` ou `teste_conv.prj.zip`.
 3. Confira as opções: comprimento `cm`, força `kgf`, cota do primeiro pavimento `0 m`, Poisson adotado `0,2`.
 4. Para reproduzir o teste executado, mantenha ativados os trechos inferiores, as ligações rígidas e a leitura das propriedades de concreto.
@@ -22,7 +22,7 @@ No exemplo `teste_conv`, as opções acima geram **28 nós, 16 barras (8 vigas e
 - Deslocamentos de extremidade representados opcionalmente por ligações rígidas do OSA. A equivalência analítica dessa idealização ainda precisa ser verificada.
 - Representações CAD duplicadas são preservadas no relatório e excluídas da contagem física somente quando correspondem a pilares já identificados.
 
-**Apoios, molas, liberações, parâmetros 0/0,15, cargas, paredes e combinações ainda não são transcritos para ações/vínculos ativos do modelo de cálculo.** As evidências lidas ficam em `import_metadata.source_evidence` dentro do `.osa`. Os nós importados ficam livres e as barras sem liberações até a revisão no editor. Não são geradas cargas adicionais de peso próprio.
+**Apoios, molas, liberações, parâmetros 0/0,15, cargas, paredes e combinações ainda não são transcritos para ações/vínculos ativos do modelo de cálculo.** As evidências lidas ficam em `import_metadata.source_evidence` dentro do `.osa`. Os nós importados ficam livres e as barras sem liberações até a revisão no editor. O peso próprio é aplicado pelas ferramentas do próprio OSA, sem duplicação pelo importador.
 
 O material pode usar as propriedades candidatas lidas do PRJ; nesse caso, o coeficiente de Poisson é uma opção explícita, e G é calculado por `E / [2(1 + ν)]`. Se essa opção for desativada, o importador utiliza um concreto de referência do catálogo OSA, identificado como material para revisão. Sobreposições particulares de material, centros/eixos locais e rotações das seções precisam ser conferidos.
 
@@ -45,7 +45,7 @@ osa/transcriptions/
 
 A abertura segue `MainWindow → ProjectService → ProjectRepository → import_project → ProjectSerializer`. O importador produz um dicionário no formato nativo; não cria arquivos temporários de projeto. O serializador continua responsável por aplicar um candidato validado ao modelo, e o repositório mantém o salvamento atômico do `.osa`.
 
-Para adicionar outro formato, implemente `name`, `extensions` e `read(path, options) -> ImportResult`, registre com `register_importer` e inclua a extensão no filtro de abertura da interface. O resultado deve seguir o formato nativo OSA. Importe módulos pesados apenas dentro do importador correspondente.
+Para adicionar outro formato, implemente `name`, `extensions` e `read(path, options) -> ImportResult`, registre com `register_importer` e inclua a extensão em `_import_file_filter` da interface. O resultado deve seguir o formato nativo OSA. Importe módulos pesados apenas dentro do importador correspondente.
 
 ## Testes
 
@@ -64,3 +64,7 @@ OSA_EBERICK_PRJ=/caminho/teste_conv.prj.zip QT_QPA_PLATFORM=offscreen PYVISTA_OF
 Não definir `PYVISTA_OFF_SCREEN=true` no teste da janela: o OSA usa o interactor Qt/VTK. O backend Qt pode ser `offscreen` para a automação. A regressão verifica conteúdo e hash do exemplo; não é um teste parametrizado para qualquer projeto.
 
 Nesta entrega foram verificados abertura real pela janela com diálogos controlados, salvamento/reabertura, unidades, seções, referências, cancelamento, recusa de conteúdo não suportado e preservação do arquivo original. Não foi validada equivalência de resultados de cálculo com o Eberick.
+
+## Aparência dos diálogos
+
+Os diálogos de importação mantêm fundo claro e cores explícitas para texto, conteúdo do relatório, campos e popups, incluindo as seleções das listas. A paleta local evita texto branco sobre branco ou preto sobre preto quando o sistema operacional usa aparência escura. O tema geral do OSA recebido continua sendo claro.
