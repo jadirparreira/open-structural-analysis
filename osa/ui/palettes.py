@@ -260,6 +260,10 @@ class FloatingPalette(QFrame):
 
     def toggle_group(self, name: str, *, animate: bool = True) -> None:
         next_group = name
+        if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
+            "scene_hide_selection", "scene_reveal_selection",
+        }:
+            self.window.cancel_member_placement()
         self._tooltip.dismiss()
         for group, button in self._primary_buttons.items():
             expanded = group == next_group
@@ -405,6 +409,7 @@ class TopIconPalette(QFrame):
         self._tooltip = PaletteTooltip(window)
         self._visibility_buttons: dict[str, QToolButton] = {}
         self._solid_visibility_previous_states: dict[str, tuple[bool, bool]] | None = None
+        self._window = window
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
                                         ("reference-axes.svg", "Eixos de referência", "reference-axes"),
                                         ("box.svg", "Seções sólidas", "solid"),
@@ -486,6 +491,87 @@ class TopIconPalette(QFrame):
         )
         layout.addWidget(snap_button)
         self.snap_button = snap_button
+
+        scene_button = QToolButton(self)
+        scene_button.setFixedSize(24, 24)
+        self._scene_icons = {
+            False: QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "eye-closed.svg")),
+            True: QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "eye.svg")),
+        }
+        scene_button.setIcon(self._scene_icons[False])
+        scene_button.setIconSize(QSize(19, 19))
+        scene_button.setToolTip("Cena")
+        scene_button.setProperty("paletteTooltip", "Cena")
+        scene_button.setAccessibleName("Cena")
+        scene_button.setCheckable(True)
+        scene_button.setChecked(False)
+        scene_button.toggled.connect(self._on_scene_toggled)
+        scene_button.installEventFilter(self)
+        scene_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(scene_button)
+        self.scene_button = scene_button
+        self.scene_palette = QFrame(window)
+        self.scene_palette.setObjectName("scenePalette")
+        self.scene_palette.setStyleSheet(
+            "QFrame#scenePalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QComboBox { min-width: 120px; min-height: 24px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QToolButton { min-width: 30px; min-height: 24px; border: 0; border-radius: 5px; "
+            "background: transparent; color: #24292f; }"
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        scene_palette_layout = QHBoxLayout(self.scene_palette)
+        scene_palette_layout.setContentsMargins(4, 4, 4, 4)
+        scene_palette_layout.setSpacing(3)
+        self.scene_view_selector = QComboBox(self.scene_palette)
+        self.scene_view_selector.addItem("Completo")
+        self.scene_view_selector.setToolTip("Vista da cena")
+        self.scene_view_selector.setAccessibleName("Vista da cena")
+        self.scene_view_selector.currentTextChanged.connect(self._on_scene_view_selected)
+        scene_palette_layout.addWidget(self.scene_view_selector)
+        self.add_scene_view_button = self._scene_view_action_button(
+            "plus.svg", "Adicionar vista", self._add_scene_view
+        )
+        scene_palette_layout.addWidget(self.add_scene_view_button)
+        self.remove_scene_view_button = self._scene_view_action_button(
+            "minus.svg", "Remover vista", self._remove_scene_view
+        )
+        scene_palette_layout.addWidget(self.remove_scene_view_button)
+        self.rename_scene_view_button = self._scene_view_action_button(
+            "pencil.svg", "Renomear vista", self._rename_scene_view
+        )
+        scene_palette_layout.addWidget(self.rename_scene_view_button)
+
+        scene_separator = QFrame(self.scene_palette)
+        scene_separator.setFrameShape(QFrame.Shape.VLine)
+        scene_separator.setFrameShadow(QFrame.Shadow.Plain)
+        scene_separator.setFixedHeight(18)
+        scene_separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        scene_palette_layout.addWidget(scene_separator, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.hide_scene_items_button = self._scene_view_action_button(
+            "lightbulb-off.svg", "Ocultar", window.start_scene_hide_selection
+        )
+        scene_palette_layout.addWidget(self.hide_scene_items_button)
+        self.show_hidden_items_button = self._scene_view_action_button(
+            "lightbulb.svg", "Reexibir", window.start_scene_reveal_selection
+        )
+        scene_palette_layout.addWidget(self.show_hidden_items_button)
+        self.show_all_button = self._scene_view_action_button(
+            "lightbulb-all.svg", "Reexibir tudo", window.show_all_scene_members
+        )
+        scene_palette_layout.addWidget(self.show_all_button)
+        self._update_scene_view_actions()
+        self.scene_palette.hide()
 
         separator = QFrame(self)
         separator.setFrameShape(QFrame.Shape.VLine)
@@ -675,6 +761,115 @@ class TopIconPalette(QFrame):
         self.copy_elements_button = copy_elements_button
         self.adjustSize()
 
+    def _on_scene_toggled(self, active: bool) -> None:
+        self.scene_button.setIcon(self._scene_icons[bool(active)])
+        self._position_scene_palette()
+        self.scene_palette.setVisible(bool(active) and self.isVisible())
+        if active:
+            self.scene_palette.raise_()
+
+    def _position_scene_palette(self) -> None:
+        button_position = self.scene_button.mapTo(self._window, QPoint(0, self.scene_button.height() + 8))
+        self.scene_palette.adjustSize()
+        x = button_position.x() + (self.scene_button.width() - self.scene_palette.width()) // 2
+        x = max(8, min(x, self._window.width() - self.scene_palette.width() - 8))
+        self.scene_palette.move(
+            x,
+            button_position.y(),
+        )
+
+    def _scene_view_action_button(self, icon_filename: str, tooltip: str, callback=None) -> QToolButton:
+        button = QToolButton(self.scene_palette)
+        button.setFixedSize(24, 24)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+        button.setIconSize(QSize(17, 17))
+        button.setToolTip(tooltip)
+        button.setProperty("paletteTooltip", tooltip)
+        button.setAccessibleName(tooltip)
+        if callback is not None:
+            button.clicked.connect(callback)
+        button.installEventFilter(self)
+        return button
+
+    def _update_scene_view_actions(self, *_args) -> None:
+        selected_view = self.scene_view_selector.currentText()
+        can_edit = bool(selected_view) and selected_view != "Completo"
+        self.remove_scene_view_button.setEnabled(can_edit)
+        self.rename_scene_view_button.setEnabled(can_edit)
+        self.hide_scene_items_button.setEnabled(can_edit)
+        self.show_hidden_items_button.setEnabled(can_edit)
+        self.show_all_button.setEnabled(can_edit)
+
+    def reload_scene_views(self) -> None:
+        with QSignalBlocker(self.scene_view_selector):
+            self.scene_view_selector.clear()
+            self.scene_view_selector.addItems(self._window.model.scene_views)
+            self.scene_view_selector.setCurrentText(self._window.model.active_scene_view)
+        self._update_scene_view_actions()
+
+    def _on_scene_view_selected(self, name: str) -> None:
+        self._update_scene_view_actions()
+        if name:
+            self._window.select_scene_view(name)
+
+    def _scene_view_name_dialog(self, title: str, initial_name: str = "") -> tuple[bool, str]:
+        dialog = QInputDialog(self._window)
+        dialog.setWindowTitle(title)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setLabelText("Nome da vista:")
+        dialog.setTextValue(initial_name)
+        dialog.setOkButtonText("Salvar")
+        dialog.setCancelButtonText("Cancelar")
+        dialog.setStyleSheet(
+            "QInputDialog { background: #ffffff; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLineEdit { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px; "
+            "padding: 2px 9px; background: #ffffff; }"
+            "QPushButton { min-height: 34px; padding: 4px 16px; border: 0; border-radius: 6px; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        for dialog_button in dialog.findChildren(QPushButton):
+            dialog_button.setIcon(QIcon())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        return accepted, dialog.textValue().strip()
+
+    def _add_scene_view(self) -> None:
+        accepted, name = self._scene_view_name_dialog("Adicionar vista")
+        existing_names = {
+            self.scene_view_selector.itemText(index)
+            for index in range(self.scene_view_selector.count())
+        }
+        if accepted and name and name not in existing_names:
+            self._window.model.add_scene_view(name)
+            self.reload_scene_views()
+            self._window.select_scene_view(name)
+
+    def _remove_scene_view(self) -> None:
+        index = self.scene_view_selector.currentIndex()
+        if index <= 0:
+            return
+        self._window.cancel_member_placement()
+        self._window.model.remove_scene_view(self.scene_view_selector.itemText(index))
+        self.reload_scene_views()
+        self._window.scene.render_model(self._window.model)
+        self._window.clear_selection()
+
+    def _rename_scene_view(self) -> None:
+        index = self.scene_view_selector.currentIndex()
+        if index <= 0:
+            return
+        current_name = self.scene_view_selector.itemText(index)
+        accepted, name = self._scene_view_name_dialog("Renomear vista", current_name)
+        existing_names = {
+            self.scene_view_selector.itemText(item_index)
+            for item_index in range(self.scene_view_selector.count())
+            if item_index != index
+        }
+        if accepted and name and name not in existing_names:
+            self._window.model.rename_scene_view(current_name, name)
+            self.reload_scene_views()
+
     def _on_solid_visibility_toggled(self, visible: bool) -> None:
         dependent_kinds = ("nodes", "node", "axes", "releases", "semirigid")
         if visible:
@@ -743,6 +938,10 @@ class TopIconPalette(QFrame):
         if not visible:
             self._tooltip.dismiss()
         self.setVisible(visible)
+        self.scene_palette.setVisible(visible and self.scene_button.isChecked())
+        if visible and self.scene_button.isChecked():
+            self._position_scene_palette()
+            self.scene_palette.raise_()
 
     def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
         """Disable manual reversal while automatic normalization is active."""
@@ -752,6 +951,9 @@ class TopIconPalette(QFrame):
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
         self.move((self.window().width() - self.width()) // 2, margin + 52)
         self.raise_()
+        self._position_scene_palette()
+        if self.scene_button.isChecked() and self.isVisible():
+            self.scene_palette.raise_()
 
 
 class ActionTopPalette(QFrame):

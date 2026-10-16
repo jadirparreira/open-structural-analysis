@@ -64,6 +64,7 @@ class ResultRenderer:
         samples_by_member = {
             name: values.get("samples", ())
             for name, values in result.member_results.items()
+            if name in model.bars
         }
         maximum = max(
             (
@@ -421,6 +422,7 @@ class ResultRenderer:
         samples_by_member = {
             name: values.get("samples", ())
             for name, values in result.member_results.items()
+            if name in model.bars
         }
         maximum = max(
             (

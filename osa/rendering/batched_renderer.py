@@ -167,6 +167,10 @@ class _LazyOutlineMap(Mapping[str, pv.PolyData]):
     def __len__(self) -> int:
         return len(self._sources)
 
+    def source(self, name: str) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return packed outline arrays without allocating a separate mesh."""
+        return self._sources.get(name)
+
     def replace_source(
         self, name: str, points: np.ndarray | None, lines: np.ndarray | None,
     ) -> None:
@@ -397,7 +401,12 @@ class BatchedMemberRenderer:
             edge_cell_ranges=edge_cell_ranges,
         )
 
-    def update_member_section_in_place(self, batch: MemberBatch, model, member_name: str) -> bool:
+    def update_member_section_in_place(
+        self, batch: MemberBatch, model, member_name: str, *,
+        rebuild_silhouette: bool = True,
+        face_connectivity: np.ndarray | None = None,
+        edge_connectivity: np.ndarray | None = None,
+    ) -> bool:
         """Update one section when its topology still fits the packed ranges.
 
         Structural sizes usually change the coordinates but keep the same
@@ -462,11 +471,15 @@ class BatchedMemberRenderer:
             or len(edge_source.points) != edge_end - edge_start
             or edge_source.n_cells != edge_cell_end - edge_cell_start
             or not np.array_equal(
-                batch.faces.faces[face_cell_start * 4:face_cell_end * 4],
+                (batch.faces.faces if face_connectivity is None else face_connectivity)[
+                    face_cell_start * 4:face_cell_end * 4
+                ],
                 _offset_cells(face_source.faces, face_start),
             )
             or not np.array_equal(
-                batch.edges.lines[edge_cell_start * 3:edge_cell_end * 3],
+                (batch.edges.lines if edge_connectivity is None else edge_connectivity)[
+                    edge_cell_start * 3:edge_cell_end * 3
+                ],
                 _offset_cells(edge_source.lines, edge_start),
             )
         ):
@@ -508,7 +521,7 @@ class BatchedMemberRenderer:
         else:
             batch.silhouette_sources.pop(member_name, None)
             batch.silhouette_member_colors.pop(member_name, None)
-        if had_silhouette or member.section in self._silhouette_sections:
+        if rebuild_silhouette and (had_silhouette or member.section in self._silhouette_sections):
             batch.silhouette_faces_by_color = self._build_silhouette_faces_by_color(
                 batch.silhouette_sources, batch.silhouette_member_colors,
             )
@@ -1052,7 +1065,7 @@ class BatchedNodeRenderer:
         positions = np.asarray(
             [(model.nodes[name].x, model.nodes[name].y, model.nodes[name].z) for name in names],
             dtype=float,
-        )
+        ).reshape((-1, 3))
         label_positions = positions + (0.0, 0.0, radius * 2.2)
         source_normals = sphere.point_data.get("Normals")
 

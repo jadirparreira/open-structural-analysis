@@ -42,6 +42,9 @@ class StructuralModel:
         self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
         self.revision = 0
+        self.scene_views: dict[str, set[str]] = {"Completo": set()}
+        self.active_scene_view = "Completo"
+        self.view_revision = 0
 
     @property
     def members(self) -> dict[str, Bar]:
@@ -50,6 +53,63 @@ class StructuralModel:
     def _touch(self) -> None:
         self.revision += 1
         self.analysis_results.clear()
+        for hidden in self.scene_views.values():
+            hidden.intersection_update(self.bars)
+
+    def add_scene_view(self, name: str) -> None:
+        name = name.strip()
+        if not name or name in self.scene_views:
+            raise ValueError("Informe um nome de vista único.")
+        self.scene_views[name] = set()
+        self.active_scene_view = name
+        self.view_revision += 1
+
+    def remove_scene_view(self, name: str) -> None:
+        if name == "Completo" or name not in self.scene_views:
+            return
+        del self.scene_views[name]
+        if self.active_scene_view == name:
+            self.active_scene_view = "Completo"
+        self.view_revision += 1
+
+    def rename_scene_view(self, old_name: str, new_name: str) -> None:
+        new_name = new_name.strip()
+        if old_name == "Completo" or old_name not in self.scene_views:
+            return
+        if not new_name or (new_name != old_name and new_name in self.scene_views):
+            raise ValueError("Informe um nome de vista único.")
+        if new_name == old_name:
+            return
+        self.scene_views = {
+            (new_name if name == old_name else name): hidden
+            for name, hidden in self.scene_views.items()
+        }
+        if self.active_scene_view == old_name:
+            self.active_scene_view = new_name
+        self.view_revision += 1
+
+    def select_scene_view(self, name: str) -> None:
+        if name not in self.scene_views or name == self.active_scene_view:
+            return
+        self.active_scene_view = name
+        self.view_revision += 1
+
+    def set_scene_members_hidden(self, names: set[str], hidden: bool) -> None:
+        if self.active_scene_view == "Completo":
+            return
+        current = self.scene_views[self.active_scene_view]
+        before = current.copy()
+        if hidden:
+            current.update(names.intersection(self.bars))
+        else:
+            current.difference_update(names)
+        if current != before:
+            self.view_revision += 1
+
+    def show_all_scene_members(self) -> None:
+        if self.active_scene_view != "Completo" and self.scene_views[self.active_scene_view]:
+            self.scene_views[self.active_scene_view].clear()
+            self.view_revision += 1
 
     @staticmethod
     def _coordinates(x: float, y: float, z: float) -> tuple[float, float, float]:
@@ -328,6 +388,10 @@ class StructuralModel:
         del self.bars[name]
         self.nodes.update(new_nodes)
         self.bars.update(new_bars)
+        for hidden in self.scene_views.values():
+            if name in hidden:
+                hidden.remove(name)
+                hidden.update(member_names)
 
         # Keep existing member actions valid after the source member is gone.
         # A distributed action is copied to every resulting segment, preserving
@@ -909,4 +973,7 @@ class StructuralModel:
         self.action_group_aliases.clear()
         self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear()
         self.selected_action_group = "PP+AP+AV"
+        self.scene_views = {"Completo": set()}
+        self.active_scene_view = "Completo"
+        self.view_revision += 1
         self._touch()

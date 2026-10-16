@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pyvista as pv
@@ -22,6 +24,7 @@ from .batched_renderer import (
     BatchedRigidBarRenderer,
     MemberBatch,
     NodeBatch,
+    _offset_cells,
 )
 from .elastic_support_overlay import ElasticSupportOverlay
 from .grid_renderer import GridRenderer
@@ -373,7 +376,7 @@ class StructureScene(QWidget):
             "member_moments": True,
         }
         self._highlight_actors: dict[str, object] = {}
-        self._highlight_targets: dict[str, tuple[str, str]] = {}
+        self._highlight_targets: dict[str, tuple[tuple[str, str], ...]] = {}
         self._highlighted_node_colors: dict[str, str] = {}
         self._highlight_state_key: tuple[object, ...] | None = None
 
@@ -389,6 +392,7 @@ class StructureScene(QWidget):
         self._hovered: tuple[str, str] | None = None
         self._selected: tuple[str, str] | None = None
         self._selected_elements: tuple[tuple[str, str], ...] = ()
+        self._scene_selection_mode: str | None = None
         self._selection_press: tuple[int, int] | None = None
         self._selection_dragged = False
         self._tab_hover_candidates: list[tuple[str, str]] = []
@@ -552,6 +556,14 @@ class StructureScene(QWidget):
         camera_state = self._camera_state()
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
+        hidden_members = self._scene_hidden_members()
+        visible_bars = {
+            name: member for name, member in model.bars.items() if name not in hidden_members
+        }
+        visible_node_names = self._scene_visible_node_names(hidden_members)
+        visible_nodes = {
+            name: node for name, node in model.nodes.items() if name in visible_node_names
+        }
         self._reference_plane_z = self._reference_plane_for_model(model)
         self._hovered = None
         self._validate_selection()
@@ -607,22 +619,24 @@ class StructureScene(QWidget):
                     (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
                      model.nodes[member.end_node].z),
                 )
-                for member in model.bars.values()
+                for member in visible_bars.values()
             ),
         )
         if member_key != self._member_geometry_cache_key or self._member_geometry_cache is None:
             self._member_geometry_cache = self._member_renderer.build(
-                model, self._marker_radius_current,
+                SimpleNamespace(bars=visible_bars, nodes=model.nodes), self._marker_radius_current,
             )
             self._member_geometry_cache_key = member_key
         self._member_batch = self._member_geometry_cache
 
         node_key = (
             round(float(node_radius), 12),
-            tuple(model.nodes.values()),
+            tuple(visible_nodes.values()),
         )
         if node_key != self._node_geometry_cache_key or self._node_geometry_cache is None:
-            self._node_geometry_cache = self._node_renderer.build(model, node_radius)
+            self._node_geometry_cache = self._node_renderer.build(
+                SimpleNamespace(nodes=visible_nodes), node_radius,
+            )
             self._node_geometry_cache_key = node_key
         self._node_batch = self._node_geometry_cache
 
@@ -640,9 +654,10 @@ class StructureScene(QWidget):
             self._rigid_geometry_cache = self._rigid_bar_renderer.build(model)
             self._rigid_geometry_cache_key = rigid_key
         self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_geometry_cache
-        self._elastic_support_overlay.set_members(model.bars.values(), model.nodes.values(), node_radius)
+        self._elastic_support_overlay.set_members(visible_bars.values(), visible_nodes.values(), node_radius)
         self._add_rigid_bar_batch()
         self._add_member_batches()
+        self._add_scene_reveal_preview(hidden_members)
         self._add_node_batches()
         self._add_actions()
         self._add_results()
@@ -693,6 +708,9 @@ class StructureScene(QWidget):
 
     def refresh_model_changes(self, model: StructuralModel) -> None:
         """Refresh only layers affected by edits to an existing structure."""
+        if model.active_scene_view != "Completo" or self._scene_selection_mode is not None:
+            self.render_model(model)
+            return
         old_node_names = tuple(self._rendered_nodes)
         old_member_names = tuple(self._rendered_members)
         node_names = tuple(model.nodes)
@@ -950,6 +968,69 @@ class StructureScene(QWidget):
             )
             self._release_actor.SetVisibility(self._member_releases_visible)
 
+    def _scene_hidden_members(self) -> set[str]:
+        return set(self._model.scene_views.get(self._model.active_scene_view, ())).intersection(
+            self._model.bars
+        )
+
+    def _scene_visible_node_names(self, hidden_members: set[str]) -> set[str]:
+        connected = set()
+        visible_connected = set()
+        for member in self._model.bars.values():
+            endpoints = (member.start_node, member.end_node)
+            connected.update(endpoints)
+            if member.name not in hidden_members:
+                visible_connected.update(endpoints)
+        for rigid in self._model.rigid_bars.values():
+            endpoints = (rigid.start_node, rigid.end_node)
+            connected.update(endpoints)
+            visible_connected.update(endpoints)
+        return set(self._model.nodes).difference(connected).union(visible_connected)
+
+    def _scene_filtered_model(self) -> SimpleNamespace:
+        hidden_members = self._scene_hidden_members()
+        visible_nodes = self._scene_visible_node_names(hidden_members)
+        bars = {
+            name: member for name, member in self._model.bars.items()
+            if name not in hidden_members
+        }
+        nodes = {
+            name: node for name, node in self._model.nodes.items()
+            if name in visible_nodes
+        }
+        actions = {
+            name: action for name, action in self._model.actions.items()
+            if action.target in bars or action.target in nodes
+        }
+        return SimpleNamespace(bars=bars, nodes=nodes, actions=actions)
+
+    def _add_scene_reveal_preview(self, hidden_members: set[str]) -> None:
+        if self._scene_selection_mode != "reveal" or not hidden_members:
+            return
+        preview_model = SimpleNamespace(
+            bars={name: self._model.bars[name] for name in self._model.bars if name in hidden_members},
+            nodes=self._model.nodes,
+        )
+        preview = self._member_renderer.build(preview_model, self._marker_radius_current)
+        self._reveal_preview_batch = preview
+        self._reveal_preview_line_actor = self._add_colored_mesh(
+            preview.lines, "scene:reveal-lines", line_width=self._member_line_width, lighting=False,
+        )
+        self._reveal_preview_face_actor = self._add_colored_mesh(
+            preview.faces, "scene:reveal-faces", lighting=True,
+        )
+        self._reveal_preview_fallback_actor = self._add_colored_mesh(
+            preview.fallback_lines, "scene:reveal-fallback", line_width=self._member_line_width,
+            lighting=False,
+        )
+        for actor in (
+            self._reveal_preview_line_actor, self._reveal_preview_face_actor,
+            self._reveal_preview_fallback_actor,
+        ):
+            if actor is not None:
+                actor.GetProperty().SetOpacity(0.7)
+                actor.SetPickable(False)
+
     def _add_local_axis_overlay(self, mesh: pv.PolyData, color: str):
         mapper = vtk.vtkPolyDataMapper()
         mapper.SetInputData(mesh)
@@ -1057,10 +1138,11 @@ class StructureScene(QWidget):
             self._action_label_positions,
             self._action_labels,
         ) = self._action_renderer.render(
-            self.plotter, self._model, self._active_load_case, self._action_visibility,
+            self.plotter, self._scene_filtered_model(), self._active_load_case,
+            self._action_visibility,
         )
         self._action_layer_key = (
-            id(self._model), self._model.revision, self._active_load_case,
+            id(self._model), self._model.revision, self._model.view_revision, self._active_load_case,
             tuple(sorted(self._action_visibility.items())),
         )
 
@@ -1122,11 +1204,12 @@ class StructureScene(QWidget):
             None,
         )
         self._result_actors, self._result_label_positions, self._result_labels = self._result_renderer.render(
-            self.plotter, self._model, result, self._active_result_type,
+            self.plotter, self._scene_filtered_model(), result, self._active_result_type,
             solid_members_visible=self._solid_members_visible,
         )
         self._result_layer_key = (
-            id(self._model), self._model.revision, self._active_analysis_combination,
+            id(self._model), self._model.revision, self._model.view_revision,
+            self._active_analysis_combination,
             self._active_result_type, self._solid_members_visible,
         )
         self._result_line_widths = []
@@ -1211,7 +1294,21 @@ class StructureScene(QWidget):
 
     def _pick_candidates(self) -> list[tuple[str, str]]:
         candidates = self._screen_pick_candidates()
-        solid = self._pick_solid_member()
+        # In the solid representation, the analytical line is hidden. Keep
+        # screen-space picking only for nodes, rigid bars and members whose
+        # section could not produce a solid (their fallback line is visible).
+        # Otherwise an offset or wide profile can be selected where nothing
+        # is drawn, while its actual face is missed.
+        preview = self._scene_selection_mode == "reveal"
+        actor = self._reveal_preview_face_actor if preview else self._member_face_actor
+        batch = self._reveal_preview_batch if preview else self._member_batch
+        if actor is not None and actor.GetVisibility() and batch is not None:
+            solid_names = batch.face_cell_ranges
+            candidates = [
+                target for target in candidates
+                if target[0] != "bar" or target[1] not in solid_names
+            ]
+        solid = self._pick_solid_member(preview=preview)
         if solid is None:
             return candidates
         if solid in candidates:
@@ -1252,15 +1349,15 @@ class StructureScene(QWidget):
             * float(max(render_height - 1, 0)) / float(widget_height - 1),
         )
 
-    def _pick_solid_member(self) -> tuple[str, str] | None:
-        batch = self._member_batch
-        actor = self._member_face_actor
+    def _pick_solid_member(self, *, preview: bool = False) -> tuple[str, str] | None:
+        batch = self._reveal_preview_batch if preview else self._member_batch
+        actor = self._reveal_preview_face_actor if preview else self._member_face_actor
         if (
             self._pointer_position is None
             or batch is None
             or actor is None
             or not actor.GetVisibility()
-            or not actor.GetPickable()
+            or (not preview and not actor.GetPickable())
         ):
             return None
         x, y = self._qt_to_vtk_position(
@@ -1268,7 +1365,12 @@ class StructureScene(QWidget):
             (self.plotter.width(), self.plotter.height()),
             tuple(self.plotter.render_window.GetSize()),
         )
-        locator = self._measurement_face_locator_for_current_batch()
+        if preview:
+            locator = vtk.vtkCellLocator()
+            locator.SetDataSet(batch.faces)
+            locator.BuildLocator()
+        else:
+            locator = self._measurement_face_locator_for_current_batch()
         if locator is None:
             return None
         renderer = self.plotter.renderer
@@ -1362,7 +1464,10 @@ class StructureScene(QWidget):
         """Cache projected node positions and member centrelines for hover and clicks."""
         camera = self.plotter.renderer.GetActiveCamera()
         width, height = self.plotter.width(), self.plotter.height()
-        key = (id(self._model), self._model.revision, int(camera.GetMTime()), width, height)
+        key = (
+            id(self._model), self._model.revision, self._model.view_revision,
+            self._scene_selection_mode, int(camera.GetMTime()), width, height,
+        )
         if self._pick_projection_cache is not None and self._pick_projection_cache[0] == key:
             return self._pick_projection_cache[1]
         matrix, _, _ = self._measurement_projection_context()
@@ -1382,6 +1487,11 @@ class StructureScene(QWidget):
             & (node_screens[:, 1] >= 0.0)
             & (node_screens[:, 1] <= height)
         )
+        visible_nodes = self._scene_visible_node_names(self._scene_hidden_members())
+        node_visible &= np.asarray([
+            name in visible_nodes and self._scene_selection_mode is None
+            for name in node_names
+        ], dtype=bool)
         member_targets = []
         starts = []
         ends = []
@@ -1397,10 +1507,20 @@ class StructureScene(QWidget):
         end_indices = np.asarray(ends, dtype=np.intp)
         member_starts = node_screens[start_indices]
         member_ends = node_screens[end_indices]
+        hidden_members = self._scene_hidden_members()
+        member_visible = within_depth[start_indices] & within_depth[end_indices]
+        member_visible &= np.asarray([
+            (kind == "bar" and name in hidden_members)
+            if self._scene_selection_mode == "reveal"
+            else (kind == "bar" and name not in hidden_members)
+            if self._scene_selection_mode == "hide"
+            else (kind != "bar" or name not in hidden_members)
+            for kind, name in member_targets
+        ], dtype=bool)
         data = (
             node_names, node_screens, node_visible,
             tuple(member_targets), member_starts, member_ends - member_starts,
-            within_depth[start_indices] & within_depth[end_indices],
+            member_visible,
             np.minimum(member_starts[:, 0], member_ends[:, 0]),
             np.maximum(member_starts[:, 0], member_ends[:, 0]),
             np.minimum(member_starts[:, 1], member_ends[:, 1]),
@@ -1497,7 +1617,9 @@ class StructureScene(QWidget):
                 and event.button() == Qt.MouseButton.LeftButton
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier
                 and not self._placement_active()
-                and getattr(self.window(), "_command_mode", None) is None
+                and getattr(self.window(), "_command_mode", None) in (
+                    None, "scene_hide_selection", "scene_reveal_selection",
+                )
                 and not over_navigation_cube
             ):
                 self._ctrl_selection_press = int(point.x()), int(point.y())
@@ -1583,9 +1705,11 @@ class StructureScene(QWidget):
             elif picked is not None:
                 selected.append(picked)
         else:
+            selected_set = set(selected)
             for target in self._elements_in_rectangle(start, (x, y)):
-                if target not in selected:
+                if target not in selected_set:
                     selected.append(target)
+                    selected_set.add(target)
         self.set_selection_highlight(selected)
         self.selection_changed.emit(tuple(selected))
 
@@ -1606,6 +1730,18 @@ class StructureScene(QWidget):
             & (node_screens[:, 1] >= top) & (node_screens[:, 1] <= bottom)
         )
         member_ends = member_starts + member_deltas
+        preview = self._scene_selection_mode == "reveal"
+        solid_actor = self._reveal_preview_face_actor if preview else self._member_face_actor
+        solid_batch = self._reveal_preview_batch if preview else self._member_batch
+        solid = solid_actor is not None and solid_actor.GetVisibility() and solid_batch is not None
+        if solid:
+            # The centreline is hidden for members with a rendered section.
+            # Retain it only for members displayed as fallback lines.
+            solid_names = solid_batch.face_cell_ranges
+            member_visible = member_visible & np.asarray([
+                kind != "bar" or name not in solid_names
+                for kind, name in member_targets
+            ], dtype=bool)
         if end[0] < start[0]:
             members_inside = member_visible & self._segments_touch_rectangle(
                 member_starts, member_ends, left, top, right, bottom,
@@ -1618,11 +1754,83 @@ class StructureScene(QWidget):
                 & (member_ends[:, 0] >= left) & (member_ends[:, 0] <= right)
                 & (member_ends[:, 1] >= top) & (member_ends[:, 1] <= bottom)
             )
+        solid_members = (
+            self._solid_members_in_rectangle(
+                left, top, right, bottom, crossing=end[0] < start[0], batch=solid_batch,
+            ) if solid else set()
+        )
         return (
             *(("node", node_names[index]) for index in np.flatnonzero(nodes_inside)),
             *(target for index, target in enumerate(member_targets)
-              if target[0] == "bar" and members_inside[index]),
+              if target[0] == "bar" and (
+                  members_inside[index] or target[1] in solid_members
+              )),
         )
+
+    def _solid_members_in_rectangle(
+        self, left: float, top: float, right: float, bottom: float, *, crossing: bool,
+        batch: MemberBatch | None = None,
+    ) -> set[str]:
+        """Test projected profile faces, including visual section/end offsets."""
+        batch = batch or self._member_batch
+        if batch is None or not batch.face_cell_ranges:
+            return set()
+        matrix, width, height = self._measurement_projection_context()
+        screens, within_depth = project_world_to_screen(
+            batch.faces.points, matrix, width, height, clip_to_viewport=False,
+        )
+        face_cells = np.asarray(batch.faces.faces, dtype=np.int64)
+        if len(face_cells) % 4 or not np.all(face_cells[::4] == 3):
+            return set()
+        triangles = face_cells.reshape((-1, 4))[:, 1:]
+        selected: set[str] = set()
+        for name, (first, last) in batch.face_point_ranges.items():
+            points = screens[first:last]
+            if not len(points) or not np.any(within_depth[first:last]):
+                continue
+            if crossing:
+                if (
+                    points[:, 0].min() > right or points[:, 0].max() < left
+                    or points[:, 1].min() > bottom or points[:, 1].max() < top
+                ):
+                    continue
+                cell_first, cell_last = batch.face_cell_ranges[name]
+                member_triangles = triangles[cell_first:cell_last]
+                visible_faces = np.all(within_depth[member_triangles], axis=1)
+                if self._triangles_touch_rectangle(
+                    screens[member_triangles[visible_faces]], left, top, right, bottom,
+                ):
+                    selected.add(name)
+            elif (
+                np.all(within_depth[first:last])
+                and np.all((points[:, 0] >= left) & (points[:, 0] <= right))
+                and np.all((points[:, 1] >= top) & (points[:, 1] <= bottom))
+            ):
+                selected.add(name)
+        return selected
+
+    @classmethod
+    def _triangles_touch_rectangle(
+        cls, triangles: np.ndarray,
+        left: float, top: float, right: float, bottom: float,
+    ) -> bool:
+        if not len(triangles):
+            return False
+        inside = (
+            (triangles[:, :, 0] >= left) & (triangles[:, :, 0] <= right)
+            & (triangles[:, :, 1] >= top) & (triangles[:, :, 1] <= bottom)
+        )
+        if np.any(inside):
+            return True
+        corners = np.asarray(((left, top), (right, top), (right, bottom), (left, bottom)))
+        edges = np.roll(triangles, -1, axis=1) - triangles
+        relative = corners[None, None, :, :] - triangles[:, :, None, :]
+        cross = edges[:, :, 0, None] * relative[:, :, :, 1] - edges[:, :, 1, None] * relative[:, :, :, 0]
+        if np.any(np.all(cross >= -1e-9, axis=1) | np.all(cross <= 1e-9, axis=1)):
+            return True
+        starts = triangles.reshape((-1, 2))
+        ends = np.roll(triangles, -1, axis=1).reshape((-1, 2))
+        return bool(np.any(cls._segments_touch_rectangle(starts, ends, left, top, right, bottom)))
 
     @staticmethod
     def _segments_touch_rectangle(
@@ -1705,10 +1913,12 @@ class StructureScene(QWidget):
     def set_selection_highlight(self, elements: object) -> None:
         """Show one or more selected elements in the viewport."""
         normalized: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         for element in elements:
             target = str(element[0]), str(element[1])
-            if target not in normalized:
+            if target not in seen:
                 normalized.append(target)
+                seen.add(target)
         self._selected_elements = tuple(normalized)
         self._selected = self._selected_elements[-1] if self._selected_elements else None
         self._sync_highlights()
@@ -2232,23 +2442,25 @@ class StructureScene(QWidget):
         """Reuse node and member-centre projections while the camera is still."""
         camera = self.plotter.renderer.GetActiveCamera()
         key = (
-            id(self._model), self._model.revision, int(camera.GetMTime()),
+            id(self._model), self._model.revision, self._model.view_revision,
+            int(camera.GetMTime()),
             width, height,
         )
         if self._projected_snap_cache is not None and self._projected_snap_cache[0] == key:
             return self._projected_snap_cache[1]
 
+        visible_model = self._scene_filtered_model()
         node_points = np.asarray(
-            [(node.x, node.y, node.z) for node in self._model.nodes.values()],
+            [(node.x, node.y, node.z) for node in visible_model.nodes.values()],
             dtype=float,
         ).reshape((-1, 3))
         node_screens, node_visible = project_world_to_screen(
             node_points, matrix, width, height,
         )
         centers = []
-        for member in self._model.bars.values():
-            start = self._model.nodes.get(member.start_node)
-            end = self._model.nodes.get(member.end_node)
+        for member in visible_model.bars.values():
+            start = visible_model.nodes.get(member.start_node)
+            end = visible_model.nodes.get(member.end_node)
             if start is not None and end is not None:
                 centers.append((
                     (start.x + end.x) * 0.5,
@@ -3533,14 +3745,29 @@ class StructureScene(QWidget):
         selected_elements = self._selected_elements or (
             (self._selected,) if self._selected is not None else ()
         )
-        desired: dict[str, tuple[str, str]] = {}
-        for index, target in enumerate(selected_elements):
-            slot = "selected" if len(selected_elements) == 1 else f"selected:{index}"
-            desired[slot] = target
+        groups: dict[str, list[tuple[str, str]]] = {}
+        for kind, name in selected_elements:
+            if kind == "node":
+                continue
+            slot = f"selected:{kind}"
+            if (
+                kind == "bar" and self._solid_members_visible
+                and self._model.bars.get(name) is not None
+                and self._model.bars[name].section in self._member_renderer._silhouette_sections
+            ):
+                slot = "selected:circular"
+            groups.setdefault(slot, []).append((kind, name))
+        desired = {slot: tuple(targets) for slot, targets in groups.items()}
         selected_targets = set(selected_elements)
         hover = None if self._hovered in selected_targets else self._hovered
-        if hover is not None:
-            desired["hover"] = hover
+        if hover is not None and hover[0] != "node":
+            desired["hover"] = (hover,)
+
+        node_colors = {
+            name: "#0969da" for kind, name in selected_elements if kind == "node"
+        }
+        if hover is not None and hover[0] == "node":
+            node_colors[hover[1]] = "#4b5563"
 
         state_key = (
             id(self._model), self._model.revision,
@@ -3549,7 +3776,7 @@ class StructureScene(QWidget):
             id(self._rigid_bar_mesh), self._solid_members_visible,
         )
         force = state_key != self._highlight_state_key
-        if not force and desired == self._highlight_targets:
+        if not force and desired == self._highlight_targets and node_colors == self._highlighted_node_colors:
             return
         changed = {
             slot for slot in self._highlight_targets.keys() | desired.keys()
@@ -3557,41 +3784,27 @@ class StructureScene(QWidget):
         }
         for slot in changed:
             self._replace_highlight(slot, None, "#0969da")
-        for slot, target in desired.items():
+        for slot, targets in desired.items():
             if slot in changed:
-                color = "#0969da" if slot.startswith("selected") else (
-                    "#4b5563" if target[0] == "node" else "#24292f"
-                )
-                self._replace_highlight(slot, target, color)
+                color = "#0969da" if slot.startswith("selected") else "#24292f"
+                self._replace_highlight(slot, targets, color)
 
-        node_colors = {
-            target[1]: ("#0969da" if slot.startswith("selected") else "#4b5563")
-            for slot, target in desired.items() if target[0] == "node"
-        }
-        for name in self._highlighted_node_colors.keys() | node_colors.keys():
-            color = node_colors.get(name, "#000000")
-            if force or self._highlighted_node_colors.get(name) != color:
-                self._set_node_highlight_color(name, color)
+        self._sync_node_highlight_colors(node_colors, force=force)
         self._highlight_targets = desired
         self._highlighted_node_colors = node_colors
         self._highlight_state_key = state_key
 
     def _replace_highlight(
-        self, slot: str, target: tuple[str, str] | None, color: str,
+        self, slot: str, targets: tuple[tuple[str, str], ...] | None, color: str,
     ) -> None:
         previous = self._highlight_actors.pop(slot, None)
         if previous is not None:
             self.plotter.remove_actor(previous, reset_camera=False, render=False)
-        if target is None:
+        if not targets:
             return
-        kind, name = target
-        # Nodes are already part of the batched marker mesh.  Highlighting a
-        # node should therefore only update that marker's color; creating a
-        # second actor here makes the selected node appear as a larger sphere.
-        if kind == "node":
-            return
+        kind, name = targets[0]
         if kind in {"bar", "rigid_bar"}:
-            mesh = self._member_highlight_mesh(name)
+            mesh = self._batched_highlight_mesh(targets, slot)
             if mesh is None or not mesh.n_cells:
                 return
             actor = self.plotter.add_mesh(
@@ -3617,23 +3830,128 @@ class StructureScene(QWidget):
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
 
-    def _set_node_highlight_color(self, name: str, color: str) -> None:
+    def _batched_highlight_mesh(
+        self, targets: tuple[tuple[str, str], ...], slot: str,
+    ) -> pv.PolyData | None:
+        """Merge selected strokes into one actor without changing their shape."""
+        kind = targets[0][0]
+        if slot == "hover" and kind == "bar":
+            return self._member_highlight_mesh(targets[0][1])
+        if kind == "rigid_bar" or (kind == "bar" and not self._solid_members_visible):
+            elements = self._model.rigid_bars if kind == "rigid_bar" else self._model.bars
+            points = np.empty((len(targets) * 2, 3), dtype=float)
+            count = 0
+            for _, name in targets:
+                element = elements.get(name)
+                if element is None:
+                    continue
+                start = self._model.nodes.get(element.start_node)
+                end = self._model.nodes.get(element.end_node)
+                if start is None or end is None:
+                    continue
+                points[count * 2] = (start.x, start.y, start.z)
+                points[count * 2 + 1] = (end.x, end.y, end.z)
+                count += 1
+            if not count:
+                return None
+            lines = np.empty((count, 3), dtype=np.int64)
+            lines[:, 0] = 2
+            lines[:, 1] = np.arange(count, dtype=np.int64) * 2
+            lines[:, 2] = lines[:, 1] + 1
+            return pv.PolyData(points[:count * 2], lines=lines.ravel())
+
+        batch = self._reveal_preview_batch if self._scene_selection_mode == "reveal" else self._member_batch
+        if slot == "selected:circular" and batch is not None:
+            surfaces = vtk.vtkAppendPolyData()
+            fallback = []
+            for _, name in targets:
+                source = batch.silhouette_sources.get(name)
+                if source is None:
+                    fallback.append(("bar", name))
+                else:
+                    surfaces.AddInputData(source)
+            surfaces.Update()
+            contour = self._member_renderer.solids.silhouette_for(
+                pv.wrap(surfaces.GetOutput()), self.plotter.renderer.GetActiveCamera(),
+            )
+            if not fallback:
+                return contour
+            extra = self._batched_highlight_mesh(tuple(fallback), "selected:fallback")
+            if extra is None:
+                return contour
+            append = vtk.vtkAppendPolyData()
+            append.AddInputData(contour)
+            append.AddInputData(extra)
+            append.Update()
+            return pv.wrap(append.GetOutput())
+
+        points: list[np.ndarray] = []
+        lines: list[np.ndarray] = []
+        offset = 0
+        for _, name in targets:
+            source = batch.outlines.source(name) if batch is not None else None
+            if source is None:
+                member = self._model.bars.get(name)
+                if member is None:
+                    continue
+                start = self._model.nodes[member.start_node]
+                end = self._model.nodes[member.end_node]
+                segment = np.asarray(((start.x, start.y, start.z),
+                                      (end.x, end.y, end.z)), dtype=float)
+                source = segment, np.asarray((2, 0, 1), dtype=np.int64)
+            source_points, source_lines = source
+            points.append(source_points)
+            lines.append(_offset_cells(source_lines, offset))
+            offset += len(source_points)
+        if not points:
+            return None
+        return pv.PolyData(np.vstack(points), lines=np.concatenate(lines))
+
+    def _sync_node_highlight_colors(self, node_colors: dict[str, str], *, force: bool) -> None:
+        """Recolor selected node glyphs with one VTK data update."""
         batch = self._node_batch
-        if batch is None or name not in batch.names:
+        if batch is None:
+            return
+        old_colors = self._highlighted_node_colors
+        changed = {
+            name for name in old_colors.keys() | node_colors.keys()
+            if force or old_colors.get(name) != node_colors.get(name)
+        }
+        if not changed:
             return
         values = batch.geometry.cell_data.get("rgb")
         indices = batch.geometry.cell_data.get("element_index")
         if values is None or indices is None:
             return
-        element_index = batch.names.index(name)
-        first = int(np.searchsorted(indices, element_index, side="left"))
-        last = int(np.searchsorted(indices, element_index, side="right"))
-        values[first:last] = np.asarray(
-            pv.Color(color).int_rgb, dtype=np.uint8,
+        positions = {name: index for index, name in enumerate(batch.names)}
+        rgb = {
+            color: np.asarray(pv.Color(color).int_rgb, dtype=np.uint8)
+            for color in set(node_colors.values()) | {"#000000"}
+        }
+        glyph_colors = (
+            self._node_glyph_points.point_data["rgb"]
+            if self._node_glyph_points is not None else None
         )
+        if len(changed) > 8:
+            palette = np.zeros((len(batch.names), 3), dtype=np.uint8)
+            for name, color in node_colors.items():
+                if (index := positions.get(name)) is not None:
+                    palette[index] = rgb[color]
+            values[:] = palette[np.asarray(indices, dtype=np.intp)]
+            if glyph_colors is not None:
+                glyph_colors[:] = palette
+        else:
+            for name in changed:
+                index = positions.get(name)
+                if index is None:
+                    continue
+                color = rgb[node_colors.get(name, "#000000")]
+                first = int(np.searchsorted(indices, index, side="left"))
+                last = int(np.searchsorted(indices, index, side="right"))
+                values[first:last] = color
+                if glyph_colors is not None:
+                    glyph_colors[index] = color
         if self._node_glyph_points is not None:
-            glyph_colors = self._node_glyph_points.point_data["rgb"]
-            glyph_colors[element_index] = np.asarray(pv.Color(color).int_rgb, dtype=np.uint8)
             self._node_glyph_points.GetPointData().GetArray("rgb").Modified()
             self._node_glyph_points.Modified()
         batch.geometry.GetCellData().GetArray("rgb").Modified()
@@ -3669,6 +3987,8 @@ class StructureScene(QWidget):
         width = fallback
         if reference_actor is not None:
             width = float(reference_actor.GetProperty().GetLineWidth())
+        if slot == "selected:circular":
+            return self._circular_silhouette_line_width
         if self._solid_members_visible and kind == "bar":
             member = self._model.bars.get(member_name) if member_name is not None else None
             if member is not None and member.section in self._member_renderer._silhouette_sections:
@@ -3683,13 +4003,14 @@ class StructureScene(QWidget):
     def _member_highlight_mesh(self, name: str) -> pv.PolyData | None:
         member = self._model.bars.get(name)
         if member is not None:
-            if self._solid_members_visible and self._member_batch is not None:
-                source = self._member_batch.silhouette_sources.get(name)
+            batch = self._reveal_preview_batch if self._scene_selection_mode == "reveal" else self._member_batch
+            if self._solid_members_visible and batch is not None:
+                source = batch.silhouette_sources.get(name)
                 if source is not None:
                     return self._member_renderer.solids.silhouette_for(
                         source, self.plotter.renderer.GetActiveCamera(),
                     )
-                outline = self._member_batch.outlines.get(name)
+                outline = batch.outlines.get(name)
                 if outline is not None and outline.n_cells:
                     return outline
             start = self._model.nodes[member.start_node]
@@ -3715,12 +4036,31 @@ class StructureScene(QWidget):
             self._member_silhouette_actor.SetVisibility(solid)
         if self._member_fallback_actor is not None:
             self._member_fallback_actor.SetVisibility(solid)
+        if self._reveal_preview_line_actor is not None:
+            self._reveal_preview_line_actor.SetVisibility(not solid)
+        if self._reveal_preview_face_actor is not None:
+            self._reveal_preview_face_actor.SetVisibility(solid)
+        if self._reveal_preview_fallback_actor is not None:
+            self._reveal_preview_fallback_actor.SetVisibility(solid)
+
+    def set_scene_selection_mode(self, mode: str | None) -> None:
+        if mode not in (None, "hide", "reveal"):
+            raise ValueError("Modo de seleção da cena inválido.")
+        self._scene_selection_mode = mode
+        self._pick_projection_cache = None
+        self._hovered = None
+        self._tab_hover_candidates = []
+        self._tab_hover_position = None
+        self.render_model(self._model)
 
     def set_solid_members_visible(self, visible: bool) -> None:
         visible = bool(visible)
         if visible == self._solid_members_visible:
             return
         self._solid_members_visible = visible
+        self._hovered = None
+        self._tab_hover_candidates = []
+        self._tab_hover_position = None
         self._apply_representation_visibility()
         if self._analysis_visible and self._active_result_type.startswith("Deformação"):
             self._refresh_result_layer()
@@ -3761,20 +4101,6 @@ class StructureScene(QWidget):
         self._nodes_visible = bool(visible)
         if self._node_actor is not None:
             self._node_actor.SetVisibility(self._nodes_visible)
-        selected_elements = self._selected_elements or (
-            (self._selected,) if self._selected is not None else ()
-        )
-        selected_slots = tuple(
-            (
-                "selected" if len(selected_elements) == 1 else f"selected:{index}",
-                target,
-            )
-            for index, target in enumerate(selected_elements)
-        )
-        for slot, target in (*selected_slots, ("hover", self._hovered)):
-            actor = self._highlight_actors.get(slot)
-            if actor is not None and target is not None and target[0] == "node":
-                actor.SetVisibility(self._nodes_visible)
         self.plotter.render()
 
     def set_member_releases_visible(self, visible: bool) -> None:
@@ -3812,7 +4138,7 @@ class StructureScene(QWidget):
             return
         self._actions_visible = visible
         current_key = (
-            id(self._model), self._model.revision, self._active_load_case,
+            id(self._model), self._model.revision, self._model.view_revision, self._active_load_case,
             tuple(sorted(self._action_visibility.items())),
         )
         if not visible and self._action_actors:
@@ -3835,7 +4161,8 @@ class StructureScene(QWidget):
             return
         self._analysis_visible = visible
         current_key = (
-            id(self._model), self._model.revision, self._active_analysis_combination,
+            id(self._model), self._model.revision, self._model.view_revision,
+            self._active_analysis_combination,
             self._active_result_type, self._solid_members_visible,
         )
         if not visible and self._result_actors:
@@ -3968,33 +4295,69 @@ class StructureScene(QWidget):
         self._clip_refresh_timer.start()
 
     def update_member_color(self, member_name: str) -> None:
+        self.update_member_colors((member_name,))
+
+    def update_member_colors(self, member_names: Iterable[str]) -> None:
+        """Apply a color edit to all affected batch cells in one render."""
         batch = self._member_batch
-        if batch is None or member_name not in batch.names:
+        if batch is None:
             self.render_model(self._model)
             return
-        member = self._model.bars.get(member_name)
-        index = batch.names.index(member_name)
-        base = np.asarray(pv.Color(self._model.bars[member_name].color).int_rgb, dtype=np.uint8)
-        edge = np.clip(base.astype(float) * 0.65, 0, 255).astype(np.uint8)
-        for mesh, color in (
-            (batch.lines, base), (batch.fallback_lines, base),
-            (batch.faces, base), (batch.edges, edge),
+        positions = {name: index for index, name in enumerate(batch.names)}
+        changed = {
+            positions[name]: np.asarray(pv.Color(self._model.bars[name].color).int_rgb, dtype=np.uint8)
+            for name in dict.fromkeys(member_names)
+            if name in positions and name in self._model.bars
+        }
+        if not changed:
+            return
+        indices = np.fromiter(changed, dtype=np.intp)
+        colors = np.zeros((len(batch.names), 3), dtype=np.uint8)
+        for index, color in changed.items():
+            colors[index] = color
+        edge_colors = np.clip(colors.astype(float) * 0.65, 0, 255).astype(np.uint8)
+        for mesh, palette in (
+            (batch.lines, colors), (batch.fallback_lines, colors),
+            (batch.faces, colors), (batch.edges, edge_colors),
         ):
             if not mesh.n_cells or "rgb" not in mesh.cell_data:
                 continue
+            element_indices = np.asarray(mesh.cell_data["element_index"])
+            mask = np.isin(element_indices, indices)
+            if not np.any(mask):
+                continue
             values = mesh.cell_data["rgb"]
-            values[mesh.cell_data["element_index"] == index] = color
-            mesh.cell_data["rgb"] = values
+            values[mask] = palette[element_indices[mask]]
+            mesh.GetCellData().GetArray("rgb").Modified()
             mesh.GetCellData().Modified()
             mesh.Modified()
-        if member is not None and member.section in self._member_renderer._silhouette_sections:
-            self._member_renderer.update_silhouette_color(batch, member_name, base)
+        silhouette_changed = False
+        for index, color in changed.items():
+            name = batch.names[index]
+            if name in batch.silhouette_sources:
+                batch.silhouette_member_colors[name] = tuple(int(channel) for channel in color)
+                silhouette_changed = True
+        if silhouette_changed:
+            batch.silhouette_faces_by_color = self._member_renderer._build_silhouette_faces_by_color(
+                batch.silhouette_sources, batch.silhouette_member_colors,
+            )
+            self._silhouette_source_batch = None
+            self._silhouette_mesh_cache = None
             if self._member_silhouette_actor is not None:
-                self._silhouette_source_batch = None
                 silhouette = self._member_silhouette_mesh(batch)
                 mapper = self._member_silhouette_actor.GetMapper()
                 mapper.SetInputData(silhouette)
                 mapper.Modified()
+        if (
+            self._highlight_state_key is not None
+            and not self._pending_member_geometry_names
+            and not self._pending_member_full_names
+            and not self._rebuild_timer.isActive()
+        ):
+            self._highlight_state_key = (
+                self._highlight_state_key[0], self._model.revision,
+                *self._highlight_state_key[2:],
+            )
         self.plotter.render()
         self._capture_rendered_state()
 
@@ -4042,23 +4405,37 @@ class StructureScene(QWidget):
         self._member_update_timer.start()
 
     def _refresh_pending_member_update(self) -> None:
+        self._member_update_timer.stop()
         full_names = tuple(self._pending_member_full_names)
         names = tuple(self._pending_member_geometry_names | self._pending_member_full_names)
         self._pending_member_geometry_names.clear()
         self._pending_member_full_names.clear()
-        if not full_names and len(names) == 1 and self._member_batch is not None:
-            member_name = names[0]
-            member = self._model.bars.get(member_name)
-            silhouette_changed = (
-                member_name in self._member_batch.silhouette_sources
+        if not names:
+            return
+        if not full_names and names and self._member_batch is not None:
+            batch = self._member_batch
+            face_connectivity = batch.faces.faces
+            edge_connectivity = batch.edges.lines
+            silhouette_changed = any(
+                name in batch.silhouette_sources
                 or (
-                    member is not None
+                    (member := self._model.bars.get(name)) is not None
                     and member.section in self._member_renderer._silhouette_sections
                 )
+                for name in names
             )
-            if self._member_renderer.update_member_section_in_place(
-                self._member_batch, self._model, member_name,
+            if all(
+                self._member_renderer.update_member_section_in_place(
+                    batch, self._model, name, rebuild_silhouette=False,
+                    face_connectivity=face_connectivity,
+                    edge_connectivity=edge_connectivity,
+                )
+                for name in names
             ):
+                if silhouette_changed:
+                    batch.silhouette_faces_by_color = self._member_renderer._build_silhouette_faces_by_color(
+                        batch.silhouette_sources, batch.silhouette_member_colors,
+                    )
                 self._member_geometry_cache_key = self._member_cache_key(self._model)
                 for actor in (self._member_face_actor, self._member_edge_actor):
                     if actor is not None:
@@ -4079,6 +4456,11 @@ class StructureScene(QWidget):
                 self._clip_refresh_timer.start()
                 self._capture_rendered_state()
                 return
+            # A changed section family may alter its cell topology. The full
+            # rebuild also replaces any earlier in-place edits in this batch.
+            self._refresh_member_batch()
+            self._capture_rendered_state()
+            return
         if names and self._refresh_member_subset(names):
             self._capture_rendered_state()
             return
@@ -4691,6 +5073,14 @@ class StructureScene(QWidget):
         if self._camera_interacting:
             return
         self._refresh_member_silhouette()
+        circular = self._highlight_targets.get("selected:circular")
+        if circular and self._solid_members_visible:
+            self._replace_highlight("selected:circular", circular, "#0969da")
+        hovered = self._highlight_targets.get("hover")
+        if hovered and self._solid_members_visible and hovered[0][0] == "bar":
+            member = self._model.bars.get(hovered[0][1])
+            if member is not None and member.section in self._member_renderer._silhouette_sections:
+                self._replace_highlight("hover", hovered, "#24292f")
         self.plotter.render()
 
     def _refresh_member_silhouette(self) -> None:
@@ -4776,19 +5166,11 @@ class StructureScene(QWidget):
             actor.GetProperty().SetLineWidth(self._local_axis_line_width * zoom_factor)
         for actor, width in self._result_line_widths:
             actor.GetProperty().SetLineWidth(width * zoom_factor)
-        selected_elements = self._selected_elements or (
-            (self._selected,) if self._selected is not None else ()
-        )
-        selected_slots = {
-            ("selected" if len(selected_elements) == 1 else f"selected:{index}"): target
-            for index, target in enumerate(selected_elements)
-        }
-        highlight_targets = {**selected_slots, "hover": self._hovered}
         for slot, actor in self._highlight_actors.items():
             if actor is not None and (slot.startswith("selected") or slot == "hover"):
-                target = highlight_targets.get(slot)
-                kind = target[0] if target is not None else "bar"
-                member_name = target[1] if target is not None and target[0] == "bar" else None
+                targets = self._highlight_targets.get(slot, ())
+                kind = targets[0][0] if targets else "bar"
+                member_name = targets[0][1] if targets and kind == "bar" else None
                 actor.GetProperty().SetLineWidth(
                     self._highlight_line_width(slot, kind, member_name),
                 )
@@ -4816,13 +5198,23 @@ class StructureScene(QWidget):
         camera.SetParallelScale(parallel_scale)
 
     def _validate_selection(self) -> None:
+        hidden_members = self._scene_hidden_members()
+        visible_nodes = self._scene_visible_node_names(hidden_members)
         def is_valid(target: tuple[str, str]) -> bool:
             kind, name = target
             collection = (
                 self._model.nodes if kind == "node"
                 else self._model.bars if kind == "bar" else self._model.rigid_bars
             )
-            return name in collection
+            if name not in collection:
+                return False
+            if self._scene_selection_mode == "reveal":
+                return kind == "bar" and name in hidden_members
+            if kind == "bar":
+                return name not in hidden_members
+            if kind == "node":
+                return name in visible_nodes and self._scene_selection_mode is None
+            return self._scene_selection_mode is None
 
         selected_elements = self._selected_elements or (
             (self._selected,) if self._selected is not None else ()
@@ -4842,6 +5234,10 @@ class StructureScene(QWidget):
         self._member_face_actor = None
         self._member_edge_actor = None
         self._member_silhouette_actor = None
+        self._reveal_preview_line_actor = None
+        self._reveal_preview_face_actor = None
+        self._reveal_preview_fallback_actor = None
+        self._reveal_preview_batch = None
         self._member_preview_actor = None
         self._measurement_preview_actor = None
         self._perpendicular_guide_actor = None

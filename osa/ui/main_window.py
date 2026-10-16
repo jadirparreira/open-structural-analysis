@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         self.section_profiles: dict[str, str] = {}
         self.current_path: Path | None = None
         self._saved_revision = self.model.revision
+        self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
         self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
@@ -127,6 +128,7 @@ class MainWindow(QMainWindow):
         self.scene.empty_clicked.connect(self.clear_selection)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
+        self.scene.enter_pressed.connect(self._confirm_scene_view_selection)
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
@@ -1048,6 +1050,74 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def select_scene_view(self, name: str) -> None:
+        if name not in self.model.scene_views:
+            return
+        if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
+            self.cancel_member_placement()
+        self.model.select_scene_view(name)
+        if self.top_icon_palette.scene_view_selector.currentText() != name:
+            self.top_icon_palette.reload_scene_views()
+        self.clear_selection()
+        self.scene.render_model(self.model)
+
+    def _start_scene_member_selection(self, mode: str) -> None:
+        if self.model.active_scene_view == "Completo":
+            return
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._command_mode = f"scene_{mode}_selection"
+        self.clear_selection()
+        self.scene.set_scene_selection_mode(mode)
+        action = "Ocultar" if mode == "hide" else "Reexibir"
+        self.history.append(
+            f"> <b>{action}</b> <span style='color:#57606a'>"
+            "(Selecione os membros; use Ctrl para multiseleção e pressione ENTER para confirmar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_scene_hide_selection(self) -> None:
+        self._start_scene_member_selection("hide")
+
+    def start_scene_reveal_selection(self) -> None:
+        self._start_scene_member_selection("reveal")
+
+    def _confirm_scene_view_selection(self) -> None:
+        mode = self._command_mode
+        if mode not in {"scene_hide_selection", "scene_reveal_selection"}:
+            return
+        names = {name for kind, name in self.selected_elements if kind == "bar"}
+        if not names:
+            self.history.append(
+                "> <b>Cena</b> <span style='color:#8c959f'>"
+                "(Selecione pelo menos um membro e pressione ENTER)</span>"
+            )
+            return
+        self.model.set_scene_members_hidden(names, mode == "scene_hide_selection")
+        self._command_mode = None
+        self.clear_selection()
+        self.scene.set_scene_selection_mode(None)
+        action = "ocultado(s)" if mode == "scene_hide_selection" else "reexibido(s)"
+        self.history.append(
+            f"> <b>Cena</b> <span style='color:#57606a'>"
+            f"({len(names)} membro(s) {action})</span>"
+        )
+
+    def show_all_scene_members(self) -> None:
+        if self.model.active_scene_view == "Completo":
+            return
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.model.show_all_scene_members()
+        self.clear_selection()
+        self.scene.render_model(self.model)
+        self.history.append(
+            "> <b>Reexibir tudo</b> <span style='color:#57606a'>"
+            "(Todos os membros da vista estão visíveis)</span>"
+        )
+
     def _confirm_copy_elements(self) -> None:
         """Confirm the element set and begin the two-point copy placement."""
         if self._command_mode != "copy_elements_selection":
@@ -1435,6 +1505,14 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
+        if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
+            self._command_mode = None
+            self.scene.set_scene_selection_mode(None)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Cena</b> <span style='color:#8c959f'>(Seleção cancelada)</span>"
+            )
+            return
         if self._command_mode == "action_selection":
             self._pending_action_launch = None
             self._command_mode = None
@@ -1643,6 +1721,8 @@ class MainWindow(QMainWindow):
         self.selected = kind, name
         if self._command_mode != "copy_elements_selection":
             self.selected_elements = [(kind, name)]
+        if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
+            return
         if self._command_mode == "action_selection":
             self._apply_pending_action(kind, name)
             return
@@ -1733,6 +1813,10 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
+            self.selected_elements = [target for target in elements if target[0] == "bar"]
+            self.selected = self.selected_elements[-1] if self.selected_elements else None
+            return
         if self._command_mode is not None:
             return
         self.selected_elements = list(elements)
@@ -1838,6 +1922,8 @@ class MainWindow(QMainWindow):
         self.split_member_dialog.hide()
         self.axes_panel.discard()
         self.model.clear()
+        self.scene.set_scene_selection_mode(None)
+        self.top_icon_palette.reload_scene_views()
         self.section_profiles.clear()
         self.section_geometry.clear()
         self.command_session.cancel()
@@ -1856,6 +1942,7 @@ class MainWindow(QMainWindow):
         self.current_path = None
         self.scene.set_model_name("Novo modelo")
         self._saved_revision = self.model.revision
+        self._saved_view_revision = self.model.view_revision
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.refresh_scene(fit_camera=True)
@@ -1886,6 +1973,7 @@ class MainWindow(QMainWindow):
             self.current_path = Path(path)
             self.scene.set_model_name(self.current_path.stem)
             self._saved_revision = self.model.revision
+            self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
             self.home.refresh()
         except OSError as error:
@@ -1904,6 +1992,8 @@ class MainWindow(QMainWindow):
         try:
             self.axes_panel.discard()
             self.project_service.load(path)
+            self.scene.set_scene_selection_mode(None)
+            self.top_icon_palette.reload_scene_views()
             self.normalize_member_directions_if_enabled()
             self.section_profiles = {
                 name: member.profile for name, member in self.model.bars.items() if member.profile
@@ -1928,6 +2018,7 @@ class MainWindow(QMainWindow):
             self.current_path = path
             self.scene.set_model_name(path.stem)
             self._saved_revision = self.model.revision
+            self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
             self.home.refresh()
             self.refresh_action_palette()
@@ -1938,7 +2029,10 @@ class MainWindow(QMainWindow):
             self.show_error(f"Não foi possível abrir o modelo: {error}")
 
     def _has_unsaved_changes(self) -> bool:
-        return self.model.revision != self._saved_revision
+        return (
+            self.model.revision != self._saved_revision
+            or self.model.view_revision != self._saved_view_revision
+        )
 
     def _confirm_pending_changes(self) -> bool:
         """Pergunta como tratar alterações antes de substituir ou fechar o modelo."""
@@ -1974,6 +2068,7 @@ class MainWindow(QMainWindow):
         self.view_stack.setCurrentWidget(self.home)
         self.title_bar.set_project_actions_enabled(False)
         self.home.refresh()
+        self.top_icon_palette.scene_palette.hide()
         for widget in (
             self.palette,
             self.top_icon_palette,
@@ -2010,6 +2105,7 @@ class MainWindow(QMainWindow):
             self.command_bar,
         ):
             widget.show()
+        self.top_icon_palette.set_geometry_visible(self.palette.active_group == "Geometria")
         self.palette.reposition()
         self.top_icon_palette.reposition()
         self.command_bar.reposition()

@@ -9,10 +9,11 @@ glyph layout with ``QStaticText`` and projects all positions in one NumPy pass.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QStaticText, QTransform
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QStaticText, QTransform
 from PySide6.QtWidgets import QWidget
 
 
@@ -51,8 +52,12 @@ def project_world_to_screen(
 @dataclass(slots=True)
 class _LabelGroup:
     positions: np.ndarray
+    text: tuple[str, ...]
     labels: tuple[QStaticText, ...]
     sizes: tuple[object, ...]
+    atlases: tuple[QPixmap, ...]
+    atlas_rects: tuple[tuple[int, QRectF], ...]
+    atlas_ratio: float
     screen: np.ndarray
     on_screen: np.ndarray
     draw_indices: np.ndarray
@@ -62,6 +67,9 @@ class _LabelGroup:
 
 class LabelOverlay(QWidget):
     """One transparent widget for every node and member identifier."""
+
+    _atlas_width = 2048
+    _atlas_height = 2048
 
     def __init__(self, plotter_widget: QWidget) -> None:
         super().__init__(plotter_widget)
@@ -88,22 +96,87 @@ class LabelOverlay(QWidget):
         visible: bool,
         deduplicate: bool = False,
     ) -> None:
+        labels = tuple(labels)
+        previous = self._groups.get(kind)
+        if previous is not None and previous.text == labels:
+            # Geometry changes frequently while identifiers rarely change.
+            # Preserve prepared glyphs and their atlas across those edits.
+            previous.positions = np.asarray(positions, dtype=float)
+            previous.visible = bool(visible)
+            previous.deduplicate = bool(deduplicate)
+            return
         static_labels = []
         for label in labels:
             text = QStaticText(label)
             text.prepare(QTransform(), self._font)
             static_labels.append(text)
+        sizes = tuple(text.size() for text in static_labels)
+        atlases, atlas_rects, atlas_ratio = self._build_atlas(tuple(static_labels), sizes)
         count = len(labels)
         self._groups[kind] = _LabelGroup(
             positions=np.asarray(positions, dtype=float),
+            text=labels,
             labels=tuple(static_labels),
-            sizes=tuple(text.size() for text in static_labels),
+            sizes=sizes,
+            atlases=atlases,
+            atlas_rects=atlas_rects,
+            atlas_ratio=atlas_ratio,
             screen=np.empty((count, 2), dtype=float),
             on_screen=np.zeros(count, dtype=bool),
             draw_indices=np.arange(count, dtype=np.int64),
             visible=bool(visible),
             deduplicate=bool(deduplicate),
         )
+
+    def _build_atlas(
+        self, labels: tuple[QStaticText, ...], sizes: tuple[object, ...],
+    ) -> tuple[tuple[QPixmap, ...], tuple[tuple[int, QRectF], ...], float]:
+        ratio = max(1.0, float(self.devicePixelRatioF()))
+        if not labels:
+            return (), (), ratio
+        width = max(self._atlas_width, max(ceil(size.width()) + 2 for size in sizes))
+        placements: list[tuple[int, QRectF]] = []
+        pages: list[list[tuple[QStaticText, int, int]]] = [[]]
+        x = y = row_height = 0
+        for text, size in zip(labels, sizes):
+            cell_width = ceil(size.width()) + 2
+            cell_height = ceil(size.height()) + 2
+            if x + cell_width > width:
+                x = 0
+                y += row_height
+                row_height = 0
+            if y + cell_height > self._atlas_height and pages[-1]:
+                pages.append([])
+                x = y = row_height = 0
+            pages[-1].append((text, x, y))
+            placements.append((len(pages) - 1, QRectF(x, y, cell_width, cell_height)))
+            x += cell_width
+            row_height = max(row_height, cell_height)
+
+        atlases = []
+        for page, entries in enumerate(pages):
+            height = ceil(max(
+                placement.y() + placement.height()
+                for page_index, placement in placements if page_index == page
+            ))
+            atlas = QPixmap(ceil(width * ratio), ceil(height * ratio))
+            atlas.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(atlas)
+            painter.scale(ratio, ratio)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setFont(self._font)
+            painter.setPen(self._color)
+            for text, left, top in entries:
+                painter.drawStaticText(QPointF(left + 1, top + 1), text)
+            painter.end()
+            atlases.append(atlas)
+        physical_rects = tuple(
+            (page, QRectF(
+                rect.x() * ratio, rect.y() * ratio,
+                rect.width() * ratio, rect.height() * ratio,
+            )) for page, rect in placements
+        )
+        return tuple(atlases), physical_rects, ratio
 
     def clear(self) -> None:
         self._groups.clear()
@@ -120,6 +193,12 @@ class LabelOverlay(QWidget):
         self.raise_()
 
     def sync(self, renderer) -> None:
+        ratio = max(1.0, float(self.devicePixelRatioF()))
+        for group in self._groups.values():
+            if group.labels and abs(group.atlas_ratio - ratio) > 1e-6:
+                group.atlases, group.atlas_rects, group.atlas_ratio = self._build_atlas(
+                    group.labels, group.sizes,
+                )
         camera = renderer.GetActiveCamera()
         aspect = renderer.GetTiledAspectRatio()
         vtk_matrix = camera.GetCompositeProjectionTransformMatrix(aspect, -1.0, 1.0)
@@ -170,18 +249,20 @@ class LabelOverlay(QWidget):
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        painter.setFont(self._font)
-        painter.setPen(self._color)
         for group in self._groups.values():
             if not group.visible:
                 continue
             for index in group.draw_indices:
-                text = group.labels[index]
                 point = group.screen[index]
                 size = group.sizes[index]
-                painter.drawStaticText(
-                    QPointF(point[0] - size.width() / 2.0, point[1] - size.height() / 2.0),
-                    text,
+                page, source = group.atlas_rects[index]
+                painter.drawPixmap(
+                    QRectF(
+                        point[0] - size.width() / 2.0 - 1,
+                        point[1] - size.height() / 2.0 - 1,
+                        source.width() / group.atlas_ratio,
+                        source.height() / group.atlas_ratio,
+                    ),
+                    group.atlases[page], source,
                 )
         painter.end()

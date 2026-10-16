@@ -61,6 +61,11 @@ class ProjectSerializer:
             "load_combinations": [asdict(item) for item in model.load_combinations.values()],
             "combination_groups_initialized": sorted(model.combination_groups_initialized),
             "results": [asdict(item) for item in model.analysis_results],
+            "scene_views": [
+                {"name": name, "hidden_members": sorted(hidden)}
+                for name, hidden in model.scene_views.items()
+            ],
+            "active_scene_view": model.active_scene_view,
         }
         if thumbnail:
             data["thumbnail"] = {"format": "png", "data": thumbnail}
@@ -141,6 +146,29 @@ class ProjectSerializer:
         })
 
         if file_format == FORMAT_V2:
+            raw_views = data.get("scene_views", [])
+            if not isinstance(raw_views, list):
+                raise ValueError("As vistas da cena são inválidas.")
+            for item in raw_views:
+                if not isinstance(item, dict):
+                    raise ValueError("As vistas da cena são inválidas.")  # noqa: TRY004
+                name = item.get("name")
+                hidden = item.get("hidden_members", ())
+                if not isinstance(name, str) or not name.strip() or not isinstance(hidden, list):
+                    raise ValueError("As vistas da cena são inválidas.")
+                if name == "Completo":
+                    if hidden:
+                        raise ValueError("A vista Completo não pode ocultar membros.")
+                    continue
+                if name in candidate.scene_views or any(
+                    not isinstance(member, str) or member not in candidate.bars for member in hidden
+                ):
+                    raise ValueError("As vistas da cena são inválidas.")
+                candidate.scene_views[name] = set(hidden)
+            active_view = data.get("active_scene_view", "Completo")
+            if active_view not in candidate.scene_views:
+                raise ValueError("A vista ativa é inválida.")
+            candidate.active_scene_view = active_view
             materials = data.get("materials", {})
             if materials:
                 candidate.materials = {
@@ -218,4 +246,7 @@ class ProjectSerializer:
         model.load_combinations = candidate.load_combinations
         model.combination_groups_initialized = candidate.combination_groups_initialized
         model.analysis_results = candidate.analysis_results
+        model.scene_views = candidate.scene_views
+        model.active_scene_view = candidate.active_scene_view
+        model.view_revision += 1
         model.revision += 1
