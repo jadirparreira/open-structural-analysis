@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from osa.analysis.contracts import AnalysisRequest
 from osa.domain import StructuralModel
+from osa.transcriptions.contracts import require_import_review
 
 from .combination_builder import CombinationBuilder
 from .load_case_builder import LoadCaseBuilder
@@ -31,6 +32,7 @@ class PyniteAdapter:
         request: AnalysisRequest,
         progress: Callable[[str], None] | None = None,
     ):
+        require_import_review(model)
         self._notify(progress, "model")
         target = self.builder.build(model)
         self._notify(progress, "loads")
