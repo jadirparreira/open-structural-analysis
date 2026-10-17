@@ -52,6 +52,55 @@ def test_member_batch_keeps_full_solid_geometry_and_pick_identity():
     assert sum(mesh.n_cells for mesh in batch.silhouette_faces_by_color.values()) > 0
 
 
+@pytest.mark.parametrize("visible", [{"B1", "B3", "B4"}, {"B2"}, set()])
+def test_filtered_member_batch_matches_building_only_visible_members(visible):
+    model = StructuralModel()
+    for index in range(6):
+        model.add_node(f"N{index}", float(index), float(index % 2), 0.0)
+    for index in range(5):
+        name = f"B{index}"
+        model.add_bar(name, f"N{index}", f"N{index + 1}")
+        if index < 3:
+            model.update_bar_section(name, "Barra Retangular")
+            model.update_member_profile(name, "R", {"b": 100, "h": 200})
+        elif index == 3:
+            model.update_bar_section(name, "Tubular Circular")
+            model.update_member_profile(name, "T", {"D": 100, "t": 3})
+        model.update_member_releases(name, (True,) * 12)
+        model.update_member_solid_section_offsets(name, (0.1, -0.2))
+        model.update_member_rotation(name, 45)
+    renderer = BatchedMemberRenderer()
+    complete = renderer.build(model, 0.05)
+    filtered = renderer.filter_members(complete, visible)
+    expected = renderer.build(SimpleNamespace(
+        bars={name: bar for name, bar in model.bars.items() if name in visible}, nodes=model.nodes,
+    ), 0.05)
+
+    assert filtered.names == expected.names
+    np.testing.assert_allclose(filtered.label_positions, expected.label_positions)
+    for name in ("face_point_ranges", "face_cell_ranges", "edge_point_ranges", "edge_cell_ranges"):
+        assert getattr(filtered, name) == getattr(expected, name)
+    for actual, rebuilt in zip(
+        (filtered.lines, filtered.fallback_lines, filtered.faces, filtered.edges, *filtered.axes, filtered.releases),
+        (expected.lines, expected.fallback_lines, expected.faces, expected.edges, *expected.axes, expected.releases),
+    ):
+        np.testing.assert_allclose(actual.points, rebuilt.points)
+        np.testing.assert_array_equal(actual.faces, rebuilt.faces)
+        np.testing.assert_array_equal(actual.lines, rebuilt.lines)
+        assert set(actual.cell_data) == set(rebuilt.cell_data)
+        for key in actual.cell_data:
+            np.testing.assert_allclose(actual.cell_data[key], rebuilt.cell_data[key])
+    for name in filtered.outlines:
+        np.testing.assert_allclose(filtered.outlines[name].points, expected.outlines[name].points)
+    assert set(filtered.silhouette_sources) == set(expected.silhouette_sources)
+    for color, mesh in filtered.silhouette_faces_by_color.items():
+        np.testing.assert_allclose(mesh.points, expected.silhouette_faces_by_color[color].points)
+        np.testing.assert_array_equal(mesh.faces, expected.silhouette_faces_by_color[color].faces)
+    assert renderer.filter_members(complete, set(model.bars)) is complete
+    # Subsets have their own mutable VTK cells and never renumber the source.
+    np.testing.assert_array_equal(complete.lines.cell_data["element_index"], np.arange(5))
+
+
 def test_measurement_rejects_profile_edges_hidden_behind_front_face():
     shape = section_shape(
         "W Laminado", {"d": 200, "bf": 100, "tw": 6, "tf": 8}, arc_steps=12,

@@ -319,6 +319,8 @@ class StructureScene(QWidget):
         self._node_batch: NodeBatch | None = None
         self._member_geometry_cache_key: tuple[object, ...] | None = None
         self._member_geometry_cache: MemberBatch | None = None
+        self._scene_member_source_key: tuple[object, ...] | None = None
+        self._scene_member_source: MemberBatch | None = None
         self._pending_member_geometry_names: set[str] = set()
         self._pending_member_full_names: set[str] = set()
         self._silhouette_source_batch: MemberBatch | None = None
@@ -614,6 +616,8 @@ class StructureScene(QWidget):
         yield
 
         if not model.nodes:
+            self._scene_member_source = None
+            self._scene_member_source_key = None
             self._marker_radius_locked = False
             self._label_overlay.clear()
             self._elastic_support_overlay.set_members((), (), 0.0)
@@ -640,29 +644,33 @@ class StructureScene(QWidget):
         # A model revision is too broad a cache key: changing one support also
         # advances it, even though member geometry is unchanged. Keep each
         # rendered batch keyed by the domain data it actually consumes.
+        source_key = self._member_cache_key(model)
         member_key = prepared_geometry.member_key if prepared_geometry is not None else (
-            round(float(self._marker_radius_current), 12),
-            self._solid_members_visible,
-            tuple(
-                (
-                    member,
-                    (model.nodes[member.start_node].x, model.nodes[member.start_node].y,
-                     model.nodes[member.start_node].z),
-                    (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
-                     model.nodes[member.end_node].z),
-                )
-                for member in visible_bars.values()
-            ),
+            *source_key[:2], tuple(item for item in source_key[2] if item[0].name in visible_bars),
         )
+        if source_key != self._scene_member_source_key:
+            # Incremental edits can already have updated the complete batch.
+            self._scene_member_source = (
+                self._member_geometry_cache if self._member_geometry_cache_key == source_key else None
+            )
+            self._scene_member_source_key = source_key if self._scene_member_source is not None else None
         if prepared_geometry is not None:
             self._member_geometry_cache = prepared_geometry.member_batch
             self._member_geometry_cache_key = prepared_geometry.member_key
+            self._scene_member_source = prepared_geometry.source_member_batch
+            self._scene_member_source_key = prepared_geometry.source_member_key
         if member_key != self._member_geometry_cache_key or self._member_geometry_cache is None:
-            self._member_geometry_cache = self._member_renderer.build(
-                SimpleNamespace(bars=visible_bars, nodes=model.nodes), self._marker_radius_current,
+            if self._scene_member_source is None:
+                self._scene_member_source = self._member_renderer.build(model, self._marker_radius_current)
+                self._scene_member_source_key = source_key
+            self._member_geometry_cache = self._member_renderer.filter_members(
+                self._scene_member_source, set(visible_bars),
             )
             self._member_geometry_cache_key = member_key
         self._member_batch = self._member_geometry_cache
+        if not hidden_members:
+            self._scene_member_source = self._member_batch
+            self._scene_member_source_key = source_key
 
         node_key = prepared_geometry.node_key if prepared_geometry is not None else (
             round(float(node_radius), 12), tuple(visible_nodes.values()),
@@ -985,8 +993,16 @@ class StructureScene(QWidget):
             edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
             edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+        if self._solid_members_visible:
+            silhouette = self._member_silhouette_mesh(batch)
+        else:
+            # A previous solid view may own a large batch through this cache.
+            self._silhouette_source_batch = None
+            self._silhouette_camera_key = None
+            self._silhouette_mesh_cache = None
+            silhouette = pv.PolyData()
         self._member_silhouette_actor = self._add_colored_mesh(
-            self._member_silhouette_mesh(batch),
+            silhouette,
             "batch:member-silhouette",
             line_width=self._circular_silhouette_line_width,
             lighting=False,
@@ -4110,13 +4126,77 @@ class StructureScene(QWidget):
         visible = bool(visible)
         if visible == self._solid_members_visible:
             return
+        source_key = self._member_cache_key(self._model)
+        hidden = self._scene_hidden_members()
+        member_key = (
+            *source_key[:2], tuple(item for item in source_key[2] if item[0].name not in hidden),
+        )
+        current = (
+            self._member_batch is not None
+            and self._member_geometry_cache_key == member_key
+            and self._rendered_revision == self._model.revision
+            and not self._rebuild_timer.isActive()
+            and not self._member_update_timer.isActive()
+            and not self._support_update_timer.isActive()
+        )
         self._solid_members_visible = visible
         self._member_renderer.position_indicators_with_section = visible
         self._elastic_support_overlay.follow_section = visible
         self._hovered = None
         self._tab_hover_candidates = []
         self._tab_hover_position = None
-        self.render_model(self._model)
+        if not current:
+            self.render_model(self._model)
+            return
+
+        # Faces, edges and analytical lines already coexist in the scene.
+        # Only their visibility and the displaced indicators need to change.
+        batch = self._member_batch
+        self._member_renderer.set_indicators_with_section(batch, visible)
+        self._member_geometry_cache_key = (member_key[0], visible, member_key[2])
+        if not hidden:
+            self._scene_member_source = batch
+            self._scene_member_source_key = source_key
+        if self._scene_member_source_key == source_key and self._scene_member_source is not None:
+            self._member_renderer.set_indicators_with_section(self._scene_member_source, visible)
+            self._scene_member_source_key = (source_key[0], visible, source_key[2])
+        else:
+            self._scene_member_source = None
+            self._scene_member_source_key = None
+        if self._reveal_preview_batch is not None:
+            self._member_renderer.set_indicators_with_section(self._reveal_preview_batch, visible)
+
+        self._label_overlay.set_group(
+            "bar", batch.label_positions, batch.names, visible=self._labels_visibility["bar"],
+        )
+        self._elastic_support_overlay.set_members(
+            (self._model.bars[name] for name in batch.names),
+            self._model.nodes.values(), self._node_marker_radius(),
+        )
+        self._pick_projection_cache = None
+        self._measurement_segments_cache = None
+        self._measurement_segment_bounds = None
+        self._projected_snap_cache = None
+        if self._active_result_type.startswith("Deformação"):
+            self._clear_result_layer()
+            if self._analysis_visible:
+                self._add_results()
+                self._label_overlay.set_group(
+                    "result", self._result_label_positions, self._result_labels,
+                    visible=self._result_layer_is_visible(), deduplicate=True,
+                )
+        elif self._result_layer_key is not None:
+            self._result_layer_key = (*self._result_layer_key[:-1], visible)
+        self._apply_representation_visibility()
+        self._configure_solid_picker()
+        self._sync_highlights()
+        self._update_zoom_dependent_sizes()
+        self._clip_refresh_timer.stop()
+        self.plotter.reset_camera_clipping_range()
+        self._silhouette_timer.stop()
+        self._refresh_member_silhouette()
+        self._sync_labels(render_preview=False)
+        self.plotter.render()
 
     def set_labels_visible(self, kind: str, visible: bool) -> None:
         self._labels_visibility[kind] = bool(visible)
@@ -5139,7 +5219,7 @@ class StructureScene(QWidget):
     def _refresh_member_silhouette(self) -> None:
         """Refresh the screen-space contour after the camera changes."""
         batch = self._member_batch
-        if batch is None or not batch.silhouette_sources:
+        if batch is None or not batch.silhouette_sources or not self._solid_members_visible:
             return
         mesh = self._member_silhouette_mesh(batch)
         if self._member_silhouette_actor is None:

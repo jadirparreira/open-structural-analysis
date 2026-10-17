@@ -3,6 +3,7 @@
 import os
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from osa.model import StructuralModel
+from osa.rendering.batched_renderer import prepare_scene_geometry
 from osa.rendering.scene_batched import StructureScene
 
 
@@ -107,3 +109,117 @@ def test_scene_renders_only_visible_members_and_previews_hidden_ones(qt_app):
     assert scene._member_batch.names == ("B1", "B2")
     assert scene._node_batch.names == ("N1", "N2", "N3")
     scene.close()
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("initial_view", ["Completo", "Vista"])
+def test_switches_reuse_geometry_including_when_opened_in_a_filtered_view(qt_app, monkeypatch, prepared, initial_view):
+    model = _model()
+    model.add_scene_view("Vista")
+    model.set_scene_members_hidden({"B1"}, True)
+    model.select_scene_view(initial_view)
+    scene = StructureScene()
+    try:
+        geometry = prepare_scene_geometry(model) if prepared else None
+        scene.render_model(model, prepared_geometry=geometry)
+        source = scene._scene_member_source
+        camera = scene._camera_state()
+
+        def unexpected_build(*args, **kwargs):
+            pytest.fail("Changing a view must reuse the prepared member geometry")
+
+        monkeypatch.setattr(scene._member_renderer, "build", unexpected_build)
+        for name in ("Vista", "Completo", "Vista", "Completo"):
+            model.select_scene_view(name)
+            scene.render_model(model)
+            assert scene._member_batch.names == (("B2",) if name == "Vista" else ("B1", "B2"))
+            assert scene._scene_member_source is source
+            assert scene._camera_state() == camera
+        model.select_scene_view("Vista")
+        model.set_scene_members_hidden({"B2"}, True)
+        scene.render_model(model)
+        assert scene._member_batch.names == ()
+        assert scene._node_batch.names == ()
+        model.show_all_scene_members()
+        scene.render_model(model)
+        assert scene._member_batch.names == ("B1", "B2")
+    finally:
+        scene.close()
+
+
+def test_view_geometry_is_invalidated_after_edits_to_hidden_members(qt_app):
+    model = _model()
+    model.add_scene_view("Vista")
+    model.set_scene_members_hidden({"B1"}, True)
+    scene = StructureScene()
+    try:
+        scene.render_model(model)
+        source = scene._scene_member_source
+        model.update_node("N1", -2.0, 1.0, 0.0)
+        model.update_member_color("B1", "#ff0000")
+        # The displayed member is unchanged, but the complete source is stale.
+        scene.render_model(model)
+        model.select_scene_view("Completo")
+        scene.render_model(model)
+        assert scene._scene_member_source is not source
+        np.testing.assert_allclose(scene._member_batch.lines.points[0], (-2.0, 1.0, 0.0))
+        np.testing.assert_array_equal(scene._member_batch.lines.cell_data["rgb"][0], (255, 0, 0))
+        scene.set_solid_members_visible(True)
+        model.select_scene_view("Vista")
+        scene.render_model(model)
+        assert scene._member_batch.names == ("B2",)
+    finally:
+        scene.close()
+
+
+def test_scene_switch_keeps_incremental_edits_to_the_complete_batch(qt_app, monkeypatch):
+    model = _model()
+    model.add_scene_view("Vista")
+    model.set_scene_members_hidden({"B2"}, True)
+    model.select_scene_view("Completo")
+    scene = StructureScene()
+    try:
+        scene.render_model(model)
+        model.update_node("N1", -1.0, 0.0, 0.0)
+        model.update_member_color("B1", "#ff0000")
+        scene.refresh_model_changes(model)
+
+        def unexpected_build(*args, **kwargs):
+            pytest.fail("The complete batch already contains the incremental edits")
+
+        monkeypatch.setattr(scene._member_renderer, "build", unexpected_build)
+        for name in ("Vista", "Completo"):
+            model.select_scene_view(name)
+            scene.render_model(model)
+            np.testing.assert_allclose(scene._member_batch.lines.points[0], (-1.0, 0.0, 0.0))
+            np.testing.assert_array_equal(scene._member_batch.lines.cell_data["rgb"][0], (255, 0, 0))
+    finally:
+        scene.close()
+
+
+def test_solid_silhouettes_are_only_prepared_when_they_are_visible(qt_app, monkeypatch):
+    model = _model()
+    model.update_bar_section("B1", "Tubular Circular")
+    model.update_member_profile("B1", "T", {"D": 100, "t": 3})
+    model.add_scene_view("Vista")
+    model.set_scene_members_hidden({"B2"}, True)
+    scene = StructureScene()
+    try:
+        with monkeypatch.context() as patch:
+            def unexpected_silhouette(*args, **kwargs):
+                pytest.fail("A line view does not need a solid silhouette")
+
+            patch.setattr(scene._member_renderer, "silhouette_mesh", unexpected_silhouette)
+            scene.render_model(model)
+            model.select_scene_view("Completo")
+            scene.render_model(model)
+            assert scene._member_silhouette_actor is None
+        scene.set_solid_members_visible(True)
+        assert scene._member_silhouette_actor is not None
+        assert scene._member_silhouette_actor.GetVisibility()
+        model.select_scene_view("Vista")
+        scene.render_model(model)
+        assert scene._member_silhouette_actor is not None
+        assert scene._member_silhouette_actor.GetVisibility()
+    finally:
+        scene.close()

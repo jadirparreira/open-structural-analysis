@@ -140,6 +140,8 @@ class MemberBatch:
     silhouette_sources: dict[str, pv.PolyData]
     silhouette_member_colors: dict[str, tuple[int, int, int]]
     label_positions: np.ndarray
+    section_offsets: np.ndarray
+    indicators_with_section: bool
     face_point_ranges: dict[str, tuple[int, int]]
     face_cell_ranges: dict[str, tuple[int, int]]
     edge_point_ranges: dict[str, tuple[int, int]]
@@ -206,6 +208,8 @@ class PreparedSceneGeometry:
     grid_renderer: GridRenderer
     visible_bars: dict[str, object]
     visible_nodes: dict[str, object]
+    source_member_batch: MemberBatch
+    source_member_key: tuple[object, ...]
 
 
 def prepare_scene_geometry(
@@ -244,16 +248,14 @@ def prepare_scene_geometry(
     member_renderer.position_indicators_with_section = position_indicators_with_section
     if progress is not None:
         progress("Preparando a geometria dos membros…")
-    member_batch = member_renderer.build(
-        SimpleNamespace(bars=visible_bars, nodes=model.nodes), marker_radius,
-        yield_control=yield_control,
-    )
+    source_member_batch = member_renderer.build(model, marker_radius, yield_control=yield_control)
+    member_batch = member_renderer.filter_members(source_member_batch, set(visible_bars))
     if progress is not None:
         progress("Preparando os nós e apoios…")
     node_batch = BatchedNodeRenderer(glyphs=True).build(SimpleNamespace(nodes=visible_nodes), marker_radius)
     rigid_names, rigid_mesh = BatchedRigidBarRenderer().build(model)
 
-    member_key = (
+    source_member_key = (
         round(float(marker_radius), 12),
         bool(solid_members_visible),
         tuple(
@@ -264,8 +266,12 @@ def prepare_scene_geometry(
                 (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
                  model.nodes[member.end_node].z),
             )
-            for member in visible_bars.values()
+            for member in model.bars.values()
         ),
+    )
+    member_key = (
+        *source_member_key[:2],
+        tuple(item for item in source_member_key[2] if item[0].name in visible_bars),
     )
     node_key = (round(float(marker_radius), 12), tuple(visible_nodes.values()))
     rigid_key = tuple(
@@ -288,6 +294,7 @@ def prepare_scene_geometry(
     return PreparedSceneGeometry(
         member_batch, node_batch, rigid_names, rigid_mesh,
         member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,
+        source_member_batch, source_member_key,
     )
 
 
@@ -354,6 +361,7 @@ class BatchedMemberRenderer:
         edge_point_ranges: dict[str, tuple[int, int]] = {}
         edge_cell_ranges: dict[str, tuple[int, int]] = {}
         label_positions = np.empty((len(names), 3), dtype=float)
+        section_offsets = np.empty((len(names), 3), dtype=float)
         colors: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         section_sources: dict[tuple[object, ...], tuple | None] = {}
 
@@ -366,6 +374,7 @@ class BatchedMemberRenderer:
             start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
             end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
             section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+            section_offsets[element_index] = section_offset
             indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
             delta = end - start
             if member.color not in colors:
@@ -510,11 +519,129 @@ class BatchedMemberRenderer:
             silhouette_sources=silhouette_sources,
             silhouette_member_colors=silhouette_member_colors,
             label_positions=label_positions,
+            section_offsets=section_offsets,
+            indicators_with_section=self.position_indicators_with_section,
             face_point_ranges=face_point_ranges,
             face_cell_ranges=face_cell_ranges,
             edge_point_ranges=edge_point_ranges,
             edge_cell_ranges=edge_cell_ranges,
         )
+
+    @staticmethod
+    def _filter_mesh(
+        mesh: pv.PolyData, remap: np.ndarray, *, faces: bool = False,
+    ) -> tuple[pv.PolyData, np.ndarray, np.ndarray]:
+        """Compact existing cells, retaining normals and remapping picking IDs."""
+        if not mesh.n_cells:
+            return _empty_mesh(), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+        indices = np.asarray(mesh.cell_data["element_index"])
+        keep = remap[indices] >= 0
+        cell_ids = np.flatnonzero(keep)
+        if not len(cell_ids):
+            return _empty_mesh(), np.empty(0, dtype=np.int64), cell_ids
+        cells = mesh.GetPolys() if faces else mesh.GetLines()
+        offsets = vtk_to_numpy(cells.GetOffsetsArray())
+        connectivity = vtk_to_numpy(cells.GetConnectivityArray())
+        widths = np.diff(offsets)
+        selected = connectivity[np.repeat(keep, widths)]
+        used_points = np.zeros(mesh.n_points, dtype=bool)
+        used_points[selected] = True
+        point_ids = np.flatnonzero(used_points)
+        point_remap = np.empty(mesh.n_points, dtype=np.int64)
+        point_remap[point_ids] = np.arange(len(point_ids), dtype=np.int64)
+        compact = point_remap[selected]
+        counts = widths[keep]
+        starts = np.r_[0, np.cumsum(counts[:-1] + 1)]
+        encoded = np.empty(len(compact) + len(counts), dtype=np.int64)
+        encoded[starts] = counts
+        is_point = np.ones(len(encoded), dtype=bool)
+        is_point[starts] = False
+        encoded[is_point] = compact
+        points = np.asarray(mesh.points)[point_ids]
+        result = pv.PolyData(points, faces=encoded) if faces else pv.PolyData(points, lines=encoded)
+        for key, values in mesh.cell_data.items():
+            result.cell_data[key] = remap[indices[keep]] if key == "element_index" else values[keep]
+        if mesh.cell_data.active_normals_name is not None:
+            result.cell_data.active_normals_name = mesh.cell_data.active_normals_name
+        return result, point_ids, cell_ids
+
+    def filter_members(self, batch: MemberBatch, visible: set[str]) -> MemberBatch:
+        """Reuse section vertices, releases and normals when only a view changes.
+
+        Keep at most the complete source batch and the displayed subset in the
+        scene, rather than retaining a copy of the geometry for every view.
+        """
+        selected = np.asarray([name in visible for name in batch.names], dtype=bool)
+        if np.all(selected):
+            return batch
+        names = tuple(name for name, keep in zip(batch.names, selected) if keep)
+        remap = np.full(len(batch.names), -1, dtype=np.int32)
+        remap[selected] = np.arange(len(names), dtype=np.int32)
+        faces, face_points, face_cells = self._filter_mesh(batch.faces, remap, faces=True)
+        edges, edge_points, edge_cells = self._filter_mesh(batch.edges, remap)
+
+        def ranges(source, retained):
+            present = tuple(name for name in names if name in source)
+            if not present:
+                return {}
+            boundaries = np.searchsorted(retained, np.asarray([source[name] for name in present]))
+            return {
+                name: (int(start), int(end)) for name, (start, end) in zip(present, boundaries)
+            }
+
+        outlines = {}
+        for name in names:
+            if isinstance(batch.outlines, _LazyOutlineMap):
+                source = batch.outlines.source(name)
+                if source is not None:
+                    outlines[name] = source
+            elif name in batch.outlines:
+                outline = batch.outlines[name]
+                outlines[name] = (np.asarray(outline.points), np.asarray(outline.lines))
+        silhouettes = {name: mesh for name, mesh in batch.silhouette_sources.items() if name in visible}
+        colors = {name: batch.silhouette_member_colors[name] for name in silhouettes}
+        return MemberBatch(
+            names=names,
+            lines=self._filter_mesh(batch.lines, remap)[0],
+            fallback_lines=self._filter_mesh(batch.fallback_lines, remap)[0],
+            faces=faces,
+            edges=edges,
+            silhouette_faces_by_color=self._build_silhouette_faces_by_color(silhouettes, colors),
+            axes=tuple(self._filter_mesh(mesh, remap)[0] for mesh in batch.axes),
+            releases=self._filter_mesh(batch.releases, remap)[0],
+            outlines=_LazyOutlineMap(outlines),
+            silhouette_sources=silhouettes,
+            silhouette_member_colors=colors,
+            label_positions=batch.label_positions[selected],
+            section_offsets=batch.section_offsets[selected],
+            indicators_with_section=batch.indicators_with_section,
+            face_point_ranges=ranges(batch.face_point_ranges, face_points),
+            face_cell_ranges=ranges(batch.face_cell_ranges, face_cells),
+            edge_point_ranges=ranges(batch.edge_point_ranges, edge_points),
+            edge_cell_ranges=ranges(batch.edge_cell_ranges, edge_cells),
+        )
+
+    @staticmethod
+    def set_indicators_with_section(batch: MemberBatch, visible: bool) -> None:
+        """Move only labels, local axes and releases when representation changes."""
+        if batch.indicators_with_section == visible:
+            return
+        batch.indicators_with_section = visible
+        if not np.any(batch.section_offsets):
+            return
+        shifts = batch.section_offsets if visible else -batch.section_offsets
+        batch.label_positions += shifts
+        for mesh in (*batch.axes, batch.releases):
+            if not mesh.n_cells:
+                continue
+            cells = mesh.GetLines()
+            connectivity = vtk_to_numpy(cells.GetConnectivityArray())
+            widths = np.diff(vtk_to_numpy(cells.GetOffsetsArray()))
+            indices = np.asarray(mesh.cell_data["element_index"])
+            # Each line/polyline owns its vertices in these indicator batches.
+            mesh.points[connectivity] += np.repeat(shifts[indices], widths, axis=0)
+            mesh.GetPoints().Modified()
+            mesh.Modified()
 
     def update_member_section_in_place(
         self, batch: MemberBatch, model, member_name: str, *,
@@ -643,6 +770,7 @@ class BatchedMemberRenderer:
             batch.silhouette_faces_by_color = self._build_silhouette_faces_by_color(
                 batch.silhouette_sources, batch.silhouette_member_colors,
             )
+        batch.section_offsets[element_index] = section_offset
         return True
 
     @staticmethod
@@ -796,6 +924,7 @@ class BatchedMemberRenderer:
             old.GetCellData().Modified()
             old.Modified()
         batch.label_positions[element_index] = replacement.label_positions[0]
+        batch.section_offsets[element_index] = replacement.section_offsets[0]
         if isinstance(batch.outlines, _LazyOutlineMap):
             outline = replacement.outlines.get(member_name)
             batch.outlines.replace_source(
@@ -869,6 +998,7 @@ class BatchedMemberRenderer:
         batch.edge_point_ranges = edge_ranges
         batch.edge_cell_ranges = edge_cell_ranges
         batch.label_positions[element_index] = replacement.label_positions[0]
+        batch.section_offsets[element_index] = replacement.section_offsets[0]
         outline_map = batch.outlines
         if isinstance(outline_map, _LazyOutlineMap):
             outline = replacement.outlines.get(member_name)
@@ -921,6 +1051,7 @@ class BatchedMemberRenderer:
         )
         batch.releases = self._splice_member_mesh(batch.releases, tail.releases, first_index)
         batch.label_positions = np.concatenate((batch.label_positions, tail.label_positions))
+        batch.section_offsets = np.concatenate((batch.section_offsets, tail.section_offsets))
         batch.names += names
         for name, (start, end) in tail.face_point_ranges.items():
             batch.face_point_ranges[name] = old_face_points + start, old_face_points + end
@@ -985,6 +1116,7 @@ class BatchedMemberRenderer:
                 mesh.GetCellData().Modified()
         batch.names = tuple(name for name in batch.names if name != member_name)
         batch.label_positions = np.delete(batch.label_positions, element_index, axis=0)
+        batch.section_offsets = np.delete(batch.section_offsets, element_index, axis=0)
         batch.face_point_ranges = face_ranges
         batch.face_cell_ranges = face_cell_ranges
         batch.edge_point_ranges = edge_ranges
@@ -1019,19 +1151,19 @@ class BatchedMemberRenderer:
         member_colors: dict[str, tuple[int, int, int]],
     ) -> dict[tuple[int, int, int], pv.PolyData]:
         points_by_color: dict[tuple[int, int, int], list[np.ndarray]] = {}
-        cells_by_color: dict[tuple[int, int, int], list[int]] = {}
+        cells_by_color: dict[tuple[int, int, int], list[np.ndarray]] = {}
         point_counts: dict[tuple[int, int, int], int] = {}
         for member_name, source in sources.items():
             color = member_colors[member_name]
             points_by_color.setdefault(color, []).append(source.points)
             cells_by_color.setdefault(color, [])
             point_counts.setdefault(color, 0)
-            self._append_cells(cells_by_color[color], source.faces, point_counts[color])
+            cells_by_color[color].append(_offset_cells(source.faces, point_counts[color]))
             point_counts[color] += len(source.points)
         return {
             color: pv.PolyData(
                 np.vstack(points_by_color[color]),
-                faces=np.asarray(cells_by_color[color], dtype=np.int64),
+                faces=np.concatenate(cells_by_color[color]),
             )
             for color in points_by_color
         }
@@ -1041,39 +1173,24 @@ class BatchedMemberRenderer:
         if not batch.silhouette_faces_by_color:
             return _empty_mesh()
         points: list[np.ndarray] = []
-        lines: list[int] = []
-        colors: list[tuple[int, int, int]] = []
+        lines: list[np.ndarray] = []
+        colors: list[np.ndarray] = []
         point_count = 0
         for color, faces in batch.silhouette_faces_by_color.items():
             silhouette = self.solids.silhouette_for(faces, camera)
             if not silhouette.n_lines:
                 continue
             points.append(silhouette.points)
-            encoded = np.asarray(silhouette.lines, dtype=np.int64)
-            cursor = 0
-            while cursor < len(encoded):
-                count = int(encoded[cursor])
-                lines.append(count)
-                lines.extend((encoded[cursor + 1:cursor + 1 + count] + point_count).tolist())
-                colors.append(tuple(max(0, int(channel * 0.65)) for channel in color))
-                cursor += count + 1
+            lines.append(_offset_cells(silhouette.lines, point_count))
+            edge_color = np.asarray(color, dtype=float) * 0.65
+            colors.append(np.tile(edge_color.astype(np.uint8), (silhouette.n_lines, 1)))
             point_count += len(silhouette.points)
 
         if not points:
             return _empty_mesh()
-        mesh = pv.PolyData(np.vstack(points), lines=np.asarray(lines, dtype=np.int64))
-        mesh.cell_data["rgb"] = np.asarray(colors, dtype=np.uint8)
+        mesh = pv.PolyData(np.vstack(points), lines=np.concatenate(lines))
+        mesh.cell_data["rgb"] = np.vstack(colors)
         return mesh
-
-    @staticmethod
-    def _append_cells(destination: list[int], encoded: np.ndarray, offset: int) -> None:
-        values = np.asarray(encoded, dtype=np.int64)
-        cursor = 0
-        while cursor < len(values):
-            count = int(values[cursor])
-            destination.append(count)
-            destination.extend((values[cursor + 1:cursor + 1 + count] + offset).tolist())
-            cursor += count + 1
 
     @staticmethod
     def _append_release_polylines(
