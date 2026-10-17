@@ -6,7 +6,12 @@ convertidas explicitamente de mm para m na fronteira com o solver.
 
 from __future__ import annotations
 
+from math import atan2, degrees
+
+import numpy as np
+
 from osa.domain import StructuralModel
+from osa.domain.member_axes import member_basis
 from osa.services import SectionPropertyService, calculate_rigid_bar_properties
 
 
@@ -81,8 +86,19 @@ class ModelBuilder:
             # a rotação escolhida pelo usuário é aplicada ao eixo local x.
             target.add_member(
                 member.name, member.start_node, member.end_node, member.material,
-                section_name, rotation=member.rotation,
+                section_name,
             )
+            # PyNite uses global Y up, while OSA draws its sections with Z up.
+            # Convert the full frame, not just the user's roll angle. All local
+            # loads, releases, inertias and results then use the drawn axes.
+            analysis_member = target.members[member.name]
+            basis = member_basis(source.nodes[member.start_node], source.nodes[member.end_node], member.rotation)
+            if basis is not None:
+                reference = analysis_member.T()[:3, :3]
+                analysis_member.rotation = degrees(atan2(
+                    float(np.dot(basis[1], reference[2])),
+                    float(np.dot(basis[1], reference[1])),
+                ))
             releases = list(member.releases)
             for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
                 releases[index] = releases[index] or percent >= 100

@@ -890,6 +890,7 @@ class McpApplication:
                     "section": member.section,
                     "profile": member.profile,
                     "geometry": member.geometry_dict(),
+                    "rotation": member.rotation,
                 }
                 for member in self.model.bars.values()
             ],

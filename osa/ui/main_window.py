@@ -9,7 +9,7 @@ from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
-from osa.services import AnalysisService
+from osa.services import AnalysisService, ResultService
 
 from .analysis_panel import ProcessingPanel
 from .analysis_worker import AnalysisWorker
@@ -2419,7 +2419,7 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
 
     def refresh_analysis_palette(self) -> None:
-        names = tuple(result.load_reference for result in self.model.analysis_results)
+        names = tuple(result.load_reference for result in ResultService(self.model).current())
         if not names:
             # Editing the model invalidates every analysis result.  Clear the
             # remembered result view as well, otherwise reopening the Analysis

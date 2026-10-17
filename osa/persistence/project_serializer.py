@@ -25,6 +25,7 @@ from osa.domain.errors import DuplicateNodeCoordinatesError
 
 FORMAT_V1 = "open-structural-analysis/v1"
 FORMAT_V2 = "open-structural-analysis/v2"
+ANALYSIS_AXES = "osa-z-up-v1"
 
 
 def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int, ...]:
@@ -60,6 +61,7 @@ class ProjectSerializer:
     def dump(self, model: StructuralModel, thumbnail: str | None = None) -> dict[str, Any]:
         data = {
             "format": FORMAT_V2,
+            "analysis_axes": ANALYSIS_AXES,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "members": [asdict(member) for member in model.bars.values()],
             # "bars" mantém interoperabilidade com leitores antigos.
@@ -287,7 +289,10 @@ class ProjectSerializer:
             }
             candidate.analysis_results = [
                 AnalysisResult(
-                    int(item["model_revision"]), item["load_reference"],
+                    # Older analyses used PyNite's Y-up frame for local
+                    # properties. Keep their data, but require a fresh solve.
+                    int(item["model_revision"]) if data.get("analysis_axes") == ANALYSIS_AXES else -1,
+                    item["load_reference"],
                     item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
                     item.get("member_results", {}) if consume else dict(item.get("member_results", {})),
                 )

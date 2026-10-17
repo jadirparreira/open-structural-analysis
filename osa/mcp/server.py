@@ -474,7 +474,7 @@ class LocalMcpServer:
             description=(
                 "Seleciona a combinação e o diagrama exibido. Diagramas: Normal, Cortante Y, Cortante Z, "
                 "Torsor, Fletor Y, Fletor Z, Reações de apoio, Deformação X, Deformação Y, "
-                "Deformação Z e Deformação XYZ."
+                "Deformação Z e Deformação XYZ. Y/Z referem-se aos eixos locais de cada membro."
             ),
             annotations=write,
         )

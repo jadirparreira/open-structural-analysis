@@ -1189,7 +1189,9 @@ class AnalysisTopPalette(QFrame):
         self.combination_selector.currentTextChanged.connect(window._select_analysis_combination)
         self.diagram_selector = QComboBox(self)
         self.diagram_selector.addItems(self.diagram_options)
-        self.diagram_selector.setToolTip("Tipo de diagrama a exibir")
+        self.diagram_selector.setToolTip(
+            "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada membro."
+        )
         self.diagram_selector.setAccessibleName("Tipo de diagrama")
         self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)
         selectors_layout.addWidget(self.combination_selector)
