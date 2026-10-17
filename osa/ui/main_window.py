@@ -447,7 +447,9 @@ class MainWindow(QMainWindow):
                 "text": "Servidor MCP acessível",
                 "detail": (
                     "ChatGPT Desktop: plugin registrado. Reinicie o cliente e selecione OpenSA em um chat Work.\n"
-                    f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+                    f"Endpoint local: {self._mcp_server.endpoint}\n"
+                    "Claude Code: use o .mcp.json na raiz do projeto.\n"
+                    "Claude Desktop Chat: configure o adaptador local mcp-remote. Consulte docs/claude-mcp.md."
                 ),
             }
         return {
@@ -455,7 +457,9 @@ class MainWindow(QMainWindow):
             "text": "Servidor MCP acessível",
             "detail": (
                 "ChatGPT Desktop: registro não confirmado.\n"
-                f"Claude: configure manualmente o endpoint {self._mcp_server.endpoint}"
+                f"Endpoint local: {self._mcp_server.endpoint}\n"
+                "Claude Code: use o .mcp.json na raiz do projeto.\n"
+                "Claude Desktop Chat: configure o adaptador local mcp-remote. Consulte docs/claude-mcp.md."
             ),
         }
 

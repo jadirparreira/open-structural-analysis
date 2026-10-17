@@ -113,9 +113,12 @@ para o marketplace pessoal e tenta registrar o plugin no ChatGPT Desktop. Se o
 ChatGPT Desktop já estiver aberto, é necessário reiniciá-lo para carregar o
 marketplace; depois, abra um chat Work e selecione `OpenSA` ou escreva
 `@OpenSA`.
-O mesmo endereço pode ser copiado para configurar manualmente outro cliente
-MCP, como o Claude, quando ele aceitar Streamable HTTP local. O OpenSA consegue
-confirmar que o endpoint está acessível e que o plugin do ChatGPT foi registrado,
-mas não consegue detectar se o usuário selecionou o plugin dentro do cliente.
+Para Claude Code, use o arquivo `.mcp.json` na raiz do repositório; ele aponta
+para esse endpoint via Streamable HTTP. Para Claude Desktop Chat, use a entrada
+stdio com `mcp-remote` documentada em [Claude Desktop e Claude Code](claude-mcp.md).
+O Claude Desktop usa essa mesma configuração também em sessões Code locais. O
+OpenSA consegue confirmar que o endpoint está acessível e que o plugin do
+ChatGPT foi registrado, mas não consegue detectar se o usuário selecionou o
+plugin dentro do cliente.
 
 Ao desativar a opção ou fechar o OpenSA, o servidor MCP é encerrado.

@@ -47,3 +47,10 @@ uv run open-structural-analysis
 ```
 
 O `git pull` baixa as alterações do GitHub e o `uv sync` atualiza o ambiente quando as dependências do projeto mudam.
+
+## Integração MCP com Claude
+
+O Claude Code usa o `.mcp.json` do projeto para conectar-se ao OpenSA. Para o
+Claude Desktop Chat, configure o adaptador local `mcp-remote`. Consulte
+[Claude Desktop e Claude Code](docs/claude-mcp.md) para os dois caminhos e os
+passos de conexão.
