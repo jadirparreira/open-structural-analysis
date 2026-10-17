@@ -13,11 +13,14 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPropertyAnimation,
+    QRunnable,
     QSettings,
     QSize,
     Qt,
+    QThreadPool,
     QTimer,
     Signal,
+    Slot,
 )
 from PySide6.QtGui import (
     QBrush,
@@ -46,6 +49,25 @@ from osa.persistence import ProjectRepository
 from osa.services.thumbnail_service import thumbnail_to_bytes
 
 from .palettes import PaletteTooltip
+
+
+class _ThumbnailSignals(QObject):
+    ready = Signal(object, object, object)
+
+
+class _ThumbnailTask(QRunnable):
+    def __init__(self, path: Path, signature: tuple[int, int]) -> None:
+        super().__init__()
+        self.path = path
+        self.signature = signature
+        self.signals = _ThumbnailSignals()
+
+    def run(self) -> None:
+        try:
+            thumbnail = ProjectRepository().load_thumbnail(self.path)
+        except (OSError, ValueError, TypeError):
+            thumbnail = None
+        self.signals.ready.emit(self.path, self.signature, thumbnail)
 
 
 class RecentProjectStore:
@@ -256,6 +278,7 @@ class ProjectCard(QFrame):
         preview.setFixedSize(92, 54)
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview.setPixmap(_preview_pixmap(thumbnail, preview.size()))
+        self.preview = preview
         layout.addWidget(preview)
 
         details = QVBoxLayout()
@@ -282,6 +305,9 @@ class ProjectCard(QFrame):
         remove_button.clicked.connect(lambda: self.remove_requested.emit(str(self.path)))
         self.remove_button = remove_button
         layout.addWidget(remove_button, 0, Qt.AlignmentFlag.AlignTop)
+
+    def set_thumbnail(self, thumbnail: str | None) -> None:
+        self.preview.setPixmap(_preview_pixmap(thumbnail, self.preview.size()))
 
     def enterEvent(self, event) -> None:
         self.name_label.start_scrolling()
@@ -311,6 +337,10 @@ class HomePage(QWidget):
         self.repository = ProjectRepository()
         self._cards: list[ProjectCard] = []
         self._remove_buttons: set[QToolButton] = set()
+        self._thumbnail_cache: dict[Path, tuple[tuple[int, int], str | None]] = {}
+        self._thumbnail_pending: dict[tuple[Path, tuple[int, int]], _ThumbnailTask] = {}
+        self._thumbnail_pool = QThreadPool(self)
+        self._thumbnail_pool.setMaxThreadCount(2)
         self.setObjectName("homePage")
         self._recent_tooltip = PaletteTooltip(self)
 
@@ -405,11 +435,20 @@ class HomePage(QWidget):
         for item in items:
             path = Path(str(item["path"]))
             thumbnail = None
-            if path.is_file():
-                try:
-                    thumbnail = self.repository.load_thumbnail(path)
-                except (OSError, ValueError, json.JSONDecodeError):
-                    thumbnail = None
+            try:
+                stat = path.stat()
+                signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                signature = None
+            if signature is not None:
+                cached = self._thumbnail_cache.get(path)
+                if cached is not None and cached[0] == signature:
+                    thumbnail = cached[1]
+                elif (path, signature) not in self._thumbnail_pending:
+                    task = _ThumbnailTask(path, signature)
+                    task.signals.ready.connect(self._thumbnail_ready, Qt.ConnectionType.QueuedConnection)
+                    self._thumbnail_pending[path, signature] = task
+                    self._thumbnail_pool.start(task)
             card = ProjectCard(path, thumbnail, item.get("last_opened", 0), self.recent_content)
             card.clicked.connect(self.recent_project_requested.emit)
             card.remove_requested.connect(self._remove_recent_project)
@@ -418,6 +457,20 @@ class HomePage(QWidget):
             self._cards.append(card)
             self.recent_layout.addWidget(card)
         self.recent_layout.addStretch(1)
+
+    @Slot(object, object, object)
+    def _thumbnail_ready(self, path: Path, signature: tuple[int, int], thumbnail: str | None) -> None:
+        self._thumbnail_pending.pop((path, signature), None)
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        if signature != (stat.st_mtime_ns, stat.st_size):
+            return
+        self._thumbnail_cache[path] = (signature, thumbnail)
+        for card in self._cards:
+            if card.path == path:
+                card.set_thumbnail(thumbnail)
 
     def _remove_recent_project(self, path: str) -> None:
         self.store.remove(path)

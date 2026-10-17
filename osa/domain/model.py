@@ -237,13 +237,20 @@ class StructuralModel:
             self.axes = normalized
             self._touch()
 
-    def _validate_member_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
+    def _validate_member_nodes(
+        self, start_node: str, end_node: str, ignore: str = "",
+        *, existing_pairs: set[frozenset[str]] | None = None,
+    ) -> None:
         if start_node.casefold() == end_node.casefold():
             raise ValueError("Uma barra deve conectar dois nós diferentes.")
         if start_node not in self.nodes or end_node not in self.nodes:
             raise ValueError("Selecione dois nós válidos.")
         pair = frozenset((start_node, end_node))
-        if any(bar.name != ignore and frozenset((bar.start_node, bar.end_node)) == pair for bar in self.bars.values()):
+        duplicate = pair in existing_pairs if existing_pairs is not None else any(
+            bar.name != ignore and frozenset((bar.start_node, bar.end_node)) == pair
+            for bar in self.bars.values()
+        )
+        if duplicate:
             raise DuplicateMemberError("Já existe um membro entre esses nós.")
 
     def add_bar(self, name: str, start_node: str, end_node: str) -> Bar:
@@ -727,17 +734,21 @@ class StructuralModel:
             self._touch()
         return tuple(new_nodes), tuple(new_bars)
 
-    def _validate_rigid_bar_nodes(self, start_node: str, end_node: str, ignore: str = "") -> None:
+    def _validate_rigid_bar_nodes(
+        self, start_node: str, end_node: str, ignore: str = "",
+        *, existing_pairs: set[frozenset[str]] | None = None,
+    ) -> None:
         if start_node.casefold() == end_node.casefold():
             raise ValueError("Uma barra rígida deve conectar dois nós diferentes.")
         if start_node not in self.nodes or end_node not in self.nodes:
             raise ValueError("Selecione dois nós válidos.")
         pair = frozenset((start_node, end_node))
-        if any(
+        duplicate = pair in existing_pairs if existing_pairs is not None else any(
             rigid.name != ignore
             and frozenset((rigid.start_node, rigid.end_node)) == pair
             for rigid in self.rigid_bars.values()
-        ):
+        )
+        if duplicate:
             raise ValueError("Já existe uma barra rígida entre esses nós.")
 
     def add_rigid_bar(self, start_node: str, end_node: str) -> RigidBar:

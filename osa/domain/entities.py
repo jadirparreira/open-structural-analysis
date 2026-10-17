@@ -5,6 +5,7 @@ Este módulo não depende de Qt, VTK, PyVista ou PyNite.
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -158,5 +159,5 @@ class LoadCombination:
 class AnalysisResult:
     model_revision: int
     load_reference: str
-    node_results: dict[str, Any] = field(default_factory=dict)
-    member_results: dict[str, Any] = field(default_factory=dict)
+    node_results: MutableMapping[str, Any] = field(default_factory=dict)
+    member_results: MutableMapping[str, Any] = field(default_factory=dict)

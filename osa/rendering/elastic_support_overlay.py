@@ -77,6 +77,10 @@ class ElasticSupportOverlay(QWidget):
 
     @staticmethod
     def _member_end_positions(member, nodes, radius: float, follow_section: bool = True) -> list[np.ndarray]:
+        has_start_spring = has_semirigid_member_end(member, "start")
+        has_end_spring = has_semirigid_member_end(member, "end")
+        if not has_start_spring and not has_end_spring:
+            return []
         start = nodes.get(member.start_node)
         end = nodes.get(member.end_node)
         if start is None or end is None:
@@ -89,9 +93,9 @@ class ElasticSupportOverlay(QWidget):
         offset = LocalAxesRenderer.end_indicator_offset(length, radius)
         section_offset = LocalAxesRenderer.section_offset(member, start, end) if follow_section else np.zeros(3)
         positions = []
-        if has_semirigid_member_end(member, "start"):
+        if has_start_spring:
             positions.append(np.asarray((start.x, start.y, start.z), dtype=float) + local_x * offset + section_offset)
-        if has_semirigid_member_end(member, "end"):
+        if has_end_spring:
             positions.append(np.asarray((end.x, end.y, end.z), dtype=float) - local_x * offset + section_offset)
         return positions
 

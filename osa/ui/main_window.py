@@ -1,10 +1,9 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
-import json
 import math
 import threading
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Slot
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
@@ -31,6 +30,7 @@ from .dialogs import (
 )
 from .displacement_panel import DisplacementPanel
 from .home import HomePage
+from .loading_indicator import LoadingIndicator
 from .mcp_dispatcher import McpQtDispatcher
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
@@ -41,6 +41,7 @@ from .palettes import (
     PaletteTooltip,
     TopIconPalette,
 )
+from .project_load_worker import ProjectLoadWorker
 from .property_panel import PropertyPanel
 from .section_panel import (
     ILaminadoSectionPanel,
@@ -85,6 +86,15 @@ class MainWindow(QMainWindow):
         self.analysis_service = AnalysisService(self.model, PyniteAdapter())
         self._analysis_thread: QThread | None = None
         self._analysis_worker: AnalysisWorker | None = None
+        self._project_load_thread: QThread | None = None
+        self._project_load_worker: ProjectLoadWorker | None = None
+        self._project_loading_path: Path | None = None
+        self._project_scene_steps = None
+        self._project_scene_revision: int | None = None
+        self._project_scene_timer = QTimer(self)
+        self._project_scene_timer.setInterval(1)
+        self._project_scene_timer.timeout.connect(self._advance_project_scene)
+        self._project_loading_action_states: list[tuple[QAction, bool]] = []
         self._analysis_revision: int | None = None
         self.command_session = CommandSession(self.model_service)
         self.section_geometry: dict[str, dict[str, float]] = {}
@@ -122,6 +132,7 @@ class MainWindow(QMainWindow):
         shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
+        self._create_project_loading_overlay()
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
         self.scene.element_clicked.connect(self.select_element)
@@ -508,6 +519,8 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if hasattr(self, "_project_loading_overlay"):
+            self._project_loading_overlay.setGeometry(self.rect())
         if hasattr(self, "palette"):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
@@ -2090,16 +2103,57 @@ class MainWindow(QMainWindow):
             self._open_model_path(path)
 
     def _open_model_path(self, path: str | Path) -> None:
+        if self._project_load_thread is not None or self._project_loading_path is not None:
+            return
         path = Path(path)
         if path.suffix.casefold() != ".osa":
             self.show_error("Selecione um arquivo de modelo com extensão .osa.")
             return
+        thread = QThread(self)
+        worker = ProjectLoadWorker(
+            path,
+            normalize_member_directions=self._member_direction_normalization_enabled,
+            solid_members_visible=self.scene._solid_members_visible,
+            reference_plane=self.scene._reference_plane_mode,
+            preferred_plane_level=self.scene._reference_plane_z,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._project_load_succeeded, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(self._project_load_failed, Qt.ConnectionType.QueuedConnection)
+        worker.progress.connect(self._project_load_stage, Qt.ConnectionType.QueuedConnection)
+        worker.loaded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._project_load_thread_finished)
+        self._project_load_thread = thread
+        self._project_load_worker = worker
+        self._project_loading_path = path
+        self.centralWidget().setEnabled(False)
+        self._project_loading_action_states = [(action, action.isEnabled()) for action in self.actions()]
+        for action, _enabled in self._project_loading_action_states:
+            action.setEnabled(False)
+        self._project_loading_description.setText("Preparando a abertura do modelo…")
+        self._project_loading_overlay.show()
+        self._project_loading_overlay.raise_()
+        QTimer.singleShot(0, thread.start)
+
+    @Slot(object, object)
+    def _project_load_succeeded(
+        self, loaded_model: StructuralModel, prepared_geometry,
+    ) -> None:
+        path = self._project_loading_path
+        if path is None:
+            self._project_loading_overlay.hide()
+            return
         try:
             self.axes_panel.discard()
-            self.project_service.load(path)
-            self.scene.set_scene_selection_mode(None)
+            with self._model_access_lock:
+                loaded_model.revision = self.model.revision + 1
+                loaded_model.view_revision = self.model.view_revision + 1
+                self.model.__dict__.update(loaded_model.__dict__)
+            self.scene.set_scene_selection_mode(None, render=False)
             self.top_icon_palette.reload_scene_views()
-            self.normalize_member_directions_if_enabled()
             self.section_profiles = {
                 name: member.profile for name, member in self.model.bars.items() if member.profile
             }
@@ -2125,13 +2179,90 @@ class MainWindow(QMainWindow):
             self._saved_revision = self.model.revision
             self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
-            self.home.refresh()
             self.refresh_action_palette()
             self.refresh_analysis_palette()
-            self.refresh_scene(fit_camera=True)
+            self._project_loading_description.setText("Exibindo a estrutura e os identificadores…")
+            self._project_scene_revision = self.model.revision
+            self._project_scene_steps = self.scene.render_model_steps(
+                self.model, preserve_camera=False, prepared_geometry=prepared_geometry,
+            )
+            self._project_scene_timer.start()
+        except Exception as error:  # noqa: BLE001 - always release the loading UI on setup errors
+            self._project_load_failed(str(error))
+
+    @Slot()
+    def _advance_project_scene(self) -> None:
+        if self._project_scene_steps is None:
+            return
+        try:
+            if self.model.revision != self._project_scene_revision:
+                raise RuntimeError("O modelo foi alterado durante sua abertura.")
+            next(self._project_scene_steps)
+        except StopIteration:
+            self.properties.update_delete_button_state()
             self.show_editor()
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-            self.show_error(f"Não foi possível abrir o modelo: {error}")
+            self._finish_project_loading()
+        except Exception as error:  # noqa: BLE001 - recover the UI after a failed scene install
+            self._project_load_failed(str(error))
+
+    def _finish_project_loading(self) -> None:
+        self._project_scene_timer.stop()
+        self._project_scene_steps = None
+        self._project_scene_revision = None
+        self._project_loading_overlay.hide()
+        self._project_loading_path = None
+        self.centralWidget().setEnabled(True)
+        for action, enabled in self._project_loading_action_states:
+            action.setEnabled(enabled)
+        self._project_loading_action_states.clear()
+
+    @Slot(str)
+    def _project_load_stage(self, message: str) -> None:
+        self._project_loading_description.setText(message)
+
+    @Slot(str)
+    def _project_load_failed(self, message: str) -> None:
+        self._finish_project_loading()
+        self.show_error(f"Não foi possível abrir o modelo: {message}")
+
+    @Slot()
+    def _project_load_thread_finished(self) -> None:
+        thread = self._project_load_thread
+        self._project_load_worker = None
+        self._project_load_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _create_project_loading_overlay(self) -> None:
+        overlay = QWidget(self)
+        overlay.setObjectName("projectLoadingOverlay")
+        overlay.setStyleSheet("#projectLoadingOverlay { background: rgba(20, 28, 38, 105); }")
+        layout = QVBoxLayout(overlay)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame(overlay)
+        card.setFixedWidth(340)
+        card.setStyleSheet(
+            "QFrame { background: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; }"
+        )
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(28, 24, 28, 24)
+        card_layout.setSpacing(14)
+        title = QLabel("Abrindo modelo…", card)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
+        description = QLabel("Aguarde enquanto os dados são carregados.", card)
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")
+        description.setWordWrap(True)
+        self._project_loading_description = description
+        progress = LoadingIndicator(card)
+        card_layout.addWidget(title)
+        card_layout.addWidget(description)
+        card_layout.addWidget(progress)
+        layout.addWidget(card)
+        overlay.setGeometry(self.rect())
+        overlay.hide()
+        self._project_loading_overlay = overlay
 
     def _has_unsaved_changes(self) -> bool:
         return (
@@ -2153,6 +2284,9 @@ class MainWindow(QMainWindow):
         return dialog.choice == UnsavedChangesDialog.DISCARD
 
     def closeEvent(self, event) -> None:
+        if self._project_loading_path is not None or self._project_load_thread is not None:
+            event.ignore()
+            return
         if self._confirm_pending_changes():
             self._mcp_dispatcher.suspend()
             self._mcp_server.stop()
@@ -2160,10 +2294,12 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
-    def refresh_scene(self, *, fit_camera: bool = False) -> None:
+    def refresh_scene(self, *, fit_camera: bool = False, prepared_geometry=None) -> None:
         with self._model_access_lock:
             if fit_camera:
-                self.scene.render_model(self.model, preserve_camera=False)
+                self.scene.render_model(
+                    self.model, preserve_camera=False, prepared_geometry=prepared_geometry,
+                )
             else:
                 self.scene.refresh_model_changes(self.model)
         self.properties.update_delete_button_state()

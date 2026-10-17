@@ -24,6 +24,7 @@ from .batched_renderer import (
     BatchedRigidBarRenderer,
     MemberBatch,
     NodeBatch,
+    PreparedSceneGeometry,
     _offset_cells,
 )
 from .elastic_support_overlay import ElasticSupportOverlay
@@ -184,7 +185,7 @@ class StructureScene(QWidget):
         self._reference_axes_renderer = ReferenceAxesRenderer()
         self._member_renderer = BatchedMemberRenderer()
         self._member_renderer.position_indicators_with_section = False
-        self._node_renderer = BatchedNodeRenderer()
+        self._node_renderer = BatchedNodeRenderer(glyphs=True)
         self._rigid_bar_renderer = BatchedRigidBarRenderer()
         self._action_renderer = ActionRenderer()
         self._result_renderer = ResultRenderer()
@@ -540,7 +541,25 @@ class StructureScene(QWidget):
         self.plotter.iren.add_observer("InteractionEvent", self._on_interaction)
         self.plotter.iren.add_observer("EndInteractionEvent", self._on_interaction_end)
 
-    def render_model(self, model: StructuralModel, *, preserve_camera: bool = True) -> None:
+    def render_model(
+        self,
+        model: StructuralModel,
+        *,
+        preserve_camera: bool = True,
+        prepared_geometry: PreparedSceneGeometry | None = None,
+    ) -> None:
+        for _ in self.render_model_steps(
+            model, preserve_camera=preserve_camera, prepared_geometry=prepared_geometry,
+        ):
+            pass
+
+    def render_model_steps(
+        self,
+        model: StructuralModel,
+        *,
+        preserve_camera: bool = True,
+        prepared_geometry: PreparedSceneGeometry | None = None,
+    ):
         """Rebuild the model actors without changing the active view by default.
 
         ``preserve_camera`` is disabled only for explicit framing operations,
@@ -558,23 +577,33 @@ class StructureScene(QWidget):
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
         hidden_members = self._scene_hidden_members()
-        visible_bars = {
-            name: member for name, member in model.bars.items() if name not in hidden_members
-        }
-        visible_node_names = self._scene_visible_node_names(hidden_members)
-        visible_nodes = {
-            name: node for name, node in model.nodes.items() if name in visible_node_names
-        }
+        if prepared_geometry is None:
+            visible_bars = {
+                name: member for name, member in model.bars.items() if name not in hidden_members
+            }
+            visible_node_names = self._scene_visible_node_names(hidden_members)
+            visible_nodes = {
+                name: node for name, node in model.nodes.items() if name in visible_node_names
+            }
+        else:
+            visible_bars = prepared_geometry.visible_bars
+            visible_nodes = prepared_geometry.visible_nodes
         self._reference_plane_z = self._reference_plane_for_model(model)
+        if prepared_geometry is not None:
+            self._grid_renderer = prepared_geometry.grid_renderer
         self._hovered = None
         self._validate_selection()
         self._clear_actor_references()
         self.plotter.clear()
         self.plotter.set_background("#ffffff")
-        self._grid_actor = self._grid_renderer.render(
-            self.plotter, model.nodes.values(), model.axes,
-            self._reference_plane_mode, self._reference_plane_z,
-        )
+        yield
+        if prepared_geometry is None:
+            self._grid_actor = self._grid_renderer.render(
+                self.plotter, model.nodes.values(), model.axes,
+                self._reference_plane_mode, self._reference_plane_z,
+            )
+        else:
+            self._grid_actor = self._grid_renderer.render_current(self.plotter)
         self._grid_actor.SetVisibility(self._grid_visible)
         self._reference_axes_actor = self._reference_axes_renderer.render(
             self.plotter, model.axes, self._grid_renderer.bounds,
@@ -582,6 +611,7 @@ class StructureScene(QWidget):
         )
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
+        yield
 
         if not model.nodes:
             self._marker_radius_locked = False
@@ -610,7 +640,7 @@ class StructureScene(QWidget):
         # A model revision is too broad a cache key: changing one support also
         # advances it, even though member geometry is unchanged. Keep each
         # rendered batch keyed by the domain data it actually consumes.
-        member_key = (
+        member_key = prepared_geometry.member_key if prepared_geometry is not None else (
             round(float(self._marker_radius_current), 12),
             self._solid_members_visible,
             tuple(
@@ -624,6 +654,9 @@ class StructureScene(QWidget):
                 for member in visible_bars.values()
             ),
         )
+        if prepared_geometry is not None:
+            self._member_geometry_cache = prepared_geometry.member_batch
+            self._member_geometry_cache_key = prepared_geometry.member_key
         if member_key != self._member_geometry_cache_key or self._member_geometry_cache is None:
             self._member_geometry_cache = self._member_renderer.build(
                 SimpleNamespace(bars=visible_bars, nodes=model.nodes), self._marker_radius_current,
@@ -631,10 +664,12 @@ class StructureScene(QWidget):
             self._member_geometry_cache_key = member_key
         self._member_batch = self._member_geometry_cache
 
-        node_key = (
-            round(float(node_radius), 12),
-            tuple(visible_nodes.values()),
+        node_key = prepared_geometry.node_key if prepared_geometry is not None else (
+            round(float(node_radius), 12), tuple(visible_nodes.values()),
         )
+        if prepared_geometry is not None:
+            self._node_geometry_cache = prepared_geometry.node_batch
+            self._node_geometry_cache_key = prepared_geometry.node_key
         if node_key != self._node_geometry_cache_key or self._node_geometry_cache is None:
             self._node_geometry_cache = self._node_renderer.build(
                 SimpleNamespace(nodes=visible_nodes), node_radius,
@@ -642,7 +677,7 @@ class StructureScene(QWidget):
             self._node_geometry_cache_key = node_key
         self._node_batch = self._node_geometry_cache
 
-        rigid_key = tuple(
+        rigid_key = prepared_geometry.rigid_key if prepared_geometry is not None else tuple(
             (
                 rigid,
                 (model.nodes[rigid.start_node].x, model.nodes[rigid.start_node].y,
@@ -652,18 +687,26 @@ class StructureScene(QWidget):
             )
             for rigid in model.rigid_bars.values()
         )
+        if prepared_geometry is not None:
+            self._rigid_geometry_cache = (prepared_geometry.rigid_names, prepared_geometry.rigid_mesh)
+            self._rigid_geometry_cache_key = prepared_geometry.rigid_key
         if rigid_key != self._rigid_geometry_cache_key or self._rigid_geometry_cache is None:
             self._rigid_geometry_cache = self._rigid_bar_renderer.build(model)
             self._rigid_geometry_cache_key = rigid_key
         self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_geometry_cache
         self._elastic_support_overlay.set_members(visible_bars.values(), visible_nodes.values(), node_radius)
         self._add_rigid_bar_batch()
+        yield
         self._add_member_batches()
+        yield
         self._add_scene_reveal_preview(hidden_members)
         self._add_node_batches()
+        yield
         self._add_actions()
+        yield
         self._add_results()
-        self._add_labels()
+        yield
+        yield from self._add_labels_steps()
         self._apply_representation_visibility()
         self._configure_solid_picker()
         self._sync_highlights()
@@ -1251,22 +1294,26 @@ class StructureScene(QWidget):
         self._clip_refresh_timer.start()
 
     def _add_labels(self) -> None:
+        for _ in self._add_labels_steps():
+            pass
+
+    def _add_labels_steps(self):
         self._add_reference_axis_labels()
         if self._member_batch is not None:
-            self._label_overlay.set_group(
+            yield from self._label_overlay.set_group_steps(
                 "bar", self._member_batch.label_positions, self._member_batch.names,
                 visible=self._labels_visibility["bar"],
             )
         if self._node_batch is not None:
-            self._label_overlay.set_group(
+            yield from self._label_overlay.set_group_steps(
                 "node", self._node_batch.label_positions, self._node_batch.names,
                 visible=self._labels_visibility["node"],
             )
-        self._label_overlay.set_group(
+        yield from self._label_overlay.set_group_steps(
             "action", self._action_label_positions, self._action_labels,
             visible=True, deduplicate=True,
         )
-        self._label_overlay.set_group(
+        yield from self._label_overlay.set_group_steps(
             "result", self._result_label_positions, self._result_labels,
             visible=self._result_layer_is_visible(), deduplicate=True,
         )
@@ -4048,7 +4095,7 @@ class StructureScene(QWidget):
         if self._reveal_preview_fallback_actor is not None:
             self._reveal_preview_fallback_actor.SetVisibility(solid)
 
-    def set_scene_selection_mode(self, mode: str | None) -> None:
+    def set_scene_selection_mode(self, mode: str | None, *, render: bool = True) -> None:
         if mode not in (None, "hide", "reveal"):
             raise ValueError("Modo de seleção da cena inválido.")
         self._scene_selection_mode = mode
@@ -4056,7 +4103,8 @@ class StructureScene(QWidget):
         self._hovered = None
         self._tab_hover_candidates = []
         self._tab_hover_position = None
-        self.render_model(self._model)
+        if render:
+            self.render_model(self._model)
 
     def set_solid_members_visible(self, visible: bool) -> None:
         visible = bool(visible)

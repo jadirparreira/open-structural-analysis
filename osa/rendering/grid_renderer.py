@@ -189,6 +189,10 @@ class GridRenderer:
         plane: str = "XY", offset: float = 0.0,
     ) -> None:
         self.update(nodes, axes, plane, offset)
+        return self.render_current(plotter)
+
+    def render_current(self, plotter):
+        """Install the already prepared grid mesh in a plotter."""
         return plotter.add_mesh(
             self.mesh, scalars="rgba", rgb=True, line_width=1, pickable=False,
             name="reference-grid", render=False,

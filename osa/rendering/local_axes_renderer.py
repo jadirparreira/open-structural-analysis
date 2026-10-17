@@ -1,3 +1,5 @@
+from math import cos, hypot, radians, sin
+
 import numpy as np
 import pyvista as pv
 
@@ -7,8 +9,10 @@ class LocalAxesRenderer:
     def section_offset(member, start, end) -> np.ndarray:
         """Translate visual member details in the positioning Y/Z frame."""
         offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+        if len(offsets) != 2 or not any(offsets):
+            return np.zeros(3, dtype=float)
         basis = LocalAxesRenderer.basis(start, end, rotation=0)
-        if basis is None or len(offsets) != 2:
+        if basis is None:
             return np.zeros(3, dtype=float)
         return basis[1] * float(offsets[0]) + basis[2] * float(offsets[1])
 
@@ -19,19 +23,23 @@ class LocalAxesRenderer:
 
     @staticmethod
     def basis(start, end, rotation: int = 0):
-        x_axis = np.array((end.x - start.x, end.y - start.y, end.z - start.z), dtype=float)
-        length = np.linalg.norm(x_axis)
+        x, y, z = end.x - start.x, end.y - start.y, end.z - start.z
+        length = hypot(x, y, z)
         if length <= 1e-12:
             return None
-        x_axis /= length
-        reference = np.array((0.0, 0.0, 1.0))
-        if abs(float(np.dot(x_axis, reference))) > 0.99:
-            reference = np.array((0.0, 1.0, 0.0))
-        y_axis = np.cross(reference, x_axis)
-        y_axis /= np.linalg.norm(y_axis)
-        z_axis = np.cross(x_axis, y_axis)
-        angle = np.deg2rad(rotation)
-        cosine, sine = np.cos(angle), np.sin(angle)
+        x, y, z = x / length, y / length, z / length
+        # Expand the two fixed-reference cross products directly. NumPy's
+        # general cross/axis dispatch dominated this per-member hot path.
+        yx, yy, yz = (z, 0.0, -x) if abs(z) > 0.99 else (-y, x, 0.0)
+        y_length = hypot(yx, yy, yz)
+        yx, yy, yz = yx / y_length, yy / y_length, yz / y_length
+        x_axis = np.array((x, y, z))
+        y_axis = np.array((yx, yy, yz))
+        z_axis = np.array((y * yz - z * yy, z * yx - x * yz, x * yy - y * yx))
+        if rotation == 0:
+            return x_axis, y_axis, z_axis
+        angle = radians(rotation)
+        cosine, sine = cos(angle), sin(angle)
         rotated_y = y_axis * cosine + z_axis * sine
         rotated_z = z_axis * cosine - y_axis * sine
         return x_axis, rotated_y, rotated_z

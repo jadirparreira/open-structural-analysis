@@ -2,8 +2,8 @@ from itertools import product
 from types import SimpleNamespace
 
 import numpy as np
-import pyvista as pv
 import pytest
+import pyvista as pv
 import vtk
 
 from osa.commands import CommandSession
@@ -15,8 +15,8 @@ from osa.rendering.batched_renderer import (
     BatchedNodeRenderer,
     has_semirigid_member_end,
 )
-from osa.rendering.scene_batched import StructureScene
 from osa.rendering.elastic_support_overlay import ElasticSupportOverlay
+from osa.rendering.scene_batched import StructureScene
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
 from osa.sections.geometry import section_shape
 from osa.services import ModelService
@@ -270,6 +270,39 @@ def test_node_batch_keeps_spherical_markers_and_pick_identity():
     assert np.all(batch.geometry.cell_data["rgb"] == 0)
     assert batch.supports.n_cells > 0
     assert batch.label_positions.shape == (408, 3)
+
+
+def test_instanced_node_batch_keeps_identity_colors_and_incremental_edits():
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 1, 0, 0)
+    batch = BatchedNodeRenderer(glyphs=True).build(model, 0.05)
+
+    assert batch.geometry.n_points == batch.geometry.n_cells == 2
+    assert batch.geometry.cell_data["element_index"].tolist() == [0, 1]
+    assert batch.geometry.cell_data["rgb"].shape == (2, 3)
+    old_nodes = dict(model.nodes)
+    model.update_node("N1", 0, 0, 2)
+    assert BatchedNodeRenderer.update_node_positions_in_place(batch, old_nodes, model, ("N1",), 0.05)
+    np.testing.assert_allclose(batch.geometry.points[0], (0, 0, 2))
+    model.add_node("N3", 3, 0, 0)
+    assert BatchedNodeRenderer.append_nodes(batch, model, ("N3",), 0.05)
+    assert batch.names == ("N1", "N2", "N3")
+    assert batch.geometry.n_points == batch.geometry.n_cells == 3
+    assert batch.geometry.cell_data["element_index"].tolist() == [0, 1, 2]
+    np.testing.assert_allclose(batch.geometry.points[2], (3, 0, 0))
+
+
+def test_repeated_supports_reuse_identical_geometry_at_each_node():
+    pattern = (True,) * 6
+    nodes = {name: Node(name, x, 0.0, 0.0, pattern) for name, x in (("N1", 0.0), ("N2", 10.0))}
+    batch = BatchedNodeRenderer(glyphs=True).build(SimpleNamespace(nodes=nodes), 0.05)
+    source = BatchedNodeRenderer._support_mesh(nodes["N1"], 0.05)
+
+    assert batch.supports.n_cells == 2 * source.n_cells
+    assert batch.supports.n_points == 2 * source.n_points
+    first, second = np.split(batch.supports.points, 2)
+    np.testing.assert_allclose(second - first, np.tile((10, 0, 0), (len(first), 1)))
 
 
 def test_fixed_support_is_a_thirty_centimeter_3x3x3_modular_cube():

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
+from itertools import product
+from math import floor, isfinite
 from typing import Any
 
 from osa.domain import (
@@ -18,9 +21,24 @@ from osa.domain import (
     RigidBar,
     StructuralModel,
 )
+from osa.domain.errors import DuplicateNodeCoordinatesError
 
 FORMAT_V1 = "open-structural-analysis/v1"
 FORMAT_V2 = "open-structural-analysis/v2"
+
+
+def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int, ...]:
+    cells = []
+    for value in coordinates:
+        scaled = value / width
+        if isfinite(scaled):
+            cells.append(floor(scaled))
+        else:
+            # Preserve support for finite coordinates near the float range.
+            numerator, denominator = value.as_integer_ratio()
+            width_numerator, width_denominator = width.as_integer_ratio()
+            cells.append((numerator * width_denominator) // (denominator * width_numerator))
+    return tuple(cells)
 
 
 class ProjectSerializer:
@@ -79,24 +97,58 @@ class ProjectSerializer:
         thumbnail = value.get("data")
         return thumbnail if isinstance(thumbnail, str) else None
 
-    def load_into(self, model: StructuralModel, data: dict[str, Any]) -> None:
+    def load_into(
+        self, model: StructuralModel, data: dict[str, Any],
+        *, yield_control: Callable[[], None] | None = None,
+        consume: bool = False,
+    ) -> None:
         file_format = data.get("format")
         if file_format not in (FORMAT_V1, FORMAT_V2):
             raise ValueError("Arquivo de modelo não reconhecido.")
+        if consume and "members" in data:
+            data.pop("bars", None)
 
         candidate = type(model)()
-        for item in data.get("nodes", []):
+        # Only nearby spatial cells can contain a duplicate. The previous
+        # all-pairs scan made opening a model quadratic in its node count.
+        tolerance = candidate.coordinate_tolerance
+        cell_width = tolerance * 2.0
+        neighbors = tuple(product((-1, 0, 1), repeat=3))
+        coordinate_cells: dict[tuple[int, ...], dict[str, tuple[float, ...]]] = {}
+        for index, item in enumerate(data.get("nodes", [])):
+            if yield_control is not None and index % 128 == 0:
+                yield_control()
+            coordinates = candidate._coordinates(item["x"], item["y"], item["z"])
             node = Node(
-                item["name"], float(item["x"]), float(item["y"]), float(item["z"]),
+                item["name"], *coordinates,
                 tuple(bool(value) for value in item.get("supports", (False,) * 6)),
                 tuple(float(value) for value in item.get("support_stiffness", (0.0,) * 6)),
             )
-            candidate._ensure_unique_coordinates((node.x, node.y, node.z))
+            cell = _coordinate_cell(coordinates, cell_width)
+            for delta in neighbors:
+                nearby = tuple(value + offset for value, offset in zip(cell, delta))
+                if any(
+                    all(abs(a - b) <= tolerance for a, b in zip(coordinates, other))
+                    for other in coordinate_cells.get(nearby, {}).values()
+                ):
+                    raise DuplicateNodeCoordinatesError("Já existe um nó nessa coordenada.")
+            previous = candidate.nodes.get(node.name)
+            if previous is not None:
+                old_cell = _coordinate_cell((previous.x, previous.y, previous.z), cell_width)
+                coordinate_cells[old_cell].pop(node.name)
+            coordinate_cells.setdefault(cell, {})[node.name] = coordinates
             candidate.nodes[node.name] = node
+            if consume:
+                data["nodes"][index] = None
 
         members = data.get("members", data.get("bars", []))
-        for item in members:
-            candidate._validate_member_nodes(item["start_node"], item["end_node"])
+        member_pairs: set[frozenset[str]] = set()
+        for index, item in enumerate(members):
+            if yield_control is not None and index % 128 == 0:
+                yield_control()
+            candidate._validate_member_nodes(
+                item["start_node"], item["end_node"], existing_pairs=member_pairs,
+            )
             geometry = item.get("section_geometry", ())
             if isinstance(geometry, dict):
                 geometry = tuple(geometry.items())
@@ -128,13 +180,23 @@ class ProjectSerializer:
                 section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
             )
+            previous = candidate.bars.get(member.name)
+            if previous is not None:
+                member_pairs.remove(frozenset((previous.start_node, previous.end_node)))
+            member_pairs.add(frozenset((member.start_node, member.end_node)))
             candidate.bars[member.name] = member
+            if consume:
+                members[index] = None
 
+        rigid_pairs: set[frozenset[str]] = set()
         for item in data.get("rigid_bars", ()):
-            candidate._validate_rigid_bar_nodes(item["start_node"], item["end_node"])
+            candidate._validate_rigid_bar_nodes(
+                item["start_node"], item["end_node"], existing_pairs=rigid_pairs,
+            )
             rigid = RigidBar(item["name"], item["start_node"], item["end_node"])
             if rigid.name != f"{rigid.start_node}-{rigid.end_node}":
                 raise ValueError("A identidade da barra rígida deve indicar seus nós.")
+            rigid_pairs.add(frozenset((rigid.start_node, rigid.end_node)))
             candidate.rigid_bars[rigid.name] = rigid
 
         candidate.set_reference_axes({
@@ -226,7 +288,8 @@ class ProjectSerializer:
             candidate.analysis_results = [
                 AnalysisResult(
                     int(item["model_revision"]), item["load_reference"],
-                    dict(item.get("node_results", {})), dict(item.get("member_results", {})),
+                    item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
+                    item.get("member_results", {}) if consume else dict(item.get("member_results", {})),
                 )
                 for item in data.get("results", ())
             ]

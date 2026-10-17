@@ -96,6 +96,19 @@ class LabelOverlay(QWidget):
         visible: bool,
         deduplicate: bool = False,
     ) -> None:
+        for _ in self.set_group_steps(kind, positions, labels, visible=visible, deduplicate=deduplicate):
+            pass
+
+    def set_group_steps(
+        self,
+        kind: str,
+        positions: np.ndarray,
+        labels: tuple[str, ...],
+        *,
+        visible: bool,
+        deduplicate: bool = False,
+    ):
+        """Prepare label glyphs in bounded GUI tasks while opening a project."""
         labels = tuple(labels)
         previous = self._groups.get(kind)
         if previous is not None and previous.text == labels:
@@ -106,12 +119,16 @@ class LabelOverlay(QWidget):
             previous.deduplicate = bool(deduplicate)
             return
         static_labels = []
-        for label in labels:
+        sizes = []
+        for index, label in enumerate(labels):
             text = QStaticText(label)
             text.prepare(QTransform(), self._font)
             static_labels.append(text)
-        sizes = tuple(text.size() for text in static_labels)
-        atlases, atlas_rects, atlas_ratio = self._build_atlas(tuple(static_labels), sizes)
+            sizes.append(text.size())
+            if index % 128 == 127:
+                yield
+        sizes = tuple(sizes)
+        atlases, atlas_rects, atlas_ratio = yield from self._build_atlas_steps(tuple(static_labels), sizes)
         count = len(labels)
         self._groups[kind] = _LabelGroup(
             positions=np.asarray(positions, dtype=float),
@@ -131,6 +148,14 @@ class LabelOverlay(QWidget):
     def _build_atlas(
         self, labels: tuple[QStaticText, ...], sizes: tuple[object, ...],
     ) -> tuple[tuple[QPixmap, ...], tuple[tuple[int, QRectF], ...], float]:
+        steps = self._build_atlas_steps(labels, sizes)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as completed:
+                return completed.value
+
+    def _build_atlas_steps(self, labels: tuple[QStaticText, ...], sizes: tuple[object, ...]):
         ratio = max(1.0, float(self.devicePixelRatioF()))
         if not labels:
             return (), (), ratio
@@ -138,7 +163,7 @@ class LabelOverlay(QWidget):
         placements: list[tuple[int, QRectF]] = []
         pages: list[list[tuple[QStaticText, int, int]]] = [[]]
         x = y = row_height = 0
-        for text, size in zip(labels, sizes):
+        for index, (text, size) in enumerate(zip(labels, sizes)):
             cell_width = ceil(size.width()) + 2
             cell_height = ceil(size.height()) + 2
             if x + cell_width > width:
@@ -152,6 +177,8 @@ class LabelOverlay(QWidget):
             placements.append((len(pages) - 1, QRectF(x, y, cell_width, cell_height)))
             x += cell_width
             row_height = max(row_height, cell_height)
+            if index % 256 == 255:
+                yield
 
         atlases = []
         for page, entries in enumerate(pages):
@@ -170,6 +197,7 @@ class LabelOverlay(QWidget):
                 painter.drawStaticText(QPointF(left + 1, top + 1), text)
             painter.end()
             atlases.append(atlas)
+            yield
         physical_rects = tuple(
             (page, QRectF(
                 rect.x() * ratio, rect.y() * ratio,

@@ -7,7 +7,7 @@ small, GPU-friendly batches while a cell-data index preserves picking.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from math import cos, pi, sin
 from types import SimpleNamespace
@@ -15,9 +15,11 @@ from types import SimpleNamespace
 import numpy as np
 import pyvista as pv
 from vtk.util.numpy_support import vtk_to_numpy
+from vtkmodules.vtkFiltersGeometry import vtkDataSetSurfaceFilter
 
 from osa.sections import section_shape
 
+from .grid_renderer import GridRenderer
 from .local_axes_renderer import LocalAxesRenderer
 from .solid_member_renderer import SolidMemberRenderer
 from .support_renderer import build_support_mesh
@@ -187,6 +189,106 @@ class NodeBatch:
     geometry: pv.PolyData
     supports: pv.PolyData
     label_positions: np.ndarray
+    glyphs: bool = False
+
+
+@dataclass(slots=True)
+class PreparedSceneGeometry:
+    """CPU-built scene meshes ready for installation on the GUI thread."""
+
+    member_batch: MemberBatch
+    node_batch: NodeBatch
+    rigid_names: tuple[str, ...]
+    rigid_mesh: pv.PolyData
+    member_key: tuple[object, ...]
+    node_key: tuple[object, ...]
+    rigid_key: tuple[object, ...]
+    grid_renderer: GridRenderer
+    visible_bars: dict[str, object]
+    visible_nodes: dict[str, object]
+
+
+def prepare_scene_geometry(
+    model,
+    *,
+    marker_radius: float = 0.05,
+    solid_members_visible: bool = False,
+    position_indicators_with_section: bool = False,
+    reference_plane: str = "XY",
+    preferred_plane_level: float = 0.0,
+    progress: Callable[[str], None] | None = None,
+    yield_control: Callable[[], None] | None = None,
+) -> PreparedSceneGeometry:
+    """Build large CPU-side meshes without accessing the Qt or VTK renderer."""
+    hidden_members = set(model.scene_views.get(model.active_scene_view, ())).intersection(model.bars)
+    visible_bars = {
+        name: member for name, member in model.bars.items() if name not in hidden_members
+    }
+    connected: set[str] = set()
+    visible_connected: set[str] = set()
+    for member in model.bars.values():
+        endpoints = (member.start_node, member.end_node)
+        connected.update(endpoints)
+        if member.name not in hidden_members:
+            visible_connected.update(endpoints)
+    for rigid in model.rigid_bars.values():
+        endpoints = (rigid.start_node, rigid.end_node)
+        connected.update(endpoints)
+        visible_connected.update(endpoints)
+    visible_node_names = set(model.nodes).difference(connected).union(visible_connected)
+    visible_nodes = {
+        name: node for name, node in model.nodes.items() if name in visible_node_names
+    }
+
+    member_renderer = BatchedMemberRenderer()
+    member_renderer.position_indicators_with_section = position_indicators_with_section
+    if progress is not None:
+        progress("Preparando a geometria dos membros…")
+    member_batch = member_renderer.build(
+        SimpleNamespace(bars=visible_bars, nodes=model.nodes), marker_radius,
+        yield_control=yield_control,
+    )
+    if progress is not None:
+        progress("Preparando os nós e apoios…")
+    node_batch = BatchedNodeRenderer(glyphs=True).build(SimpleNamespace(nodes=visible_nodes), marker_radius)
+    rigid_names, rigid_mesh = BatchedRigidBarRenderer().build(model)
+
+    member_key = (
+        round(float(marker_radius), 12),
+        bool(solid_members_visible),
+        tuple(
+            (
+                member,
+                (model.nodes[member.start_node].x, model.nodes[member.start_node].y,
+                 model.nodes[member.start_node].z),
+                (model.nodes[member.end_node].x, model.nodes[member.end_node].y,
+                 model.nodes[member.end_node].z),
+            )
+            for member in visible_bars.values()
+        ),
+    )
+    node_key = (round(float(marker_radius), 12), tuple(visible_nodes.values()))
+    rigid_key = tuple(
+        (
+            rigid,
+            (model.nodes[rigid.start_node].x, model.nodes[rigid.start_node].y,
+             model.nodes[rigid.start_node].z),
+            (model.nodes[rigid.end_node].x, model.nodes[rigid.end_node].y,
+             model.nodes[rigid.end_node].z),
+        )
+        for rigid in model.rigid_bars.values()
+    )
+    axis_name = {"XY": "Z", "XZ": "X", "YZ": "Y"}.get(reference_plane, "Z")
+    levels = tuple(sorted({0.0, *(float(axis.value) for axis in model.axes.get(axis_name, ())) }))
+    plane_level = min(levels, key=lambda level: abs(level - preferred_plane_level))
+    grid_renderer = GridRenderer()
+    if progress is not None:
+        progress("Preparando a grade da cena…")
+    grid_renderer.update(model.nodes.values(), model.axes, reference_plane, plane_level)
+    return PreparedSceneGeometry(
+        member_batch, node_batch, rigid_names, rigid_mesh,
+        member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,
+    )
 
 
 class BatchedRigidBarRenderer:
@@ -225,7 +327,9 @@ class BatchedMemberRenderer:
         self.solids = solid_renderer or SolidMemberRenderer()
         self.position_indicators_with_section = True
 
-    def build(self, model, marker_radius: float) -> MemberBatch:
+    def build(
+        self, model, marker_radius: float, *, yield_control: Callable[[], None] | None = None,
+    ) -> MemberBatch:
         names = tuple(model.bars)
         line_segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
         fallback_segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
@@ -250,8 +354,12 @@ class BatchedMemberRenderer:
         edge_point_ranges: dict[str, tuple[int, int]] = {}
         edge_cell_ranges: dict[str, tuple[int, int]] = {}
         label_positions = np.empty((len(names), 3), dtype=float)
+        colors: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        section_sources: dict[tuple[object, ...], tuple | None] = {}
 
         for element_index, member_name in enumerate(names):
+            if yield_control is not None and element_index % 64 == 0:
+                yield_control()
             member = model.bars[member_name]
             start_node = model.nodes[member.start_node]
             end_node = model.nodes[member.end_node]
@@ -260,7 +368,9 @@ class BatchedMemberRenderer:
             section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
             indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
             delta = end - start
-            color = _rgb(member.color)
+            if member.color not in colors:
+                colors[member.color] = (_rgb(member.color), _rgb(member.color, 0.65))
+            color, edge_color = colors[member.color]
             line_segments.append((start, end, element_index, color))
             label_positions[element_index] = (
                 (start + end) / 2.0 + indicator_offset + (0.0, 0.0, marker_radius * 2.2)
@@ -300,28 +410,38 @@ class BatchedMemberRenderer:
             solid_origin = solid_start + section_offset
             solid_delta = solid_end - solid_start
 
-            try:
-                shape = section_shape(
-                    member.section, member.geometry_dict(), arc_steps=12,
-                    mirror_z=member.section_mirrored,
-                )
-                if shape is None:
-                    raise ValueError("Seção incompleta.")
-                face_source = self.solids._mesh_for(shape)
-                edge_source = self.solids._edge_mesh_for(shape)
-            except (KeyError, TypeError, ValueError):
+            section_key = (member.section, member.section_geometry, member.section_mirrored)
+            if section_key not in section_sources:
+                try:
+                    shape = section_shape(
+                        member.section, member.geometry_dict(), arc_steps=12,
+                        mirror_z=member.section_mirrored,
+                    )
+                    if shape is None:
+                        raise ValueError("Seção incompleta.")
+                    face_source = self.solids._mesh_for(shape)
+                    edge_source = self.solids._edge_mesh_for(shape)
+                    section_sources[section_key] = (
+                        np.asarray(face_source.points), np.asarray(face_source.faces), face_source.n_cells,
+                        np.asarray(edge_source.points), np.asarray(edge_source.lines), edge_source.n_cells,
+                    )
+                except (KeyError, TypeError, ValueError):
+                    section_sources[section_key] = None
+            source = section_sources[section_key]
+            if source is None:
                 fallback_segments.append((start, end, element_index, color))
                 continue
+            face_vertices, face_connectivity, face_count, edge_vertices, edge_connectivity, edge_count = source
 
             face_offset = face_point_count
             face_cell_offset = len(face_indices)
             transformed_face_points = _transformed_points(
-                face_source.points, solid_origin, solid_delta, local_y, local_z,
+                face_vertices, solid_origin, solid_delta, local_y, local_z,
             )
             face_points.append(transformed_face_points)
-            face_cells.append(_offset_cells(face_source.faces, face_offset))
-            face_indices.extend([element_index] * face_source.n_cells)
-            face_colors.extend([color] * face_source.n_cells)
+            face_cells.append(_offset_cells(face_connectivity, face_offset))
+            face_indices.extend([element_index] * face_count)
+            face_colors.extend([color] * face_count)
             face_point_count += len(transformed_face_points)
             face_point_ranges[member_name] = (face_offset, face_point_count)
             face_cell_ranges[member_name] = (face_cell_offset, len(face_indices))
@@ -329,19 +449,19 @@ class BatchedMemberRenderer:
             edge_offset = edge_point_count
             edge_cell_offset = len(edge_indices)
             transformed_edge_points = _transformed_points(
-                edge_source.points, solid_origin, solid_delta, local_y, local_z,
+                edge_vertices, solid_origin, solid_delta, local_y, local_z,
             )
             edge_points.append(transformed_edge_points)
-            edge_cells.append(_offset_cells(edge_source.lines, edge_offset))
-            edge_indices.extend([element_index] * edge_source.n_cells)
-            edge_colors.extend([_rgb(member.color, 0.65)] * edge_source.n_cells)
+            edge_cells.append(_offset_cells(edge_connectivity, edge_offset))
+            edge_indices.extend([element_index] * edge_count)
+            edge_colors.extend([edge_color] * edge_count)
             edge_point_count += len(transformed_edge_points)
             edge_point_ranges[member_name] = (edge_offset, edge_point_count)
             edge_cell_ranges[member_name] = (edge_cell_offset, len(edge_indices))
-            outline_sources[member_name] = (transformed_edge_points, edge_source.lines)
+            outline_sources[member_name] = (transformed_edge_points, edge_connectivity)
             if member.section in self._silhouette_sections:
                 silhouette_sources[member_name] = pv.PolyData(
-                    transformed_face_points, faces=face_source.faces,
+                    transformed_face_points, faces=face_connectivity,
                 )
                 silhouette_member_colors[member_name] = tuple(int(channel) for channel in color)
 
@@ -986,8 +1106,9 @@ class BatchedMemberRenderer:
 class BatchedNodeRenderer:
     """Merge node markers and supports while retaining per-cell node identity."""
 
-    def __init__(self) -> None:
-        self._support_cache: dict[str, tuple[object, pv.DataSet | None]] = {}
+    def __init__(self, *, glyphs: bool = False) -> None:
+        self.glyphs = glyphs
+        self._support_templates: dict[tuple[bool, ...], pv.PolyData | None] = {}
 
     @staticmethod
     def update_node_positions_in_place(
@@ -1026,15 +1147,18 @@ class BatchedNodeRenderer:
         if not names or tuple(model.nodes) != batch.names + names:
             return False
         tail_model = SimpleNamespace(nodes={name: model.nodes[name] for name in names})
-        tail = BatchedNodeRenderer().build(tail_model, radius)
+        tail = BatchedNodeRenderer(glyphs=batch.glyphs).build(tail_model, radius)
         old = batch.geometry
         new = tail.geometry
         points = np.concatenate((np.asarray(old.points), np.asarray(new.points)))
-        faces = np.concatenate((
-            np.asarray(old.faces, dtype=np.int64),
-            _offset_cells(new.faces, old.n_points),
-        ))
-        geometry = pv.PolyData(points, faces=faces)
+        if batch.glyphs:
+            geometry = pv.PolyData(points)
+        else:
+            faces = np.concatenate((
+                np.asarray(old.faces, dtype=np.int64),
+                _offset_cells(new.faces, old.n_points),
+            ))
+            geometry = pv.PolyData(points, faces=faces)
         geometry.cell_data["element_index"] = np.concatenate((
             np.asarray(old.cell_data["element_index"]),
             np.asarray(new.cell_data["element_index"]) + len(batch.names),
@@ -1054,6 +1178,18 @@ class BatchedNodeRenderer:
 
     def build(self, model, radius: float) -> NodeBatch:
         names = tuple(model.nodes)
+        if self.glyphs:
+            positions = np.asarray([
+                (node.x, node.y, node.z) for node in model.nodes.values()
+            ], dtype=float).reshape((-1, 3))
+            geometry = pv.PolyData(positions)
+            if names:
+                geometry.cell_data["element_index"] = np.arange(len(names), dtype=np.int32)
+                geometry.cell_data["rgb"] = np.zeros((len(names), 3), dtype=np.uint8)
+            return NodeBatch(
+                names, geometry, self.build_supports(model, radius),
+                positions + (0.0, 0.0, radius * 2.2), glyphs=True,
+            )
         sphere = pv.Sphere(
             radius=radius,
             center=(0.0, 0.0, 0.0),
@@ -1098,21 +1234,44 @@ class BatchedNodeRenderer:
         )
 
     def build_supports(self, model, radius: float) -> pv.PolyData:
-        """Build just the support symbols for edits that leave nodes in place."""
+        """Reuse each support pattern and pack translated copies as arrays."""
         del radius
-        support_parts = []
-        cache = {}
+        groups: dict[tuple[bool, ...], list[tuple[float, float, float]]] = {}
         for node in model.nodes.values():
-            entry = self._support_cache.get(node.name)
-            if entry is not None and entry[0] == node:
-                support = entry[1]
-            else:
-                support = self._support_mesh(node, 0.0)
-            cache[node.name] = node, support
-            if support is not None:
-                support_parts.append(support)
-        self._support_cache = cache
-        return _merge(support_parts)
+            if any(node.supports):
+                groups.setdefault(tuple(node.supports), []).append((node.x, node.y, node.z))
+        points = []
+        faces = []
+        point_offset = 0
+        for pattern, positions in groups.items():
+            if pattern not in self._support_templates:
+                origin = SimpleNamespace(x=0.0, y=0.0, z=0.0, supports=pattern)
+                template = self._support_mesh(origin, 0.0)
+                if template is not None and not isinstance(template, pv.PolyData):
+                    surface = vtkDataSetSurfaceFilter()
+                    surface.SetInputData(template)
+                    surface.Update()
+                    template = pv.wrap(surface.GetOutput())
+                self._support_templates[pattern] = template
+            template = self._support_templates[pattern]
+            if template is None:
+                continue
+            vertices = np.asarray(template.points, dtype=float)
+            source_faces = np.asarray(template.faces, dtype=np.int64)
+            id_mask = np.ones(len(source_faces), dtype=bool)
+            cursor = 0
+            while cursor < len(source_faces):
+                id_mask[cursor] = False
+                cursor += int(source_faces[cursor]) + 1
+            offsets = point_offset + np.arange(len(positions), dtype=np.int64) * len(vertices)
+            connectivity = np.tile(source_faces, (len(positions), 1))
+            connectivity[:, id_mask] += offsets[:, None]
+            points.append((vertices[None, :, :] + np.asarray(positions)[:, None, :]).reshape(-1, 3))
+            faces.append(connectivity.ravel())
+            point_offset += len(positions) * len(vertices)
+        if not points:
+            return _empty_mesh()
+        return pv.PolyData(np.concatenate(points), faces=np.concatenate(faces))
 
     @staticmethod
     def _support_mesh(node, radius: float) -> pv.PolyData | None:
