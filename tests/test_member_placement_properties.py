@@ -241,6 +241,24 @@ def test_direction_normalization_keeps_chosen_member_properties(window):
     assert member.releases == editor.template.releases
 
 
+def test_placement_reuses_existing_nodes_after_rounding_noisy_clicks(window):
+    window.model.add_node("N1", 3.6, 5.1, 3.06)
+    window.start_member_placement()
+    launch(window, (3.600003814697269, 5.10000001, 3.06), (3.600003814697269, 5.1, 6.1200004))
+    assert tuple(window.model.nodes) == ("N1", "N2")
+    assert window.model.bars["B1"].start_node == "N1"
+    node = window.model.nodes["N2"]
+    assert (node.x, node.y, node.z) == (3.6, 5.1, 6.12)
+
+
+def test_placement_rejects_points_that_round_to_the_same_node(window):
+    window.start_member_placement()
+    launch(window, (1, 2, 3), (1.0004, 2.0004, 3.0004))
+    assert not window.model.nodes
+    assert not window.model.bars
+    assert window._member_placement_start is not None
+
+
 @pytest.mark.parametrize("toggle", ["toggle_axes_panel", "toggle_reference_panel"])
 def test_configuration_panels_do_not_overlap_the_placement_editor(window, toggle):
     window.start_member_placement()

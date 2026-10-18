@@ -628,7 +628,7 @@ def test_galpao_does_not_leave_a_pending_command():
         assert color in available_colors
 
     coordinates = {(node.x, node.y, node.z) for node in model.nodes.values()}
-    assert coordinates == {
+    expected_coordinates = {
         *((x, y, 0.0) for x in (0.0, 12.0) for y in (0.0, 5.0, 10.0, 15.0, 20.0)),
         *((x, y, 3.0) for x in (0.0, 12.0) for y in (0.0, 5.0, 10.0, 15.0, 20.0)),
         *((-0.4, y, 3.04) for y in (0.0, 5.0, 10.0, 15.0, 20.0)),
@@ -649,6 +649,9 @@ def test_galpao_does_not_leave_a_pending_command():
           for x in range(0, 13, 2)
           for start_y in (0.0, 5.0, 10.0, 15.0)
           for fraction in (0.12, 0.88)),
+    }
+    assert coordinates == {
+        tuple(round(value, 3) for value in point) for point in expected_coordinates
     }
     assert all(
         node.supports[:3] == (True, True, True)
@@ -811,10 +814,10 @@ def test_galpao_does_not_leave_a_pending_command():
     assert {
         round(abs(model.nodes[member.start_node].y - model.nodes[member.end_node].y), 9)
         for member in roof_purlins
-    } == {0.6, round(5.0 / 3.0 - 0.6, 9), round(5.0 / 3.0, 9)}
+    } == {0.6, 1.067, 1.666}
     assert all(
         abs(abs(model.nodes[member.start_node].y - model.nodes[member.end_node].y)
-            - 5.0 / 3.0) < 1e-9
+            - 5.0 / 3.0) < 0.001
         for member in overhang_purlins
     )
     assert {model.nodes[member.start_node].x for member in roof_purlins} == set(range(0, 13, 2))
@@ -829,7 +832,7 @@ def test_galpao_does_not_leave_a_pending_command():
         and model.nodes[member.start_node].x == model.nodes[member.end_node].x
         and model.nodes[member.start_node].x in {-0.4, -2.0}
         and abs(abs(model.nodes[member.start_node].y - model.nodes[member.end_node].y)
-                - 5.0 / 3.0) < 1e-9
+                - 5.0 / 3.0) < 0.001
         for member in overhang_purlins
     )
     upper_chord_nodes = {
@@ -856,7 +859,7 @@ def test_galpao_does_not_leave_a_pending_command():
               if abs(abs(model.nodes[member.start_node].y - model.nodes[member.end_node].y) - 5.0) < 1e-9]
     ridge_braces = [member for member in round_bars
                     if abs(abs(model.nodes[member.start_node].y - model.nodes[member.end_node].y)
-                           - 5.0 / 3.0) < 1e-9]
+                           - 5.0 / 3.0) < 0.001]
     purlin_ties = [member for member in round_bars
                    if model.nodes[member.start_node].y == model.nodes[member.end_node].y]
     assert len(braces) == 24
@@ -894,7 +897,7 @@ def test_galpao_does_not_leave_a_pending_command():
         frozenset(((start_x, y), (end_x, y)))
         for start_x, end_x in ((4.0, 2.0), (2.0, 0.0), (8.0, 10.0), (10.0, 12.0))
         for y in {
-            start_y + 5.0 * part / 3.0
+            round(start_y + 5.0 * part / 3.0, 3)
             for start_y in (0.0, 5.0, 10.0, 15.0)
             for part in (1, 2)
         }
@@ -918,7 +921,7 @@ def test_galpao_does_not_leave_a_pending_command():
         for x in (4.0, 8.0):
             for adjacent_y in adjacent_y_positions:
                 expected_ridge_brace_layout.add(
-                    frozenset(((6.0, frame_y), (x, adjacent_y)))
+                    frozenset(((6.0, frame_y), (x, round(adjacent_y, 3))))
                 )
     assert ridge_brace_layout == expected_ridge_brace_layout
 
@@ -958,7 +961,7 @@ def test_galpao_does_not_leave_a_pending_command():
         for member in rigid_roof_braces
     )
     assert {model.nodes[member.start_node].y for member in rigid_roof_braces} == {
-        start_y + 5.0 * part / 3.0
+        round(start_y + 5.0 * part / 3.0, 3)
         for start_y in (0.0, 5.0, 10.0, 15.0)
         for part in (1, 2)
     }
@@ -987,7 +990,7 @@ def test_galpao_does_not_leave_a_pending_command():
         for member in marquee_l_braces
     } == {frozenset((-0.4, -2.0))}
     assert {model.nodes[member.start_node].y for member in marquee_l_braces} == {
-        start_y + 5.0 * part / 3.0
+        round(start_y + 5.0 * part / 3.0, 3)
         for start_y in (0.0, 5.0, 10.0, 15.0)
         for part in (1, 2)
     }
@@ -1051,12 +1054,15 @@ def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
     assert commands.pending is None
     assert len(model.nodes) == 34
     assert len(model.bars) == 54
-    assert {(node.x, node.y, node.z) for node in model.nodes.values()} == {
+    expected_coordinates = {
         *((x, y, z) for x in (0.0, 7.0, 14.0, 21.0) for y in (0.0, 4.0) for z in (0.0, 4.0)),
         *((x, y, 4.0) for x in (7.0 / 3, 14.0 / 3, 28.0 / 3, 35.0 / 3, 49.0 / 3, 56.0 / 3)
           for y in (0.0, 4.0)),
         *((x, 2.0, 4.0) for x in (0.0, 21.0)),
         *((x, y, 3.0) for x in (7.0, 14.0) for y in (1.0, 3.0)),
+    }
+    assert {(node.x, node.y, node.z) for node in model.nodes.values()} == {
+        tuple(round(value, 3) for value in point) for point in expected_coordinates
     }
     assert all(
         node.supports[:3] == (True, True, True)

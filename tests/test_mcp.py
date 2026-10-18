@@ -15,6 +15,15 @@ def make_application(on_model_changed=None):
     return model, application
 
 
+def test_mcp_node_creation_and_editing_use_millimetres():
+    model, application = make_application()
+    result = application.create_node(3.600003814697269, 5.10000001, 3.06)
+    assert tuple(result["node"][key] for key in ("x", "y", "z")) == (3.6, 5.1, 3.06)
+    result = application.update_node_properties("N1", x=-1.2346, y=2.3456, z=-0.0001)
+    assert tuple(result["node"][key] for key in ("x", "y", "z")) == (-1.235, 2.346, 0.0)
+    assert (model.nodes["N1"].x, model.nodes["N1"].y, model.nodes["N1"].z) == (-1.235, 2.346, 0.0)
+
+
 def test_mcp_application_switches_visual_sessions():
     _model, application = make_application()
     sessions = []

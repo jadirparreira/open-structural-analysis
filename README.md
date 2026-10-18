@@ -10,6 +10,11 @@ O projeto utiliza uma arquitetura modular, separando o domínio estrutural, a in
 
 O Open Structural Analysis encontra-se em desenvolvimento ativo. A base de modelagem e visualização está sendo construída progressivamente, enquanto os recursos relacionados ao processamento estrutural, carregamentos, combinações e apresentação de resultados continuam em evolução.
 
+As coordenadas dos nós são expressas em metros e arredondadas ao milímetro
+mais próximo (`0,001 m`) na criação, edição, cópia e divisão de membros.
+Projetos existentes mantêm as coordenadas originais ao serem abertos, evitando
+unir nós ou reduzir membros a comprimento zero sem uma edição explícita.
+
 ## Instalação e execução
 
 Requisitos: [Git](https://git-scm.com/downloads), [Python entre 3.10 e 3.13](https://www.python.org/downloads/) e [uv](https://docs.astral.sh/uv/).

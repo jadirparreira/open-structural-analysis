@@ -23,8 +23,8 @@ from .dialogs import (
     ActionGroupDialog,
     CombinationsDialog,
     ErrorDialog,
-    ProgramSettingsDialog,
     MemberSnapSplitDialog,
+    ProgramSettingsDialog,
     SelfweightDialog,
     SettingsDialog,
     UnsavedChangesDialog,
@@ -1588,7 +1588,7 @@ class MainWindow(QMainWindow):
             return
 
         start = self._member_placement_start
-        if all(abs(start[index] - coordinates[index]) <= self.model.coordinate_tolerance for index in range(3)):
+        if self.model.node_coordinates(*start) == self.model.node_coordinates(*coordinates):
             self.history.append(
                 "> <b>Adicionar membro</b> "
                 "<span style='color:#8c959f'>(O segundo ponto deve ser diferente do ponto inicial.)</span>"
@@ -1862,6 +1862,8 @@ class MainWindow(QMainWindow):
         start_node_name: str | None = None,
         end_node_name: str | None = None,
     ) -> tuple[str, str, str]:
+        start = self.model.node_coordinates(*start)
+        end = self.model.node_coordinates(*end)
         tolerance = self.model.coordinate_tolerance
         if all(abs(start[index] - end[index]) <= tolerance for index in range(3)):
             raise ValueError("O segundo ponto deve ser diferente do ponto inicial.")
@@ -1900,6 +1902,8 @@ class MainWindow(QMainWindow):
         start: tuple[float, float, float],
         end: tuple[float, float, float],
     ) -> tuple[str, str, str]:
+        start = self.model.node_coordinates(*start)
+        end = self.model.node_coordinates(*end)
         tolerance = self.model.coordinate_tolerance
         if all(abs(start[index] - end[index]) <= tolerance for index in range(3)):
             raise ValueError("O segundo ponto deve ser diferente do ponto inicial.")
@@ -1924,6 +1928,7 @@ class MainWindow(QMainWindow):
         return start_name, end_name, rigid.name
 
     def _node_at_coordinates(self, coordinates: tuple[float, float, float]) -> str | None:
+        coordinates = self.model.node_coordinates(*coordinates)
         tolerance = self.model.coordinate_tolerance
         for name, node in self.model.nodes.items():
             if all(

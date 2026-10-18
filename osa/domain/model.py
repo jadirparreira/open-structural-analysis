@@ -26,6 +26,8 @@ class StructuralModel:
     """Mantém as entidades e garante invariantes em qualquer fluxo de entrada."""
 
     coordinate_tolerance = 1e-9
+    # Maximum displacement when each coordinate rounds by half a millimetre.
+    node_rounding_tolerance = math.sqrt(3) * 0.0005
 
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
@@ -144,6 +146,15 @@ class StructuralModel:
             raise ValueError("As coordenadas devem ser números finitos.")
         return values
 
+    @classmethod
+    def node_coordinates(cls, x: float, y: float, z: float) -> tuple[float, float, float]:
+        """Snap node coordinates in metres to the nearest millimetre.
+
+        Keep file loading at its original precision so opening a legacy model
+        cannot silently merge nodes or collapse members.
+        """
+        return tuple(round(value, 3) or 0.0 for value in cls._coordinates(x, y, z))
+
     def _ensure_unique_coordinates(self, coordinates: tuple[float, float, float], ignore: str = "") -> None:
         for node in self.nodes.values():
             if node.name != ignore and all(
@@ -158,7 +169,7 @@ class StructuralModel:
             raise ValueError("Informe o nome do nó.")
         if name in self.nodes:
             raise ValueError(f"Já existe um nó chamado '{name}'.")
-        coordinates = self._coordinates(x, y, z)
+        coordinates = self.node_coordinates(x, y, z)
         self._ensure_unique_coordinates(coordinates)
         node = Node(name, *coordinates)
         self.nodes[name] = node
@@ -168,7 +179,7 @@ class StructuralModel:
     def update_node(self, name: str, x: float, y: float, z: float) -> Node:
         if name not in self.nodes:
             raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
-        coordinates = self._coordinates(x, y, z)
+        coordinates = self.node_coordinates(x, y, z)
         self._ensure_unique_coordinates(coordinates, ignore=name)
         node = replace(self.nodes[name], x=coordinates[0], y=coordinates[1], z=coordinates[2])
         self.nodes[name] = node
@@ -185,7 +196,7 @@ class StructuralModel:
             if name not in self.nodes:
                 raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
         final = {
-            name: self._coordinates(*changes[name]) if name in changes
+            name: self.node_coordinates(*changes[name]) if name in changes
             else (node.x, node.y, node.z)
             for name, node in self.nodes.items()
         }
@@ -369,9 +380,11 @@ class StructuralModel:
             cumulative_lengths = tuple(math.fsum(segment_lengths[:index]) for index in range(1, len(segment_lengths)))
             positions = tuple(distance / total_length for distance in cumulative_lengths)
         coordinates = tuple(
-            tuple(start_coordinates[axis] + direction[axis] * ratio for axis in range(3))
+            self.node_coordinates(*(start_coordinates[axis] + direction[axis] * ratio for axis in range(3)))
             for ratio in positions
         )
+        if len(set(coordinates)) != len(coordinates):
+            raise ValueError("A divisão criaria nós coincidentes na precisão de um milímetro.")
         for coordinate in coordinates:
             self._ensure_unique_coordinates(coordinate)
 
@@ -510,9 +523,12 @@ class StructuralModel:
         )
         cross_length = math.sqrt(sum(value * value for value in cross))
         direction = sum(a * b for a, b in zip(vector_a, vector_b)) / (length_a * length_b)
+        outer_length = math.hypot(*(a + b for a, b in zip(vector_a, vector_b)))
+        # A split diagonal can move its interface slightly off the original
+        # line when rounded. Allow only the displacement of one grid snap.
         if (
-            cross_length > 1e-9 * length_a * length_b
-            or direction < 1.0 - 1e-9
+            cross_length > max(1e-9 * length_a * length_b, self.node_rounding_tolerance * outer_length)
+            or direction <= 0.0
         ):
             raise ValueError("Os membros devem ser colineares e seguir na mesma direção.")
 
@@ -691,7 +707,7 @@ class StructuralModel:
                     source_node_names.append(node_name)
 
         def translated_coordinates(node: Node) -> tuple[float, float, float]:
-            return node.x + dx, node.y + dy, node.z + dz
+            return self.node_coordinates(node.x + dx, node.y + dy, node.z + dz)
 
         def same_coordinates(first: tuple[float, float, float], second: tuple[float, float, float]) -> bool:
             return all(
@@ -744,6 +760,8 @@ class StructuralModel:
             source = self.bars[source_name]
             start_node = node_map[source.start_node]
             end_node = node_map[source.end_node]
+            if start_node == end_node:
+                raise ValueError("A cópia criaria um membro de comprimento zero na precisão de um milímetro.")
             pair = frozenset((start_node, end_node))
             if pair in existing_pairs:
                 continue

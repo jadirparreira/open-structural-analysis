@@ -99,6 +99,7 @@ class ModelService:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Split a member at an interior point and return the shared node name."""
         tolerance = self.model.coordinate_tolerance
+        rounded_point = self.model.node_coordinates(*coordinates)
         ordered_members = []
         if name in self.model.bars:
             ordered_members.append(self.model.bars[name])
@@ -121,10 +122,16 @@ class ModelService:
             distance_from_line = math.sqrt(math.fsum(
                 (float(coordinates[index]) - projected[index]) ** 2 for index in range(3)
             ))
-            if distance_from_line > tolerance * 10 or not 0.0 <= fraction <= 1.0:
+            if (
+                distance_from_line > max(tolerance * 10, self.model.node_rounding_tolerance)
+                or not 0.0 <= fraction <= 1.0
+            ):
                 continue
             distance = length * fraction
-            if min(distance, length - distance) <= tolerance:
+            if min(distance, length - distance) <= tolerance or rounded_point in (
+                self.model.node_coordinates(start.x, start.y, start.z),
+                self.model.node_coordinates(end.x, end.y, end.z),
+            ):
                 return (), ()
             split_target = member.name, distance, length - distance
             break
@@ -343,7 +350,6 @@ class ModelService:
         rigid_bars = self._unique_names((*rigid_bars, *cascade_rigid_bars))
         member_set = set(members)
         rigid_bar_set = set(rigid_bars)
-        requested_node_set = set(nodes)
 
         blockers = [
             {
