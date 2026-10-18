@@ -946,6 +946,9 @@ class McpApplication:
             raise ValueError("A cena visual do OpenSA não está disponível.")
         view = dict(self._get_view_state())
         for option, visible in options.items():
+            if option == "snap_enabled":
+                view[option] = True
+                continue
             self._on_view_changed(option, visible)
             view[option] = visible
         return {"view": view}

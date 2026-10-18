@@ -38,6 +38,36 @@ def test_removing_member_also_removes_actions_targeting_it():
 
     assert "B1" not in model.bars
     assert not model.actions
+    assert not model.nodes
+
+
+def test_removing_member_deletes_only_endpoint_nodes_that_become_orphaned():
+    model = StructuralModel()
+    for name, x in (("N1", 0), ("N2", 1), ("N3", 2)):
+        model.add_node(name, x, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_bar("B2", "N2", "N3")
+
+    model.remove_bar("B1")
+
+    assert set(model.nodes) == {"N2", "N3"}
+    assert set(model.bars) == {"B2"}
+
+
+def test_orphan_cleanup_keeps_nodes_connected_to_rigid_bars():
+    model = StructuralModel()
+    for name, x in (("N1", 0), ("N2", 1), ("N3", 2)):
+        model.add_node(name, x, 0, 0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_rigid_bar("N1", "N3")
+
+    model.remove_bar("B1")
+
+    assert set(model.nodes) == {"N1", "N3"}
+    assert set(model.rigid_bars) == {"N1-N3"}
+
+    model.remove_rigid_bar("N1-N3")
+    assert not model.nodes
 
 
 def test_orphaned_actions_can_be_removed_from_legacy_models():

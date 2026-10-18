@@ -44,13 +44,27 @@ data_files.extend(
 pyvista_datas, pyvista_binaries, pyvista_hiddenimports = collect_all("pyvista")
 pyvistaqt_datas, pyvistaqt_binaries, pyvistaqt_hiddenimports = collect_all("pyvistaqt")
 vtk_datas, vtk_binaries, vtk_hiddenimports = collect_all("vtkmodules")
+ezdxf_datas, ezdxf_binaries, ezdxf_hiddenimports = collect_all("ezdxf")
 
-datas = unique(data_files + pyvista_datas + pyvistaqt_datas + vtk_datas)
-binaries = unique(pyvista_binaries + pyvistaqt_binaries + vtk_binaries)
+converter_dir = project_root / "build-tools" / "libredwg" / sys.platform
+converter_name = "dwg2dxf.exe" if sys.platform == "win32" else "dwg2dxf"
+if not (converter_dir / converter_name).is_file():
+    raise RuntimeError("Prepare o leitor DWG com scripts/prepare-dwg-converter.py antes de empacotar.")
+converter_binaries = []
+for path in converter_dir.iterdir():
+    entry = (str(path), "osa/resources/converters")
+    if path.name == converter_name or path.suffix.lower() == ".dll":
+        converter_binaries.append(entry)
+    else:
+        data_files.append(entry)
+
+datas = unique(data_files + pyvista_datas + pyvistaqt_datas + vtk_datas + ezdxf_datas)
+binaries = unique(converter_binaries + pyvista_binaries + pyvistaqt_binaries + vtk_binaries + ezdxf_binaries)
 hiddenimports = unique(
     pyvista_hiddenimports
     + pyvistaqt_hiddenimports
     + vtk_hiddenimports
+    + ezdxf_hiddenimports
 )
 
 

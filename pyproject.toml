@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.26",
     "PyNiteFEA>=1.5",
     "mcp>=1.26,<2",
+    "ezdxf>=1.4.3,<2",
 ]
 
 [project.optional-dependencies]

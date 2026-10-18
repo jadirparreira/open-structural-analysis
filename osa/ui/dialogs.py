@@ -25,6 +25,90 @@ PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
 PROJECT_VERSION = "2026.3-dev"
 
 
+class _SettingsChoiceSwitch(QFrame):
+    """Animated pill selector matching the A/B switch in member restraints."""
+
+    def __init__(self, choices, selected: str, on_change, parent=None):
+        super().__init__(parent)
+        self._choices = tuple(choices)
+        self._selected = selected
+        self._on_change = on_change
+        self._buttons = {}
+        self._animation = None
+        widths = (46, 46) if len(self._choices) == 2 else (50, 76, 50)
+        self._widths = widths
+        self.setObjectName("settingsChoiceSwitch")
+        self.setFixedSize(sum(widths) + 6, 30)
+        self.setStyleSheet(
+            "QFrame#settingsChoiceSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        self._indicator = QFrame(self)
+        self._indicator.setObjectName("settingsChoiceIndicator")
+        self._indicator.setStyleSheet(
+            "QFrame#settingsChoiceIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        for (value, label), width in zip(self._choices, widths):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(width, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(value == self._selected)
+            button.setAccessibleName(label)
+            button.clicked.connect(lambda _checked=False, choice=value: self._select(choice))
+            self._group.addButton(button)
+            layout.addWidget(button)
+            self._buttons[value] = button
+        self._indicator.setGeometry(self._indicator_geometry())
+        self._indicator.lower()
+        self._update_text()
+
+    def _indicator_geometry(self) -> QRect:
+        index = next(
+            (position for position, (value, _label) in enumerate(self._choices)
+             if value == self._selected),
+            0,
+        )
+        left = 4 + sum(self._widths[:index])
+        return QRect(left, 5, self._widths[index] - 2, 20)
+
+    def _update_text(self) -> None:
+        for value, button in self._buttons.items():
+            color = "#ffffff" if value == self._selected else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _select(self, value: str) -> None:
+        if value == self._selected:
+            return
+        self._selected = value
+        if self._animation is not None:
+            self._animation.stop()
+        animation = QPropertyAnimation(self._indicator, b"geometry", self)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(self._indicator.geometry())
+        animation.setEndValue(self._indicator_geometry())
+        self._animation = animation
+        self._update_text()
+        self._on_change(value)
+        animation.start()
+
+
 class UnsavedChangesDialog(QDialog):
     """Confirma o destino das alterações usando o visual dos diálogos compactos."""
 
@@ -72,6 +156,52 @@ class UnsavedChangesDialog(QDialog):
 
     def _finish(self, choice: str) -> None:
         self.choice = choice
+        self.accept()
+
+
+class MemberSnapSplitDialog(QDialog):
+    """Small confirmation shown before connecting a snap point to a member."""
+
+    def __init__(self, member_name: str, node_label: str = "final", parent=None):
+        super().__init__(parent)
+        self.should_split = False
+        self.setWindowTitle("Ligar ao membro")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(370, 170)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QPushButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton:hover { background: #eaeef2; }"
+            "QPushButton#primaryButton { border: 0; background: #0969da; color: #ffffff; font-weight: 600; }"
+            "QPushButton#primaryButton:hover { background: #0550ae; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+        title = QLabel("Ligar ao membro")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        prompt = QLabel(
+            f"Deseja segmentar o membro {member_name} para ligar o nó {node_label} a ele?"
+        )
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_button = QPushButton("Não")
+        split_button = QPushButton("Segmentar")
+        split_button.setObjectName("primaryButton")
+        cancel_button.clicked.connect(self.reject)
+        split_button.clicked.connect(self._confirm_split)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(split_button)
+        layout.addLayout(buttons)
+
+    def _confirm_split(self) -> None:
+        self.should_split = True
         self.accept()
 
 
@@ -853,10 +983,10 @@ class ProgramSettingsDialog(QDialog):
     """Application settings window using the same navigation as properties."""
 
     _snap_options = (
-        ("grid", "Malha", "hash.svg"),
+        ("intersection", "Interseção", "x.svg"),
         ("endpoint", "Extremidade", "square.svg"),
         ("center", "Centro", "triangle.svg"),
-        ("perpendicular", "Perpendicular", "axis-configuration.svg"),
+        ("perpendicular", "Perpendicular", "perpendicular.svg"),
         ("orthogonal", "Ortogonal", "axis-3d.svg"),
     )
 
@@ -933,6 +1063,14 @@ class ProgramSettingsDialog(QDialog):
         icon_path = Path(__file__).parents[1] / "resources" / "icons"
         for snap_kind, label, icon_name in self._snap_options:
             row = QWidget()
+            if snap_kind == "orthogonal":
+                row.setToolTip("Alinhamento nos eixos do plano e na direção normal ao plano")
+            elif snap_kind == "perpendicular":
+                row.setToolTip(
+                    "Captura a projeção perpendicular do ponto inicial sobre um membro, referência ou aresta sólida ao medir"
+                )
+            elif snap_kind == "intersection":
+                row.setToolTip("Captura o cruzamento entre linhas visíveis da malha, membros, arestas, eixos e barras rígidas")
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(8)
@@ -966,26 +1104,40 @@ class ProgramSettingsDialog(QDialog):
         members_page = QWidget()
         members_layout = QVBoxLayout(members_page)
         members_layout.addSpacing(10)
-        members_hint = QLabel(
-            "Membros com direções diferentes podem posicionar resultados de análise incorretamente."
+        direction_section = QVBoxLayout()
+        direction_section.setContentsMargins(0, 0, 0, 0)
+        direction_section.setSpacing(6)
+        direction_label = QLabel("Normalizar a direção dos membros automaticamente")
+        direction_label.setObjectName("hint")
+        direction_label.setWordWrap(True)
+        direction_label.setAccessibleName("Normalizar a direção dos membros automaticamente")
+        direction_section.addWidget(direction_label)
+        self._member_direction_switch = _SettingsChoiceSwitch(
+            (("sim", "Sim"), ("nao", "Não")),
+            "sim" if self.window.member_direction_normalization_enabled else "nao",
+            lambda mode: self.window.set_member_direction_normalization_enabled(mode == "sim"),
+            self,
         )
-        members_hint.setObjectName("hint")
-        members_hint.setWordWrap(True)
-        members_layout.addWidget(members_hint)
-        members_layout.addSpacing(8)
-        self._member_direction_checkbox = QCheckBox(
-            "Normalizar direção dos membros automaticamente"
+        direction_section.addWidget(self._member_direction_switch, 0, Qt.AlignmentFlag.AlignLeft)
+        members_layout.addLayout(direction_section)
+        members_layout.addSpacing(12)
+
+        split_section = QVBoxLayout()
+        split_section.setContentsMargins(0, 0, 0, 0)
+        split_section.setSpacing(6)
+        split_label = QLabel("Segmentar membro capturado por snap intermediário")
+        split_label.setObjectName("hint")
+        split_label.setWordWrap(True)
+        split_label.setAccessibleName("Segmentar membro capturado por snap intermediário")
+        split_section.addWidget(split_label)
+        self._member_split_switch = _SettingsChoiceSwitch(
+            (("sim", "Sim"), ("perguntar", "Perguntar"), ("nao", "Não")),
+            self.window.member_intermediate_snap_split_mode,
+            self.window.set_member_intermediate_snap_split_mode,
+            self,
         )
-        self._member_direction_checkbox.setAccessibleName(
-            "Normalizar direção dos membros automaticamente"
-        )
-        self._member_direction_checkbox.setChecked(
-            self.window.member_direction_normalization_enabled
-        )
-        self._member_direction_checkbox.toggled.connect(
-            self.window.set_member_direction_normalization_enabled
-        )
-        members_layout.addWidget(self._member_direction_checkbox)
+        split_section.addWidget(self._member_split_switch, 0, Qt.AlignmentFlag.AlignLeft)
+        members_layout.addLayout(split_section)
         members_layout.addStretch(1)
         members_close_button = QPushButton("Fechar")
         members_close_button.setObjectName("closeProperties")

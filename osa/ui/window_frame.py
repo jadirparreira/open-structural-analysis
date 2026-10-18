@@ -22,6 +22,8 @@ class TitleBar(QFrame):
         new_model_action.triggered.connect(window.new_model)
         open_model_action = file_menu.addAction("Abrir modelo…")
         open_model_action.triggered.connect(window.open_model)
+        self.import_reference_action = file_menu.addAction("Importar referência…")
+        self.import_reference_action.triggered.connect(window.import_reference)
         self.save_model_action = file_menu.addAction("Salvar")
         self.save_model_action.triggered.connect(window.save_model)
         self.save_model_as_action = file_menu.addAction("Salvar como…")
@@ -82,6 +84,7 @@ class TitleBar(QFrame):
         """Enable actions that require an open project in the editor."""
         enabled = bool(enabled)
         self.save_model_action.setEnabled(enabled)
+        self.import_reference_action.setEnabled(enabled)
         self.save_model_as_action.setEnabled(enabled)
         self.close_project_action.setEnabled(enabled)
 

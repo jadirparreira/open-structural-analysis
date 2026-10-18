@@ -1,10 +1,11 @@
+from PySide6.QtCore import QRegularExpression, Signal
+from PySide6.QtGui import QRegularExpressionValidator
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QStyledItemDelegate, QTableWidget, QTableWidgetItem
+
+from osa.model import ReferenceAxis
+
 from .common import *
 from .window_frame import WindowFrame
-from PySide6.QtCore import QRegularExpression
-from PySide6.QtGui import QRegularExpressionValidator
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
-from PySide6.QtWidgets import QStyledItemDelegate
-from osa.model import ReferenceAxis
 
 
 class AxisLabelDelegate(QStyledItemDelegate):
@@ -68,6 +69,8 @@ class AxisValueDelegate(QStyledItemDelegate):
 
 class AxesPanel(QFrame):
     """Floating placeholder for configuring the structural reference axes."""
+
+    visibility_changed = Signal(bool)
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -168,12 +171,14 @@ class AxesPanel(QFrame):
         self._load_axes()
         self._loaded = True
         super().showEvent(event)
+        self.visibility_changed.emit(True)
 
     def hideEvent(self, event) -> None:
         if self._loaded:
             self._commit_valid_axes()
             self._loaded = False
         super().hideEvent(event)
+        self.visibility_changed.emit(False)
 
     def discard(self) -> None:
         """Hide stale table values before replacing or clearing the model."""

@@ -64,11 +64,11 @@ class MixedCheckBox(QCheckBox):
 
 
 class SelectionKindSwitch(QFrame):
-    """Two-position control for inspecting nodes or members in one selection."""
+    """Two-position selection control shared by property editors."""
 
     kind_changed = Signal(str)
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, *, choices=None) -> None:
         super().__init__(parent)
         self.setObjectName("selectionKindSwitch")
         self.setFixedHeight(34)
@@ -85,13 +85,15 @@ class SelectionKindSwitch(QFrame):
         group = QButtonGroup(self)
         group.setExclusive(True)
         self._buttons: dict[str, QToolButton] = {}
-        for kind, label in (("node", "Nós"), ("bar", "Membros")):
+        for kind, label in choices or (("node", "Nós"), ("bar", "Membros")):
             button = QToolButton(self)
             button.setText(label)
             button.setCheckable(True)
             button.setFixedHeight(26)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.setAccessibleName(f"Exibir propriedades dos {label.lower()} selecionados")
+            button.setAccessibleName(
+                label if choices else f"Exibir propriedades dos {label.lower()} selecionados"
+            )
             button.clicked.connect(
                 lambda _checked=False, selected_kind=kind: self.kind_changed.emit(selected_kind)
             )
@@ -107,9 +109,10 @@ class SelectionKindSwitch(QFrame):
 class PropertyPanel(QFrame):
     """Floating inspector for the currently selected node or bar."""
 
-    def __init__(self, window: "MainWindow") -> None:
+    def __init__(self, window: "MainWindow", *, context=None, creation_mode: bool = False) -> None:
         super().__init__(window)
-        self.window = window
+        self.window = context if context is not None else window
+        self._creation_mode = creation_mode
         self.setObjectName("propertyPanel")
         self.setFixedWidth(300)
         self._selected: tuple[str, str] | None = None
@@ -159,11 +162,22 @@ class PropertyPanel(QFrame):
             "QToolButton:disabled { background: #f6f8fa; border-color: #eaeef2; }"
         )
         identity_layout.addWidget(self.delete_button)
-        self._color_palette = HoneycombColorPalette(self.window, self._color_selected)
+        self._color_palette = HoneycombColorPalette(window, self._color_selected)
         self.layout.addWidget(self.title)
         self.layout.addWidget(self.kind_control)
         self.layout.addWidget(self.name)
         self.layout.addWidget(identity_row)
+        self.point_mode_switch = None
+        if creation_mode:
+            self.point_mode_switch = SelectionKindSwitch(
+                self, choices=(("exact", "Ponto exato"), ("midpoint", "Ponto Médio")),
+            )
+            self.point_mode_switch.set_selection("exact")
+            self.point_mode_switch._buttons["exact"].setToolTip("Definir cada extremidade com um clique")
+            self.point_mode_switch._buttons["midpoint"].setToolTip(
+                "Definir cada extremidade pelo ponto médio entre dois cliques"
+            )
+            self.layout.addWidget(self.point_mode_switch)
         self.coordinates_title = QLabel("Coordenadas")
         self.coordinates_title.setObjectName("propertySection")
         self.nodes_title = QLabel("Nós")
@@ -283,7 +297,9 @@ class PropertyPanel(QFrame):
             else:
                 plural = {"node": "Nós", "bar": "Membros", "rigid_bar": "Barras rígidas"}.get(kind, "Elementos")
                 title = f"{plural} · {len(names)} selecionados"
-        self.title.setText(title)
+        self.title.setText("Adicionar membro" if self._creation_mode else title)
+        self.name.setVisible(not self._creation_mode)
+        self._identity_row.setVisible(not self._creation_mode)
         self.name.setText("Identidade")
         self.identity_value.setText(name if len(names) == 1 else f"Variado ({len(names)})")
         if kind == "bar":
@@ -371,46 +387,47 @@ class PropertyPanel(QFrame):
             self.layout.insertWidget(7, supports)
         else:
             bar = self.window.model.bars[name]
-            nodes = list(self.window.model.nodes)
-            self.layout.insertWidget(4, self.nodes_title)
-            self.nodes_title.show()
-            start, end = QComboBox(), QComboBox()
-            start.addItems(nodes); end.addItems(nodes)
-            for combo in (start, end):
-                combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-                combo.view().setMinimumHeight(min(5, len(nodes)) * 28 + 2)
-                combo.view().setMaximumHeight(min(5, len(nodes)) * 28 + 2)
-            for index, combo in enumerate((start, end)):
-                values = [
-                    (self.window.model.bars[member_name].start_node,
-                     self.window.model.bars[member_name].end_node)[index]
-                    for member_name in names
-                ]
-                if self._all_equal(values):
-                    combo.setCurrentText(values[0])
-                else:
-                    combo.setPlaceholderText("Variado")
-                    combo.setCurrentIndex(-1)
-                combo.currentTextChanged.connect(
-                    lambda _text, idx=index: self._bar_changed(idx)
-                )
-                combo.setEnabled(len(names) == 1)
-            self.fields.extend((start, end))
-            start_label = QLabel("A")
-            start_label.setObjectName("propertySection")
-            end_label = QLabel("B")
-            end_label.setObjectName("propertySection")
-            endpoints = QWidget()
-            endpoint_grid = QGridLayout(endpoints)
-            endpoint_grid.setContentsMargins(0, 0, 0, 0)
-            endpoint_grid.setHorizontalSpacing(8)
-            endpoint_grid.addWidget(start_label, 0, 0)
-            endpoint_grid.addWidget(start, 0, 1)
-            endpoint_grid.addWidget(end_label, 0, 2)
-            endpoint_grid.addWidget(end, 0, 3)
-            endpoint_grid.setColumnStretch(1, 1)
-            endpoint_grid.setColumnStretch(3, 1)
-            self.form.addRow(endpoints)
+            if not self._creation_mode:
+                nodes = list(self.window.model.nodes)
+                self.layout.insertWidget(4, self.nodes_title)
+                self.nodes_title.show()
+                start, end = QComboBox(), QComboBox()
+                start.addItems(nodes); end.addItems(nodes)
+                for combo in (start, end):
+                    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                    combo.view().setMinimumHeight(min(5, len(nodes)) * 28 + 2)
+                    combo.view().setMaximumHeight(min(5, len(nodes)) * 28 + 2)
+                for index, combo in enumerate((start, end)):
+                    values = [
+                        (self.window.model.bars[member_name].start_node,
+                         self.window.model.bars[member_name].end_node)[index]
+                        for member_name in names
+                    ]
+                    if self._all_equal(values):
+                        combo.setCurrentText(values[0])
+                    else:
+                        combo.setPlaceholderText("Variado")
+                        combo.setCurrentIndex(-1)
+                    combo.currentTextChanged.connect(
+                        lambda _text, idx=index: self._bar_changed(idx)
+                    )
+                    combo.setEnabled(len(names) == 1)
+                self.fields.extend((start, end))
+                start_label = QLabel("A")
+                start_label.setObjectName("propertySection")
+                end_label = QLabel("B")
+                end_label.setObjectName("propertySection")
+                endpoints = QWidget()
+                endpoint_grid = QGridLayout(endpoints)
+                endpoint_grid.setContentsMargins(0, 0, 0, 0)
+                endpoint_grid.setHorizontalSpacing(8)
+                endpoint_grid.addWidget(start_label, 0, 0)
+                endpoint_grid.addWidget(start, 0, 1)
+                endpoint_grid.addWidget(end_label, 0, 2)
+                endpoint_grid.addWidget(end, 0, 3)
+                endpoint_grid.setColumnStretch(1, 1)
+                endpoint_grid.setColumnStretch(3, 1)
+                self.form.addRow(endpoints)
             material_widget = QWidget()
             self._material_widget = material_widget
             material_layout = QVBoxLayout(material_widget)

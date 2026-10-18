@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import replace
 
+from .drawing_reference import DrawingReference
 from .entities import (
     Action,
     ActionDefinition,
@@ -30,6 +32,7 @@ class StructuralModel:
         self.bars: dict[str, Bar] = {}
         self.rigid_bars: dict[str, RigidBar] = {}
         self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
+        self.references: dict[str, DrawingReference] = {}
         self.materials = {name: tuple(values) for name, values in (materials or {}).items()}
         self.material_types = dict(material_types or {})
         self.sections = {kind: list(items) for kind, items in (sections or {}).items()}
@@ -63,6 +66,29 @@ class StructuralModel:
         self.scene_views[name] = set()
         self.active_scene_view = name
         self.view_revision += 1
+
+    def add_reference(self, reference: DrawingReference) -> None:
+        if reference.id in self.references:
+            raise ValueError("A referência já está no projeto.")
+        self.references[reference.id] = reference
+        self.view_revision += 1
+
+    def update_reference(self, reference_id: str, *, origin=None, plane=None, visible=None) -> None:
+        current = self.references[reference_id]
+        updated = replace(
+            current,
+            origin=current.origin if origin is None else self._coordinates(*origin),
+            plane=current.plane if plane is None else plane,
+            visible=current.visible if visible is None else bool(visible),
+        )
+        if updated != current:
+            self.references[reference_id] = updated
+            self.view_revision += 1
+
+    def remove_reference(self, reference_id: str) -> None:
+        if reference_id in self.references:
+            del self.references[reference_id]
+            self.view_revision += 1
 
     def remove_scene_view(self, name: str) -> None:
         if name == "Completo" or name not in self.scene_views:
@@ -253,14 +279,17 @@ class StructuralModel:
         if duplicate:
             raise DuplicateMemberError("Já existe um membro entre esses nós.")
 
-    def add_bar(self, name: str, start_node: str, end_node: str) -> Bar:
+    def add_bar(self, name: str, start_node: str, end_node: str, *, template: Bar | None = None) -> Bar:
         name = name.strip()
         if not name:
             raise ValueError("Informe o nome da barra.")
         if name in self.bars:
             raise ValueError(f"Já existe uma barra chamada '{name}'.")
         self._validate_member_nodes(start_node, end_node)
-        bar = Bar(name, start_node, end_node)
+        bar = (
+            replace(template, name=name, start_node=start_node, end_node=end_node)
+            if template is not None else Bar(name, start_node, end_node)
+        )
         self.bars[name] = bar
         self._touch()
         return bar
@@ -281,8 +310,10 @@ class StructuralModel:
     def remove_bar(self, name: str) -> None:
         if name not in self.bars:
             return
+        member = self.bars[name]
         del self.bars[name]
         self._remove_actions_for_target(name)
+        self._delete_orphan_nodes((member.start_node, member.end_node))
         self._touch()
 
     remove_member = remove_bar
@@ -777,9 +808,46 @@ class StructuralModel:
     def remove_rigid_bar(self, name: str) -> None:
         if name not in self.rigid_bars:
             return
+        rigid = self.rigid_bars[name]
         del self.rigid_bars[name]
         self._remove_actions_for_target(name)
+        self._delete_orphan_nodes((rigid.start_node, rigid.end_node))
         self._touch()
+
+    def _orphan_node_names(
+        self,
+        candidates: Iterable[str],
+        *,
+        removing_bars: set[str] | None = None,
+        removing_rigid_bars: set[str] | None = None,
+    ) -> tuple[str, ...]:
+        """Find candidate nodes with no remaining structural or rigid members."""
+        removed_bars = removing_bars or set()
+        removed_rigid_bars = removing_rigid_bars or set()
+        connected = {
+            node_name
+            for name, member in self.bars.items()
+            if name not in removed_bars
+            for node_name in (member.start_node, member.end_node)
+        }
+        connected.update(
+            node_name
+            for name, rigid in self.rigid_bars.items()
+            if name not in removed_rigid_bars
+            for node_name in (rigid.start_node, rigid.end_node)
+        )
+        return tuple(
+            name for name in dict.fromkeys(candidates)
+            if name in self.nodes and name not in connected
+        )
+
+    def _delete_orphan_nodes(self, candidates: Iterable[str]) -> tuple[str, ...]:
+        """Delete unconnected candidate nodes and any actions targeting them."""
+        orphaned = self._orphan_node_names(candidates)
+        for name in orphaned:
+            del self.nodes[name]
+            self._remove_actions_for_target(name)
+        return orphaned
 
     def remove_orphaned_actions(self) -> tuple[str, ...]:
         """Remove actions whose target no longer exists in the model."""
@@ -1017,6 +1085,7 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
+        self.references.clear()
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()

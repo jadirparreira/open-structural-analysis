@@ -671,7 +671,7 @@ class LocalMcpServer:
                 "grid_visible, reference_axes_visible, node_labels_visible, "
                 "member_labels_visible, local_axes_visible, nodes_visible, "
                 "solid_members_visible, member_releases_visible, semirigid_links_visible, "
-                "node_supports_visible, snap_enabled, node_forces_visible, node_moments_visible, "
+                "node_supports_visible, snap_enabled (sempre ativo), node_forces_visible, node_moments_visible, "
                 "member_forces_visible e member_moments_visible. Informe somente os campos desejados."
             ),
             annotations=write,

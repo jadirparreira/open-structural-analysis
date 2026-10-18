@@ -3,7 +3,7 @@ import copy
 import math
 import threading
 
-from PySide6.QtCore import QThread, Signal, Slot
+from PySide6.QtCore import QSettings, QThread, Signal, Slot
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
@@ -24,6 +24,7 @@ from .dialogs import (
     CombinationsDialog,
     ErrorDialog,
     ProgramSettingsDialog,
+    MemberSnapSplitDialog,
     SelfweightDialog,
     SettingsDialog,
     UnsavedChangesDialog,
@@ -32,6 +33,7 @@ from .displacement_panel import DisplacementPanel
 from .home import HomePage
 from .loading_indicator import LoadingIndicator
 from .mcp_dispatcher import McpQtDispatcher
+from .member_placement_panel import MemberPlacementEditor
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -43,6 +45,7 @@ from .palettes import (
 )
 from .project_load_worker import ProjectLoadWorker
 from .property_panel import PropertyPanel
+from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
     ILaminadoSectionPanel,
     LLaminadoSectionPanel,
@@ -69,8 +72,8 @@ class MainWindow(QMainWindow):
         "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
-        "referenceaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
-        "solids", "releases", "semirigid", "supports", "snap",
+        "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
+        "solids", "releases", "semirigid", "supports",
     })
 
     def __init__(self) -> None:
@@ -105,12 +108,22 @@ class MainWindow(QMainWindow):
         self._command_mode: str | None = None
         self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
+        self._member_placement_start_snap_member_name: str | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
         self._copy_elements_selection: list[tuple[str, str]] = []
         self._copy_elements_reference: tuple[float, float, float] | None = None
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
+        self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        split_mode = self._program_settings.value(
+            "members/intermediateSnapSplit",
+            self._program_settings.value("members/perpendicularSplit", "nao"),
+        )
+        split_mode = str(split_mode)
+        self._member_intermediate_snap_split_mode = (
+            split_mode if split_mode in {"sim", "perguntar", "nao"} else "nao"
+        )
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("Open Structural Analysis")
@@ -142,6 +155,7 @@ class MainWindow(QMainWindow):
         self.scene.enter_pressed.connect(self._confirm_scene_view_selection)
         self.scene.enter_pressed.connect(self._confirm_command_selection)
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
+        self.scene.member_midpoint_pending.connect(self._member_midpoint_pending)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
@@ -257,6 +271,9 @@ class MainWindow(QMainWindow):
         self.displacement_panel = DisplacementPanel(self)
         self.processing_panel = ProcessingPanel(self)
         self.axes_panel = AxesPanel(self)
+        self.reference_panel = ReferencePanel(self)
+        self.axes_panel.visibility_changed.connect(self.top_icon_palette.configure_axes_button.setChecked)
+        self.reference_panel.visibility_changed.connect(self.top_icon_palette.configure_reference_button.setChecked)
         self.split_member_dialog = SplitMemberDialog(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
@@ -270,6 +287,7 @@ class MainWindow(QMainWindow):
             for family in SECTION_PARAMETRIC_SPECS
         })
         self.section_panel = self.section_panels["W Laminado"]
+        self.member_placement_editor = MemberPlacementEditor(self)
         self.history = CommandHistory(self)
         self.command_bar = CommandBar(self)
         self.scene.plotter.installEventFilter(self)
@@ -479,6 +497,18 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
             self.refresh_scene()
 
+    @property
+    def member_intermediate_snap_split_mode(self) -> str:
+        return self._member_intermediate_snap_split_mode
+
+    def set_member_intermediate_snap_split_mode(self, mode: str) -> None:
+        if mode not in {"sim", "perguntar", "nao"}:
+            raise ValueError("Opção inválida para segmentação do membro.")
+        self._member_intermediate_snap_split_mode = mode
+        self._program_settings.setValue("members/intermediateSnapSplit", mode)
+        self._program_settings.remove("members/perpendicularSplit")
+        self._program_settings.sync()
+
     def normalize_member_directions_if_enabled(self) -> tuple[str, ...]:
         if not self._member_direction_normalization_enabled:
             return ()
@@ -523,6 +553,8 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if hasattr(self, "member_placement_editor"):
+            self.member_placement_editor.reposition()
         if hasattr(self, "_project_loading_overlay"):
             self._project_loading_overlay.setGeometry(self.rect())
         if hasattr(self, "palette"):
@@ -543,6 +575,8 @@ class MainWindow(QMainWindow):
                 self.properties.reposition_color_palette()
         if hasattr(self, "axes_panel") and self.axes_panel.isVisible():
             self.axes_panel.reposition()
+        if hasattr(self, "reference_panel") and self.reference_panel.isVisible():
+            self.reference_panel.reposition()
         if hasattr(self, "split_member_dialog") and self.split_member_dialog.isVisible():
             self.split_member_dialog.reposition()
         if hasattr(self, "command_bar"):
@@ -715,6 +749,9 @@ class MainWindow(QMainWindow):
             button.setChecked(True)
 
     def toggle_axes_panel(self) -> None:
+        if self._command_mode == "member_placement":
+            self.cancel_member_placement()
+        self.reference_panel.hide()
         if self.axes_panel.isVisible():
             self.axes_panel.hide()
             return
@@ -725,8 +762,50 @@ class MainWindow(QMainWindow):
         self.axes_panel.show()
         self.axes_panel.raise_()
 
+    def toggle_reference_panel(self) -> None:
+        if self._command_mode == "member_placement":
+            self.cancel_member_placement()
+        if self.reference_panel.isVisible():
+            self.reference_panel.hide()
+            return
+        self.axes_panel.hide()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.reference_panel.reposition()
+        self.reference_panel.show()
+        self.reference_panel.raise_()
+
+    def import_reference(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Importar referência", "",
+            "Desenhos CAD (*.dxf *.DXF *.dwg *.DWG);;Desenhos DXF (*.dxf *.DXF);;Desenhos DWG (*.dwg *.DWG)",
+        )
+        if not filename:
+            return
+        dialog = ReferenceImportDialog(self, filename)
+        dialog.exec()
+        if dialog.error:
+            QMessageBox.warning(self, "Não foi possível importar a referência", dialog.error)
+            dialog.deleteLater()
+            return
+        result = dialog.result_data
+        dialog.deleteLater()
+        if result is None:
+            return
+        with self._model_access_lock:
+            self.model.add_reference(result.reference)
+            self.scene.refresh_drawing_references(self.model, fit_camera=True)
+        if not self.reference_panel.isVisible():
+            self.toggle_reference_panel()
+        self.reference_panel.reload(result.reference.id)
+        if result.warnings:
+            QMessageBox.information(self, "Referência importada com avisos", "\n\n".join(result.warnings))
+
     def _remember_last_command(self, callback) -> None:
         """Keep the most recently started graphical command for Enter to repeat."""
+        self.member_placement_editor.hide()
         self._last_command_callback = callback
 
     def start_member_placement(self) -> None:
@@ -734,12 +813,37 @@ class MainWindow(QMainWindow):
         self._remember_last_command(self.start_member_placement)
         self.command_session.cancel()
         self._member_placement_start = None
+        self._member_placement_start_snap_member_name = None
         self._command_mode = "member_placement"
-        self.scene.set_member_placement_mode(True)
-        self.history.append(
-            "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição inicial do membro)</span>"
-        )
+        self.clear_selection()
+        self.member_placement_editor.show()
+        self.scene.set_member_placement_mode(True, point_mode=self.member_placement_editor.point_mode)
+        self._show_member_placement_prompt()
         self.scene.plotter.setFocus()
+
+    def _member_point_mode_changed(self, mode: str) -> None:
+        """Change how the next endpoint is captured, preserving a defined start."""
+        if self._command_mode != "member_placement" or mode == self.scene._member_point_mode:
+            return
+        self.scene._cancel_coordinate_edit(update=False)
+        self.scene.set_member_placement_mode(True, point_mode=mode)
+        self._show_member_placement_prompt()
+        self.scene.plotter.setFocus()
+
+    def _member_midpoint_pending(self) -> None:
+        if self._command_mode == "member_placement":
+            self._show_member_placement_prompt(second_point=True)
+
+    def _show_member_placement_prompt(self, *, second_point: bool = False) -> None:
+        endpoint = "inicial" if self._member_placement_start is None else "final"
+        if self.member_placement_editor.point_mode == "midpoint":
+            point = "segundo" if second_point else "primeiro"
+            message = f"Clique no {point} ponto para definir a extremidade {endpoint} pelo ponto médio"
+        else:
+            message = f"Clique na posição {endpoint} do membro"
+        self.history.append(
+            f"> <b>Adicionar membro</b> <span style='color:#57606a'>({message})</span>"
+        )
 
     def start_measurement(self) -> None:
         """Start a transient two-point distance measurement in the viewport."""
@@ -880,6 +984,7 @@ class MainWindow(QMainWindow):
         self.close_section_panel()
         self.close_displacement_panel()
         self.axes_panel.hide()
+        self.reference_panel.hide()
         members = self._selected_command_members()
         if len(members) == 1:
             self._command_mode = None
@@ -1338,7 +1443,7 @@ class MainWindow(QMainWindow):
 
         geometry_visibility = {
             "grid": "grid",
-            "referenceaxes": "reference-axes",
+            "axes": "reference-axes",
             "nodelabels": "node",
             "memberlabels": "bar",
             "localaxes": "axes",
@@ -1362,12 +1467,6 @@ class MainWindow(QMainWindow):
             self.history.append(f"> <b>{command_label}</b>")
             return True
 
-        if name == "snap":
-            self.palette.show_group("Geometria")
-            self.top_icon_palette.toggle_snap_command()
-            self.history.append(f"> <b>{command_label}</b>")
-            return True
-
         if name in action_visibility:
             self.palette.show_group("Ações")
             self.action_top_palette.toggle_action_visibility_command(action_visibility[name])
@@ -1383,7 +1482,7 @@ class MainWindow(QMainWindow):
             "copy": ("Geometria", self.start_copy_elements),
             "cprop": ("Geometria", self.start_copy_member_properties),
             "measure": ("Geometria", self.start_measurement),
-            "axes": ("Geometria", self.toggle_axes_panel),
+            "configaxes": ("Geometria", self.toggle_axes_panel),
             "group": ("Ações", self.open_action_groups),
             "action": ("Ações", self.start_load_command),
             "load": ("Ações", self.start_load_command),
@@ -1396,13 +1495,14 @@ class MainWindow(QMainWindow):
             return False
         self.palette.show_group(target[0])
         target[1]()
-        if name in {"axes", "group", "combinations", "analyze"}:
+        if name in {"configaxes", "group", "combinations", "analyze"}:
             self.history.append(f"> <b>{command_label}</b>")
         return True
 
     def handle_command(self, command: str) -> None:
         if self._handle_interface_command(command):
             return
+        self.member_placement_editor.hide()
         had_model_geometry = bool(self.model.nodes)
         command_name = command.strip().casefold().split(maxsplit=1)[0] if command.strip() else ""
         split_source = self.command_session.split_member_name
@@ -1482,33 +1582,74 @@ class MainWindow(QMainWindow):
         coordinates = tuple(float(value) for value in point)
         if self._member_placement_start is None:
             self._member_placement_start = coordinates
+            self._member_placement_start_snap_member_name = self.scene._placement_snap_member_name
             self.scene.set_member_preview_start(coordinates)
-            self.history.append(
-                "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição final do membro)</span>"
-            )
+            self._show_member_placement_prompt()
             return
 
         start = self._member_placement_start
+        if all(abs(start[index] - coordinates[index]) <= self.model.coordinate_tolerance for index in range(3)):
+            self.history.append(
+                "> <b>Adicionar membro</b> "
+                "<span style='color:#8c959f'>(O segundo ponto deve ser diferente do ponto inicial.)</span>"
+            )
+            return
+
+        snapped_points = (
+            ("inicial", self._member_placement_start_snap_member_name, start),
+            ("final", self.scene._placement_snap_member_name, coordinates),
+        )
+        split_mode = self.member_intermediate_snap_split_mode
+        split_decisions: list[tuple[str, str, tuple[float, float, float]]] = []
+        for node_label, member_name, snap_point in snapped_points:
+            if member_name is None:
+                continue
+            should_split = split_mode == "sim"
+            if split_mode == "perguntar":
+                dialog = MemberSnapSplitDialog(member_name, node_label, self)
+                dialog.move(self.geometry().center() - dialog.rect().center())
+                should_split = dialog.exec() == QDialog.DialogCode.Accepted and dialog.should_split
+            if should_split:
+                split_decisions.append((node_label, member_name, snap_point))
+
+        start_node_name = None
+        end_node_name = None
         try:
-            start_name, end_name, member_name = self._create_graphical_member(start, coordinates)
+            for node_label, member_name, snap_point in split_decisions:
+                node_names, _member_names = self.model_service.split_member_at_point(
+                    member_name, snap_point,
+                )
+                node_name = (
+                    node_names[0] if node_names
+                    else self._node_at_coordinates(snap_point)
+                )
+                if node_label == "inicial":
+                    start_node_name = node_name
+                else:
+                    end_node_name = node_name
+            start_name, end_name, member_name = self._create_graphical_member(
+                start, coordinates,
+                start_node_name=start_node_name, end_node_name=end_node_name,
+            )
         except ValueError as error:
             self.history.append(
                 f"> <b>Adicionar membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
+            if self.member_placement_editor.point_mode == "midpoint":
+                self._show_member_placement_prompt()
             return
 
         self._member_placement_start = None
+        self._member_placement_start_snap_member_name = None
         self.command_session.cancel()
         self._command_mode = "member_placement"
         self.scene.set_member_preview_start(None)
-        self.scene.set_member_placement_mode(True)
+        self.scene.set_member_placement_mode(True, point_mode=self.member_placement_editor.point_mode)
         self.history.append(
             f"> <b>Adicionar membro</b> <span style='color:#57606a'>"
             f"(Membro {escape(member_name)} criado entre {escape(start_name)} e {escape(end_name)})</span>"
         )
-        self.history.append(
-            "> <b>Adicionar membro</b> <span style='color:#57606a'>(Clique na posição inicial do próximo membro)</span>"
-        )
+        self._show_member_placement_prompt()
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         # The point signal is deferred until VTK processes the mouse release.
@@ -1629,6 +1770,7 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
+        self.member_placement_editor.hide()
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             self._command_mode = None
             self.scene.set_scene_selection_mode(None)
@@ -1703,6 +1845,7 @@ class MainWindow(QMainWindow):
         }
         label = labels[self._command_mode]
         self._member_placement_start = None
+        self._member_placement_start_snap_member_name = None
         self._command_mode = None
         self.command_session.cancel()
         self.scene.set_member_placement_mode(False)
@@ -1715,13 +1858,20 @@ class MainWindow(QMainWindow):
         self,
         start: tuple[float, float, float],
         end: tuple[float, float, float],
+        *,
+        start_node_name: str | None = None,
+        end_node_name: str | None = None,
     ) -> tuple[str, str, str]:
         tolerance = self.model.coordinate_tolerance
         if all(abs(start[index] - end[index]) <= tolerance for index in range(3)):
             raise ValueError("O segundo ponto deve ser diferente do ponto inicial.")
 
-        start_name = self._node_at_coordinates(start)
-        end_name = self._node_at_coordinates(end)
+        # Resolve each endpoint against the model first, even when the caller
+        # supplies a node created by an intermediate-snap split. This keeps
+        # the launched member attached to an existing coincident node instead
+        # of allowing an override name to bypass coordinate de-duplication.
+        start_name = self._node_at_coordinates(start) or start_node_name
+        end_name = self._node_at_coordinates(end) or end_node_name
         created_nodes: list[str] = []
         try:
             if start_name is None:
@@ -1733,7 +1883,11 @@ class MainWindow(QMainWindow):
                 self.model_service.create_node(*end, name=end_name)
                 created_nodes.append(end_name)
             member_name = self.model_service.next_member_name()
-            self.model_service.create_member(start_name, end_name, name=member_name)
+            template = (
+                self.member_placement_editor.template
+                if self._command_mode == "member_placement" else None
+            )
+            self.model_service.create_member(start_name, end_name, name=member_name, template=template)
             self.normalize_member_directions_if_enabled()
         except ValueError:
             for node_name in reversed(created_nodes):
@@ -1843,6 +1997,7 @@ class MainWindow(QMainWindow):
 
     def select_element(self, kind: str, name: str, center: object) -> None:
         self.axes_panel.hide()
+        self.reference_panel.hide()
         self.selected = kind, name
         self.selected_elements = [(kind, name)]
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
@@ -1947,6 +2102,7 @@ class MainWindow(QMainWindow):
             self.clear_selection()
         else:
             self.axes_panel.hide()
+            self.reference_panel.hide()
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def refresh_selected_property_panel(self, section: str | None) -> None:
@@ -1987,6 +2143,7 @@ class MainWindow(QMainWindow):
         self.section_panel.hide()
         self.displacement_panel.hide()
         self.axes_panel.hide()
+        self.reference_panel.hide()
         if self._command_mode == "copy_elements_selection":
             self._copy_elements_selection = []
 
@@ -2041,6 +2198,8 @@ class MainWindow(QMainWindow):
         self.show_home()
 
     def _reset_model_state(self) -> None:
+        self.member_placement_editor.reset()
+        self.reference_panel.hide()
         self.split_member_dialog.hide()
         self.axes_panel.discard()
         self.model.clear()
@@ -2152,6 +2311,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.axes_panel.discard()
+            self.reference_panel.hide()
+            self.member_placement_editor.reset()
             with self._model_access_lock:
                 loaded_model.revision = self.model.revision + 1
                 loaded_model.view_revision = self.model.view_revision + 1
@@ -2310,6 +2471,8 @@ class MainWindow(QMainWindow):
 
     def show_home(self) -> None:
         """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
+        self.member_placement_editor.hide()
+        self.reference_panel.hide()
         self.view_stack.setCurrentWidget(self.home)
         self.title_bar.set_project_actions_enabled(False)
         self.home.refresh()
@@ -2380,7 +2543,6 @@ class MainWindow(QMainWindow):
             "member_releases_visible": self.scene.set_member_releases_visible,
             "semirigid_links_visible": self.scene.set_semirigid_links_visible,
             "node_supports_visible": self.scene.set_node_supports_visible,
-            "snap_enabled": self.scene.set_snap_enabled,
         }
         if option in setters:
             setters[option](visible)

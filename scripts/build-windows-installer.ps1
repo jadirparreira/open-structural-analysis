@@ -9,6 +9,8 @@ $InstallerScript = Join-Path $Root "packaging\windows\open-structural-analysis.i
 
 Push-Location $Root
 try {
+    & uv run python scripts/prepare-dwg-converter.py
+    if ($LASTEXITCODE -ne 0) { throw "Não foi possível preparar o leitor DWG." }
     & uv run python scripts/render-windows-icon.py $IconSource $IconOutput
     & uv run pyinstaller --noconfirm --clean $Spec
 

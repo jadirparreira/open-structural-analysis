@@ -261,7 +261,7 @@ class FloatingPalette(QFrame):
     def toggle_group(self, name: str, *, animate: bool = True) -> None:
         next_group = name
         if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
-            "scene_hide_selection", "scene_reveal_selection",
+            "scene_hide_selection", "scene_reveal_selection", "member_placement",
         }:
             self.window.cancel_member_placement()
         self._tooltip.dismiss()
@@ -411,7 +411,7 @@ class TopIconPalette(QFrame):
         self._solid_node_states: dict[str, tuple[bool, bool]] | None = None
         self._window = window
         for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
-                                        ("reference-axes.svg", "Eixos de referência", "reference-axes"),
+                                        ("reference-axes.svg", "Eixos", "reference-axes"),
                                         ("box.svg", "Seções sólidas", "solid"),
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
@@ -426,7 +426,7 @@ class TopIconPalette(QFrame):
             button.setIconSize(QSize(19, 19))
             command = {
                 "grid": "GRID",
-                "reference-axes": "REFERENCEAXES",
+                "reference-axes": "AXES",
                 "node": "NODELABELS",
                 "bar": "MEMBERLABELS",
                 "axes": "LOCALAXES",
@@ -470,27 +470,6 @@ class TopIconPalette(QFrame):
             )
             layout.addWidget(button)
             self._visibility_buttons[kind] = button
-
-        snap_button = QToolButton(self)
-        snap_button.setFixedSize(24, 24)
-        snap_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "magnet.svg")))
-        snap_button.setIconSize(QSize(19, 19))
-        snap_tooltip = _command_tooltip("Snap", "SNAP")
-        snap_button.setToolTip(snap_tooltip)
-        snap_button.setProperty("paletteTooltip", snap_tooltip)
-        snap_button.setAccessibleName("Snap")
-        snap_button.setCheckable(True)
-        snap_button.setChecked(True)
-        snap_button.toggled.connect(window.scene.set_snap_enabled)
-        snap_button.installEventFilter(self)
-        snap_button.setStyleSheet(
-            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
-            "QToolButton:hover { background: #eaeef2; }"
-            "QToolButton:checked { background: #d0d7de; }"
-            "QToolButton:pressed { background: #afb8c1; }"
-        )
-        layout.addWidget(snap_button)
-        self.snap_button = snap_button
 
         scene_button = QToolButton(self)
         scene_button.setFixedSize(24, 24)
@@ -586,19 +565,37 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"))
         )
         configure_axes_button.setIconSize(QSize(19, 19))
-        configure_axes_tooltip = _command_tooltip("Configurar eixos", "AXES")
+        configure_axes_tooltip = _command_tooltip("Configurar eixos", "CONFIGAXES")
         configure_axes_button.setToolTip(configure_axes_tooltip)
         configure_axes_button.setProperty("paletteTooltip", configure_axes_tooltip)
         configure_axes_button.setAccessibleName("Configurar eixos")
+        configure_axes_button.setCheckable(True)
         configure_axes_button.clicked.connect(window.toggle_axes_panel)
         configure_axes_button.installEventFilter(self)
         configure_axes_button.setStyleSheet(
             "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
             "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
         layout.addWidget(configure_axes_button)
         self.configure_axes_button = configure_axes_button
+
+        configure_reference_button = QToolButton(self)
+        configure_reference_button.setFixedSize(24, 24)
+        configure_reference_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources/icons/scan-box.svg"))
+        )
+        configure_reference_button.setIconSize(QSize(19, 19))
+        configure_reference_button.setToolTip("Configurar referência")
+        configure_reference_button.setProperty("paletteTooltip", "Configurar referência")
+        configure_reference_button.setAccessibleName("Configurar referência")
+        configure_reference_button.setCheckable(True)
+        configure_reference_button.clicked.connect(window.toggle_reference_panel)
+        configure_reference_button.installEventFilter(self)
+        configure_reference_button.setStyleSheet(configure_axes_button.styleSheet())
+        layout.addWidget(configure_reference_button)
+        self.configure_reference_button = configure_reference_button
 
         add_member_button = QToolButton(self)
         add_member_button.setFixedSize(24, 24)
@@ -910,11 +907,6 @@ class TopIconPalette(QFrame):
             button = self._visibility_buttons.get(kind)
             if button is not None and button.isEnabled():
                 button.setChecked(bool(visible))
-        elif option == "snap_enabled":
-            self.snap_button.setChecked(bool(visible))
-
-    def toggle_snap_command(self) -> None:
-        self.snap_button.setChecked(not self.snap_button.isChecked())
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if isinstance(watched, QToolButton):

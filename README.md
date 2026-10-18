@@ -29,6 +29,15 @@ uv sync
 
 O comando `uv sync` cria o ambiente virtual e instala as dependências nas versões registradas em `uv.lock`.
 
+Para habilitar a importação de DWG na execução pelo código-fonte, prepare o leitor
+local uma vez (no Linux, são necessários compilador C e `make`):
+
+```bash
+uv run python scripts/prepare-dwg-converter.py
+```
+
+Os instaladores Windows e o AppImage já incluem esse leitor.
+
 Execute a aplicação:
 ```bash
 uv run open-structural-analysis
@@ -47,6 +56,12 @@ uv run open-structural-analysis
 ```
 
 O `git pull` baixa as alterações do GitHub e o `uv sync` atualiza o ambiente quando as dependências do projeto mudam.
+
+## Referências de desenho
+
+Importe plantas DXF ou DWG em **Arquivo → Importar referência…** e configure
+visibilidade, origem e plano pelo botão **Configurar referência**, na paleta
+de Geometria. Consulte [Referências DXF e DWG](docs/referencias-dxf.md).
 
 ## Integração MCP com Claude
 

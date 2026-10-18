@@ -102,10 +102,8 @@ def test_mcp_application_can_delete_members_and_nodes():
     application.create_member("N1", "N2")
 
     deleted_member = application.delete_member("B1")
-    deleted_node = application.delete_node("N2")
-
     assert deleted_member["deleted_member"] == "B1"
-    assert deleted_node["deleted_node"] == "N2"
+    assert not application.model.nodes
 
 
 def test_mcp_application_deletes_structural_elements_in_batches():
@@ -135,9 +133,9 @@ def test_mcp_application_deletes_structural_elements_in_batches():
 
     final = application.delete_elements(nodes=["N2"], members=["B2", "B2"])
     assert final["status"] == "deleted"
-    assert final["nodes"] == ["N2"]
+    assert final["nodes"] == ["N2", "N3"]
     assert final["members"] == ["B2"]
-    assert set(model.nodes) == {"N3"}
+    assert not model.nodes
     assert not model.bars
 
 

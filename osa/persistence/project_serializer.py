@@ -23,6 +23,8 @@ from osa.domain import (
 )
 from osa.domain.errors import DuplicateNodeCoordinatesError
 
+from .drawing_reference import dump_reference, load_reference
+
 FORMAT_V1 = "open-structural-analysis/v1"
 FORMAT_V2 = "open-structural-analysis/v2"
 ANALYSIS_AXES = "osa-z-up-v1"
@@ -68,6 +70,7 @@ class ProjectSerializer:
             "bars": [asdict(member) for member in model.bars.values()],
             "rigid_bars": [asdict(rigid) for rigid in model.rigid_bars.values()],
             "axes": {direction: [asdict(axis) for axis in axes] for direction, axes in model.axes.items()},
+            "references": [dump_reference(reference) for reference in model.references.values()],
             "materials": {
                 name: {"type": model.material_types.get(name, ""), "values": list(values)}
                 for name, values in model.materials.items()
@@ -111,6 +114,10 @@ class ProjectSerializer:
             data.pop("bars", None)
 
         candidate = type(model)()
+        for item in data.get("references", ()):
+            candidate.add_reference(load_reference(item))
+            if yield_control is not None:
+                yield_control()
         # Only nearby spatial cells can contain a duplicate. The previous
         # all-pairs scan made opening a model quadratic in its node count.
         tolerance = candidate.coordinate_tolerance
@@ -303,6 +310,7 @@ class ProjectSerializer:
         model.bars = candidate.bars
         model.rigid_bars = candidate.rigid_bars
         model.axes = candidate.axes
+        model.references = candidate.references
         model.materials = candidate.materials
         model.material_types = candidate.material_types
         model.sections = candidate.sections

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
 from osa.domain import StructuralModel
+from osa.domain.entities import Member
 
 from .section_property_service import SectionPropertyService
 
@@ -26,8 +29,11 @@ class ModelService:
     def create_node(self, x: float, y: float, z: float, *, name: str | None = None):
         return self.model.add_node(name or self.next_node_name(), x, y, z)
 
-    def create_member(self, start_node: str, end_node: str, *, name: str | None = None):
-        return self.model.add_bar(name or self.next_member_name(), start_node, end_node)
+    def create_member(
+        self, start_node: str, end_node: str, *, name: str | None = None,
+        template: Member | None = None,
+    ):
+        return self.model.add_bar(name or self.next_member_name(), start_node, end_node, template=template)
 
     def split_member(self, name: str, parts: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Divide a member into equally sized collinear members."""
@@ -86,6 +92,61 @@ class ModelService:
             tuple(node_names),
             tuple(member_names),
             segment_lengths=segment_lengths,
+        )
+
+    def split_member_at_point(
+        self, name: str, coordinates: tuple[float, float, float],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Split a member at an interior point and return the shared node name."""
+        tolerance = self.model.coordinate_tolerance
+        ordered_members = []
+        if name in self.model.bars:
+            ordered_members.append(self.model.bars[name])
+        ordered_members.extend(
+            member for member_name, member in self.model.bars.items() if member_name != name
+        )
+        split_target = None
+        for member in ordered_members:
+            start = self.model.nodes[member.start_node]
+            end = self.model.nodes[member.end_node]
+            origin = (start.x, start.y, start.z)
+            direction = (end.x - start.x, end.y - start.y, end.z - start.z)
+            length_squared = math.fsum(value * value for value in direction)
+            length = math.sqrt(length_squared)
+            if length <= tolerance:
+                continue
+            offset = tuple(float(value) - origin[index] for index, value in enumerate(coordinates))
+            fraction = math.fsum(offset[index] * direction[index] for index in range(3)) / length_squared
+            projected = tuple(origin[index] + fraction * direction[index] for index in range(3))
+            distance_from_line = math.sqrt(math.fsum(
+                (float(coordinates[index]) - projected[index]) ** 2 for index in range(3)
+            ))
+            if distance_from_line > tolerance * 10 or not 0.0 <= fraction <= 1.0:
+                continue
+            distance = length * fraction
+            if min(distance, length - distance) <= tolerance:
+                return (), ()
+            split_target = member.name, distance, length - distance
+            break
+        if split_target is None:
+            raise ValueError(f"O ponto não está no trecho interno do membro '{name}'.")
+        target_name, first_length, second_length = split_target
+
+        node_index = 1
+        while f"N{node_index}" in self.model.nodes:
+            node_index += 1
+        member_names: list[str] = []
+        member_index = 1
+        while len(member_names) < 2:
+            candidate = f"B{member_index}"
+            member_index += 1
+            if candidate not in self.model.bars or candidate == target_name:
+                member_names.append(candidate)
+        return self.model.split_bar(
+            target_name,
+            (f"N{node_index}",),
+            tuple(member_names),
+            segment_lengths=(first_length, second_length),
         )
 
     def reverse_member(self, name: str):
@@ -309,13 +370,38 @@ class ModelService:
                 for rigid in self.model.rigid_bars.values()
             )
         ]
+        affected_nodes = tuple(
+            node_name
+            for member_name in members
+            for node_name in (
+                self.model.bars[member_name].start_node,
+                self.model.bars[member_name].end_node,
+            )
+        ) + tuple(
+            node_name
+            for rigid_name in rigid_bars
+            for node_name in (
+                self.model.rigid_bars[rigid_name].start_node,
+                self.model.rigid_bars[rigid_name].end_node,
+            )
+        )
+        auto_orphaned_nodes = (
+            self.model._orphan_node_names(
+                affected_nodes,
+                removing_bars=member_set,
+                removing_rigid_bars=rigid_bar_set,
+            )
+            if not blockers else ()
+        )
+        deleted_node_names = self._unique_names((*nodes, *auto_orphaned_nodes))
+        deleted_node_set = set(deleted_node_names)
         deleted_actions = tuple(
             name for name, action in self.model.actions.items()
-            if action.target in requested_node_set | member_set | rigid_bar_set
+            if action.target in deleted_node_set | member_set | rigid_bar_set
         )
         result: dict[str, object] = {
             "status": "preview" if dry_run else "blocked" if blockers else "deleted",
-            "nodes": list(nodes),
+            "nodes": list(deleted_node_names),
             "members": list(members),
             "rigid_bars": list(rigid_bars),
             "actions": list(deleted_actions),
@@ -332,7 +418,7 @@ class ModelService:
             del self.model.bars[name]
         for name in rigid_bars:
             del self.model.rigid_bars[name]
-        for name in nodes:
+        for name in deleted_node_names:
             del self.model.nodes[name]
         for name in deleted_actions:
             del self.model.actions[name]

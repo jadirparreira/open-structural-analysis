@@ -199,23 +199,19 @@ def test_horizontal_orbit_keeps_global_z_after_any_cube_orientation(qt_app, monk
 def test_hidden_construction_plane_is_not_a_snap_target(qt_app, monkeypatch):
     scene = StructureScene()
     scene.render_model(StructuralModel())
-    scene._pointer_position = (100.0, 100.0)
-    grid_point = np.asarray((1.0, 2.0, 0.0))
-    monkeypatch.setattr(
-        scene,
-        "_nearest_grid_candidate",
-        lambda _position: (grid_point, 0.0),
-    )
+    grid_point = np.zeros(3)
+    screen, visible = scene._world_to_screen(grid_point)
+    assert visible
+    scene._pointer_position = tuple(screen)
 
     snap = scene._snap_position(np.zeros(3))
     assert snap is not None
-    assert snap[1] == "grid"
+    assert snap[1] == "intersection"
     assert np.allclose(snap[0], grid_point)
 
     scene.set_grid_visible(False)
 
     assert scene._snap_position(np.zeros(3)) is None
-    assert scene._snap_to_grid(np.zeros(3)) is None
 
 
 @pytest.mark.parametrize(
@@ -255,7 +251,7 @@ def test_second_member_point_keeps_snap_coordinates(qt_app, monkeypatch):
     ("mode", "normal_axis"),
     [("XY", 2), ("XZ", 1), ("YZ", 0)],
 )
-def test_member_point_can_snap_to_perpendicular_guide(
+def test_member_point_can_snap_to_orthogonal_normal_guide(
     qt_app, monkeypatch, mode, normal_axis,
 ):
     scene = StructureScene()
@@ -273,13 +269,13 @@ def test_member_point_can_snap_to_perpendicular_guide(
     monkeypatch.setattr(scene, "_world_to_screen", project)
     target, snap_kind = scene._placement_target(np.asarray((1.0, 2.0, 3.0)))
 
-    assert snap_kind == "perpendicular"
+    assert snap_kind == "orthogonal"
     assert np.isclose(target[normal_axis], first_point[normal_axis] + 2.0)
     plane_axes = [axis for axis in range(3) if axis != normal_axis]
     assert np.allclose(target[plane_axes], np.asarray((10.0, 20.0, 30.0))[plane_axes])
 
 
-def test_perpendicular_guide_respects_snap_toggle(qt_app, monkeypatch):
+def test_orthogonal_normal_guide_respects_snap_toggle(qt_app, monkeypatch):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_preview_start((10.0, 20.0, 30.0))
@@ -298,7 +294,7 @@ def test_perpendicular_guide_respects_snap_toggle(qt_app, monkeypatch):
     assert target[2] == 30.0
 
 
-def test_perpendicular_guide_wins_over_ambiguous_grid_projection(qt_app, monkeypatch):
+def test_real_intersection_takes_precedence_over_orthogonal_guide(qt_app, monkeypatch):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_preview_start((2.0, 2.0, 0.0))
@@ -308,28 +304,28 @@ def test_perpendicular_guide_wins_over_ambiguous_grid_projection(qt_app, monkeyp
     monkeypatch.setattr(
         scene,
         "_snap_position",
-        lambda _position: (grid_point, "grid"),
+        lambda _position: (grid_point, "intersection"),
     )
     monkeypatch.setattr(
         scene,
         "_placement_guide_target",
-        lambda: (perpendicular_point, "perpendicular"),
+        lambda: (perpendicular_point, "orthogonal"),
     )
 
     target, snap_kind = scene._placement_target(np.zeros(3))
 
-    assert snap_kind == "perpendicular"
-    assert np.allclose(target, perpendicular_point)
+    assert snap_kind == "intersection"
+    assert np.allclose(target, grid_point)
 
 
-def test_perpendicular_guide_is_dashed_and_fades_like_grid(qt_app):
+def test_orthogonal_normal_guide_is_dashed_and_fades_like_grid(qt_app):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_placement_mode(True)
     scene.set_member_preview_start((2.0, 2.0, 0.0))
-    scene._update_perpendicular_guide()
+    scene._update_normal_guide()
 
-    mesh = scene._perpendicular_guide_actor.GetMapper().GetInput()
+    mesh = scene._normal_guide_actor.GetMapper().GetInput()
     rgba = np.asarray(mesh.GetPointData().GetArray("rgba"))
 
     assert mesh.GetNumberOfLines() > 10
@@ -371,15 +367,15 @@ def test_orthogonal_guide_snaps_along_active_plane_axis(qt_app, monkeypatch):
     assert np.allclose(target, np.asarray((6.0, 2.0, 0.0)))
 
 
-def test_perpendicular_guide_has_five_units_on_each_side(qt_app):
+def test_orthogonal_normal_guide_has_five_units_on_each_side(qt_app):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_placement_mode(True)
     scene.set_member_preview_start((2.0, 2.0, 0.0))
 
-    direction = scene._perpendicular_direction()
-    length = scene._perpendicular_guide_length()
-    mesh = scene._perpendicular_guide_mesh(
+    direction = scene._normal_direction()
+    length = scene._normal_guide_length()
+    mesh = scene._normal_guide_mesh(
         scene._member_preview_start, direction, length,
     )
     points = np.asarray(mesh.points)
@@ -389,7 +385,7 @@ def test_perpendicular_guide_has_five_units_on_each_side(qt_app):
     assert np.isclose(distances.max(), 5.0)
 
 
-def test_perpendicular_snap_extends_to_ten_units_beyond_visible_guide(qt_app, monkeypatch):
+def test_orthogonal_normal_snap_extends_to_ten_units_beyond_visible_guide(qt_app, monkeypatch):
     scene = StructureScene()
     scene.render_model(StructuralModel())
     scene.set_member_placement_mode(True)
@@ -402,9 +398,9 @@ def test_perpendicular_snap_extends_to_ten_units_beyond_visible_guide(qt_app, mo
     )
 
     scene._pointer_position = (100.0, 40.0)
-    upper_target = scene._perpendicular_snap_target()
+    upper_target = scene._normal_snap_target()
     scene._pointer_position = (100.0, 55.0)
-    outside_target = scene._perpendicular_snap_target()
+    outside_target = scene._normal_snap_target()
 
     assert upper_target is not None
     assert np.isclose(upper_target[2], 8.0)
