@@ -234,7 +234,7 @@ def test_intersection_uses_actual_construction_plane_and_offset(scene, plane):
     model.set_reference_axes({{"XY": "Z", "XZ": "Y", "YZ": "X"}[plane]: (ReferenceAxis("N2", 2.0),)})
     add_line(model, "B", world((-2, 0.2)), world((3, 0.2)))
     render(scene, model)
-    assert scene._reference_plane_levels() == (0.0, 2.0)
+    assert scene._reference_plane_levels() == (2.0,)
     assert scene._reference_plane_z == 2.0
     camera = scene.plotter.renderer.GetActiveCamera()
     normal = np.eye(3)[{"XY": 2, "XZ": 1, "YZ": 0}[plane]]

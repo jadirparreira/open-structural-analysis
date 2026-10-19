@@ -48,4 +48,4 @@ def test_restarting_local_mcp_recreates_the_single_use_sdk_session(monkeypatch):
     server._thread.join(timeout=2)
 
     assert server.server is not first_sdk_server
-    assert len(server.server._tool_manager.list_tools()) == 60
+    assert len(server.server._tool_manager.list_tools()) == 70

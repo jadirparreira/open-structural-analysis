@@ -8,7 +8,8 @@ def test_packaged_mcp_server_needs_no_credential():
     manifest = Path(__file__).resolve().parents[1] / "plugins" / "mcp-opensa" / "mcp.json"
     server = json.loads(manifest.read_text(encoding="utf-8"))["mcpServers"]["mcp-opensa"]
     assert server["url"] == "http://127.0.0.1:8765/mcp-opensa"
-    assert server["extensions"]["com.openai"]["auth"] == {"type": "none"}
+    assert server["type"] == "streamable-http"
+    assert "extensions" not in server
     assert "headers" not in server
 
 

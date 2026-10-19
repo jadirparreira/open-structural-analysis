@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QObject
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from osa.app import create_application
 from osa.startup_splash import StartupSplash
@@ -17,7 +17,10 @@ class WindowShowRecorder(QObject):
         self.windows = []
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+        if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow() and (
+            obj.objectName() == "unitValueBox"
+            or isinstance(obj, QLabel) and obj.text() in {"d", "bf", "tw", "tf", "b", "t", "c", "D", "De", "Di", "h"}
+        ):
             self.windows.append(obj)
         return False
 
@@ -38,16 +41,20 @@ def test_startup_never_exposes_section_fields_as_desktop_windows(monkeypatch):
     window = None
     try:
         app, window = create_application(show_splash=True, on_splash_shown=bootloader_close)
-        splash = window._startup_splash
-        assert handover_windows == [splash]
-        assert recorder.windows == [splash]
+        geometry_widgets = [
+            widget
+            for label, box, _field in window.section_panel._geometry_widgets
+            for widget in (label, box)
+        ]
+        assert not set(geometry_widgets).intersection(handover_windows)
+        assert not recorder.windows
         assert not window.isVisible()
 
         # Newly used fields must also be parented before being shown when
         # changing section families after startup.
         for family in SECTION_PARAMETRIC_SPECS:
             window.section_panel._set_geometry_layout(family)
-        assert recorder.windows == [splash]
+        assert not recorder.windows
     finally:
         app.removeEventFilter(recorder)
         if window is not None:

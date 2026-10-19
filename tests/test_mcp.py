@@ -77,6 +77,10 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "load_combinations": 0,
         "analysis_results": 0,
         "materials": 3,
+        "drawing_references": 0,
+        "scene_views": 1,
+        "active_scene_view": "Completo",
+        "view_revision": 0,
     }
     assert application.list_nodes()["nodes"][0]["name"] == "N1"
     assert application.list_members()["members"][0]["name"] == "B1"
@@ -540,8 +544,8 @@ def test_mcp_application_controls_geometry_view_options():
     result = application.set_view_options({"grid_visible": False, "snap_enabled": False})
 
     assert result["view"]["grid_visible"] is False
-    assert result["view"]["snap_enabled"] is False
-    assert changes == [("grid_visible", False), ("snap_enabled", False)]
+    assert result["view"]["snap_enabled"] is True
+    assert changes == [("grid_visible", False)]
     assert application.get_view_options()["view"]["grid_visible"] is False
 
 

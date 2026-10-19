@@ -25,11 +25,6 @@ data_files.extend(
     (str(path), "osa/resources/icons")
     for path in sorted((project_root / "osa/resources/icons").glob("*.svg"))
 )
-data_files.extend(
-    (str(path), "osa/resources/icons")
-    for path in sorted((project_root / "osa/resources/icons").glob("*.png"))
-)
-
 plugin_root = project_root / "plugins"
 data_files.extend(
     (

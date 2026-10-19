@@ -61,6 +61,14 @@ class InspectorWindow(QMainWindow):
     def refresh_scene(self) -> None:
         pass
 
+    def refresh_selected_property_panel(self, section: str | None) -> None:
+        if self.selected is not None and hasattr(self, "properties"):
+            self.properties.show_for(
+                *self.selected,
+                section or "Geometria",
+                selection=getattr(self, "selected_elements", None) or [self.selected],
+            )
+
     def close_displacement_panel(self, button=None) -> None:
         self.displacement_panel.hide()
 
@@ -659,8 +667,10 @@ def test_mixed_kind_switch_keeps_action_and_analysis_selection(qt_app):
     )]
     selection = (("node", "N1"), ("node", "N2"), ("bar", "B1"))
     window.selected = ("bar", "B1")
+    window.selected_elements = list(selection)
     window.palette.active_group = "Ações"
     panel = PropertyPanel(window)
+    window.properties = panel
     panel.show_for("bar", "B1", "Ações", selection=selection)
 
     assert panel.title.text() == "Elementos · 3 selecionados"
