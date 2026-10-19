@@ -59,7 +59,9 @@ class StartupSplash(QWidget):
             timer.setSingleShot(True)
             timer.setTimerType(Qt.TimerType.PreciseTimer)
             timer.timeout.connect(wait_loop.quit)
-            timer.start(remaining_ms)
+            # Leave a small margin for platform timer granularity so the
+            # measured visible interval never ends just under the minimum.
+            timer.start(remaining_ms + 10)
             wait_loop.exec()
             timer.deleteLater()
             wait_loop.deleteLater()
