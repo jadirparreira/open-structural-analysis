@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import os
 import sys
-from time import monotonic
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from osa.startup_splash import StartupSplash
 
-_STARTUP_STARTED_AT = monotonic()
-_MINIMUM_SPLASH_MS = 2000
 
-
-def create_application(argv: list[str] | None = None, *, show_splash: bool = False):
+def create_application(
+    argv: list[str] | None = None,
+    *,
+    show_splash: bool = False,
+    on_splash_shown: Callable[[], None] | None = None,
+):
     # O OSA usa os diálogos e widgets nativos do Qt e não precisa do XDG
     # Desktop Portal. Em algumas sessões KDE/Wayland o registro do app no
     # portal falha com "Connection already associated with an application ID".
@@ -40,6 +41,10 @@ def create_application(argv: list[str] | None = None, *, show_splash: bool = Fal
     if splash is not None:
         splash.show()
         app.processEvents()
+        if on_splash_shown is not None:
+            # Hand over only after the vector splash has painted. The
+            # bootloader already gave feedback before Python/Qt loaded.
+            on_splash_shown()
     try:
         if sys.platform.startswith("linux"):
             # VTK 9.7 can emit four benign framebuffer WARNs when Qt/Wayland
@@ -85,38 +90,22 @@ def _remove_legacy_gtk_accessibility_module() -> None:
 def run() -> int:
     bootloader_splash = _get_bootloader_splash()
     try:
-        app, window = create_application(show_splash=bootloader_splash is None)
-    except Exception as error:
+        app, window = create_application(
+            show_splash=True,
+            on_splash_shown=bootloader_splash.close if bootloader_splash is not None else None,
+        )
+    except Exception:
         if bootloader_splash is not None:
             bootloader_splash.close()
-            QMessageBox.critical(
-                None,
-                "Falha ao iniciar o Open Structural Analysis",
-                str(error),
-            )
         raise
-
-    if bootloader_splash is not None:
-        window.show()
-        app.processEvents()
-        remaining_ms = max(
-            0,
-            _MINIMUM_SPLASH_MS - int((monotonic() - _STARTUP_STARTED_AT) * 1000),
-        )
-        if remaining_ms:
-            wait_loop = QEventLoop()
-            QTimer.singleShot(remaining_ms, wait_loop.quit)
-            wait_loop.exec()
-        bootloader_splash.close()
-        window.raise_()
-        window.activateWindow()
-        return app.exec()
 
     splash = getattr(window, "_startup_splash", None)
     if splash is None:
         window.show()
     else:
         splash.finish(window)
+    window.raise_()
+    window.activateWindow()
     return app.exec()
 
 

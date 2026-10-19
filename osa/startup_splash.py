@@ -5,18 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QEventLoop, Qt, QTimer
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QFrame,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtGui import QPainter
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 class StartupSplash(QWidget):
-    """Show honest, indeterminate startup feedback without a console window."""
+    """Paint the official vector artwork at the screen's pixel density."""
 
     MINIMUM_VISIBLE_MS = 2000
 
@@ -28,43 +23,23 @@ class StartupSplash(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self.setWindowTitle("Open Structural Analysis")
-        self.setFixedSize(460, 176)
         self._visible_timer = QElapsedTimer()
-
-        frame = QFrame(self)
-        frame.setObjectName("startupCard")
-        frame_layout = QVBoxLayout(frame)
-        frame_layout.setContentsMargins(24, 20, 24, 20)
-        frame_layout.setSpacing(12)
-
-        icon_path = (
+        artwork_path = (
             Path(__file__).resolve().parent
             / "resources"
             / "icons"
-            / "openstructuralanalysis-wordmark.png"
+            / "openstructuralanalysis-startup.svg"
         )
-        wordmark = QLabel(frame)
-        wordmark.setPixmap(
-            QPixmap(str(icon_path)).scaledToWidth(396, Qt.TransformationMode.SmoothTransformation)
-        )
-        wordmark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wordmark.setAccessibleName("Open Structural Analysis")
-        frame_layout.addWidget(wordmark)
-
-        tagline = QLabel("Feito pra ser livre", frame)
-        tagline.setObjectName("startupTagline")
-        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        frame_layout.addWidget(tagline)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
-        layout.addWidget(frame)
-        self.setStyleSheet(
-            "QWidget { background: transparent; }"
-            "QFrame#startupCard { background: #ffffff; border: 1px solid #d0d7de; }"
-            "QLabel#startupTagline { color: #24292f; font-size: 15px; }"
-        )
+        self._artwork = QSvgRenderer(str(artwork_path), self)
+        self.setFixedSize(self._artwork.defaultSize())
+        self.setAccessibleName("Open Structural Analysis — Feito pra ser livre")
         self._center_on_primary_screen()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._artwork.render(painter)
+        painter.end()
 
     def _center_on_primary_screen(self) -> None:
         screen = QApplication.primaryScreen()
@@ -80,8 +55,14 @@ class StartupSplash(QWidget):
         remaining_ms = max(0, self.MINIMUM_VISIBLE_MS - self._visible_timer.elapsed())
         if remaining_ms:
             wait_loop = QEventLoop(self)
-            QTimer.singleShot(remaining_ms, wait_loop.quit)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setTimerType(Qt.TimerType.PreciseTimer)
+            timer.timeout.connect(wait_loop.quit)
+            timer.start(remaining_ms)
             wait_loop.exec()
+            timer.deleteLater()
+            wait_loop.deleteLater()
         window.show()
         QApplication.processEvents()
         self.close()

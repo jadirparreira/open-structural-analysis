@@ -1,10 +1,11 @@
-"""Render the startup splash SVG at its native size for the PyInstaller bootloader."""
+"""Rasterize vector artwork for the PNG-only PyInstaller bootloader."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
@@ -16,18 +17,21 @@ def main() -> int:
 
     source = Path(sys.argv[1]).resolve()
     destination = Path(sys.argv[2]).resolve()
+    app = QGuiApplication(sys.argv[:1])
     renderer = QSvgRenderer(str(source))
     if not renderer.isValid():
         print(f"SVG inválido: {source}", file=sys.stderr)
         return 1
 
-    app = QGuiApplication(sys.argv[:1])
     size = renderer.defaultSize()
-    image = QImage(size, QImage.Format.Format_RGB32)
+    # Supersampling keeps thin strokes and text clean in the earliest frame.
+    # The Qt splash paints the SVG directly once Qt is available.
+    image = QImage(size * 4, QImage.Format.Format_RGB32)
     image.fill(0xFFFFFFFF)
     painter = QPainter(image)
     renderer.render(painter)
     painter.end()
+    image = image.scaled(size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not image.save(str(destination), "PNG"):

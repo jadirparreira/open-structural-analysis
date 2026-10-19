@@ -726,10 +726,10 @@ class SectionPanel(QFrame):
         }
         for name, (row, column) in positions.items():
             label_widget, box = self.mechanical_widgets[name]
-            label_widget.setVisible(True)
-            box.setVisible(True)
             self.mechanical.addWidget(label_widget, row, column)
             self.mechanical.addWidget(box, row, column + 1)
+            label_widget.setVisible(True)
+            box.setVisible(True)
 
     def _set_geometry_layout(self, section: str) -> None:
         definitions = {
@@ -765,10 +765,12 @@ class SectionPanel(QFrame):
             box.setToolTip(tooltip)
             box.findChildren(QLabel)[0].setText(unit)
             row, column = index // 2, (index % 2) * 2
-            label_widget.show()
-            box.show()
+            # Adding first gives these widgets their panel parent. Showing
+            # unparented fields creates temporary desktop windows on Windows.
             self.geometry.addWidget(label_widget, row, column)
             self.geometry.addWidget(box, row, column + 1)
+            label_widget.show()
+            box.show()
             self.fields[name] = field
 
     def _calculate_properties(self, geometry: dict[str, float]):

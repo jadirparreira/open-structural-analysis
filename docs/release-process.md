@@ -39,6 +39,24 @@ Não será distribuído um pacote portátil `.zip` nesta etapa.
 
 As builds oficiais para Linux e Windows serão realizadas com Python 3.13.
 
+## Tela de abertura
+
+O splash usa a arte vetorial `osa/resources/icons/openstructuralanalysis-startup.svg`,
+com o símbolo oficial, o nome do programa e a frase “Feito pra ser livre”.
+O Qt desenha esse SVG diretamente na resolução da tela, sem barra de progresso
+ou cantos arredondados. A janela principal aparece após a inicialização e pelo
+menos dois segundos de exibição do splash do Qt.
+
+Antes do carregamento do Python e do Qt, o bootloader do PyInstaller mostra
+uma cópia PNG gerada desse mesmo SVG durante a compilação. Esse primeiro estágio
+aceita apenas PNG. A cópia usa suavização por supersampling e permanece visível
+até o primeiro desenho do splash vetorial, antes dos imports da interface e do VTK.
+
+Os campos dos painéis de seção devem ser adicionados ao layout antes de
+`show()`/`setVisible(True)`. Exibi-los ainda sem pai cria janelas temporárias
+independentes que piscam no Windows. O teste `tests/test_startup.py` acompanha
+os eventos de exibição para impedir que isso volte a ocorrer.
+
 ## Automação dos releases
 
 A automação será implementada em um workflow do GitHub Actions chamado:
