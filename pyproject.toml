@@ -31,7 +31,7 @@ include = ["osa*"]
 
 [tool.setuptools.package-data]
 "osa.data" = ["*.json"]
-"osa.resources" = ["icons/*.svg"]
+"osa.resources" = ["icons/*.svg", "icons/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

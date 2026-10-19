@@ -12,6 +12,10 @@ try {
     & uv run python scripts/prepare-dwg-converter.py
     if ($LASTEXITCODE -ne 0) { throw "Não foi possível preparar o leitor DWG." }
     & uv run python scripts/render-windows-icon.py $IconSource $IconOutput
+    & uv run python scripts/render-startup-splash.py `
+        (Join-Path $Root "osa\resources\icons\openstructuralanalysis-startup.svg") `
+        (Join-Path $Root "build\startup-splash.png")
+    if ($LASTEXITCODE -ne 0) { throw "Não foi possível preparar a tela de abertura." }
     & uv run pyinstaller --noconfirm --clean $Spec
 
     $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue

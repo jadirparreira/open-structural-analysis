@@ -22,6 +22,10 @@ data_files.extend(
     (str(path), "osa/resources/icons")
     for path in sorted((project_root / "osa/resources/icons").glob("*.svg"))
 )
+data_files.extend(
+    (str(path), "osa/resources/icons")
+    for path in sorted((project_root / "osa/resources/icons").glob("*.png"))
+)
 
 plugin_root = project_root / "plugins"
 data_files.extend(
@@ -75,10 +79,19 @@ analysis = Analysis(
     noarchive=False,
 )
 
+splash = Splash(
+    str(project_root / "build/startup-splash.png"),
+    binaries=analysis.binaries,
+    datas=analysis.datas,
+    center="primary",
+    always_on_top=True,
+)
+
 pyz = PYZ(analysis.pure)
 
 executable = EXE(
     pyz,
+    splash,
     analysis.scripts,
     [],
     exclude_binaries=True,
@@ -94,6 +107,7 @@ executable = EXE(
 
 COLLECT(
     executable,
+    splash.binaries,
     analysis.binaries,
     analysis.datas,
     strip=False,
