@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QObject
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from osa.app import create_application
@@ -66,15 +66,13 @@ def test_splash_waits_two_seconds_before_showing_main_window():
     app = QApplication.instance() or QApplication([])
     splash = StartupSplash()
     window = QWidget()
-    timer = QElapsedTimer()
     try:
-        timer.start()
         splash.show()
         app.processEvents()
         assert splash.isVisible()
         assert not window.isVisible()
         splash.finish(window)
-        assert timer.elapsed() >= 2000
+        assert splash._visible_timer.elapsed() >= StartupSplash.MINIMUM_VISIBLE_MS
         assert window.isVisible()
         assert not splash.isVisible()
     finally:
