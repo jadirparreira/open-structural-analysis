@@ -7,7 +7,7 @@ SPEC_FILE="$ROOT_DIR/packaging/linux/open-structural-analysis.spec"
 APPDIR="$ROOT_DIR/packaging/linux/AppDir"
 PYINSTALLER_DIST="$ROOT_DIR/dist/open-structural-analysis"
 VERSION="${OSA_VERSION:-2026.3}"
-OUTPUT="$ROOT_DIR/dist/OpenStructuralAnalysis-${VERSION}-x86_64.AppImage"
+OUTPUT="$ROOT_DIR/dist/OpenStructuralAnalysis-${VERSION}-Linux-x86_64.AppImage"
 RUNTIME_FILE="$ROOT_DIR/build-tools/runtime-x86_64"
 
 if [[ -z "${APPIMAGE_TOOL:-}" ]]; then
@@ -63,10 +63,10 @@ case "$APPIMAGE_TOOL" in
         if [[ -f "$RUNTIME_FILE" ]]; then
             "$APPIMAGE_TOOL" --appimage-extract-and-run \
                 --runtime-file "build-tools/runtime-x86_64" \
-                "packaging/linux/AppDir" "dist/OpenStructuralAnalysis-${VERSION}-x86_64.AppImage"
+                "packaging/linux/AppDir" "$OUTPUT"
         else
             "$APPIMAGE_TOOL" --appimage-extract-and-run \
-                "packaging/linux/AppDir" "dist/OpenStructuralAnalysis-${VERSION}-x86_64.AppImage"
+                "packaging/linux/AppDir" "$OUTPUT"
         fi
         ;;
     *)

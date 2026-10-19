@@ -99,6 +99,10 @@ def test_member_pick_follows_visible_representation_with_section_offset(qt_app):
     scene.plotter.resize(800, 600)
     scene.show()
     qt_app.processEvents()
+    context = scene.plotter.context()
+    if context is None or not context.isValid():
+        scene.close()
+        pytest.skip("A seleção 3D requer um contexto OpenGL válido.")
     scene.render_model(model)
     camera = scene.plotter.renderer.GetActiveCamera()
     camera.SetPosition(2.5, 0.5, 10.0)

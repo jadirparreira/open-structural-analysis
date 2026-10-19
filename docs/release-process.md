@@ -76,7 +76,7 @@ publish-release
 O job `build-linux-appimage` será responsável por gerar:
 
 ```text
-OpenStructuralAnalysis-2026.3-x86_64.AppImage
+OpenStructuralAnalysis-2026.3-Linux-x86_64.AppImage
 ```
 
 O job `build-windows-installer` será responsável por gerar:
