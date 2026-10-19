@@ -225,6 +225,9 @@ def prepare_scene_geometry(
 ) -> PreparedSceneGeometry:
     """Build large CPU-side meshes without accessing the Qt or VTK renderer."""
     hidden_members = set(model.scene_views.get(model.active_scene_view, ())).intersection(model.bars)
+    hidden_rigid_bars = set(
+        model.scene_view_hidden_rigid_bars.get(model.active_scene_view, ())
+    ).intersection(model.rigid_bars)
     visible_bars = {
         name: member for name, member in model.bars.items() if name not in hidden_members
     }
@@ -235,10 +238,11 @@ def prepare_scene_geometry(
         connected.update(endpoints)
         if member.name not in hidden_members:
             visible_connected.update(endpoints)
-    for rigid in model.rigid_bars.values():
+    for name, rigid in model.rigid_bars.items():
         endpoints = (rigid.start_node, rigid.end_node)
         connected.update(endpoints)
-        visible_connected.update(endpoints)
+        if name not in hidden_rigid_bars:
+            visible_connected.update(endpoints)
     visible_node_names = set(model.nodes).difference(connected).union(visible_connected)
     visible_nodes = {
         name: node for name, node in model.nodes.items() if name in visible_node_names
@@ -285,7 +289,7 @@ def prepare_scene_geometry(
         for rigid in model.rigid_bars.values()
     )
     axis_name = {"XY": "Z", "XZ": "X", "YZ": "Y"}.get(reference_plane, "Z")
-    levels = tuple(sorted({0.0, *(float(axis.value) for axis in model.axes.get(axis_name, ())) }))
+    levels = tuple(sorted({float(axis.value) for axis in model.axes.get(axis_name, ())})) or (0.0,)
     plane_level = min(levels, key=lambda level: abs(level - preferred_plane_level))
     grid_renderer = GridRenderer()
     if progress is not None:

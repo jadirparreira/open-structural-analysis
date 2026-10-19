@@ -45,6 +45,7 @@ class McpApplication:
         action_service: ActionService | None = None,
         analysis_engine=None,
         on_model_changed: Callable[[], None] | None = None,
+        on_scene_views_changed: Callable[[], None] | None = None,
         on_view_changed: Callable[[str, bool], None] | None = None,
         get_view_state: Callable[[], dict[str, bool]] | None = None,
         on_active_action_changed: Callable[[str], None] | None = None,
@@ -64,6 +65,7 @@ class McpApplication:
         self.action_service = action_service or ActionService(model)
         self._analysis_engine = analysis_engine or PyniteAdapter()
         self._on_model_changed = on_model_changed
+        self._on_scene_views_changed = on_scene_views_changed
         self._on_view_changed = on_view_changed
         self._get_view_state = get_view_state
         self._on_active_action_changed = on_active_action_changed
@@ -155,7 +157,137 @@ class McpApplication:
             "load_combinations": len(self.model.load_combinations),
             "analysis_results": len(self.model.analysis_results),
             "materials": len(self.model.materials),
+            "drawing_references": len(self.model.references),
+            "scene_views": len(self.model.scene_views),
+            "active_scene_view": self.model.active_scene_view,
+            "view_revision": self.model.view_revision,
         }
+
+    def list_drawing_references(self) -> dict[str, Any]:
+        """Retorna metadados das referências de desenho importadas."""
+        return {
+            "view_revision": self.model.view_revision,
+            "references": [
+                {
+                    "id": reference.id,
+                    "name": reference.name,
+                    "origin": list(reference.origin),
+                    "plane": reference.plane,
+                    "visible": reference.visible,
+                    "line_count": len(reference.geometry.lines) // 32,
+                    "triangle_count": len(reference.geometry.triangles) // 48,
+                    "snap_endpoint_count": len(reference.geometry.snap_endpoints or b"") // 16,
+                    "snap_center_count": len(reference.geometry.snap_centers or b"") // 16,
+                }
+                for reference in self.model.references.values()
+            ],
+        }
+
+    def update_drawing_reference(
+        self,
+        reference_id: str,
+        origin: list[float] | None = None,
+        plane: str | None = None,
+        visible: bool | None = None,
+    ) -> dict[str, Any]:
+        """Reposiciona, reorienta ou altera a visibilidade de uma referência."""
+        if reference_id not in self.model.references:
+            raise ValueError(f"Referência '{reference_id}' não encontrada.")
+        if origin is None and plane is None and visible is None:
+            raise ValueError("Informe origin, plane ou visible para atualizar.")
+        if origin is not None:
+            if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+                raise ValueError("origin deve conter exatamente três coordenadas.")
+            origin = tuple(float(value) for value in origin)
+        if visible is not None and not isinstance(visible, bool):
+            raise ValueError("visible deve ser booleano.")
+        self.model.update_reference(reference_id, origin=origin, plane=plane, visible=visible)
+        self._notify_model_changed()
+        return self.list_drawing_references()
+
+    def delete_drawing_reference(self, reference_id: str) -> dict[str, Any]:
+        """Remove uma referência de desenho importada do projeto."""
+        if reference_id not in self.model.references:
+            raise ValueError(f"Referência '{reference_id}' não encontrada.")
+        self.model.remove_reference(reference_id)
+        self._notify_model_changed()
+        return self.list_drawing_references()
+
+    def get_scene_views(self) -> dict[str, Any]:
+        """Retorna as vistas persistentes e os elementos ocultos em cada vista."""
+        return {
+            "view_revision": self.model.view_revision,
+            "active_view": self.model.active_scene_view,
+            "views": [
+                {
+                    "name": name,
+                    "hidden_members": sorted(hidden),
+                    "hidden_rigid_bars": sorted(
+                        self.model.scene_view_hidden_rigid_bars.get(name, ())
+                    ),
+                }
+                for name, hidden in self.model.scene_views.items()
+            ],
+        }
+
+    def create_scene_view(self, name: str) -> dict[str, Any]:
+        self.model.add_scene_view(name)
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
+
+    def select_scene_view(self, name: str) -> dict[str, Any]:
+        if name not in self.model.scene_views:
+            raise ValueError(f"Vista '{name}' não encontrada.")
+        self.model.select_scene_view(name)
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
+
+    def rename_scene_view(self, old_name: str, new_name: str) -> dict[str, Any]:
+        if old_name not in self.model.scene_views:
+            raise ValueError(f"Vista '{old_name}' não encontrada.")
+        if old_name == "Completo":
+            raise ValueError("A vista 'Completo' não pode ser renomeada.")
+        self.model.rename_scene_view(old_name, new_name)
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
+
+    def delete_scene_view(self, name: str) -> dict[str, Any]:
+        if name not in self.model.scene_views:
+            raise ValueError(f"Vista '{name}' não encontrada.")
+        if name == "Completo":
+            raise ValueError("A vista 'Completo' não pode ser removida.")
+        self.model.remove_scene_view(name)
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
+
+    def set_scene_members_visibility(
+        self, member_names: list[str], visible: bool,
+        rigid_bar_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self.model.active_scene_view == "Completo":
+            raise ValueError("Selecione uma vista diferente de 'Completo' antes de ocultar elementos.")
+        if not isinstance(visible, bool):
+            raise ValueError("visible deve ser booleano.")
+        rigid_bar_names = rigid_bar_names or []
+        if not member_names and not rigid_bar_names:
+            raise ValueError("Informe pelo menos um membro ou barra rígida.")
+        unknown = set(member_names) - self.model.bars.keys()
+        if unknown:
+            raise ValueError(f"Membro '{min(unknown)}' não encontrado.")
+        unknown_rigid = set(rigid_bar_names) - self.model.rigid_bars.keys()
+        if unknown_rigid:
+            raise ValueError(f"Barra rígida '{min(unknown_rigid)}' não encontrada.")
+        self.model.set_scene_members_hidden(set(member_names), not visible)
+        self.model.set_scene_rigid_bars_hidden(set(rigid_bar_names), not visible)
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
+
+    def show_all_scene_members(self) -> dict[str, Any]:
+        if self.model.active_scene_view == "Completo":
+            raise ValueError("Selecione uma vista diferente de 'Completo'.")
+        self.model.show_all_scene_members()
+        self._notify_scene_views_changed()
+        return self.get_scene_views()
 
     def list_materials(self) -> dict[str, Any]:
         """Retorna os materiais disponíveis no catálogo do projeto."""
@@ -1213,19 +1345,32 @@ class McpApplication:
         node_names: list[str] | None,
         member_names: list[str] | None,
         offset: tuple[float, float, float],
+        rigid_bar_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Copia nós e membros por translação, preservando suas propriedades."""
+        """Copia nós, membros e barras rígidas por translação."""
+        rigid_bars_before = set(self.model.rigid_bars)
         copied_nodes, copied_members = self.model_service.copy_elements(
             tuple(node_names or ()),
             tuple(member_names or ()),
             offset,
+            tuple(rigid_bar_names or ()),
         )
+        copied_rigid_bars = sorted(set(self.model.rigid_bars) - rigid_bars_before)
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
             "created_nodes": list(copied_nodes),
             "created_members": list(copied_members),
+            "created_rigid_bars": copied_rigid_bars,
             "members": [self._member_payload(self.model.bars[name]) for name in copied_members],
+            "rigid_bars": [
+                {
+                    "name": name,
+                    "start_node": self.model.rigid_bars[name].start_node,
+                    "end_node": self.model.rigid_bars[name].end_node,
+                }
+                for name in copied_rigid_bars
+            ],
         }
 
     def copy_member_properties(
@@ -1275,7 +1420,7 @@ class McpApplication:
         section: str | None = None,
         geometry: dict[str, float] | None = None,
         profile: str | None = None,
-        rotation: int | None = None,
+        rotation: int | float | None = None,
         releases: list[bool] | None = None,
         rotation_flexibility_percent: list[int] | None = None,
         solid_face_offsets_mm: list[float] | None = None,
@@ -1290,8 +1435,11 @@ class McpApplication:
         if missing is not None:
             raise ValueError(f"Membro '{missing}' não encontrado.")
 
-        if rotation is not None and (isinstance(rotation, bool) or not isinstance(rotation, int)):
-            raise ValueError("A rotação deve ser um número inteiro em graus.")
+        if rotation is not None and (
+            isinstance(rotation, bool) or not isinstance(rotation, (int, float))
+            or not isfinite(float(rotation))
+        ):
+            raise ValueError("A rotação deve ser um número finito em graus.")
         normalized_releases = self._normalize_bool_values(releases, 12, "vinculações")
         normalized_flexibility = self._normalize_int_values(
             rotation_flexibility_percent, 6, 0, 99, "percentuais de semirrígidez",
@@ -1537,3 +1685,7 @@ class McpApplication:
     def _notify_model_changed(self) -> None:
         if self._on_model_changed is not None:
             self._on_model_changed()
+
+    def _notify_scene_views_changed(self) -> None:
+        if self._on_scene_views_changed is not None:
+            self._on_scene_views_changed()

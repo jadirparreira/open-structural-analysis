@@ -61,6 +61,7 @@ from .window_frame import TitleBar, WindowFrame
 class MainWindow(QMainWindow):
     mcp_model_changed = Signal()
     mcp_view_changed = Signal(str, bool)
+    mcp_scene_views_changed = Signal()
     mcp_active_action_changed = Signal(str)
     mcp_analysis_view_changed = Signal(str, str)
     mcp_analysis_diagrams_changed = Signal(bool)
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
         "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
-        "solids", "releases", "semirigid", "supports",
+        "solids", "releases", "semirigid", "supports", "scene", "configreference",
     })
 
     def __init__(self) -> None:
@@ -297,6 +298,7 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
         self.mcp_model_changed.connect(self._refresh_after_mcp_change)
         self.mcp_view_changed.connect(self._apply_mcp_view_change)
+        self.mcp_scene_views_changed.connect(self._refresh_after_mcp_scene_views_change)
         self.mcp_active_action_changed.connect(self._select_active_action)
         self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
         self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
@@ -310,6 +312,7 @@ class MainWindow(QMainWindow):
             analysis_engine=self.analysis_service.engine,
             on_model_changed=self.mcp_model_changed.emit,
             on_view_changed=self.mcp_view_changed.emit,
+            on_scene_views_changed=self.mcp_scene_views_changed.emit,
             get_view_state=self.scene.view_state,
             on_active_action_changed=self.mcp_active_action_changed.emit,
             get_active_action=lambda: self.selected_action_name,
@@ -875,6 +878,7 @@ class MainWindow(QMainWindow):
         self._remember_last_command(self.start_rigid_bar_placement)
         self.command_session.cancel()
         self._member_placement_start = None
+        self._member_placement_start_snap_member_name = None
         self._command_mode = "rigid_bar_placement"
         self.scene.set_member_placement_mode(True)
         self.history.append(
@@ -1180,12 +1184,14 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
 
     def start_copy_elements(self) -> None:
-        """Start selecting nodes and members for a translated copy."""
+        """Start selecting nodes, members, and rigid bars for a translated copy."""
         self._remember_last_command(self.start_copy_elements)
         self.command_session.cancel()
         self._member_placement_start = None
         targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
-        self._copy_elements_selection = [target for target in targets if target[0] in {"node", "bar"}]
+        self._copy_elements_selection = [
+            target for target in targets if target[0] in {"node", "bar", "rigid_bar"}
+        ]
         self._copy_elements_reference = None
         self._copy_properties_reference = None
         self.member_property_copy_panel.hide()
@@ -1199,7 +1205,7 @@ class MainWindow(QMainWindow):
         self.close_displacement_panel()
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
-            "(Selecione nós e membros; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+            "(Selecione nós, membros e barras rígidas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1227,7 +1233,7 @@ class MainWindow(QMainWindow):
         action = "Ocultar" if mode == "hide" else "Reexibir"
         self.history.append(
             f"> <b>{action}</b> <span style='color:#57606a'>"
-            "(Selecione os membros; use Ctrl para multiseleção e pressione ENTER para confirmar)</span>"
+            "(Selecione membros e barras rígidas; use Ctrl para multiseleção e pressione ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1241,21 +1247,25 @@ class MainWindow(QMainWindow):
         mode = self._command_mode
         if mode not in {"scene_hide_selection", "scene_reveal_selection"}:
             return
-        names = {name for kind, name in self.selected_elements if kind == "bar"}
-        if not names:
+        member_names = {name for kind, name in self.selected_elements if kind == "bar"}
+        rigid_bar_names = {name for kind, name in self.selected_elements if kind == "rigid_bar"}
+        if not member_names and not rigid_bar_names:
             self.history.append(
                 "> <b>Cena</b> <span style='color:#8c959f'>"
-                "(Selecione pelo menos um membro e pressione ENTER)</span>"
+                "(Selecione pelo menos um elemento e pressione ENTER)</span>"
             )
             return
-        self.model.set_scene_members_hidden(names, mode == "scene_hide_selection")
+        hidden = mode == "scene_hide_selection"
+        self.model.set_scene_members_hidden(member_names, hidden)
+        self.model.set_scene_rigid_bars_hidden(rigid_bar_names, hidden)
         self._command_mode = None
         self.clear_selection()
         self.scene.set_scene_selection_mode(None)
         action = "ocultado(s)" if mode == "scene_hide_selection" else "reexibido(s)"
         self.history.append(
             f"> <b>Cena</b> <span style='color:#57606a'>"
-            f"({len(names)} membro(s) {action})</span>"
+            f"({len(member_names)} membro(s) e {len(rigid_bar_names)} barra(s) rígida(s) "
+            f"{action})</span>"
         )
 
     def show_all_scene_members(self) -> None:
@@ -1268,18 +1278,21 @@ class MainWindow(QMainWindow):
         self.scene.render_model(self.model)
         self.history.append(
             "> <b>Reexibir tudo</b> <span style='color:#57606a'>"
-            "(Todos os membros da vista estão visíveis)</span>"
+            "(Todos os elementos da vista estão visíveis)</span>"
         )
 
     def _confirm_copy_elements(self) -> None:
         """Confirm the element set and begin the two-point copy placement."""
         if self._command_mode != "copy_elements_selection":
             return
-        self._copy_elements_selection = [target for target in self.selected_elements if target[0] in {"node", "bar"}]
+        self._copy_elements_selection = [
+            target for target in self.selected_elements
+            if target[0] in {"node", "bar", "rigid_bar"}
+        ]
         if not self._copy_elements_selection:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#8c959f'>"
-                "(Selecione pelo menos um nó ou membro)</span>"
+                "(Selecione pelo menos um nó ou elemento)</span>"
             )
             return
         self._copy_elements_reference = None
@@ -1393,15 +1406,20 @@ class MainWindow(QMainWindow):
         member_names = tuple(
             name for kind, name in self._copy_elements_selection if kind == "bar"
         )
+        rigid_bar_names = tuple(
+            name for kind, name in self._copy_elements_selection if kind == "rigid_bar"
+        )
+        rigid_bars_before = set(self.model.rigid_bars)
         try:
             copied_nodes, copied_members = self.model_service.copy_elements(
-                node_names, member_names, offset,
+                node_names, member_names, offset, rigid_bar_names,
             )
         except ValueError as error:
             self.history.append(
                 f"> <b>Copiar</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
+        copied_rigid_bars = tuple(set(self.model.rigid_bars) - rigid_bars_before)
 
         for member_name in copied_members:
             copied_member = self.model.bars[member_name]
@@ -1411,10 +1429,11 @@ class MainWindow(QMainWindow):
                 self.section_geometry[member_name] = copied_member.geometry_dict()
 
         self._command_mode = "copy_elements_destination_placement"
-        if copied_nodes or copied_members:
+        if copied_nodes or copied_members or copied_rigid_bars:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
-                f"({len(copied_nodes)} nó(s) e {len(copied_members)} membro(s) criado(s); "
+                f"({len(copied_nodes)} nó(s), {len(copied_members)} membro(s) e "
+                f"{len(copied_rigid_bars)} barra(s) rígida(s) criada(s); "
                 "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
         else:
@@ -1461,6 +1480,12 @@ class MainWindow(QMainWindow):
         }
         command_label = escape(name.upper())
 
+        if name == "scene":
+            self.palette.show_group("Geometria")
+            self.top_icon_palette.scene_button.toggle()
+            self.history.append(f"> <b>{command_label}</b>")
+            return True
+
         if name in geometry_visibility:
             self.palette.show_group("Geometria")
             self.top_icon_palette.toggle_visibility_command(geometry_visibility[name])
@@ -1483,6 +1508,7 @@ class MainWindow(QMainWindow):
             "cprop": ("Geometria", self.start_copy_member_properties),
             "measure": ("Geometria", self.start_measurement),
             "configaxes": ("Geometria", self.toggle_axes_panel),
+            "configreference": ("Geometria", self.toggle_reference_panel),
             "group": ("Ações", self.open_action_groups),
             "action": ("Ações", self.start_load_command),
             "load": ("Ações", self.start_load_command),
@@ -1495,7 +1521,7 @@ class MainWindow(QMainWindow):
             return False
         self.palette.show_group(target[0])
         target[1]()
-        if name in {"configaxes", "group", "combinations", "analyze"}:
+        if name in {"configaxes", "configreference", "group", "combinations", "analyze"}:
             self.history.append(f"> <b>{command_label}</b>")
         return True
 
@@ -1701,6 +1727,7 @@ class MainWindow(QMainWindow):
         coordinates = tuple(float(value) for value in point)
         if self._member_placement_start is None:
             self._member_placement_start = coordinates
+            self._member_placement_start_snap_member_name = self.scene._placement_snap_member_name
             self.scene.set_member_preview_start(coordinates)
             self.history.append(
                 "> <b>Adicionar barra rígida</b> "
@@ -1709,7 +1736,32 @@ class MainWindow(QMainWindow):
             return
 
         start = self._member_placement_start
+        if self.model.node_coordinates(*start) == self.model.node_coordinates(*coordinates):
+            self.history.append(
+                "> <b>Adicionar barra rígida</b> "
+                "<span style='color:#8c959f'>(O segundo ponto deve ser diferente do ponto inicial.)</span>"
+            )
+            return
+        snapped_points = (
+            ("inicial", self._member_placement_start_snap_member_name, start),
+            ("final", self.scene._placement_snap_member_name, coordinates),
+        )
+        split_decisions: list[tuple[str, str, tuple[float, float, float]]] = []
+        split_mode = self.member_intermediate_snap_split_mode
+        for node_label, member_name, snap_point in snapped_points:
+            if member_name is None:
+                continue
+            should_split = split_mode == "sim"
+            if split_mode == "perguntar":
+                dialog = MemberSnapSplitDialog(member_name, node_label, self)
+                dialog.move(self.geometry().center() - dialog.rect().center())
+                should_split = dialog.exec() == QDialog.DialogCode.Accepted and dialog.should_split
+            if should_split:
+                split_decisions.append((node_label, member_name, snap_point))
+
         try:
+            for _node_label, member_name, snap_point in split_decisions:
+                self.model_service.split_member_at_point(member_name, snap_point)
             start_name, end_name, rigid_name = self._create_graphical_rigid_bar(start, coordinates)
         except ValueError as error:
             self.history.append(
@@ -1719,6 +1771,7 @@ class MainWindow(QMainWindow):
             return
 
         self._member_placement_start = None
+        self._member_placement_start_snap_member_name = None
         self.command_session.cancel()
         self._command_mode = "rigid_bar_placement"
         self.scene.set_member_preview_start(None)
@@ -2077,14 +2130,16 @@ class MainWindow(QMainWindow):
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
-            self.selected_elements = [target for target in elements if target[0] == "bar"]
+            self.selected_elements = [
+                target for target in elements if target[0] in {"bar", "rigid_bar"}
+            ]
             self.selected = self.selected_elements[-1] if self.selected_elements else None
             return
         if self._command_mode in {
             "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
             "reverse_member_selection", "join_member_selection", "action_selection",
         }:
-            kinds = {"node", "bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
+            kinds = {"node", "bar", "rigid_bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:
                 kinds = {self._pending_action_launch[0]}
             targets = tuple(target for target in elements if target[0] in kinds)
@@ -2536,6 +2591,12 @@ class MainWindow(QMainWindow):
         self.normalize_member_directions_if_enabled()
         self.refresh_action_palette()
         self.refresh_analysis_palette()
+        self.reference_panel.reload()
+        self.refresh_scene()
+
+    def _refresh_after_mcp_scene_views_change(self) -> None:
+        """Atualiza o seletor e a geometria após operações MCP de vistas."""
+        self.top_icon_palette.reload_scene_views()
         self.refresh_scene()
 
     def _apply_mcp_view_change(self, option: str, visible: bool) -> None:

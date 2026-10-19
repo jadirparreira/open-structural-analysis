@@ -691,10 +691,10 @@ class PropertyPanel(QFrame):
         """Build the compact positioning identification shown beside the button."""
         face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        rotation = int(getattr(member, "rotation", 0))
+        rotation = float(getattr(member, "rotation", 0))
         tokens: list[str] = []
         if rotation != 0:
-            tokens.append(f"R{rotation}")
+            tokens.append(f"R{PropertyPanel._format_positioning_value(rotation)}")
         for label, value in (
             ("A", face_offsets[0] if len(face_offsets) > 0 else 0.0),
             ("B", face_offsets[1] if len(face_offsets) > 1 else 0.0),

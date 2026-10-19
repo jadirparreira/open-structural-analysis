@@ -1125,10 +1125,14 @@ class ProgramSettingsDialog(QDialog):
         split_section = QVBoxLayout()
         split_section.setContentsMargins(0, 0, 0, 0)
         split_section.setSpacing(6)
-        split_label = QLabel("Segmentar membro capturado por snap intermediário")
+        split_label = QLabel(
+            "Segmentar membro capturado por snap intermediário ao lançar membros ou barras rígidas"
+        )
         split_label.setObjectName("hint")
         split_label.setWordWrap(True)
-        split_label.setAccessibleName("Segmentar membro capturado por snap intermediário")
+        split_label.setAccessibleName(
+            "Segmentar membro capturado por snap intermediário ao lançar membros ou barras rígidas"
+        )
         split_section.addWidget(split_label)
         self._member_split_switch = _SettingsChoiceSwitch(
             (("sim", "Sim"), ("perguntar", "Perguntar"), ("nao", "Não")),

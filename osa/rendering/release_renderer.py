@@ -9,7 +9,7 @@ class ReleaseRenderer:
 
     _release_color = "#000000"
 
-    def render(self, plotter, start, end, releases, radius: float, *, rotation: int = 0) -> list[object]:
+    def render(self, plotter, start, end, releases, radius: float, *, rotation: float = 0) -> list[object]:
         if len(releases) != 12 or not any(releases):
             return []
         basis = LocalAxesRenderer.basis(start, end, rotation)

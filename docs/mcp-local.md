@@ -9,6 +9,9 @@ http://127.0.0.1:8765/mcp-opensa
 
 O servidor opera sobre o mesmo `StructuralModel` que está aberto na interface.
 As alterações recebidas por MCP atualizam a cena do OpenSA depois da execução.
+Referências de desenho e vistas fazem parte do estado visual persistido do
+projeto. Essas operações atualizam a revisão visual sem invalidar os resultados
+da análise estrutural.
 
 ## Sessões da interface
 
@@ -43,6 +46,19 @@ alterações na tela.
 - `clear_actions`: remove todas as cargas de um ou vários elementos, usando
   `target` para um elemento ou `targets` para uma lista de nós e membros. O
   filtro `load_case` é opcional.
+- `list_drawing_references`: lista as referências de desenho importadas com
+  identificador, plano, origem, visibilidade e contagem de entidades.
+- `update_drawing_reference`: altera a origem, o plano ou a visibilidade de uma
+  referência importada.
+- `delete_drawing_reference`: remove uma referência importada do projeto.
+- `get_scene_views`: lista as vistas persistentes, a vista ativa e os membros
+  ocultos em cada vista.
+- `create_scene_view`, `select_scene_view`, `rename_scene_view` e
+  `delete_scene_view`: gerencia vistas nomeadas. `Completo` é fixa e não pode
+  ser renomeada ou removida.
+- `set_scene_members_visibility`: oculta ou reexibe membros e barras rígidas na
+  vista nomeada ativa. Selecione uma vista nomeada antes; `Completo` mostra tudo.
+- `show_all_scene_members`: reexibe todos os membros e barras rígidas da vista ativa.
 
 Com essas ferramentas, uma IA pode modelar uma estrutura passo a passo:
 

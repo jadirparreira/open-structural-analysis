@@ -22,13 +22,13 @@ class LocalAxesRenderer:
         return min(max(float(radius), 0.0) * 4.0, max(float(length), 0.0) * 0.2)
 
     @staticmethod
-    def basis(start, end, rotation: int = 0):
+    def basis(start, end, rotation: float = 0):
         basis = member_basis(start, end, rotation)
         if basis is None:
             return None
         return tuple(np.asarray(axis, dtype=float) for axis in basis)
 
-    def render(self, plotter, start, end, *, rotation: int = 0, visible: bool) -> list[object]:
+    def render(self, plotter, start, end, *, rotation: float = 0, visible: bool) -> list[object]:
         origin = np.array(((start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2))
         basis = self.basis(start, end, rotation)
         if basis is None:

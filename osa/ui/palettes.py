@@ -479,8 +479,9 @@ class TopIconPalette(QFrame):
         }
         scene_button.setIcon(self._scene_icons[False])
         scene_button.setIconSize(QSize(19, 19))
-        scene_button.setToolTip("Cena")
-        scene_button.setProperty("paletteTooltip", "Cena")
+        scene_tooltip = _command_tooltip("Cena", "SCENE")
+        scene_button.setToolTip(scene_tooltip)
+        scene_button.setProperty("paletteTooltip", scene_tooltip)
         scene_button.setAccessibleName("Cena")
         scene_button.setCheckable(True)
         scene_button.setChecked(False)
@@ -578,7 +579,6 @@ class TopIconPalette(QFrame):
             "QToolButton:checked { background: #d0d7de; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.addWidget(configure_axes_button)
         self.configure_axes_button = configure_axes_button
 
         configure_reference_button = QToolButton(self)
@@ -587,8 +587,9 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources/icons/scan-box.svg"))
         )
         configure_reference_button.setIconSize(QSize(19, 19))
-        configure_reference_button.setToolTip("Configurar referência")
-        configure_reference_button.setProperty("paletteTooltip", "Configurar referência")
+        configure_reference_tooltip = _command_tooltip("Configurar referência", "CONFIGREFERENCE")
+        configure_reference_button.setToolTip(configure_reference_tooltip)
+        configure_reference_button.setProperty("paletteTooltip", configure_reference_tooltip)
         configure_reference_button.setAccessibleName("Configurar referência")
         configure_reference_button.setCheckable(True)
         configure_reference_button.clicked.connect(window.toggle_reference_panel)
@@ -596,6 +597,7 @@ class TopIconPalette(QFrame):
         configure_reference_button.setStyleSheet(configure_axes_button.styleSheet())
         layout.addWidget(configure_reference_button)
         self.configure_reference_button = configure_reference_button
+        layout.addWidget(configure_axes_button)
 
         add_member_button = QToolButton(self)
         add_member_button.setFixedSize(24, 24)

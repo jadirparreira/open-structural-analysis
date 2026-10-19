@@ -14,7 +14,10 @@ class AxisLabelDelegate(QStyledItemDelegate):
     def createEditor(self, parent, _option, _index):
         editor = QLineEdit(parent)
         editor.setFrame(False)
-        editor.setStyleSheet("QLineEdit { border: 0; background: transparent; padding: 0 8px; color: #24292f; }")
+        editor.setStyleSheet(
+            "QLineEdit { border: 0; background: #ffffff; padding: 0; color: #24292f; "
+            "selection-background-color: #0969da; selection-color: #ffffff; }"
+        )
         editor.setValidator(QRegularExpressionValidator(QRegularExpression(r"[A-Za-z0-9]*"), editor))
         editor.textEdited.connect(lambda text, field=editor: self._uppercase(field, text))
         return editor
@@ -38,7 +41,10 @@ class AxisValueDelegate(QStyledItemDelegate):
     def createEditor(self, parent, _option, _index):
         editor = QLineEdit(parent)
         editor.setFrame(False)
-        editor.setStyleSheet("QLineEdit { border: 0; background: transparent; padding: 0 8px; color: #24292f; }")
+        editor.setStyleSheet(
+            "QLineEdit { border: 0; background: #ffffff; padding: 0; color: #24292f; "
+            "selection-background-color: #0969da; selection-color: #ffffff; }"
+        )
         editor.setValidator(
             QRegularExpressionValidator(QRegularExpression(r"[+-]?(?:\d+(?:\.\d{0,3})?)?"), editor)
         )

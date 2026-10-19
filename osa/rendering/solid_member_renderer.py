@@ -90,7 +90,7 @@ class SolidMemberRenderer:
         self.update_transform(edge_actor, start, end, rotation=member.rotation, member=member)
         return SolidMemberVisual(face_actor, edge_actor)
 
-    def update_transform(self, actor, start, end, *, rotation: int = 0, member=None) -> bool:
+    def update_transform(self, actor, start, end, *, rotation: float = 0, member=None) -> bool:
         """Update an existing actor without rebuilding its shared mesh."""
         basis = LocalAxesRenderer.basis(start, end, rotation=rotation)
         if basis is None:

@@ -210,9 +210,10 @@ class ModelService:
         node_names: tuple[str, ...],
         member_names: tuple[str, ...],
         offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Copy selected nodes and members to a translated position."""
-        return self.model.copy_elements(node_names, member_names, offset)
+        """Copy selected nodes, members, and rigid bars to a translated position."""
+        return self.model.copy_elements(node_names, member_names, offset, rigid_bar_names)
 
     def create_rigid_bar(self, start_node: str, end_node: str):
         return self.model.add_rigid_bar(start_node, end_node)
@@ -250,7 +251,7 @@ class ModelService:
     def set_section_mirrored(self, name: str, mirrored: bool):
         return self.model.update_member_section_mirrored(name, mirrored)
 
-    def update_member_rotation(self, name: str, rotation: int):
+    def update_member_rotation(self, name: str, rotation: int | float):
         return self.model.update_member_rotation(name, rotation)
 
     def update_member_releases(self, name: str, releases: tuple[bool, ...]):

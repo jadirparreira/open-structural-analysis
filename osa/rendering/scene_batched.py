@@ -351,6 +351,7 @@ class StructureScene(QWidget):
         self._member_face_actor = None
         self._member_edge_actor = None
         self._member_silhouette_actor = None
+        self._reveal_rigid_bar_actor = None
         self._member_preview_actor = None
         self._measurement_preview_actor = None
         self._normal_guide_actor = None
@@ -590,11 +591,12 @@ class StructureScene(QWidget):
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
         hidden_members = self._scene_hidden_members()
+        hidden_rigid_bars = self._scene_hidden_rigid_bars()
         if prepared_geometry is None:
             visible_bars = {
                 name: member for name, member in model.bars.items() if name not in hidden_members
             }
-            visible_node_names = self._scene_visible_node_names(hidden_members)
+            visible_node_names = self._scene_visible_node_names(hidden_members, hidden_rigid_bars)
             visible_nodes = {
                 name: node for name, node in model.nodes.items() if name in visible_node_names
             }
@@ -697,7 +699,11 @@ class StructureScene(QWidget):
             self._node_geometry_cache_key = node_key
         self._node_batch = self._node_geometry_cache
 
-        rigid_key = prepared_geometry.rigid_key if prepared_geometry is not None else tuple(
+        visible_rigid_bars = {
+            name: rigid for name, rigid in model.rigid_bars.items()
+            if name not in hidden_rigid_bars
+        }
+        rigid_key = prepared_geometry.rigid_key if prepared_geometry is not None and not hidden_rigid_bars else tuple(
             (
                 rigid,
                 (model.nodes[rigid.start_node].x, model.nodes[rigid.start_node].y,
@@ -705,13 +711,15 @@ class StructureScene(QWidget):
                 (model.nodes[rigid.end_node].x, model.nodes[rigid.end_node].y,
                  model.nodes[rigid.end_node].z),
             )
-            for rigid in model.rigid_bars.values()
+            for rigid in visible_rigid_bars.values()
         )
-        if prepared_geometry is not None:
+        if prepared_geometry is not None and not hidden_rigid_bars:
             self._rigid_geometry_cache = (prepared_geometry.rigid_names, prepared_geometry.rigid_mesh)
             self._rigid_geometry_cache_key = prepared_geometry.rigid_key
         if rigid_key != self._rigid_geometry_cache_key or self._rigid_geometry_cache is None:
-            self._rigid_geometry_cache = self._rigid_bar_renderer.build(model)
+            self._rigid_geometry_cache = self._rigid_bar_renderer.build(
+                SimpleNamespace(nodes=model.nodes, rigid_bars=visible_rigid_bars),
+            )
             self._rigid_geometry_cache_key = rigid_key
         self._rigid_bar_names, self._rigid_bar_mesh = self._rigid_geometry_cache
         self._elastic_support_overlay.set_members(visible_bars.values(), visible_nodes.values(), node_radius)
@@ -719,7 +727,7 @@ class StructureScene(QWidget):
         yield
         self._add_member_batches()
         yield
-        self._add_scene_reveal_preview(hidden_members)
+        self._add_scene_reveal_preview(hidden_members, hidden_rigid_bars)
         self._add_node_batches()
         yield
         self._add_actions()
@@ -1064,7 +1072,15 @@ class StructureScene(QWidget):
             self._model.bars
         )
 
-    def _scene_visible_node_names(self, hidden_members: set[str]) -> set[str]:
+    def _scene_hidden_rigid_bars(self) -> set[str]:
+        return set(self._model.scene_view_hidden_rigid_bars.get(self._model.active_scene_view, ())).intersection(
+            self._model.rigid_bars
+        )
+
+    def _scene_visible_node_names(
+        self, hidden_members: set[str], hidden_rigid_bars: set[str] | None = None,
+    ) -> set[str]:
+        hidden_rigid_bars = hidden_rigid_bars or set()
         connected = set()
         visible_connected = set()
         for member in self._model.bars.values():
@@ -1072,15 +1088,17 @@ class StructureScene(QWidget):
             connected.update(endpoints)
             if member.name not in hidden_members:
                 visible_connected.update(endpoints)
-        for rigid in self._model.rigid_bars.values():
+        for name, rigid in self._model.rigid_bars.items():
             endpoints = (rigid.start_node, rigid.end_node)
             connected.update(endpoints)
-            visible_connected.update(endpoints)
+            if name not in hidden_rigid_bars:
+                visible_connected.update(endpoints)
         return set(self._model.nodes).difference(connected).union(visible_connected)
 
     def _scene_filtered_model(self) -> SimpleNamespace:
         hidden_members = self._scene_hidden_members()
-        visible_nodes = self._scene_visible_node_names(hidden_members)
+        hidden_rigid_bars = self._scene_hidden_rigid_bars()
+        visible_nodes = self._scene_visible_node_names(hidden_members, hidden_rigid_bars)
         bars = {
             name: member for name, member in self._model.bars.items()
             if name not in hidden_members
@@ -1089,38 +1107,58 @@ class StructureScene(QWidget):
             name: node for name, node in self._model.nodes.items()
             if name in visible_nodes
         }
+        rigid_bars = {
+            name: rigid for name, rigid in self._model.rigid_bars.items()
+            if name not in hidden_rigid_bars
+        }
         actions = {
             name: action for name, action in self._model.actions.items()
             if action.target in bars or action.target in nodes
         }
-        return SimpleNamespace(bars=bars, nodes=nodes, actions=actions)
+        return SimpleNamespace(bars=bars, rigid_bars=rigid_bars, nodes=nodes, actions=actions)
 
-    def _add_scene_reveal_preview(self, hidden_members: set[str]) -> None:
-        if self._scene_selection_mode != "reveal" or not hidden_members:
+    def _add_scene_reveal_preview(
+        self, hidden_members: set[str], hidden_rigid_bars: set[str] | None = None,
+    ) -> None:
+        hidden_rigid_bars = hidden_rigid_bars or set()
+        if self._scene_selection_mode != "reveal" or not hidden_members and not hidden_rigid_bars:
             return
-        preview_model = SimpleNamespace(
-            bars={name: self._model.bars[name] for name in self._model.bars if name in hidden_members},
-            nodes=self._model.nodes,
-        )
-        preview = self._member_renderer.build(preview_model, self._marker_radius_current)
-        self._reveal_preview_batch = preview
-        self._reveal_preview_line_actor = self._add_colored_mesh(
-            preview.lines, "scene:reveal-lines", line_width=self._member_line_width, lighting=False,
-        )
-        self._reveal_preview_face_actor = self._add_colored_mesh(
-            preview.faces, "scene:reveal-faces", lighting=True,
-        )
-        self._reveal_preview_fallback_actor = self._add_colored_mesh(
-            preview.fallback_lines, "scene:reveal-fallback", line_width=self._member_line_width,
-            lighting=False,
-        )
-        for actor in (
-            self._reveal_preview_line_actor, self._reveal_preview_face_actor,
-            self._reveal_preview_fallback_actor,
-        ):
-            if actor is not None:
-                actor.GetProperty().SetOpacity(0.7)
-                actor.SetPickable(False)
+        if hidden_members:
+            preview_model = SimpleNamespace(
+                bars={name: self._model.bars[name] for name in self._model.bars if name in hidden_members},
+                nodes=self._model.nodes,
+            )
+            preview = self._member_renderer.build(preview_model, self._marker_radius_current)
+            self._reveal_preview_batch = preview
+            self._reveal_preview_line_actor = self._add_colored_mesh(
+                preview.lines, "scene:reveal-lines", line_width=self._member_line_width, lighting=False,
+            )
+            self._reveal_preview_face_actor = self._add_colored_mesh(
+                preview.faces, "scene:reveal-faces", lighting=True,
+            )
+            self._reveal_preview_fallback_actor = self._add_colored_mesh(
+                preview.fallback_lines, "scene:reveal-fallback", line_width=self._member_line_width,
+                lighting=False,
+            )
+            for actor in (
+                self._reveal_preview_line_actor, self._reveal_preview_face_actor,
+                self._reveal_preview_fallback_actor,
+            ):
+                if actor is not None:
+                    actor.GetProperty().SetOpacity(0.7)
+                    actor.SetPickable(False)
+        if hidden_rigid_bars:
+            _names, mesh = self._rigid_bar_renderer.build(SimpleNamespace(
+                nodes=self._model.nodes,
+                rigid_bars={
+                    name: self._model.rigid_bars[name] for name in hidden_rigid_bars
+                },
+            ))
+            self._reveal_rigid_bar_actor = self.plotter.add_mesh(
+                mesh, color=BatchedRigidBarRenderer.COLOR, line_width=self._rigid_bar_line_width,
+                lighting=False, opacity=0.7, pickable=False,
+                reset_camera=False, render=False, render_lines_as_tubes=True,
+            )
 
     def _add_local_axis_overlay(self, mesh: pv.PolyData, color: str):
         mapper = vtk.vtkPolyDataMapper()
@@ -1582,7 +1620,9 @@ class StructureScene(QWidget):
             & (node_screens[:, 1] >= 0.0)
             & (node_screens[:, 1] <= height)
         )
-        visible_nodes = self._scene_visible_node_names(self._scene_hidden_members())
+        hidden_members = self._scene_hidden_members()
+        hidden_rigid_bars = self._scene_hidden_rigid_bars()
+        visible_nodes = self._scene_visible_node_names(hidden_members, hidden_rigid_bars)
         node_visible &= np.asarray([
             name in visible_nodes and self._scene_selection_mode is None
             for name in node_names
@@ -1602,14 +1642,16 @@ class StructureScene(QWidget):
         end_indices = np.asarray(ends, dtype=np.intp)
         member_starts = node_screens[start_indices]
         member_ends = node_screens[end_indices]
-        hidden_members = self._scene_hidden_members()
         member_visible = within_depth[start_indices] & within_depth[end_indices]
         member_visible &= np.asarray([
             (kind == "bar" and name in hidden_members)
+            or (kind == "rigid_bar" and name in hidden_rigid_bars)
             if self._scene_selection_mode == "reveal"
             else (kind == "bar" and name not in hidden_members)
+            or (kind == "rigid_bar" and name not in hidden_rigid_bars)
             if self._scene_selection_mode == "hide"
             else (kind != "bar" or name not in hidden_members)
+            and (kind != "rigid_bar" or name not in hidden_rigid_bars)
             for kind, name in member_targets
         ], dtype=bool)
         data = (
@@ -1860,8 +1902,11 @@ class StructureScene(QWidget):
         return (
             *(("node", node_names[index]) for index in np.flatnonzero(nodes_inside)),
             *(target for index, target in enumerate(member_targets)
-              if target[0] == "bar" and (
-                  members_inside[index] or target[1] in solid_members
+              if (
+                  target[0] == "rigid_bar" and members_inside[index]
+                  or target[0] == "bar" and (
+                      members_inside[index] or target[1] in solid_members
+                  )
               )),
         )
 
@@ -5388,16 +5433,13 @@ class StructureScene(QWidget):
             actor.SetPosition(0.0, 0.0, 0.0)
 
     def _reference_plane_levels(self) -> tuple[float, ...]:
-        values = {0.0}
         axis_name = {"XY": "Z", "XZ": "Y", "YZ": "X"}[self._reference_plane_mode]
-        values.update(float(axis.value) for axis in self._model.axes.get(axis_name, ()))
-        return tuple(sorted(values))
+        values = tuple(sorted({float(axis.value) for axis in self._model.axes.get(axis_name, ())}))
+        return values or (0.0,)
 
     def _reference_plane_for_model(self, model: StructuralModel, preferred: float | None = None) -> float:
-        values = {0.0}
         axis_name = {"XY": "Z", "XZ": "Y", "YZ": "X"}[self._reference_plane_mode]
-        values.update(float(axis.value) for axis in model.axes.get(axis_name, ()))
-        levels = tuple(sorted(values))
+        levels = tuple(sorted({float(axis.value) for axis in model.axes.get(axis_name, ())})) or (0.0,)
         reference = self._reference_plane_z if preferred is None else preferred
         return min(levels, key=lambda level: abs(level - reference))
 
@@ -5453,7 +5495,8 @@ class StructureScene(QWidget):
 
     def _validate_selection(self) -> None:
         hidden_members = self._scene_hidden_members()
-        visible_nodes = self._scene_visible_node_names(hidden_members)
+        hidden_rigid_bars = self._scene_hidden_rigid_bars()
+        visible_nodes = self._scene_visible_node_names(hidden_members, hidden_rigid_bars)
         def is_valid(target: tuple[str, str]) -> bool:
             kind, name = target
             collection = (
@@ -5463,9 +5506,14 @@ class StructureScene(QWidget):
             if name not in collection:
                 return False
             if self._scene_selection_mode == "reveal":
-                return kind == "bar" and name in hidden_members
+                return (
+                    kind == "bar" and name in hidden_members
+                    or kind == "rigid_bar" and name in hidden_rigid_bars
+                )
             if kind == "bar":
                 return name not in hidden_members
+            if kind == "rigid_bar":
+                return name not in hidden_rigid_bars
             if kind == "node":
                 return name in visible_nodes and self._scene_selection_mode is None
             return self._scene_selection_mode is None
@@ -5492,6 +5540,7 @@ class StructureScene(QWidget):
         self._reveal_preview_face_actor = None
         self._reveal_preview_fallback_actor = None
         self._reveal_preview_batch = None
+        self._reveal_rigid_bar_actor = None
         self._member_preview_actor = None
         self._measurement_preview_actor = None
         self._normal_guide_actor = None

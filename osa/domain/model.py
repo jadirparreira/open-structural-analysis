@@ -48,6 +48,7 @@ class StructuralModel:
         self.analysis_results: list[AnalysisResult] = []
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
+        self.scene_view_hidden_rigid_bars: dict[str, set[str]] = {"Completo": set()}
         self.active_scene_view = "Completo"
         self.view_revision = 0
 
@@ -60,12 +61,15 @@ class StructuralModel:
         self.analysis_results.clear()
         for hidden in self.scene_views.values():
             hidden.intersection_update(self.bars)
+        for hidden in self.scene_view_hidden_rigid_bars.values():
+            hidden.intersection_update(self.rigid_bars)
 
     def add_scene_view(self, name: str) -> None:
         name = name.strip()
         if not name or name in self.scene_views:
             raise ValueError("Informe um nome de vista único.")
         self.scene_views[name] = set()
+        self.scene_view_hidden_rigid_bars[name] = set()
         self.active_scene_view = name
         self.view_revision += 1
 
@@ -96,6 +100,7 @@ class StructuralModel:
         if name == "Completo" or name not in self.scene_views:
             return
         del self.scene_views[name]
+        self.scene_view_hidden_rigid_bars.pop(name, None)
         if self.active_scene_view == name:
             self.active_scene_view = "Completo"
         self.view_revision += 1
@@ -111,6 +116,10 @@ class StructuralModel:
         self.scene_views = {
             (new_name if name == old_name else name): hidden
             for name, hidden in self.scene_views.items()
+        }
+        self.scene_view_hidden_rigid_bars = {
+            (new_name if name == old_name else name): hidden
+            for name, hidden in self.scene_view_hidden_rigid_bars.items()
         }
         if self.active_scene_view == old_name:
             self.active_scene_view = new_name
@@ -134,10 +143,26 @@ class StructuralModel:
         if current != before:
             self.view_revision += 1
 
-    def show_all_scene_members(self) -> None:
-        if self.active_scene_view != "Completo" and self.scene_views[self.active_scene_view]:
-            self.scene_views[self.active_scene_view].clear()
+    def set_scene_rigid_bars_hidden(self, names: set[str], hidden: bool) -> None:
+        if self.active_scene_view == "Completo":
+            return
+        current = self.scene_view_hidden_rigid_bars[self.active_scene_view]
+        before = current.copy()
+        if hidden:
+            current.update(names.intersection(self.rigid_bars))
+        else:
+            current.difference_update(names)
+        if current != before:
             self.view_revision += 1
+
+    def show_all_scene_members(self) -> None:
+        if self.active_scene_view != "Completo":
+            members = self.scene_views[self.active_scene_view]
+            rigid_bars = self.scene_view_hidden_rigid_bars[self.active_scene_view]
+            if members or rigid_bars:
+                members.clear()
+                rigid_bars.clear()
+                self.view_revision += 1
 
     @staticmethod
     def _coordinates(x: float, y: float, z: float) -> tuple[float, float, float]:
@@ -675,8 +700,9 @@ class StructuralModel:
         node_names: tuple[str, ...],
         member_names: tuple[str, ...],
         offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Copy selected nodes and members by translating them by ``offset``.
+        """Copy selected nodes, members, and rigid bars by translating them.
 
         Existing nodes at the destination coordinates are reused.  Members
         whose endpoint pair already exists are skipped, which makes copying
@@ -684,12 +710,15 @@ class StructuralModel:
         """
         selected_nodes = tuple(dict.fromkeys(node_names))
         selected_members = tuple(dict.fromkeys(member_names))
-        if not selected_nodes and not selected_members:
-            raise ValueError("Selecione pelo menos um nó ou membro para copiar.")
+        selected_rigid_bars = tuple(dict.fromkeys(rigid_bar_names))
+        if not selected_nodes and not selected_members and not selected_rigid_bars:
+            raise ValueError("Selecione pelo menos um nó ou elemento para copiar.")
         if any(name not in self.nodes for name in selected_nodes):
             raise EntityNotFoundError("Um dos nós selecionados não foi encontrado.")
         if any(name not in self.bars for name in selected_members):
             raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+        if any(name not in self.rigid_bars for name in selected_rigid_bars):
+            raise EntityNotFoundError("Uma das barras rígidas selecionadas não foi encontrada.")
 
         try:
             translation = tuple(float(value) for value in offset)
@@ -703,6 +732,11 @@ class StructuralModel:
         for member_name in selected_members:
             member = self.bars[member_name]
             for node_name in (member.start_node, member.end_node):
+                if node_name not in source_node_names:
+                    source_node_names.append(node_name)
+        for rigid_name in selected_rigid_bars:
+            rigid = self.rigid_bars[rigid_name]
+            for node_name in (rigid.start_node, rigid.end_node):
                 if node_name not in source_node_names:
                     source_node_names.append(node_name)
 
@@ -777,9 +811,30 @@ class StructuralModel:
             )
             existing_pairs.add(pair)
 
-        if new_nodes or new_bars:
+        existing_rigid_pairs = {
+            frozenset((rigid.start_node, rigid.end_node))
+            for rigid in self.rigid_bars.values()
+        }
+        new_rigid_bars: dict[str, RigidBar] = {}
+        for source_name in selected_rigid_bars:
+            source = self.rigid_bars[source_name]
+            start_node = node_map[source.start_node]
+            end_node = node_map[source.end_node]
+            if start_node == end_node:
+                raise ValueError("A cópia criaria uma barra rígida de comprimento zero.")
+            pair = frozenset((start_node, end_node))
+            if pair in existing_rigid_pairs:
+                continue
+            rigid_name = f"{start_node}-{end_node}"
+            if rigid_name in self.rigid_bars or rigid_name in new_rigid_bars:
+                raise ValueError(f"Já existe uma barra rígida chamada '{rigid_name}'.")
+            new_rigid_bars[rigid_name] = RigidBar(rigid_name, start_node, end_node)
+            existing_rigid_pairs.add(pair)
+
+        if new_nodes or new_bars or new_rigid_bars:
             self.nodes.update(new_nodes)
             self.bars.update(new_bars)
+            self.rigid_bars.update(new_rigid_bars)
             self._touch()
         return tuple(new_nodes), tuple(new_bars)
 
@@ -914,12 +969,20 @@ class StructuralModel:
         return self.bars[name]
 
     @staticmethod
-    def _member_rotation(value: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("A rotação do membro deve ser um número inteiro.")  # noqa: TRY004
-        return value % 360
+    def _member_rotation(value: int | float) -> int | float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("A rotação do membro deve ser um número em graus.")  # noqa: TRY004
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("A rotação do membro deve ser um número finito.")
+        normalized = round(value % 360.0, 2)
+        if normalized >= 360.0 or normalized == 0.0:
+            return 0
+        if normalized.is_integer():
+            return int(normalized)
+        return normalized
 
-    def update_member_rotation(self, name: str, rotation: int) -> Bar:
+    def update_member_rotation(self, name: str, rotation: int | float) -> Bar:
         if name not in self.bars:
             raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
         rotation = self._member_rotation(rotation)
@@ -1110,6 +1173,7 @@ class StructuralModel:
         self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear()
         self.selected_action_group = "PP+AP+AV"
         self.scene_views = {"Completo": set()}
+        self.scene_view_hidden_rigid_bars = {"Completo": set()}
         self.active_scene_view = "Completo"
         self.view_revision += 1
         self._touch()

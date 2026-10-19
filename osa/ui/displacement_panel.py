@@ -152,7 +152,10 @@ class DisplacementPanel(QFrame):
         self.rotation_input = QLineEdit()
         self.rotation_input.setObjectName("unitValue")
         self.rotation_input.setValidator(
-            QRegularExpressionValidator(QRegularExpression(r"[+-]?\d*"), self.rotation_input)
+            QRegularExpressionValidator(
+                QRegularExpression(r"[+-]?(?:\d+(?:[.,]\d{0,2})?|[.,]\d{1,2})?"),
+                self.rotation_input,
+            )
         )
         self.rotation_input.setAccessibleName("Rotação do membro (graus)")
         self.rotation_input.editingFinished.connect(self._rotation_changed)
@@ -313,7 +316,10 @@ class DisplacementPanel(QFrame):
         self.center_button.setEnabled(member is not None)
         rotations = [item.rotation for item in members]
         self.rotation_input.setPlaceholderText("Variado" if len(set(rotations)) > 1 else "")
-        self.rotation_input.setText(str(member.rotation) if member is not None and len(set(rotations)) == 1 else "")
+        self.rotation_input.setText(
+            self._format_rotation(member.rotation)
+            if member is not None and len(set(rotations)) == 1 else ""
+        )
         if member is None:
             for field in self._solid_offset_inputs.values():
                 field.clear()
@@ -349,12 +355,13 @@ class DisplacementPanel(QFrame):
             self.configure_for(self._member_name)
             return
         try:
+            rotation = float(value.replace(",", "."))
             for member in members:
-                self.window.model_service.update_member_rotation(member.name, int(value))
+                self.window.model_service.update_member_rotation(member.name, rotation)
         except ValueError:
             self.configure_for(self._member_name)
             return
-        self.rotation_input.setText(str(int(value)))
+        self.rotation_input.setText(self._format_rotation(self._members()[0].rotation))
         self.rotation_input.setPlaceholderText("")
         for member in members:
             self.window.refresh_member_rotation(member.name)
@@ -374,8 +381,14 @@ class DisplacementPanel(QFrame):
             self.window.refresh_member_rotation(member.name)
         rotations = {member.rotation for member in self._members()}
         self.rotation_input.setPlaceholderText("Variado" if len(rotations) > 1 else "")
-        self.rotation_input.setText(str(next(iter(rotations))) if len(rotations) == 1 else "")
+        self.rotation_input.setText(
+            self._format_rotation(next(iter(rotations))) if len(rotations) == 1 else ""
+        )
         self._refresh_positioning_status()
+
+    @staticmethod
+    def _format_rotation(value: int | float) -> str:
+        return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", ",") or "0"
 
     def _center_requested(self, _checked: bool) -> None:
         """Select the member's original geometric-center position."""

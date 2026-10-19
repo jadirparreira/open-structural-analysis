@@ -655,6 +655,131 @@ class LocalMcpServer:
             return self.application.list_rigid_bars()
 
         @self.server.tool(
+            name="list_drawing_references",
+            title="Listar referências de desenho",
+            description=(
+                "Lista as referências CAD importadas no projeto, com identidade, plano, origem, "
+                "visibilidade e contagens de geometria. Não retorna os dados binários do desenho."
+            ),
+            annotations=read_only,
+        )
+        def list_drawing_references() -> dict[str, Any]:
+            return self.application.list_drawing_references()
+
+        @self.server.tool(
+            name="update_drawing_reference",
+            title="Atualizar referência de desenho",
+            description=(
+                "Altera a origem [x,y,z], o plano (XY, XZ ou YZ) ou a visibilidade de uma "
+                "referência importada. Informe somente os campos que deseja alterar; use o id "
+                "retornado por list_drawing_references."
+            ),
+            annotations=write,
+        )
+        def update_drawing_reference(
+            reference_id: str,
+            origin: list[float] | None = None,
+            plane: str | None = None,
+            visible: bool | None = None,
+        ) -> dict[str, Any]:
+            return self.application.update_drawing_reference(reference_id, origin, plane, visible)
+
+        @self.server.tool(
+            name="delete_drawing_reference",
+            title="Remover referência de desenho",
+            description=(
+                "Remove permanentemente do projeto uma referência CAD importada. "
+                "Confirme o id com list_drawing_references antes de remover."
+            ),
+            annotations=destructive,
+        )
+        def delete_drawing_reference(reference_id: str) -> dict[str, Any]:
+            return self.application.delete_drawing_reference(reference_id)
+
+        @self.server.tool(
+            name="get_scene_views",
+            title="Consultar vistas da cena",
+            description=(
+                "Lista as vistas persistentes do projeto, a vista ativa, os membros ocultos "
+                "e as barras rígidas ocultas em cada vista. A vista 'Completo' mostra tudo."
+            ),
+            annotations=read_only,
+        )
+        def get_scene_views() -> dict[str, Any]:
+            return self.application.get_scene_views()
+
+        @self.server.tool(
+            name="create_scene_view",
+            title="Criar vista da cena",
+            description=(
+                "Cria uma vista nomeada vazia e a torna ativa. Depois, use "
+                "set_scene_members_visibility para ocultar ou reexibir membros e barras rígidas nela."
+            ),
+            annotations=write,
+        )
+        def create_scene_view(name: str) -> dict[str, Any]:
+            return self.application.create_scene_view(name)
+
+        @self.server.tool(
+            name="select_scene_view",
+            title="Selecionar vista da cena",
+            description="Ativa uma vista existente pelo nome retornado por get_scene_views.",
+            annotations=write,
+        )
+        def select_scene_view(name: str) -> dict[str, Any]:
+            return self.application.select_scene_view(name)
+
+        @self.server.tool(
+            name="rename_scene_view",
+            title="Renomear vista da cena",
+            description="Renomeia uma vista existente. A vista 'Completo' é fixa.",
+            annotations=write,
+        )
+        def rename_scene_view(old_name: str, new_name: str) -> dict[str, Any]:
+            return self.application.rename_scene_view(old_name, new_name)
+
+        @self.server.tool(
+            name="delete_scene_view",
+            title="Remover vista da cena",
+            description=(
+                "Remove uma vista nomeada. Se ela estiver ativa, 'Completo' passa a ser ativa. "
+                "A vista 'Completo' não pode ser removida."
+            ),
+            annotations=destructive,
+        )
+        def delete_scene_view(name: str) -> dict[str, Any]:
+            return self.application.delete_scene_view(name)
+
+        @self.server.tool(
+            name="set_scene_members_visibility",
+            title="Mostrar ou ocultar elementos na vista",
+            description=(
+                "Define a visibilidade de membros e barras rígidas na vista ativa. Informe "
+                "member_names e/ou rigid_bar_names. Use visible=false para ocultar ou true "
+                "para reexibir. É necessário selecionar uma vista nomeada; a vista 'Completo' "
+                "não permite ocultar elementos."
+            ),
+            annotations=write,
+        )
+        def set_scene_members_visibility(
+            member_names: list[str] | None = None,
+            visible: bool = True,
+            rigid_bar_names: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.set_scene_members_visibility(
+                member_names or [], visible, rigid_bar_names,
+            )
+
+        @self.server.tool(
+            name="show_all_scene_members",
+            title="Reexibir todos os elementos da vista",
+            description="Remove as ocultações de membros e barras rígidas da vista nomeada ativa.",
+            annotations=write,
+        )
+        def show_all_scene_members() -> dict[str, Any]:
+            return self.application.show_all_scene_members()
+
+        @self.server.tool(
             name="get_view_options",
             title="Consultar opções visuais",
             description="Consulta o que está visível na cena do OpenSA.",
@@ -914,9 +1039,9 @@ class LocalMcpServer:
             name="copy_elements",
             title="Copiar elementos",
             description=(
-                "Copia nós e/ou membros por uma translação. Informe listas de nomes e "
-                "um deslocamento [dx, dy, dz] nas unidades do projeto. Membros copiados "
-                "preservam suas propriedades."
+                "Copia nós, membros e/ou barras rígidas por uma translação. Informe listas "
+                "de nomes e um deslocamento [dx, dy, dz] nas unidades do projeto. Membros "
+                "copiados preservam suas propriedades."
             ),
             annotations=write,
         )
@@ -924,6 +1049,7 @@ class LocalMcpServer:
             offset: list[float],
             node_names: list[str] | None = None,
             member_names: list[str] | None = None,
+            rigid_bar_names: list[str] | None = None,
         ) -> dict[str, Any]:
             if len(offset) != 3:
                 raise ValueError("O deslocamento deve possuir exatamente três valores.")
@@ -931,6 +1057,7 @@ class LocalMcpServer:
                 node_names,
                 member_names,
                 (float(offset[0]), float(offset[1]), float(offset[2])),
+                rigid_bar_names,
             )
 
         @self.server.tool(
@@ -1010,7 +1137,7 @@ class LocalMcpServer:
             section: str | None = None,
             geometry: dict[str, float] | None = None,
             profile: str | None = None,
-            rotation: int | None = None,
+            rotation: float | None = None,
             releases: list[bool] | None = None,
             rotation_flexibility_percent: list[int] | None = None,
             solid_face_offsets_mm: list[float] | None = None,
