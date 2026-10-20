@@ -7,7 +7,9 @@ from PySide6.QtCore import QObject, Signal, Slot
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.domain import StructuralModel
+
 from .elements import verification_elements
+from .restraints import AnalyticalRestraints
 from .w_rolled import verify_w_element
 
 
@@ -36,8 +38,9 @@ class VerificationWorker(QObject):
             return
         try:
             evaluations = {}
+            restraints = AnalyticalRestraints(self.model)
             for element in elements:
-                evaluation = verify_w_element(element, self.model, results)
+                evaluation = verify_w_element(element, self.model, results, restraint_analyzer=restraints)
                 evaluations[element.key] = evaluation
         except Exception as error:  # noqa: BLE001
             self.failed.emit("Falha interna durante a verificação: " + " ".join(str(error).split()))

@@ -1104,6 +1104,9 @@ dependencies = [
     { name = "pyside6" },
     { name = "pyvista" },
     { name = "pyvistaqt" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [package.optional-dependencies]
@@ -1127,6 +1130,7 @@ requires-dist = [
     { name = "pyvista", specifier = ">=0.43" },
     { name = "pyvistaqt", specifier = ">=0.11" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "scipy", specifier = ">=1.11" },
 ]
 provides-extras = ["dev"]
 

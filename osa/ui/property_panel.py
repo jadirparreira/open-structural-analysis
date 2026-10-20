@@ -9,6 +9,7 @@ from osa.verification.elements import verification_element_key
 
 from .color_palette import HoneycombColorPalette
 from .common import *
+from .verification_memory_dialog import VerificationMemoryDialog
 from .window_frame import WindowFrame
 
 
@@ -183,6 +184,7 @@ class PropertyPanel(QFrame):
         self._verification_result_rows: list[QWidget] = []
         self._verification_result_values: dict[str, QLineEdit] = {}
         for field_name, label_text, accessible_name in (
+            ("utilization", "Taxa de solicitação", "Taxa de solicitação"),
             ("critical_check", "Verificação crítica", "Verificação crítica"),
             ("critical_combination", "Combinação crítica", "Combinação crítica"),
         ):
@@ -199,7 +201,29 @@ class PropertyPanel(QFrame):
             result_value.setToolTip("")
             result_label.setBuddy(result_value)
             result_layout.addWidget(result_label)
-            result_layout.addWidget(result_value)
+            if field_name == "utilization":
+                value_row = QHBoxLayout()
+                value_row.setContentsMargins(0, 0, 0, 0)
+                value_row.setSpacing(6)
+                value_row.addWidget(result_value, 1)
+                memory_button = QToolButton(result_row)
+                memory_button.setFixedSize(34, 34)
+                memory_button.setIcon(QIcon(str(
+                    Path(__file__).parents[1] / "resources" / "icons" / "calculation-memory.svg"
+                )))
+                memory_button.setIconSize(QSize(18, 18))
+                memory_button.setToolTip("Abrir memória de cálculo")
+                memory_button.setAccessibleName("Abrir memória de cálculo")
+                memory_button.setStyleSheet(
+                    "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+                    "QToolButton:hover { background: #eaeef2; }"
+                    "QToolButton:pressed { background: #d0d7de; }"
+                )
+                memory_button.clicked.connect(self._open_verification_memory)
+                value_row.addWidget(memory_button)
+                result_layout.addLayout(value_row)
+            else:
+                result_layout.addWidget(result_value)
             self._verification_result_rows.append(result_row)
             self._verification_result_values[field_name] = result_value
         self._color_palette = HoneycombColorPalette(window, self._color_selected)
@@ -284,6 +308,14 @@ class PropertyPanel(QFrame):
         names = tuple(self._selected_names("bar"))
         self.window.model.set_verification_element_name(names, self.verification_name_input.text())
         self.window.refresh_scene()
+
+    def _open_verification_memory(self) -> None:
+        """Open the stored calculation memory for the selected element or group."""
+        names = tuple(self._selected_names("bar"))
+        element_key = verification_element_key(self.window.model, names)
+        evaluation = self.window.model.verification_results.get(element_key, {}) if element_key else {}
+        dialog = VerificationMemoryDialog(evaluation.get("calculation_memory"), self.window)
+        dialog.exec()
 
     def _inspected_kind_changed(self, _index: int) -> None:
         self._switch_inspected_kind(self.kind_selector.currentData())
@@ -380,11 +412,10 @@ class PropertyPanel(QFrame):
             evaluation = self.window.model.verification_results.get(element_key, {}) if element_key else {}
             check = evaluation.get("critical_check")
             utilization = evaluation.get("utilization")
-            critical_check = (
-                f"{float(utilization):.0%} {check}"
-                if check and utilization is not None else str(check or "A definir")
+            self._verification_result_values["utilization"].setText(
+                f"{float(utilization):.1%}" if utilization is not None else "A definir"
             )
-            self._verification_result_values["critical_check"].setText(critical_check)
+            self._verification_result_values["critical_check"].setText(str(check or "A definir"))
             self._verification_result_values["critical_combination"].setText(
                 str(evaluation.get("critical_combination", "A definir"))
             )

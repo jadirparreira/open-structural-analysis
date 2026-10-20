@@ -5,11 +5,14 @@ from __future__ import annotations
 from math import pi, sqrt
 
 from osa.sections.contours import polygon_properties, w_contour_points
+
 from .elements import VerificationElement
+from .restraints import AnalyticalRestraints
 
 E_KN_CM2 = 20_000.0
 G_KN_CM2 = 7_690.0
 GAMMA_A1 = 1.10
+CB_INITIAL = 1.0
 
 
 def _geometry_properties(member):
@@ -50,7 +53,9 @@ def _shear_capacity(h: float, t: float, area: float, kv: float, fy: float) -> fl
     return 1.24 * (lp / lam) ** 2 * vpl / GAMMA_A1
 
 
-def _flexural_capacities(p: dict[str, float], span_cm: float, fy: float) -> tuple[float, float]:
+def _flexural_capacities(
+    p: dict[str, float], lb_cm: float, fy: float, cb: float = CB_INITIAL,
+) -> tuple[float, float]:
     d, bf, tw, tf, r = p["d"], p["bf"], p["tw"], p["tf"], p["r"]
     e = E_KN_CM2
     # FLM and FLA per the piecewise limits for rolled I/H sections.
@@ -76,9 +81,9 @@ def _flexural_capacities(p: dict[str, float], span_cm: float, fy: float) -> tupl
         raise ValueError("alma esbelta exige verificação adicional")
     m_fla = mpl_x if lam_w <= lp_w else mpl_x - (mpl_x - mr_w) * (lam_w - lp_w) / (lr_w - lp_w)
 
-    # Elastic critical moment for a doubly symmetric I section; Cb is fixed at 1.0.
-    mcr = (pi**2 * e * p["Iy"] / span_cm**2) * sqrt(
-        max(0.0, p["Cw"] / p["Iy"] * (1.0 + 0.039 * p["J"] * span_cm**2 / p["Cw"]))
+    # Elastic critical moment for a doubly symmetric I section; Cb calculation is pending.
+    mcr = cb * (pi**2 * e * p["Iy"] / lb_cm**2) * sqrt(
+        max(0.0, p["Cw"] / p["Iy"] * (1.0 + 0.039 * p["J"] * lb_cm**2 / p["Cw"]))
     )
     lp_lt = 1.76 * sqrt(e / fy)
     lr_lt = 1.76 * sqrt(e / (fy - 0.30 * fy))
@@ -93,7 +98,7 @@ def _flexural_capacities(p: dict[str, float], span_cm: float, fy: float) -> tupl
     return min(m_flm, m_fla, m_flt) / GAMMA_A1, p["Zy"] * fy / GAMMA_A1
 
 
-def verify_w_element(element: VerificationElement, model, results) -> dict:
+def verify_w_element(element: VerificationElement, model, results, *, restraint_analyzer=None) -> dict:
     members = [model.bars[name] for name in element.member_names]
     if any(not (member.profile or "").lower().startswith("w") for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
@@ -104,6 +109,12 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
         return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
     if not results or any(name not in result.member_results for result in results for name in element.member_names):
         return {"status": "not_checked", "detail": "resultados de análise indisponíveis"}
+    memory = {}
+
+    def not_checked(detail):
+        return {"status": "not_checked", "detail": detail,
+                **({"calculation_memory": memory} if memory else {})}
+
     try:
         p = _geometry_properties(members[0])
         material_values = model.materials.get(members[0].material, ())
@@ -111,30 +122,50 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
             return {"status": "not_checked", "detail": "resistências do material não definidas"}
         fy_kn_m2, fu_kn_m2 = float(material_values[4]), float(material_values[5])
         fy = fy_kn_m2 / 10_000.0  # kN/m² to kN/cm²
-        lengths_cm = [result.member_results[name]["length"] * 100.0
-                      for result in results for name in element.member_names]
-        span_cm = sum(lengths_cm) / len(results)
-        if span_cm <= 0:
-            return {"status": "not_checked", "detail": "vão inválido"}
-        nx = pi**2 * E_KN_CM2 * p["Ix"] / span_cm**2
-        ny = pi**2 * E_KN_CM2 * p["Iy"] / span_cm**2
+        cb = CB_INITIAL
+        analyzer = restraint_analyzer or AnalyticalRestraints(model)
+        restraints = analyzer.lengths(element, results, p, cb)
+        ly_cm, lz_cm, lt_cm, lb_cm = (restraints.lengths_m[key] * 100.0 for key in ("Ly", "Lz", "Lt", "Lb"))
+        memory = {
+            "standard": "ABNT NBR 8800:2024 — Versão Corrigida:2025",
+            "members": tuple(element.member_names),
+            "profile": members[0].profile,
+            "material": members[0].material,
+            "fy_kn_m2": fy_kn_m2, "fu_kn_m2": fu_kn_m2,
+            "E_kn_cm2": E_KN_CM2, "G_kn_cm2": G_KN_CM2,
+            "gamma_a1": GAMMA_A1,
+            "lengths_cm": {"Ly": ly_cm, "Lz": lz_cm, "Lt": lt_cm, "Lb": lb_cm},
+            "restraints": restraints.memory(),
+            "Cb": cb,
+        }
+        if restraints.issues:
+            return not_checked("; ".join(restraints.issues))
+        # NBR's section axes x/y correspond to OSA's local y/z, respectively.
+        nx = pi**2 * E_KN_CM2 * p["Ix"] / ly_cm**2
+        ny = pi**2 * E_KN_CM2 * p["Iy"] / lz_cm**2
         r0_sq = (p["Ix"] + p["Iy"]) / p["A"]
-        nt = (pi**2 * E_KN_CM2 * p["Cw"] / span_cm**2 + G_KN_CM2 * p["J"]) / r0_sq
+        nt = (pi**2 * E_KN_CM2 * p["Cw"] / lt_cm**2 + G_KN_CM2 * p["J"]) / r0_sq
         ne = min(nx, ny, nt)
         lam0 = sqrt(p["A"] * fy / ne)
         chi = 0.658 ** (lam0**2) if lam0 <= 1.5 else 0.877 / lam0**2
         nrd_t = p["A"] * fy / GAMMA_A1
         nrd_c = chi * p["A"] * fy / GAMMA_A1
-        mrd_x, mrd_y = _flexural_capacities(p, span_cm, fy)
+        mrd_x, mrd_y = _flexural_capacities(p, lb_cm, fy, cb)
         if mrd_x <= 0.0 or mrd_y <= 0.0:
-            return {"status": "not_checked", "detail": "capacidade à flexão fora do domínio implementado"}
+            return not_checked("capacidade à flexão fora do domínio implementado")
         vrd_x = _shear_capacity(p["d"] - 2 * p["tf"], p["tw"], p["d"] * p["tw"], 5.34, fy)
         vrd_y = _shear_capacity(p["bf"] / 2.0, p["tf"], 2 * p["bf"] * p["tf"], 1.2, fy)
+        memory["capacities"] = {
+            "tension_kn": nrd_t, "compression_kn": nrd_c,
+            "moment_x_kn_m": mrd_x / 100.0, "moment_y_kn_m": mrd_y / 100.0,
+            "shear_x_kn": vrd_x, "shear_y_kn": vrd_y,
+        }
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
         detail = str(error).strip() or "não foi possível obter propriedades da seção"
-        return {"status": "not_checked", "detail": detail}
+        return not_checked(detail)
 
     critical = (0.0, "Sem solicitação", results[0].load_reference, "")
+    critical_memory = {}
     for result in results:
         combo = result.load_reference
         for member_name in element.member_names:
@@ -145,10 +176,10 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
                     web_slenderness = (p["d"] - 2.0 * (p["tf"] + p["r"])) / p["tw"]
                     if (flange_slenderness > 0.56 * sqrt(E_KN_CM2 / fy)
                             or web_slenderness > 1.49 * sqrt(E_KN_CM2 / fy)):
-                        return {"status": "not_checked", "detail": "flambagem local em compressão ainda não está incluída"}
+                        return not_checked("flambagem local em compressão ainda não está incluída")
                 torque = abs(float(sample.get("torque", 0.0)))
                 if torque > 1e-6:
-                    return {"status": "not_checked", "detail": "torção ainda não está incluída na verificação"}
+                    return not_checked("torção ainda não está incluída na verificação")
                 # PyNite reports member axial force positive in tension.
                 n_ratio = axial / nrd_t if axial >= 0 else -axial / nrd_c
                 mx = abs(float(sample.get("moment_y", 0.0))) * 100.0
@@ -156,7 +187,7 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
                 vx = abs(float(sample.get("shear_y", 0.0)))
                 vy = abs(float(sample.get("shear_z", 0.0)))
                 if vx > 0.50 * vrd_x or vy > 0.50 * vrd_y:
-                    return {"status": "not_checked", "detail": "interação entre cisalhamento elevado e flexão ainda não está incluída"}
+                    return not_checked("interação entre cisalhamento elevado e flexão ainda não está incluída")
                 rx, ry = mx / mrd_x, my / mrd_y
                 # NBR 8800 interaction equation for axial force and biaxial bending.
                 interaction = n_ratio + (8.0 / 9.0) * (rx + ry) if n_ratio >= 0.20 else n_ratio / 2.0 + rx + ry
@@ -169,6 +200,25 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
                 for utilization, check_name in checks:
                     if utilization > critical[0]:
                         critical = (utilization, check_name, combo, member_name)
+                        critical_memory = {
+                            "axial_kn": axial,
+                            "moment_x_kn_m": mx / 100.0,
+                            "moment_y_kn_m": my / 100.0,
+                            "shear_x_kn": vx,
+                            "shear_y_kn": vy,
+                            "tension_capacity_kn": nrd_t,
+                            "compression_capacity_kn": nrd_c,
+                            "moment_x_capacity_kn_m": mrd_x / 100.0,
+                            "moment_y_capacity_kn_m": mrd_y / 100.0,
+                            "shear_x_capacity_kn": vrd_x,
+                            "shear_y_capacity_kn": vrd_y,
+                            "axial_ratio": n_ratio,
+                            "moment_x_ratio": rx,
+                            "moment_y_ratio": ry,
+                            "shear_x_ratio": vx / vrd_x,
+                            "shear_y_ratio": vy / vrd_y,
+                            "interaction_ratio": interaction,
+                        }
     utilization, check_name, combo, _member = critical
     return {
         "status": "approved" if utilization <= 1.0 else "rejected",
@@ -176,6 +226,15 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
         "critical_check": check_name,
         "critical_combination": combo,
         "detail": f"{utilization:.0%} · {check_name}",
-        "assumptions": f"{members[0].material} · Kx=Ky=Kz=1,0 · Cb=1,0",
+        "assumptions": (f"{members[0].material} · Ly={ly_cm:.2f} cm · Lz={lz_cm:.2f} cm · "
+                        f"Lt={lt_cm:.2f} cm · Lb={lb_cm:.2f} cm · Cb={cb:.2f}"),
         "material_strengths": {"fy_kn_m2": fy_kn_m2, "fu_kn_m2": fu_kn_m2},
+        "calculation_memory": {
+            **memory,
+            "element": _member,
+            "critical_check": check_name,
+            "critical_combination": combo,
+            "utilization": utilization,
+            "critical_values": critical_memory,
+        },
     }
