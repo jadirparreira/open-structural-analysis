@@ -41,7 +41,7 @@ class LocalMcpServer:
             instructions=(
                 "Você está conectado ao Open Structural Analysis. "
                 "Consulte o projeto atual antes de fazer alterações. "
-                "A interface possui as sessões Geometria, Ações e Análise. "
+                "A interface possui as sessões Geometria, Verificação, Ações e Análise. "
                 "Antes de executar uma operação relacionada a uma sessão, consulte "
                 "get_session_state e abra a sessão correspondente com set_session. "
                 "Mantenha essa sessão aberta durante a sequência de operações para "
@@ -989,6 +989,35 @@ class LocalMcpServer:
         )
         def join_members(first_member: str, second_member: str) -> dict[str, Any]:
             return self.application.join_members(first_member, second_member)
+
+        @self.server.tool(
+            name="group_verification_elements",
+            title="Agrupar elementos de verificação",
+            description=(
+                "Agrupa duas ou mais barras existentes como um único elemento na sessão Verificação. "
+                "Todas devem estar conectadas em sequência e alinhadas na mesma reta. "
+                "Informe os nomes padrão das barras retornados por list_members."
+            ),
+            annotations=write,
+        )
+        def group_verification_elements(member_names: list[str]) -> dict[str, Any]:
+            return self.application.group_verification_elements(member_names)
+
+        @self.server.tool(
+            name="set_verification_element_name",
+            title="Nomear elemento de verificação",
+            description=(
+                "Define o nome de um elemento ou grupo na sessão Verificação. O nome aceita "
+                "somente letras e números; use texto vazio para limpar. Para um grupo, informe "
+                "todos os nomes das barras que o compõem. Informe uma única barra para nomear "
+                "um elemento individual."
+            ),
+            annotations=write,
+        )
+        def set_verification_element_name(
+            member_names: list[str], name: str,
+        ) -> dict[str, Any]:
+            return self.application.set_verification_element_name(member_names, name)
 
         @self.server.tool(
             name="reverse_member",

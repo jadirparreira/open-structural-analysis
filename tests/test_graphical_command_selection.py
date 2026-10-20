@@ -275,12 +275,35 @@ def test_scene_hide_and_reveal_accept_ctrl_selection(window, monkeypatch):
     assert window.model.scene_views["Vista"] == set()
 
 
+def test_group_command_accepts_ctrl_multiselection_and_groups_bars(window, monkeypatch):
+    window.palette.show_group("Verificação")
+    window.handle_command("GROUP")
+    assert window._command_mode == "verification_group_selection"
+
+    ctrl_click(window, monkeypatch, ("bar", "B1"))
+    ctrl_click(window, monkeypatch, ("bar", "B2"))
+    assert window.selected_elements == [("bar", "B1"), ("bar", "B2")]
+
+    enter(window)
+    group = window.model.verification_group_for("B1")
+    assert group is not None
+    assert group["members"] == ("B1", "B2")
+    assert window.model.verification_group_for("B2") is group
+    assert window._command_mode is None
+
+    ctrl_click(window, monkeypatch, ("bar", "B1"))
+    assert window.selected_elements == [("bar", "B1"), ("bar", "B2")]
+    ctrl_click(window, monkeypatch, ("bar", "B2"))
+    assert window.selected_elements == []
+
+
 def test_escape_cancels_pending_multi_selection_without_model_changes(window, monkeypatch):
     revision = window.model.revision
     for start in (
         window.start_copy_elements, window.start_reverse_member,
         window.start_join_members, window.start_split_member,
         window.start_copy_member_properties,
+        window.start_group_verification_elements,
     ):
         window.clear_selection()
         start()

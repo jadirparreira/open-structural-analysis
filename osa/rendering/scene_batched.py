@@ -320,6 +320,7 @@ class StructureScene(QWidget):
         self._measurement_start_marker.hide()
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
+        self._verification_group_selection_active = False
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
         self._member_geometry_cache_key: tuple[object, ...] | None = None
@@ -1758,7 +1759,7 @@ class StructureScene(QWidget):
                     None, "scene_hide_selection", "scene_reveal_selection",
                     "copy_elements_selection", "copy_member_properties_selection",
                     "reverse_member_selection", "split_member_selection",
-                    "join_member_selection", "action_selection",
+                    "join_member_selection", "action_selection", "verification_group_selection",
                 )
                 and not over_navigation_cube
             ):
@@ -1840,10 +1841,15 @@ class StructureScene(QWidget):
         selected = list(self._selected_elements)
         if np.hypot(x - start[0], y - start[1]) <= self._placement_drag_tolerance_pixels:
             picked = self._pick()
-            if picked in selected:
-                selected.remove(picked)
-            elif picked is not None:
-                selected.append(picked)
+            picked_targets = (picked,) if picked is not None else ()
+            if self._verification_group_selection_active and picked is not None and picked[0] == "bar":
+                group = self._model.verification_group_for(picked[1])
+                if group is not None:
+                    picked_targets = tuple(("bar", name) for name in group["members"])
+            if any(target in selected for target in picked_targets):
+                selected = [target for target in selected if target not in picked_targets]
+            else:
+                selected.extend(target for target in picked_targets if target not in selected)
         else:
             selected_set = set(selected)
             for target in self._elements_in_rectangle(start, (x, y)):
@@ -1852,6 +1858,11 @@ class StructureScene(QWidget):
                     selected_set.add(target)
         self.set_selection_highlight(selected)
         self.selection_changed.emit(tuple(selected))
+
+    def cancel_ctrl_selection(self) -> None:
+        """Discard an in-progress Ctrl selection gesture."""
+        self._ctrl_selection_press = None
+        self._selection_rectangle.hide()
 
     def _elements_in_rectangle(
         self, start: tuple[int, int], end: tuple[int, int],
@@ -2066,10 +2077,27 @@ class StructureScene(QWidget):
             if target not in seen:
                 normalized.append(target)
                 seen.add(target)
+        if self._verification_group_selection_active:
+            expanded = list(normalized)
+            for kind, name in normalized:
+                if kind == "bar":
+                    group = self._model.verification_group_for(name)
+                    if group is not None:
+                        for member in group["members"]:
+                            target = ("bar", member)
+                            if target not in seen:
+                                expanded.append(target)
+                                seen.add(target)
+            normalized = expanded
         self._selected_elements = tuple(normalized)
         self._selected = self._selected_elements[-1] if self._selected_elements else None
         self._sync_highlights()
         self.plotter.render()
+
+    def set_verification_group_selection_active(self, active: bool) -> None:
+        self._verification_group_selection_active = bool(active)
+        if active and self._selected_elements:
+            self.set_selection_highlight(self._selected_elements)
 
     def set_node_placement_mode(self, active: bool) -> None:
         """Enable the single-click graphical node-placement flow."""
@@ -3992,7 +4020,12 @@ class StructureScene(QWidget):
         selected_targets = set(selected_elements)
         hover = None if self._hovered in selected_targets else self._hovered
         if hover is not None and hover[0] != "node":
-            desired["hover"] = (hover,)
+            hover_targets = (hover,)
+            if self._verification_group_selection_active and hover[0] == "bar":
+                group = self._model.verification_group_for(hover[1])
+                if group is not None:
+                    hover_targets = tuple(("bar", name) for name in group["members"])
+            desired["hover"] = hover_targets
 
         node_colors = {
             name: "#0969da" for kind, name in selected_elements if kind == "node"
@@ -4067,7 +4100,19 @@ class StructureScene(QWidget):
         """Merge selected strokes into one actor without changing their shape."""
         kind = targets[0][0]
         if slot == "hover" and kind == "bar":
-            return self._member_highlight_mesh(targets[0][1])
+            meshes = [
+                mesh for _, name in targets
+                if (mesh := self._member_highlight_mesh(name)) is not None
+            ]
+            if not meshes:
+                return None
+            if len(meshes) == 1:
+                return meshes[0]
+            append = vtk.vtkAppendPolyData()
+            for mesh in meshes:
+                append.AddInputData(mesh)
+            append.Update()
+            return pv.wrap(append.GetOutput())
         if kind == "rigid_bar" or (kind == "bar" and not self._solid_members_visible):
             elements = self._model.rigid_bars if kind == "rigid_bar" else self._model.bars
             points = np.empty((len(targets) * 2, 3), dtype=float)

@@ -162,11 +162,30 @@ class PropertyPanel(QFrame):
             "QToolButton:disabled { background: #f6f8fa; border-color: #eaeef2; }"
         )
         identity_layout.addWidget(self.delete_button)
+        self.verification_name_input = QLineEdit()
+        self.verification_name_input.setObjectName("propertyValue")
+        self.verification_name_input.setMinimumWidth(0)
+        self.verification_name_input.setAccessibleName("Nome do elemento")
+        self.verification_name_input.setValidator(QRegularExpressionValidator(
+            QRegularExpression(r"[\p{L}\p{N}]*"), self.verification_name_input,
+        ))
+        self.verification_name_input.editingFinished.connect(self._verification_name_changed)
+        self._verification_name_row = QWidget()
+        verification_name_layout = QVBoxLayout(self._verification_name_row)
+        verification_name_layout.setContentsMargins(0, 0, 0, 0)
+        verification_name_layout.setSpacing(self.layout.spacing())
+        verification_name_label = QLabel("Nome")
+        verification_name_label.setObjectName("propertySection")
+        verification_name_label.setBuddy(self.verification_name_input)
+        verification_name_layout.addWidget(verification_name_label)
+        verification_name_layout.addWidget(self.verification_name_input)
         self._color_palette = HoneycombColorPalette(window, self._color_selected)
         self.layout.addWidget(self.title)
         self.layout.addWidget(self.kind_control)
         self.layout.addWidget(self.name)
         self.layout.addWidget(identity_row)
+        self.layout.addWidget(self._verification_name_row)
+        self._verification_name_row.hide()
         self.point_mode_switch = None
         if creation_mode:
             self.point_mode_switch = SelectionKindSwitch(
@@ -233,6 +252,13 @@ class PropertyPanel(QFrame):
     def _selected_names(self, kind: str) -> list[str]:
         return [name for selected_kind, name in self._selection if selected_kind == kind]
 
+    def _verification_name_changed(self) -> None:
+        if self._selected is None or self._selected[0] != "bar":
+            return
+        names = tuple(self._selected_names("bar"))
+        self.window.model.set_verification_element_name(names, self.verification_name_input.text())
+        self.window.refresh_scene()
+
     def _inspected_kind_changed(self, _index: int) -> None:
         self._switch_inspected_kind(self.kind_selector.currentData())
 
@@ -288,7 +314,9 @@ class PropertyPanel(QFrame):
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
-        self.member_color_button.setVisible(kind == "bar")
+        verification_mode = section == "Verificação"
+        self.member_color_button.setVisible(kind == "bar" and not verification_mode)
+        self.delete_button.setVisible(not verification_mode)
         self.update_delete_button_state()
         title = {"node": "Nó", "bar": "Barra", "rigid_bar": "Barra rígida"}.get(kind, "Elemento")
         if len(self._selection) > 1:
@@ -302,6 +330,24 @@ class PropertyPanel(QFrame):
         self._identity_row.setVisible(not self._creation_mode)
         self.name.setText("Identidade")
         self.identity_value.setText(name if len(names) == 1 else f"Variado ({len(names)})")
+        self._verification_name_row.setVisible(verification_mode and kind == "bar")
+        if verification_mode and kind == "bar":
+            group = self.window.model.verification_group_for(names[-1]) if names else None
+            is_group = group is not None and set(names) == set(group["members"])
+            identity_names = list(group["members"]) if is_group else names
+            identity = ", ".join(identity_names) if is_group else (
+                names[0] if len(names) == 1 else f"Variado ({len(names)})"
+            )
+            self.identity_value.setText(identity)
+            title = "Grupo de elementos" if is_group else "Elemento"
+            self.title.setText(title)
+            custom_name = (
+                str(group.get("name", "")) if is_group
+                else self.window.model.verification_element_names.get(names[-1], "") if names else ""
+            )
+            with QSignalBlocker(self.verification_name_input):
+                self.verification_name_input.setText(custom_name)
+            self.name.setVisible(True)
         if kind == "bar":
             colors = [self.window.model.bars[member_name].color for member_name in names]
             self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
@@ -313,13 +359,13 @@ class PropertyPanel(QFrame):
         # inspector is therefore informational and must be the same in every
         # work section; in particular, it must not expose editable endpoints
         # or action/result controls.
-        if kind == "rigid_bar":
+        if kind == "rigid_bar" and not verification_mode:
             self._show_rigid_bar_properties(name)
-        elif section == "Ações":
+        elif section == "Ações" and not verification_mode:
             self._show_actions(kind, name, select_available_reference=True)
-        elif section == "Análise":
+        elif section == "Análise" and not verification_mode:
             self._show_analysis(kind, name)
-        elif kind == "node":
+        elif kind == "node" and not verification_mode:
             node = self.window.model.nodes[name]
             self.layout.insertWidget(4, self.coordinates_title)
             self.coordinates_title.show()
@@ -385,7 +431,7 @@ class PropertyPanel(QFrame):
                 row.addWidget(value_box, 1)
                 supports_layout.addLayout(row)
             self.layout.insertWidget(7, supports)
-        else:
+        elif not verification_mode:
             bar = self.window.model.bars[name]
             if not self._creation_mode:
                 nodes = list(self.window.model.nodes)

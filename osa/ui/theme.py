@@ -19,7 +19,7 @@ QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }
 QFrame#propertyPanel QDoubleSpinBox, QFrame#propertyPanel QComboBox {
     min-height: 30px; height: 30px;
 }
-QLineEdit#identityDisplay { min-height: 30px; padding: 2px 9px; border: 1px solid #d0d7de;
+QLineEdit#identityDisplay, QLineEdit#propertyValue { min-height: 30px; padding: 2px 9px; border: 1px solid #d0d7de;
     border-radius: 6px; background: #ffffff; color: #57606a; }
 QFrame#propertyPanel QComboBox::drop-down { width: 0px; border: 0; }
 QFrame#propertyPanel QComboBox::down-arrow { image: none; }

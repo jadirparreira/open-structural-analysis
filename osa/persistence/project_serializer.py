@@ -66,6 +66,8 @@ class ProjectSerializer:
             "analysis_axes": ANALYSIS_AXES,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "members": [asdict(member) for member in model.bars.values()],
+            "verification_element_names": model.verification_element_names,
+            "verification_element_groups": model.verification_element_groups,
             # "bars" mantém interoperabilidade com leitores antigos.
             "bars": [asdict(member) for member in model.bars.values()],
             "rigid_bars": [asdict(rigid) for rigid in model.rigid_bars.values()],
@@ -201,6 +203,28 @@ class ProjectSerializer:
             if consume:
                 members[index] = None
 
+        raw_names = data.get("verification_element_names", {})
+        if not isinstance(raw_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.bars or not isinstance(value, str)
+            for name, value in raw_names.items()
+        ):
+            raise ValueError("Os nomes dos elementos de verificação são inválidos.")
+        candidate.verification_element_names = dict(raw_names)
+        raw_groups = data.get("verification_element_groups", [])
+        if not isinstance(raw_groups, list):
+            raise ValueError("Os grupos de elementos de verificação são inválidos.")
+        grouped_names: set[str] = set()
+        for group in raw_groups:
+            if not isinstance(group, dict):
+                raise ValueError("Os grupos de elementos de verificação são inválidos.")
+            names, group_name = group.get("members"), group.get("name", "")
+            if (not isinstance(names, list) or len(names) < 2 or not isinstance(group_name, str)
+                    or any(not isinstance(name, str) or name not in candidate.bars for name in names)
+                    or grouped_names.intersection(names)):
+                raise ValueError("Os grupos de elementos de verificação são inválidos.")
+            grouped_names.update(names)
+            candidate.verification_element_groups.append({"members": tuple(names), "name": group_name})
+
         rigid_pairs: set[frozenset[str]] = set()
         for item in data.get("rigid_bars", ()):
             candidate._validate_rigid_bar_nodes(
@@ -320,6 +344,8 @@ class ProjectSerializer:
 
         model.nodes = candidate.nodes
         model.bars = candidate.bars
+        model.verification_element_names = candidate.verification_element_names
+        model.verification_element_groups = candidate.verification_element_groups
         model.rigid_bars = candidate.rigid_bars
         model.axes = candidate.axes
         model.references = candidate.references

@@ -161,6 +161,7 @@ class FloatingPalette(QFrame):
         self._primary_buttons: dict[str, QToolButton] = {}
         self._sections: dict[str, QWidget] = {}
         self._expanded: str | None = None
+        self._verification_view_state: dict[str, bool] | None = None
         self._tooltip = PaletteTooltip(window)
         self._selection_indicator = QFrame(self)
         self._selection_indicator.setObjectName("paletteSelectionIndicator")
@@ -185,7 +186,11 @@ class FloatingPalette(QFrame):
             "analysis-cpu.svg",
             (),
         )
-        self._add_unavailable_button("Verificação", "verification-book-check.svg")
+        self._add_group(
+            "Verificação",
+            "verification-book-check.svg",
+            (),
+        )
         self._add_unavailable_button("Documentação", "documentation-scroll.svg")
         self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
         self.toggle_group("Geometria", animate=False)
@@ -260,6 +265,9 @@ class FloatingPalette(QFrame):
 
     def toggle_group(self, name: str, *, animate: bool = True) -> None:
         next_group = name
+        previous_group = self._expanded
+        if previous_group == "Verificação" and next_group != "Verificação":
+            self._set_verification_view(False)
         if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
             "scene_hide_selection", "scene_reveal_selection", "member_placement",
         }:
@@ -272,11 +280,15 @@ class FloatingPalette(QFrame):
             if section is not None:
                 section.setVisible(expanded)
         self._expanded = next_group
+        if next_group == "Verificação" and previous_group != "Verificação":
+            self._set_verification_view(True)
         self._layout.activate()
         self.setFixedHeight(self.sizeHint().height())
         self._move_selection_indicator(next_group, animate=animate)
         if hasattr(self.window, "top_icon_palette"):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
+        if hasattr(self.window, "verification_top_palette"):
+            self.window.verification_top_palette.set_verification_visible(next_group == "Verificação")
         if hasattr(self.window, "action_top_palette"):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
         if hasattr(self.window, "analysis_top_palette"):
@@ -286,8 +298,42 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "scene"):
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
+            self.window.scene.set_verification_group_selection_active(next_group == "Verificação")
         if hasattr(self.window, "refresh_selected_property_panel"):
             self.window.refresh_selected_property_panel(next_group)
+
+    def _set_verification_view(self, enabled: bool) -> None:
+        """Hide modeling annotations while the verification session is active."""
+        options = (
+            "nodes_visible",
+            "node_labels_visible",
+            "member_labels_visible",
+            "local_axes_visible",
+            "member_releases_visible",
+            "semirigid_links_visible",
+            "node_supports_visible",
+        )
+        if enabled:
+            if self._verification_view_state is None:
+                state = self.window.scene.view_state()
+                self._verification_view_state = {option: state[option] for option in options}
+            target = {
+                "nodes_visible": True,
+                "node_labels_visible": False,
+                "member_labels_visible": False,
+                "local_axes_visible": False,
+                "member_releases_visible": False,
+                "semirigid_links_visible": False,
+                "node_supports_visible": True,
+            }
+        else:
+            if self._verification_view_state is None:
+                return
+            target = self._verification_view_state
+            self._verification_view_state = None
+
+        for option, visible in target.items():
+            self.window._apply_mcp_view_change(option, visible)
 
     def _move_selection_indicator(self, name: str, *, animate: bool) -> None:
         button = self._primary_buttons.get(name)
@@ -395,6 +441,64 @@ class MemberPropertyCopyPanel(QFrame):
             QPoint((self._button.width() - self.width()) // 2, self._button.height() + 10),
         )
         self.move(position)
+
+
+class VerificationTopPalette(QFrame):
+    """Top palette for element verification commands."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.setObjectName("verificationTopPalette")
+        self.setStyleSheet(
+            "QFrame#verificationTopPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self._window = window
+        self._tooltip = PaletteTooltip(window)
+        self.group_button = QToolButton(self)
+        self.group_button.setFixedSize(24, 24)
+        self.group_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "group-elements.svg"))
+        )
+        self.group_button.setIconSize(QSize(19, 19))
+        tooltip = _command_tooltip("Agrupar elementos", "GROUP")
+        self.group_button.setToolTip(tooltip)
+        self.group_button.setProperty("paletteTooltip", tooltip)
+        self.group_button.setAccessibleName("Agrupar elementos")
+        self.group_button.clicked.connect(window.start_group_verification_elements)
+        self.group_button.installEventFilter(self)
+        self.group_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(self.group_button)
+        self.hide()
+
+    def set_verification_visible(self, visible: bool) -> None:
+        if not visible:
+            self._tooltip.dismiss()
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
+        self.move((self._window.width() - self.width()) // 2, margin + 52)
+        self.raise_()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.group_button:
+            if event.type() == QEvent.Type.Enter:
+                self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._tooltip.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
 
 
 class TopIconPalette(QFrame):

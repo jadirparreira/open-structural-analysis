@@ -42,6 +42,7 @@ from .palettes import (
     MemberPropertyCopyPanel,
     PaletteTooltip,
     TopIconPalette,
+    VerificationTopPalette,
 )
 from .project_load_worker import ProjectLoadWorker
 from .property_panel import PropertyPanel
@@ -169,6 +170,8 @@ class MainWindow(QMainWindow):
             self._member_direction_normalization_enabled
         )
         self.top_icon_palette.reposition()
+        self.verification_top_palette = VerificationTopPalette(self)
+        self.verification_top_palette.reposition()
         self.member_property_copy_panel = MemberPropertyCopyPanel(self)
         self.selected_action_name: str | None = None
         self.action_top_palette = ActionTopPalette(self)
@@ -564,6 +567,7 @@ class MainWindow(QMainWindow):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
             self.top_icon_palette.reposition()
+            self.verification_top_palette.reposition()
         if hasattr(self, "member_property_copy_panel") and self.member_property_copy_panel.isVisible():
             self.member_property_copy_panel.reposition()
         if hasattr(self, "action_top_palette"):
@@ -1123,6 +1127,19 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         self.refresh_scene()
 
+    def start_group_verification_elements(self) -> None:
+        """Select a collinear chain of bars and group it for verification."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        self._command_mode = "verification_group_selection"
+        self.scene.set_selection_highlight(())
+        self.selected_elements = []
+        self.selected = None
+        self.properties.hide()
+        self.history.append("> <b>Agrupar elementos</b> <span style='color:#57606a'>(Use Ctrl para selecionar barras alinhadas; ENTER confirma, ESC cancela)</span>")
+        self.scene.plotter.setFocus()
+
     def start_copy_member_properties(self) -> None:
         """Choose a reference member and then any number of destination members."""
         self._remember_last_command(self.start_copy_member_properties)
@@ -1309,10 +1326,24 @@ class MainWindow(QMainWindow):
         mode = self._command_mode
         if mode not in {
             "split_member_selection", "reverse_member_selection", "join_member_selection",
-            "copy_member_properties_selection", "action_selection",
+            "copy_member_properties_selection", "action_selection", "verification_group_selection",
         }:
             return
         members = self._selected_command_members()
+        if mode == "verification_group_selection":
+            if len(members) < 2:
+                self.history.append("> <b>Agrupar elementos</b> <span style='color:#8c959f'>(Selecione ao menos duas barras e pressione ENTER)</span>")
+                return
+            try:
+                self.model.group_verification_elements(members)
+            except ValueError as error:
+                self.history.append(f"> <b>Agrupar elementos</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                return
+            self._command_mode = None
+            self.history.append(f"> <b>Agrupar elementos</b> <span style='color:#57606a'>({len(members)} elementos agrupados)</span>")
+            self.clear_selection()
+            self.refresh_scene()
+            return
         if mode == "action_selection":
             if self._pending_action_launch is None:
                 return
@@ -1484,6 +1515,10 @@ class MainWindow(QMainWindow):
             self.palette.show_group("Geometria")
             self.top_icon_palette.scene_button.toggle()
             self.history.append(f"> <b>{command_label}</b>")
+            return True
+
+        if name == "group" and self.palette.active_group == "Verificação":
+            self.start_group_verification_elements()
             return True
 
         if name in geometry_visibility:
@@ -1844,11 +1879,13 @@ class MainWindow(QMainWindow):
             "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "copy_elements_selection",
             "copy_elements_reference_placement", "copy_elements_destination_placement",
+            "verification_group_selection",
         }:
             labels = {
                 "reverse_member_selection": "Inverter barra",
                 "join_member_selection": "Unir barras",
                 "copy_member_properties_selection": "Copiar propriedades",
+                "verification_group_selection": "Agrupar elementos",
                 "copy_elements_selection": "Copiar",
                 "copy_elements_reference_placement": "Copiar",
                 "copy_elements_destination_placement": "Copiar",
@@ -1869,6 +1906,9 @@ class MainWindow(QMainWindow):
                 self.scene.set_member_preview_start(None)
                 self.scene.set_member_placement_mode(False)
                 self.scene.set_selection_highlight(())
+                self.clear_selection()
+            if label == "Agrupar elementos":
+                self.scene.cancel_ctrl_selection()
                 self.clear_selection()
             result_message = (
                 "Comando encerrado" if copy_elements_active else "Operação cancelada"
@@ -2064,6 +2104,9 @@ class MainWindow(QMainWindow):
             self._apply_pending_action(kind, name)
             self.clear_selection()
             return
+        if self._command_mode == "verification_group_selection":
+            self._selection_changed(self.scene._selected_elements)
+            return
         if self._command_mode == "split_member_selection":
             if kind != "bar":
                 self.history.append(
@@ -2126,6 +2169,11 @@ class MainWindow(QMainWindow):
                 self._copy_member_properties(self._copy_properties_reference, name)
                 self.clear_selection()
         if self.selected is not None and self._command_mode != "split_member_selection":
+            if kind == "bar" and self.palette.active_group == "Verificação":
+                group = self.model.verification_group_for(name)
+                if group is not None:
+                    self.selected_elements = [("bar", member) for member in group["members"]]
+                    self.scene.set_selection_highlight(self.selected_elements)
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
@@ -2137,7 +2185,7 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode in {
             "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
-            "reverse_member_selection", "join_member_selection", "action_selection",
+            "reverse_member_selection", "join_member_selection", "action_selection", "verification_group_selection",
         }:
             kinds = {"node", "bar", "rigid_bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:
@@ -2540,6 +2588,7 @@ class MainWindow(QMainWindow):
         for widget in (
             self.palette,
             self.top_icon_palette,
+            self.verification_top_palette,
             self.action_top_palette,
             self.analysis_top_palette,
             self.navigation_button,

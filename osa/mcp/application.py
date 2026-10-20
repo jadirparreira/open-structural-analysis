@@ -31,7 +31,7 @@ ANALYSIS_DIAGRAMS = (
     "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
 )
 ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
-APPLICATION_SESSIONS = ("Geometria", "Ações", "Análise")
+APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise")
 
 
 class McpApplication:
@@ -135,7 +135,7 @@ class McpApplication:
         normalized = str(session).strip()
         if normalized not in APPLICATION_SESSIONS:
             raise ValueError(
-                "Sessão desconhecida. Use Geometria, Ações ou Análise."
+                "Sessão desconhecida. Use Geometria, Verificação, Ações ou Análise."
             )
         if self._on_session_changed is None:
             raise ValueError("A navegação visual do OpenSA não está disponível.")
@@ -1023,8 +1023,54 @@ class McpApplication:
                     "profile": member.profile,
                     "geometry": member.geometry_dict(),
                     "rotation": member.rotation,
+                    "verification_name": self.model.verification_element_names.get(member.name, ""),
+                    "verification_group": self.model.verification_group_for(member.name),
                 }
                 for member in self.model.bars.values()
+            ],
+        }
+
+    def group_verification_elements(self, member_names: list[str]) -> dict[str, Any]:
+        """Agrupa barras alinhadas como um único elemento na sessão Verificação."""
+        if not isinstance(member_names, (list, tuple)) or not member_names:
+            raise ValueError("Informe pelo menos duas barras para agrupar.")
+        group = self.model.group_verification_elements(tuple(member_names))
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "group": dict(group)}
+
+    def set_verification_element_name(
+        self, member_names: list[str], name: str,
+    ) -> dict[str, Any]:
+        """Define o nome de um elemento, de um grupo completo ou dos elementos selecionados."""
+        if not isinstance(member_names, (list, tuple)) or not member_names:
+            raise ValueError("Informe pelo menos uma barra para nomear.")
+        names = tuple(dict.fromkeys(member_names))
+        if any(member_name not in self.model.bars for member_name in names):
+            unknown = next(member_name for member_name in names if member_name not in self.model.bars)
+            raise ValueError(f"Barra '{unknown}' não encontrada.")
+        if not isinstance(name, str) or any(not character.isalnum() for character in name):
+            raise ValueError("O nome aceita somente letras e números, ou pode ficar vazio.")
+
+        groups = {id(group): group for member_name in names
+                  if (group := self.model.verification_group_for(member_name)) is not None}
+        if groups:
+            if len(groups) != 1:
+                raise ValueError("Nomeie um grupo de elementos por vez.")
+            group = next(iter(groups.values()))
+            if set(names) != set(group["members"]):
+                raise ValueError("Informe todos os elementos do grupo para definir seu nome.")
+            names = tuple(group["members"])
+
+        self.model.set_verification_element_name(names, name)
+        self._notify_model_changed()
+        group = self.model.verification_group_for(names[0]) if len(names) > 1 else None
+        if group is not None and set(names) == set(group["members"]):
+            return {"revision": self.model.revision, "group": dict(group)}
+        return {
+            "revision": self.model.revision,
+            "elements": [
+                {"member": member_name, "name": self.model.verification_element_names.get(member_name, "")}
+                for member_name in names
             ],
         }
 

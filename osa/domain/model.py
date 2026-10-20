@@ -32,6 +32,8 @@ class StructuralModel:
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
         self.bars: dict[str, Bar] = {}
+        self.verification_element_names: dict[str, str] = {}
+        self.verification_element_groups: list[dict[str, object]] = []
         self.rigid_bars: dict[str, RigidBar] = {}
         self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
         self.references: dict[str, DrawingReference] = {}
@@ -59,6 +61,13 @@ class StructuralModel:
     def _touch(self) -> None:
         self.revision += 1
         self.analysis_results.clear()
+        self.verification_element_names = {
+            name: value for name, value in self.verification_element_names.items() if name in self.bars
+        }
+        self.verification_element_groups = [
+            group for group in self.verification_element_groups
+            if all(name in self.bars for name in group["members"])
+        ]
         for hidden in self.scene_views.values():
             hidden.intersection_update(self.bars)
         for hidden in self.scene_view_hidden_rigid_bars.values():
@@ -606,6 +615,67 @@ class StructuralModel:
         del self.nodes[interface]
         self._touch()
         return joined
+
+    def group_verification_elements(self, member_names: tuple[str, ...]) -> dict[str, object]:
+        """Group a connected collinear chain for selection in Verification."""
+        names = tuple(dict.fromkeys(member_names))
+        if len(names) < 2:
+            raise ValueError("Selecione pelo menos duas barras para agrupar.")
+        if any(name not in self.bars for name in names):
+            raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
+        if any(set(names).intersection(group["members"]) for group in self.verification_element_groups):
+            raise ValueError("Uma ou mais barras já pertencem a um grupo de elementos.")
+        connected = {names[0]}
+        while True:
+            endpoints = {
+                node for name in connected
+                for node in (self.bars[name].start_node, self.bars[name].end_node)
+            }
+            expanded = connected | {
+                name for name in names
+                if endpoints.intersection((self.bars[name].start_node, self.bars[name].end_node))
+            }
+            if expanded == connected:
+                break
+            connected = expanded
+        if len(connected) != len(names):
+            raise ValueError("As barras devem formar uma sequência conectada na mesma reta.")
+        first = self.bars[names[0]]
+        a = self.nodes[first.start_node]
+        b = self.nodes[first.end_node]
+        origin = (a.x, a.y, a.z)
+        direction = (b.x - a.x, b.y - a.y, b.z - a.z)
+        length = math.sqrt(sum(v * v for v in direction))
+        if length <= self.coordinate_tolerance:
+            raise ValueError("As barras devem possuir comprimento positivo.")
+        for name in names:
+            bar = self.bars[name]
+            for node_name in (bar.start_node, bar.end_node):
+                point = self.nodes[node_name]
+                delta = (point.x - origin[0], point.y - origin[1], point.z - origin[2])
+                cross = (direction[1]*delta[2]-direction[2]*delta[1], direction[2]*delta[0]-direction[0]*delta[2], direction[0]*delta[1]-direction[1]*delta[0])
+                if math.sqrt(sum(v*v for v in cross)) > max(1e-9 * length * math.sqrt(sum(v*v for v in delta)), self.node_rounding_tolerance * length):
+                    raise ValueError("As barras devem estar alinhadas na mesma reta.")
+        group = {"members": names, "name": ""}
+        self.verification_element_groups.append(group)
+        self._touch()
+        return group
+
+    def verification_group_for(self, member_name: str) -> dict[str, object] | None:
+        return next((group for group in self.verification_element_groups if member_name in group["members"]), None)
+
+    def set_verification_element_name(self, member_names: tuple[str, ...], value: str) -> None:
+        names = tuple(dict.fromkeys(member_names))
+        if len(names) > 1:
+            group = self.verification_group_for(names[0])
+            if group is not None and tuple(group["members"]) == names:
+                group["name"] = value
+                self._touch()
+                return
+        for name in names:
+            if name in self.bars:
+                self.verification_element_names[name] = value
+        self._touch()
 
     join_members = join_bars
 

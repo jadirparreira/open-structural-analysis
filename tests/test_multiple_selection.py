@@ -430,6 +430,25 @@ def test_selected_members_share_a_highlight_actor_and_nodes_keep_their_color(qt_
     scene.close()
 
 
+def test_grouped_member_hover_highlights_every_member(qt_app):
+    model = _model()
+    model.group_verification_elements(("B1", "B2"))
+    scene = StructureScene()
+    scene.render_model(model)
+    scene.set_verification_group_selection_active(True)
+    scene._hovered = ("bar", "B1")
+
+    scene._sync_highlights()
+
+    hover = scene._highlight_targets["hover"]
+    actor = scene._highlight_actors["hover"]
+    highlighted_mesh = actor.GetMapper().GetInput()
+    assert hover == (("bar", "B1"), ("bar", "B2"))
+    assert highlighted_mesh.GetNumberOfCells() == 2
+    assert highlighted_mesh.GetBounds() == pytest.approx((0, 2, 0, 2, 0, 0))
+    scene.close()
+
+
 def test_solid_selection_preserves_each_member_contour(qt_app):
     model = _model()
     model.update_bar_section("B1", "Barra Circular")
