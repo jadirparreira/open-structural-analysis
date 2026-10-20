@@ -787,18 +787,20 @@ class SettingsDialog(QDialog):
                     tool_button.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
                                              "QToolButton:hover { background: #eaeef2; }")
                 material_row.addWidget(add_button); material_row.addWidget(remove_button); page_layout.addLayout(material_row)
-                form = QFormLayout(); fields = []
-                labels = ("Módulo de elasticidade", "Módulo de cisalhamento", "Coeficiente de Poisson", "Peso específico")
+                form = QFormLayout(); fields = []; field_labels = []
+                labels = (
+                    "Módulo de elasticidade", "Módulo de cisalhamento", "Coeficiente de Poisson",
+                    "Peso específico", "Tensão de escoamento", "Tensão de ruptura",
+                )
                 type_combo = QComboBox(); type_combo.addItems(["Aço", "Concreto", "Madeira"])
                 type_combo.setCurrentText(self.material_types.get(material_combo.currentText(), "Aço"))
-                type_combo.currentTextChanged.connect(
-                    lambda material_type: self.window.material_service.upsert(
-                        material_combo.currentText(), material_type, tuple(field.value() for field in fields)
-                    )
-                )
                 form.addRow("Tipo de material", type_combo)
-                units = ("kN/m²", "kN/m²", "", "kN/m³")
-                for label, unit, value in zip(labels, units, values["Aço Estrutural"]):
+                units = ("kN/m²", "kN/m²", "", "kN/m³", "kN/m²", "kN/m²")
+                initial_material = material_combo.currentText()
+                initial_values = tuple(values[initial_material])
+                if len(initial_values) < len(labels):
+                    initial_values += (0.0,) * (len(labels) - len(initial_values))
+                for label, unit, value in zip(labels, units, initial_values):
                     box = QFrame(); box.setObjectName("unitInputBox")
                     box.setStyleSheet("QFrame#unitInputBox { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } QFrame#unitInputBox QDoubleSpinBox { border: 0; background: transparent; color: #24292f; padding: 2px 9px; } QFrame#unitInputBox QLabel { color: #57606a; padding-right: 9px; }")
                     row = QHBoxLayout(box); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(0)
@@ -807,23 +809,43 @@ class SettingsDialog(QDialog):
                     row.addWidget(field, 1)
                     if unit:
                         row.addWidget(QLabel(unit))
-                    form.addRow(label, box); fields.append(field)
-                for index, field in enumerate(fields):
-                    field.valueChanged.connect(
-                        lambda _v, idx=index: self.window.material_service.upsert(
-                            material_combo.currentText(), type_combo.currentText(), tuple(f.value() for f in fields)
-                        )
+                    label_widget = QLabel(label)
+                    form.addRow(label_widget, box); fields.append(field); field_labels.append(label_widget)
+                def current_values():
+                    properties = [field.value() for field in fields[:4]]
+                    strengths = [field.value() for field in fields[4:]] if type_combo.currentText() == "Aço" else [0.0, 0.0]
+                    return tuple(properties + strengths)
+
+                def save_current_material(*_args):
+                    self.window.material_service.upsert(
+                        material_combo.currentText(), type_combo.currentText(), current_values()
                     )
+
+                def set_strength_visibility(material_type):
+                    visible = material_type == "Aço"
+                    for field, label in zip(fields[4:], field_labels[4:]):
+                        label.setVisible(visible)
+                        field.parentWidget().setVisible(visible)
+
+                for field in fields:
+                    field.valueChanged.connect(save_current_material)
+                type_combo.currentTextChanged.connect(save_current_material)
+                type_combo.currentTextChanged.connect(set_strength_visibility)
+                set_strength_visibility(type_combo.currentText())
                 def load_material(material):
                     for field in fields:
                         field.blockSignals(True)
-                    for field, value in zip(fields, values[material]):
+                    material_values = tuple(values[material])
+                    if len(material_values) < len(fields):
+                        material_values += (0.0,) * (len(fields) - len(material_values))
+                    for field, value in zip(fields, material_values):
                         field.setValue(value)
                     for field in fields:
                         field.blockSignals(False)
                     type_combo.blockSignals(True)
                     type_combo.setCurrentText(self.material_types.get(material, "Aço"))
                     type_combo.blockSignals(False)
+                    set_strength_visibility(type_combo.currentText())
                 material_combo.currentTextChanged.connect(load_material)
                 def add_material():
                     dialog = QInputDialog(self)
@@ -843,12 +865,15 @@ class SettingsDialog(QDialog):
                     name = dialog.textValue()
                     if ok and name.strip() and name.strip() not in values:
                         self.window.material_service.upsert(
-                            name.strip(), type_combo.currentText(), tuple(field.value() for field in fields)
+                            name.strip(), type_combo.currentText(), current_values()
                         )
                         material_combo.addItem(name.strip()); material_combo.setCurrentText(name.strip())
                 def remove_material():
                     name = material_combo.currentText()
-                    if name not in ("Aço Estrutural", "Concreto Estrutural", "Madeira Estrutural"):
+                    if name not in (
+                        "ASTM A36", "ASTM A572 Gr 50", "NBR MR 250", "NBR AR 350", "NBR AR 415",
+                        "SAE 1020", "Concreto Estrutural", "Madeira Estrutural",
+                    ):
                         self.window.material_service.remove(name); material_combo.removeItem(material_combo.currentIndex())
                 add_button.clicked.connect(add_material); remove_button.clicked.connect(remove_material)
                 page_layout.addLayout(form)

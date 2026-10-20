@@ -58,7 +58,7 @@ class Member:
     start_node: str
     end_node: str
     material: str = "Indefinido"
-    material_values: tuple[float, float, float, float] = (200000000.0, 76900000.0, 0.30, 76.9822025)
+    material_values: tuple[float, ...] = (200000000.0, 76900000.0, 0.30, 76.9822025, 250.0, 400.0)
     section: str = ""
     profile: str = ""
     section_geometry: tuple[tuple[str, float], ...] = ()

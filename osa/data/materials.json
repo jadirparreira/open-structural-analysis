@@ -2,12 +2,64 @@
   "schema_version": 1,
   "materials": [
     {
-      "name": "Aço Estrutural",
+      "name": "ASTM A36",
       "type": "Aço",
       "elastic_modulus_kn_m2": 200000000.0,
       "shear_modulus_kn_m2": 76900000.0,
       "poisson_ratio": 0.3,
-      "unit_weight_kn_m3": 76.9822025
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 250000.0,
+      "fu_kn_m2": 400000.0
+    },
+    {
+      "name": "ASTM A572 Gr 50",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 345000.0,
+      "fu_kn_m2": 450000.0
+    },
+    {
+      "name": "NBR MR 250",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 250000.0,
+      "fu_kn_m2": 400000.0
+    },
+    {
+      "name": "NBR AR 350",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 350000.0,
+      "fu_kn_m2": 450000.0
+    },
+    {
+      "name": "NBR AR 415",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 415000.0,
+      "fu_kn_m2": 520000.0
+    },
+    {
+      "name": "SAE 1020",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 240000.0,
+      "fu_kn_m2": 380000.0
     },
     {
       "name": "Concreto Estrutural",
@@ -15,7 +67,9 @@
       "elastic_modulus_kn_m2": 30000000.0,
       "shear_modulus_kn_m2": 12500000.0,
       "poisson_ratio": 0.2,
-      "unit_weight_kn_m3": 23.53596
+      "unit_weight_kn_m3": 23.53596,
+      "fy_kn_m2": 0.0,
+      "fu_kn_m2": 0.0
     },
     {
       "name": "Madeira Estrutural",
@@ -23,7 +77,9 @@
       "elastic_modulus_kn_m2": 12000000.0,
       "shear_modulus_kn_m2": 750000.0,
       "poisson_ratio": 0.35,
-      "unit_weight_kn_m3": 4.903325
+      "unit_weight_kn_m3": 4.903325,
+      "fy_kn_m2": 0.0,
+      "fu_kn_m2": 0.0
     }
   ]
 }

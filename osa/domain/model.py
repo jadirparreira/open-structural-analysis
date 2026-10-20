@@ -1013,8 +1013,10 @@ class StructuralModel:
             if action.target == target:
                 del self.actions[name]
 
-    def update_bar_material(self, name: str, material: str, values: tuple[float, float, float, float]) -> Bar:
-        self.bars[name] = replace(self.bars[name], material=material, material_values=tuple(values))
+    def update_bar_material(self, name: str, material: str, values: tuple[float, ...]) -> Bar:
+        # Member snapshots only need the four elastic/self-weight properties;
+        # strength values are read from the assigned material during design checks.
+        self.bars[name] = replace(self.bars[name], material=material, material_values=tuple(values[:4]))
         self._touch()
         return self.bars[name]
 

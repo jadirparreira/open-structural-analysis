@@ -464,6 +464,19 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        # The geometry inspector and placement editor keep material selectors
+        # alive while the modal catalog editor is open. Rebuild them from the
+        # updated project catalog when it closes so additions/removals are
+        # immediately reflected in the bar material selector.
+        if self.member_placement_editor.isVisible():
+            self.member_placement_editor.show()
+        selected = self.properties._selected
+        if selected and selected[0] == "bar" and self.palette.active_group == "Geometria":
+            if self.section_panel.isVisible():
+                self.close_section_panel()
+            self.properties.show_for(
+                selected[0], selected[1], "Geometria", selection=self.properties._selection,
+            )
 
     def open_program_settings(self) -> None:
         dialog = ProgramSettingsDialog(self)

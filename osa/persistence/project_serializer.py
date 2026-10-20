@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from itertools import product
 from math import floor, isfinite
 from typing import Any
@@ -46,19 +46,27 @@ def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int,
 
 class ProjectSerializer:
     @staticmethod
-    def _material_values(values: Any) -> tuple[float, float, float, float]:
-        """Normaliza materiais legados (GPa e kg/m³) para kN/m² e kN/m³."""
-        elastic_modulus, shear_modulus, poisson_ratio, unit_weight = (
-            float(value) for value in values
-        )
+    def _material_values(values: Any, *, default_strength=(0.0, 0.0)) -> tuple[float, ...]:
+        """Normaliza materiais legados e fy/fu para kN/m²."""
+        raw = tuple(float(value) for value in values)
+        if len(raw) not in (4, 6):
+            raise ValueError("As propriedades do material são inválidas.")
+        elastic_modulus, shear_modulus, poisson_ratio, unit_weight = raw[:4]
+        fy_kn_m2, fu_kn_m2 = raw[4:6] if len(raw) == 6 else default_strength
+        # Projects written by the first material-strength implementation stored MPa.
+        if len(raw) == 6 and 0.0 < fy_kn_m2 < 1000.0 and 0.0 < fu_kn_m2 < 1000.0:
+            fy_kn_m2 *= 1000.0
+            fu_kn_m2 *= 1000.0
         if elastic_modulus < 1e5 and shear_modulus < 1e5 and unit_weight > 100.0:
             return (
                 elastic_modulus * 1e6,
                 shear_modulus * 1e6,
                 poisson_ratio,
                 unit_weight * 9.80665e-3,
+                fy_kn_m2,
+                fu_kn_m2,
             )
-        return elastic_modulus, shear_modulus, poisson_ratio, unit_weight
+        return elastic_modulus, shear_modulus, poisson_ratio, unit_weight, fy_kn_m2, fu_kn_m2
 
     def dump(self, model: StructuralModel, thumbnail: str | None = None) -> dict[str, Any]:
         data = {
@@ -277,12 +285,31 @@ class ProjectSerializer:
                 raise ValueError("A vista ativa é inválida.")
             candidate.active_scene_view = active_view
             materials = data.get("materials", {})
-            if materials:
-                candidate.materials = {
-                    name: self._material_values(item["values"])
-                    for name, item in materials.items()
-                }
-            candidate.material_types = {name: item.get("type", "") for name, item in materials.items()}
+            # Keep current catalog defaults when loading older projects, then
+            # overlay project-specific edits and custom materials.
+            catalog_materials = dict(candidate.materials)
+            catalog_types = dict(candidate.material_types)
+            loaded_materials = {}
+            loaded_types = {}
+            for name, item in materials.items():
+                # The old generic steel is replaced by the specified A36 entry.
+                if name == "Aço Estrutural":
+                    continue
+                default_values = catalog_materials.get(name, ())
+                default_strength = tuple(default_values[4:6]) if len(default_values) >= 6 else (0.0, 0.0)
+                loaded_materials[name] = self._material_values(
+                    item["values"], default_strength=default_strength,
+                )
+                loaded_types[name] = item.get("type", catalog_types.get(name, ""))
+            candidate.materials = {**catalog_materials, **loaded_materials}
+            candidate.material_types = {**catalog_types, **loaded_types}
+            a36_values = candidate.materials.get("ASTM A36")
+            if a36_values is not None:
+                for member_name, member in tuple(candidate.bars.items()):
+                    if member.material == "Aço Estrutural":
+                        candidate.bars[member_name] = replace(
+                            member, material="ASTM A36", material_values=tuple(a36_values[:4]),
+                        )
             candidate.sections = {
                 str(kind): [str(section) for section in sections]
                 for kind, sections in data.get("included_sections", candidate.sections).items()

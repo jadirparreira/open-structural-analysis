@@ -493,7 +493,7 @@ class CommandSession:
         def add_w_member(start: str, end: str, profile_kind: str):
             profile, geometry = profiles[profile_kind]
             member = self.service.create_member(start, end)
-            model.update_bar_material(member.name, "Aço Estrutural", model.materials["Aço Estrutural"])
+            model.update_bar_material(member.name, "ASTM A36", model.materials["ASTM A36"])
             section = "Barra Circular" if profile_kind == "brace" else "W Laminado"
             model.update_bar_section(member.name, section)
             model.update_member_profile(member.name, profile, geometry)
@@ -700,7 +700,7 @@ class CommandSession:
                 cantilever = self.service.create_member(start_name, end_name)
                 configure_member(
                     cantilever.name,
-                    "Aço Estrutural",
+                    "ASTM A36",
                     "W Laminado",
                     "W 200 x 15.0",
                     cantilever_geometry,
@@ -741,7 +741,7 @@ class CommandSession:
                 member = self.service.create_member(start, end)
                 configure_member(
                     member.name,
-                    "Aço Estrutural",
+                    "ASTM A36",
                     "U Formado",
                     "U 100 x 50 x 3",
                     truss_geometry,
@@ -798,7 +798,7 @@ class CommandSession:
                     purlin = self.service.create_member(start_node, end_node)
                     configure_member(
                         purlin.name,
-                        "Aço Estrutural",
+                        "ASTM A36",
                         "C Formado",
                         purlin_profile,
                         purlin_geometry,
@@ -835,7 +835,7 @@ class CommandSession:
                     purlin = self.service.create_member(start_node, end_node)
                     configure_member(
                         purlin.name,
-                        "Aço Estrutural",
+                        "ASTM A36",
                         "C Formado",
                         purlin_profile,
                         purlin_geometry,
@@ -864,7 +864,7 @@ class CommandSession:
                     )
                     configure_member(
                         knee_brace.name,
-                        "Aço Estrutural",
+                        "ASTM A36",
                         "L Formado",
                         "L Formado 30 x 30 x 3.00",
                         l_bracing_geometry,
@@ -878,7 +878,7 @@ class CommandSession:
             )
             configure_member(
                 l_brace.name,
-                "Aço Estrutural",
+                "ASTM A36",
                 "L Formado",
                 "L Formado 30 x 30 x 3.00",
                 l_bracing_geometry,
@@ -891,7 +891,7 @@ class CommandSession:
                 )
                 configure_member(
                     l_brace.name,
-                    "Aço Estrutural",
+                    "ASTM A36",
                     "L Formado",
                     "L Formado 30 x 30 x 3.00",
                     l_bracing_geometry,
@@ -918,7 +918,7 @@ class CommandSession:
                     )
                     configure_member(
                         brace.name,
-                        "Aço Estrutural",
+                        "ASTM A36",
                         "Barra Circular",
                         "Barra Redonda Ø10 mm",
                         bracing_geometry,
@@ -938,7 +938,7 @@ class CommandSession:
                     )
                     configure_member(
                         brace.name,
-                        "Aço Estrutural",
+                        "ASTM A36",
                         "Barra Circular",
                         "Barra Redonda Ø10 mm",
                         bracing_geometry,
@@ -962,7 +962,7 @@ class CommandSession:
                 )
                 configure_member(
                     tie.name,
-                    "Aço Estrutural",
+                    "ASTM A36",
                     "Barra Circular",
                     "Barra Redonda Ø10 mm",
                     bracing_geometry,

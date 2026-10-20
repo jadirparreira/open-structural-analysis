@@ -300,6 +300,8 @@ class McpApplication:
                     "shear_modulus_kn_m2": values[1],
                     "poisson_ratio": values[2],
                     "unit_weight_kn_m3": values[3],
+                    "fy_kn_m2": values[4] if len(values) > 4 else 0.0,
+                    "fu_kn_m2": values[5] if len(values) > 5 else 0.0,
                 }
                 for name, values in self.model.materials.items()
             ],

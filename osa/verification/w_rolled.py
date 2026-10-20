@@ -9,7 +9,6 @@ from .elements import VerificationElement
 
 E_KN_CM2 = 20_000.0
 G_KN_CM2 = 7_690.0
-FY_KN_CM2 = 34.5
 GAMMA_A1 = 1.10
 
 
@@ -39,11 +38,11 @@ def _geometry_properties(member):
     }
 
 
-def _shear_capacity(h: float, t: float, area: float, kv: float) -> float:
+def _shear_capacity(h: float, t: float, area: float, kv: float, fy: float) -> float:
     lam = h / t
-    lp = 1.10 * sqrt(kv * E_KN_CM2 / FY_KN_CM2)
-    lr = 1.37 * sqrt(kv * E_KN_CM2 / FY_KN_CM2)
-    vpl = 0.60 * area * FY_KN_CM2
+    lp = 1.10 * sqrt(kv * E_KN_CM2 / fy)
+    lr = 1.37 * sqrt(kv * E_KN_CM2 / fy)
+    vpl = 0.60 * area * fy
     if lam <= lp:
         return vpl / GAMMA_A1
     if lam <= lr:
@@ -51,9 +50,9 @@ def _shear_capacity(h: float, t: float, area: float, kv: float) -> float:
     return 1.24 * (lp / lam) ** 2 * vpl / GAMMA_A1
 
 
-def _flexural_capacities(p: dict[str, float], span_cm: float) -> tuple[float, float]:
+def _flexural_capacities(p: dict[str, float], span_cm: float, fy: float) -> tuple[float, float]:
     d, bf, tw, tf, r = p["d"], p["bf"], p["tw"], p["tf"], p["r"]
-    fy, e = FY_KN_CM2, E_KN_CM2
+    e = E_KN_CM2
     # FLM and FLA per the piecewise limits for rolled I/H sections.
     lam_f = max(0.0, (bf - tw - 2.0 * r) / 2.0) / tf
     lp_f = 0.38 * sqrt(e / fy)
@@ -107,6 +106,11 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
         return {"status": "not_checked", "detail": "resultados de análise indisponíveis"}
     try:
         p = _geometry_properties(members[0])
+        material_values = model.materials.get(members[0].material, ())
+        if len(material_values) < 6 or material_values[4] <= 0.0 or material_values[5] <= 0.0:
+            return {"status": "not_checked", "detail": "resistências do material não definidas"}
+        fy_kn_m2, fu_kn_m2 = float(material_values[4]), float(material_values[5])
+        fy = fy_kn_m2 / 10_000.0  # kN/m² to kN/cm²
         lengths_cm = [result.member_results[name]["length"] * 100.0
                       for result in results for name in element.member_names]
         span_cm = sum(lengths_cm) / len(results)
@@ -117,15 +121,15 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
         r0_sq = (p["Ix"] + p["Iy"]) / p["A"]
         nt = (pi**2 * E_KN_CM2 * p["Cw"] / span_cm**2 + G_KN_CM2 * p["J"]) / r0_sq
         ne = min(nx, ny, nt)
-        lam0 = sqrt(p["A"] * FY_KN_CM2 / ne)
+        lam0 = sqrt(p["A"] * fy / ne)
         chi = 0.658 ** (lam0**2) if lam0 <= 1.5 else 0.877 / lam0**2
-        nrd_t = p["A"] * FY_KN_CM2 / GAMMA_A1
-        nrd_c = chi * p["A"] * FY_KN_CM2 / GAMMA_A1
-        mrd_x, mrd_y = _flexural_capacities(p, span_cm)
+        nrd_t = p["A"] * fy / GAMMA_A1
+        nrd_c = chi * p["A"] * fy / GAMMA_A1
+        mrd_x, mrd_y = _flexural_capacities(p, span_cm, fy)
         if mrd_x <= 0.0 or mrd_y <= 0.0:
             return {"status": "not_checked", "detail": "capacidade à flexão fora do domínio implementado"}
-        vrd_x = _shear_capacity(p["d"] - 2 * p["tf"], p["tw"], p["d"] * p["tw"], 5.34)
-        vrd_y = _shear_capacity(p["bf"] / 2.0, p["tf"], 2 * p["bf"] * p["tf"], 1.2)
+        vrd_x = _shear_capacity(p["d"] - 2 * p["tf"], p["tw"], p["d"] * p["tw"], 5.34, fy)
+        vrd_y = _shear_capacity(p["bf"] / 2.0, p["tf"], 2 * p["bf"] * p["tf"], 1.2, fy)
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
         detail = str(error).strip() or "não foi possível obter propriedades da seção"
         return {"status": "not_checked", "detail": detail}
@@ -139,8 +143,8 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
                 if axial < 0.0:
                     flange_slenderness = (p["bf"] - p["tw"] - 2.0 * p["r"]) / (2.0 * p["tf"])
                     web_slenderness = (p["d"] - 2.0 * (p["tf"] + p["r"])) / p["tw"]
-                    if (flange_slenderness > 0.56 * sqrt(E_KN_CM2 / FY_KN_CM2)
-                            or web_slenderness > 1.49 * sqrt(E_KN_CM2 / FY_KN_CM2)):
+                    if (flange_slenderness > 0.56 * sqrt(E_KN_CM2 / fy)
+                            or web_slenderness > 1.49 * sqrt(E_KN_CM2 / fy)):
                         return {"status": "not_checked", "detail": "flambagem local em compressão ainda não está incluída"}
                 torque = abs(float(sample.get("torque", 0.0)))
                 if torque > 1e-6:
@@ -172,5 +176,6 @@ def verify_w_element(element: VerificationElement, model, results) -> dict:
         "critical_check": check_name,
         "critical_combination": combo,
         "detail": f"{utilization:.0%} · {check_name}",
-        "assumptions": "A572 Gr50 · Kx=Ky=Kz=1,0 · Cb=1,0",
+        "assumptions": f"{members[0].material} · Kx=Ky=Kz=1,0 · Cb=1,0",
+        "material_strengths": {"fy_kn_m2": fy_kn_m2, "fu_kn_m2": fu_kn_m2},
     }

@@ -51,7 +51,7 @@ class ModelBuilder:
                 if supports[index] and stiffness[index] > 0.0:
                     target.def_support_spring(node.name, dof, stiffness[index])
         for material_name, values in source.materials.items():
-            elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values
+            elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values[:4]
             target.add_material(
                 material_name,
                 elastic_modulus_kn_m2,

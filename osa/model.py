@@ -14,6 +14,7 @@ class StructuralModel(_StructuralModel):
             item["name"]: (
                 item["elastic_modulus_kn_m2"], item["shear_modulus_kn_m2"],
                 item["poisson_ratio"], item["unit_weight_kn_m3"],
+                item.get("fy_kn_m2", 0.0), item.get("fu_kn_m2", 0.0),
             )
             for item in catalog
         }
