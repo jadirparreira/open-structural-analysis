@@ -54,6 +54,8 @@ class CommandHistory(QFrame):
         """)
         self.scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.content = QWidget()
+        self.content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.content.setStyleSheet("background: transparent;")
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(4, 4, 4, 4)
         self.content_layout.setSpacing(0)
