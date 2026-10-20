@@ -5,7 +5,15 @@ from html import escape
 from PySide6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtGui import QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
+
+from .math_equations import (
+    EQUATION_OBJECT_TYPE,
+    EQUATION_SVG_PROPERTY,
+    SvgEquationObject,
+    equation_svg,
+)
 
 
 class CalculationMemorialDialog(QDialog):
@@ -38,7 +46,20 @@ class CalculationMemorialDialog(QDialog):
         self.content = QTextBrowser()
         self.content.setObjectName("calculationMemory")
         self.content.setOpenExternalLinks(False)
-        self.content.setHtml(self._render(memory or {}))
+        equation_objects: dict[str, bytes] = {}
+        html = self._render(memory or {}, equation_objects)
+        self.content.setHtml(html)
+        document = self.content.document()
+        self._equation_handler = SvgEquationObject(self.content)
+        document.documentLayout().registerHandler(EQUATION_OBJECT_TYPE, self._equation_handler)
+        for marker, svg_data in equation_objects.items():
+            cursor = document.find(marker)
+            if cursor.isNull():
+                continue
+            text_format = QTextCharFormat()
+            text_format.setObjectType(EQUATION_OBJECT_TYPE)
+            text_format.setProperty(EQUATION_SVG_PROPERTY, QByteArray(svg_data))
+            cursor.insertText("\uFFFC", text_format)
         outer.addWidget(self.content, 1)
         footer = QHBoxLayout()
         footer.setContentsMargins(16, 8, 16, 12)
@@ -50,7 +71,9 @@ class CalculationMemorialDialog(QDialog):
         outer.addLayout(footer)
 
     @staticmethod
-    def _render(memory: dict) -> str:
+    def _render(memory: dict, equation_objects: dict[str, bytes] | None = None) -> str:
+        equation_objects = equation_objects if equation_objects is not None else {}
+
         def formatted(value, unit: str = "") -> str:
             if value is None or value == "":
                 return "—"
@@ -111,6 +134,18 @@ class CalculationMemorialDialog(QDialog):
                 return "—"
             return f"{float(value):,.{places}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+        def equation(latex_lines: tuple[str, ...], fallback: str) -> str:
+            rendered_lines = []
+            for index, latex in enumerate(latex_lines):
+                svg_data = equation_svg(latex)
+                if svg_data is None:
+                    return escape(fallback)
+                marker = f"OSA_EQUATION_OBJECT_{len(equation_objects):04d}_END"
+                equation_objects[marker] = svg_data
+                indent = "&nbsp;&nbsp;&nbsp;&nbsp;" if index else ""
+                rendered_lines.append(f"{indent}{marker}")
+            return "<br/>".join(rendered_lines)
+
         axial_tension_content = (
             '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">Tração axial</p>'
         )
@@ -129,43 +164,80 @@ class CalculationMemorialDialog(QDialog):
             checks = [
                 (
                     "Área efetiva da seção transversal",
-                    ("Ae = Ct × An = "
-                     f"{decimal(ct, 2)} × {decimal(an)} cm² = {decimal(ae)} cm²"),
+                    (
+                        (
+                            rf"A_e = C_t \times A_n = {decimal(ct, 2)} \times "
+                            rf"{decimal(an)}\,\mathrm{{cm^2}} = {decimal(ae)}\,\mathrm{{cm^2}}",
+                        ),
+                        ("Ae = Ct × An = "
+                         f"{decimal(ct, 2)} × {decimal(an)} cm² = {decimal(ae)} cm²"),
+                    ),
                 ),
                 (
                     "Escoamento da seção bruta",
-                    ("Nt,Rd1 = Ag × fy / γa1 = "
-                     f"{decimal(ag)} cm² × {decimal(fy)} kN/cm² / {decimal(gamma_a1, 2)} "
-                     f"= {decimal(nrd1)} kN"),
+                    (
+                        (
+                            r"N_{t,Rd1} = \dfrac{A_g \times f_y}{\gamma_{a1}} = "
+                            rf"\dfrac{{{decimal(ag)}\,\mathrm{{cm^2}} \times "
+                            rf"{decimal(fy)}\,\mathrm{{kN/cm^2}}}}{{{decimal(gamma_a1, 2)}}} "
+                            rf"= {decimal(nrd1)}\,\mathrm{{kN}}",
+                        ),
+                        ("Nt,Rd1 = Ag × fy / γa1 = "
+                         f"{decimal(ag)} cm² × {decimal(fy)} kN/cm² / {decimal(gamma_a1, 2)} "
+                         f"= {decimal(nrd1)} kN"),
+                    ),
                 ),
                 (
                     "Ruptura da seção líquida efetiva",
-                    ("Nt,Rd2 = Ae × fu / γa2 = "
-                     f"{decimal(ae)} cm² × {decimal(fu)} kN/cm² / {decimal(gamma_a2, 2)} "
-                     f"= {decimal(nrd2)} kN"),
+                    (
+                        (
+                            r"N_{t,Rd2} = \dfrac{A_e \times f_u}{\gamma_{a2}} = "
+                            rf"\dfrac{{{decimal(ae)}\,\mathrm{{cm^2}} \times "
+                            rf"{decimal(fu)}\,\mathrm{{kN/cm^2}}}}{{{decimal(gamma_a2, 2)}}} "
+                            rf"= {decimal(nrd2)}\,\mathrm{{kN}}",
+                        ),
+                        ("Nt,Rd2 = Ae × fu / γa2 = "
+                         f"{decimal(ae)} cm² × {decimal(fu)} kN/cm² / {decimal(gamma_a2, 2)} "
+                         f"= {decimal(nrd2)} kN"),
+                    ),
                 ),
                 (
                     "Força axial resistente de cálculo à tração",
-                    (f"Nt,Rd = min(Nt,Rd1; Nt,Rd2) = min({decimal(nrd1)}; {decimal(nrd2)}) "
-                     f"= {decimal(nrd)} kN"),
+                    (
+                        (
+                            r"N_{t,Rd} = \min(N_{t,Rd1};\,N_{t,Rd2}) = "
+                            rf"\min({decimal(nrd1)};\,{decimal(nrd2)}) = {decimal(nrd)}\,\mathrm{{kN}}",
+                        ),
+                        (f"Nt,Rd = min(Nt,Rd1; Nt,Rd2) = min({decimal(nrd1)}; {decimal(nrd2)}) "
+                         f"= {decimal(nrd)} kN"),
+                    ),
                 ),
             ]
             applied = verification.get("applied_kn")
             utilization = verification.get("utilization")
             combination_name = escape(str(verification.get("critical_combination", "—")))
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
-            for index, (check_name, equation) in enumerate(checks):
+            for index, (check_name, equation_data) in enumerate(checks):
                 top_spacing = "0" if index == 0 else "18px"
+                latex_lines, fallback = equation_data
                 axial_tension_content += (
                     f'<p style="margin:{top_spacing} 0 3px;color:#57606a">{escape(check_name)}</p>'
-                    f'<p style="margin:0;color:#57606a">{escape(equation)}</p>'
+                    f'<p style="margin:0;color:#57606a">{equation(latex_lines, fallback)}</p>'
                 )
+            utilization_latex_lines = (
+                rf"\dfrac{{N_{{t,Sd}}}}{{N_{{t,Rd}}}} = "
+                rf"\dfrac{{{decimal(applied)}}}{{{decimal(nrd)}}} "
+                rf"= {decimal(utilization * 100.0, 2)}\,\%\quad\mathrm{{({status}).}}",
+            )
+            utilization_fallback = (
+                f"Nt,Sd / Nt,Rd = {decimal(applied)} / {decimal(nrd)} "
+                f"= {decimal(utilization * 100.0, 2)} % ({status})."
+            )
             axial_tension_content += (
                 f'<p style="margin:18px 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
                 f'<p style="margin:0;color:#57606a">'
-                f'Nt,Sd / Nt,Rd = {decimal(applied)} / {decimal(nrd)} '
-                f'= {decimal(utilization * 100.0, 2)} % ({status}).</p>'
+                f'{equation(utilization_latex_lines, utilization_fallback)}</p>'
             )
         elif memory.get("profile_type") != "W Laminado":
             axial_tension_content += (
