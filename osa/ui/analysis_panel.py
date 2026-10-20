@@ -117,7 +117,7 @@ class ProcessingPanel(QFrame):
 
 
 class VerificationPanel(QFrame):
-    """Progress card showing the verification result for each model element."""
+    """Progress card for model verification and its final summary."""
 
     def __init__(self, window) -> None:
         super().__init__(window)
@@ -137,7 +137,6 @@ class VerificationPanel(QFrame):
         self.summary = QLabel()
         self.summary.setObjectName("processingStatus")
         self.summary.setWordWrap(True)
-        self.summary.hide()
         layout.addWidget(self.summary)
         self.close_button = QPushButton("Fechar")
         self.close_button.setObjectName("secondaryButton")
@@ -146,13 +145,12 @@ class VerificationPanel(QFrame):
         layout.addWidget(self.close_button)
         self.hide()
 
-    def start(self, total_elements: int) -> None:
+    def start(self) -> None:
         self.close_button.hide()
-        self.summary.setText(f"Total de elementos: {total_elements}")
-        self.summary.show()
-        self.status.setText("Verificando modelo")
+        self.status.setText("Verificando estrutura…")
         self.status.setProperty("state", "active")
         ProcessingPanel._refresh_style(self.status)
+        self.summary.setText("Análise e verificação da tração axial dos perfis W em andamento.")
         self.show()
         self.reposition()
         self.raise_()
@@ -163,12 +161,11 @@ class VerificationPanel(QFrame):
         ProcessingPanel._refresh_style(self.status)
         self.summary.setText(
             f"Total de elementos: {summary['total']}\n"
-            f"Verificados: {summary['checked']}\n"
+            f"Com rotina: {summary['with_routine']}\n"
+            f"Sem rotina: {summary['without_routine']}\n"
             f"Aprovados: {summary['approved']}\n"
-            f"Reprovados: {summary['rejected']}\n"
-            f"Não verificados: {summary['not_checked']}"
+            f"Reprovados: {summary['rejected']}"
         )
-        self.summary.show()
         self.close_button.show()
         self.reposition()
 
@@ -176,6 +173,7 @@ class VerificationPanel(QFrame):
         self.status.setText(f"Não foi possível concluir a verificação: {message}")
         self.status.setProperty("state", "error")
         ProcessingPanel._refresh_style(self.status)
+        self.summary.clear()
         self.close_button.show()
         self.reposition()
 

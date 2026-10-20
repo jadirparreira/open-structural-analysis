@@ -1,4 +1,4 @@
-"""Canonical element list used by model verification."""
+"""Canonical named member groups used by memorial annotations."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class VerificationElement:
 
 
 def verification_elements(model: StructuralModel) -> tuple[VerificationElement, ...]:
-    """Return each standalone bar and verification group exactly once."""
+    """Return the named member groups used by the calculation memorial."""
     grouped_names: set[str] = set()
     elements: list[VerificationElement] = []
     for group in model.verification_element_groups:
@@ -39,16 +39,3 @@ def verification_elements(model: StructuralModel) -> tuple[VerificationElement, 
         display_name = f"{custom_name} ({member_name})" if custom_name else member_name
         elements.append(VerificationElement(f"bar:{member_name}", display_name, (member_name,)))
     return tuple(elements)
-
-
-def verification_element_key(model: StructuralModel, member_names) -> str | None:
-    """Resolve a complete selected element/group to its stable result key."""
-    names = tuple(member_names)
-    if len(names) == 1:
-        group = model.verification_group_for(names[0])
-        return None if group is not None else f"bar:{names[0]}"
-    for group in model.verification_element_groups:
-        members = tuple(group["members"])
-        if len(names) == len(members) and set(names) == set(members):
-            return f"group:{'|'.join(members)}"
-    return None

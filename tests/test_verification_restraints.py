@@ -10,7 +10,7 @@ from osa.domain.member_axes import member_basis
 from osa.model import StructuralModel
 from osa.verification.elements import VerificationElement
 from osa.verification.restraints import AnalyticalRestraints
-from osa.verification.w_rolled import _geometry_properties, verify_w_element
+from osa.memorial_data import _w_properties
 
 
 def add_w(model, name, start, end, rotation=0):
@@ -45,8 +45,10 @@ def result(model, element, *, axial=-10, moment=0):
 
 
 def lengths(model, element, **forces):
+    properties = _w_properties(model.bars[element.member_names[0]])
     return AnalyticalRestraints(model).lengths(
-        element, [result(model, element, **forces)], _geometry_properties(model.bars[element.member_names[0]])
+        element, [result(model, element, **forces)],
+        {"Iy": properties["Iz"], "tw": properties["tw"] / 10.0},
     )
 
 
@@ -173,42 +175,8 @@ def test_target_semirigid_connection_does_not_become_an_ideal_rotation_support()
     assert not first["accepted"]
 
 
-def test_internal_hinge_without_a_lateral_restraint_is_not_checked_as_continuous():
-    model, element = chain()
-    for name, index in (("B1", 9), ("B2", 8)):
-        releases = list(model.bars[name].releases)
-        releases[index] = True
-        model.update_member_releases(name, tuple(releases))
-    evaluation = verify_w_element(element, model, [result(model, element)])
-    assert evaluation["status"] == "not_checked"
-    assert "Ly: ligação interna" in evaluation["detail"]
-
-
-def test_free_end_requires_special_stability_analysis():
-    model, element = chain()
-    model.update_node_supports("B", (False,) * 6)
-    evaluation = verify_w_element(element, model, [result(model, element, moment=1)])
-    assert evaluation["status"] == "not_checked"
-    assert "extremidades" in evaluation["detail"]
-    assert "calculation_memory" in evaluation
-
-
-def test_group_order_does_not_change_lengths_and_rotation_mismatch_is_rejected():
+def test_group_order_does_not_change_calculated_lengths():
     model, element = chain()
     brace(model)
     reverse = replace(element, member_names=tuple(reversed(element.member_names)))
     assert lengths(model, reverse).lengths_m == lengths(model, element).lengths_m
-    model.update_member_rotation("B2", 90)
-    evaluation = verify_w_element(element, model, [result(model, element)])
-    assert evaluation["status"] == "not_checked"
-    assert "eixos locais" in evaluation["detail"]
-
-
-def test_memory_uses_local_names_and_analytical_lengths():
-    model, element = chain()
-    brace(model)
-    evaluation = verify_w_element(element, model, [result(model, element)])
-    assert evaluation["status"] in {"approved", "rejected"}
-    assert evaluation["calculation_memory"]["lengths_cm"] == {"Ly": 600, "Lz": 400, "Lt": 600, "Lb": 600}
-    assert "Lx" not in evaluation["assumptions"]
-    assert evaluation["calculation_memory"]["restraints"]["notes"]

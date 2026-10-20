@@ -187,8 +187,8 @@ class FloatingPalette(QFrame):
             (),
         )
         self._add_group(
-            "Verificação",
-            "verification-book-text.svg",
+            "Memorial",
+            "calculation-memory.svg",
             (),
         )
         self._add_unavailable_button("Documentação", "documentation-scroll.svg")
@@ -266,7 +266,7 @@ class FloatingPalette(QFrame):
     def toggle_group(self, name: str, *, animate: bool = True) -> None:
         next_group = name
         previous_group = self._expanded
-        if previous_group == "Verificação" and next_group != "Verificação":
+        if previous_group == "Memorial" and next_group != "Memorial":
             self._set_verification_view(False)
         if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
             "scene_hide_selection", "scene_reveal_selection", "member_placement",
@@ -280,7 +280,7 @@ class FloatingPalette(QFrame):
             if section is not None:
                 section.setVisible(expanded)
         self._expanded = next_group
-        if next_group == "Verificação" and previous_group != "Verificação":
+        if next_group == "Memorial" and previous_group != "Memorial":
             self._set_verification_view(True)
         self._layout.activate()
         self.setFixedHeight(self.sizeHint().height())
@@ -288,7 +288,7 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "top_icon_palette"):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
         if hasattr(self.window, "verification_top_palette"):
-            self.window.verification_top_palette.set_verification_visible(next_group == "Verificação")
+            self.window.verification_top_palette.set_verification_visible(next_group == "Memorial")
         if hasattr(self.window, "action_top_palette"):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
         if hasattr(self.window, "analysis_top_palette"):
@@ -298,7 +298,7 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "scene"):
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
-            self.window.scene.set_verification_group_selection_active(next_group == "Verificação")
+            self.window.scene.set_verification_group_selection_active(next_group == "Memorial")
         if hasattr(self.window, "refresh_selected_property_panel"):
             self.window.refresh_selected_property_panel(next_group)
 
@@ -444,7 +444,7 @@ class MemberPropertyCopyPanel(QFrame):
 
 
 class VerificationTopPalette(QFrame):
-    """Top palette for element verification commands."""
+    """Top palette for element names and memorial grouping."""
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -462,7 +462,7 @@ class VerificationTopPalette(QFrame):
         )
         layout.addWidget(self.name_button)
         self.utilization_button = self._identifier_button(
-            "percent.svg", "Taxa de solicitação", "utilization",
+            "percent.svg", "Taxa de utilização", "utilization",
         )
         layout.addWidget(self.utilization_button)
         separator = QFrame(self)

@@ -5,11 +5,12 @@ from PySide6.QtGui import QPainterPath, QPen, QRegularExpressionValidator
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
-from osa.verification.elements import verification_element_key
+from osa.memorial_data import calculation_memory
+from osa.verification.elements import verification_elements
 
 from .color_palette import HoneycombColorPalette
 from .common import *
-from .verification_memory_dialog import VerificationMemoryDialog
+from .calculation_memorial_dialog import CalculationMemorialDialog
 from .window_frame import WindowFrame
 
 
@@ -212,8 +213,8 @@ class PropertyPanel(QFrame):
                     Path(__file__).parents[1] / "resources" / "icons" / "calculation-memory.svg"
                 )))
                 memory_button.setIconSize(QSize(18, 18))
-                memory_button.setToolTip("Abrir memória de cálculo")
-                memory_button.setAccessibleName("Abrir memória de cálculo")
+                memory_button.setToolTip("Abrir memorial de cálculo")
+                memory_button.setAccessibleName("Abrir memorial de cálculo")
                 memory_button.setStyleSheet(
                     "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
                     "QToolButton:hover { background: #eaeef2; }"
@@ -312,9 +313,8 @@ class PropertyPanel(QFrame):
     def _open_verification_memory(self) -> None:
         """Open the stored calculation memory for the selected element or group."""
         names = tuple(self._selected_names("bar"))
-        element_key = verification_element_key(self.window.model, names)
-        evaluation = self.window.model.verification_results.get(element_key, {}) if element_key else {}
-        dialog = VerificationMemoryDialog(evaluation.get("calculation_memory"), self.window)
+        memory = calculation_memory(self.window.model, names)
+        dialog = CalculationMemorialDialog(memory, self.window)
         dialog.exec()
 
     def _inspected_kind_changed(self, _index: int) -> None:
@@ -372,7 +372,7 @@ class PropertyPanel(QFrame):
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
-        verification_mode = section == "Verificação"
+        verification_mode = section == "Memorial"
         self.member_color_button.setVisible(kind == "bar" and not verification_mode)
         self.delete_button.setVisible(not verification_mode)
         self.update_delete_button_state()
@@ -408,19 +408,29 @@ class PropertyPanel(QFrame):
             with QSignalBlocker(self.verification_name_input):
                 self.verification_name_input.setText(custom_name)
             self.name.setVisible(True)
-            element_key = verification_element_key(self.window.model, names)
-            evaluation = self.window.model.verification_results.get(element_key, {}) if element_key else {}
-            check = evaluation.get("critical_check")
-            utilization = evaluation.get("utilization")
-            self._verification_result_values["utilization"].setText(
-                f"{float(utilization):.1%}" if utilization is not None else "A definir"
-            )
-            self._verification_result_values["critical_check"].setText(str(check or "A definir"))
-            self._verification_result_values["critical_combination"].setText(
-                str(evaluation.get("critical_combination", "A definir"))
-            )
-            for value in self._verification_result_values.values():
-                value.setToolTip("")
+            self._verification_result_values["utilization"].setText("A definir")
+            self._verification_result_values["critical_check"].setText("A definir")
+            self._verification_result_values["critical_combination"].setText("A definir")
+            selected_names = set(names)
+            element_result = next((
+                self.window.model.verification_results.get(element.key)
+                for element in verification_elements(self.window.model)
+                if set(element.member_names) == selected_names
+            ), None)
+            if element_result:
+                if element_result.get("status") == "checked":
+                    self._verification_result_values["utilization"].setText(
+                        f"{element_result['utilization']:.2%}".replace(".", ",")
+                    )
+                    self._verification_result_values["critical_check"].setText(
+                        element_result.get("critical_check", "N/D")
+                    )
+                    self._verification_result_values["critical_combination"].setText(
+                        element_result.get("critical_combination", "N/D")
+                    )
+                elif element_result.get("status") == "not_applicable":
+                    for value in self._verification_result_values.values():
+                        value.setText("N/A")
         if kind == "bar":
             colors = [self.window.model.bars[member_name].color for member_name in names]
             self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")

@@ -4449,12 +4449,9 @@ class StructureScene(QWidget):
                 name = name or element.member_names[0]
             else:
                 name = group_names.get(element.member_names, "") or ", ".join(element.member_names)
-            result = self._model.verification_results.get(element.key, {})
+            result = getattr(self._model, "verification_results", {}).get(element.key, {})
             utilization = result.get("utilization")
-            rate = (
-                f"{float(utilization):.0%}"
-                if utilization is not None else "N/D"
-            )
+            rate = f"{float(utilization):.0%}" if utilization is not None else "N/D"
             parts = ([name] if show_name else []) + ([rate] if show_utilization else [])
             visible_members = [
                 member_name for member_name in element.member_names

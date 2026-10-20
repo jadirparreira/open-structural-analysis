@@ -31,7 +31,7 @@ ANALYSIS_DIAGRAMS = (
     "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
 )
 ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
-APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise")
+APPLICATION_SESSIONS = ("Geometria", "Memorial", "Ações", "Análise")
 
 
 class McpApplication:
@@ -135,7 +135,7 @@ class McpApplication:
         normalized = str(session).strip()
         if normalized not in APPLICATION_SESSIONS:
             raise ValueError(
-                "Sessão desconhecida. Use Geometria, Verificação, Ações ou Análise."
+                "Sessão desconhecida. Use Geometria, Memorial, Ações ou Análise."
             )
         if self._on_session_changed is None:
             raise ValueError("A navegação visual do OpenSA não está disponível.")
@@ -1033,7 +1033,7 @@ class McpApplication:
         }
 
     def group_verification_elements(self, member_names: list[str]) -> dict[str, Any]:
-        """Agrupa barras alinhadas como um único elemento na sessão Verificação."""
+        """Agrupa barras alinhadas como um único elemento no memorial."""
         if not isinstance(member_names, (list, tuple)) or not member_names:
             raise ValueError("Informe pelo menos duas barras para agrupar.")
         group = self.model.group_verification_elements(tuple(member_names))

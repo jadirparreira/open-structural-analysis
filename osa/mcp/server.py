@@ -41,7 +41,7 @@ class LocalMcpServer:
             instructions=(
                 "Você está conectado ao Open Structural Analysis. "
                 "Consulte o projeto atual antes de fazer alterações. "
-                "A interface possui as sessões Geometria, Verificação, Ações e Análise. "
+                "A interface possui as sessões Geometria, Memorial, Ações e Análise. "
                 "Antes de executar uma operação relacionada a uma sessão, consulte "
                 "get_session_state e abra a sessão correspondente com set_session. "
                 "Mantenha essa sessão aberta durante a sequência de operações para "
@@ -992,9 +992,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="group_verification_elements",
-            title="Agrupar elementos de verificação",
+            title="Agrupar barras no memorial",
             description=(
-                "Agrupa duas ou mais barras existentes como um único elemento na sessão Verificação. "
+                "Agrupa duas ou mais barras existentes como um único elemento na sessão Memorial. "
                 "Todas devem estar conectadas em sequência e alinhadas na mesma reta. "
                 "Informe os nomes padrão das barras retornados por list_members."
             ),
@@ -1005,9 +1005,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="set_verification_element_name",
-            title="Nomear elemento de verificação",
+            title="Nomear elemento do memorial",
             description=(
-                "Define o nome de um elemento ou grupo na sessão Verificação. O nome aceita "
+                "Define o nome de um elemento ou grupo na sessão Memorial. O nome aceita "
                 "somente letras e números; use texto vazio para limpar. Para um grupo, informe "
                 "todos os nomes das barras que o compõem. Informe uma única barra para nomear "
                 "um elemento individual."
