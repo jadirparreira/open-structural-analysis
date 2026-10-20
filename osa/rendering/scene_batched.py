@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayou
 from pyvistaqt import QtInteractor
 
 from osa.model import StructuralModel
+from osa.verification import verification_elements
 
 from .action_renderer import ActionRenderer
 from .batched_renderer import (
@@ -396,6 +397,8 @@ class StructureScene(QWidget):
         self._reference_axes_visible = True
         self._nodes_visible = True
         self._labels_visibility = {"node": True, "bar": True}
+        self._verification_identifier_modes = {"name": False, "utilization": False}
+        self._verification_palette_visible = False
         self._solid_members_visible = False
         self._member_releases_visible = True
         self._semirigid_links_visible = True
@@ -965,6 +968,7 @@ class StructureScene(QWidget):
             self._refresh_result_layer()
         elif self._rendered_revision != model.revision:
             self._clear_result_layer()
+        self._sync_verification_identifier_labels()
         self._capture_rendered_state()
 
     def refresh_drawing_references(self, model: StructuralModel, *, fit_camera: bool = False) -> None:
@@ -1389,6 +1393,11 @@ class StructureScene(QWidget):
                 "bar", self._member_batch.label_positions, self._member_batch.names,
                 visible=self._labels_visibility["bar"],
             )
+        positions, labels = self._verification_identifier_data()
+        yield from self._label_overlay.set_group_steps(
+            "verification", positions, labels,
+            visible=self._verification_identifier_visible(), deduplicate=False,
+        )
         if self._node_batch is not None:
             yield from self._label_overlay.set_group_steps(
                 "node", self._node_batch.label_positions, self._node_batch.names,
@@ -4409,6 +4418,117 @@ class StructureScene(QWidget):
         self._labels_visibility[kind] = bool(visible)
         self._label_overlay.set_group_visible(kind, visible)
 
+    def _verification_identifier_visible(self) -> bool:
+        return (
+            self._verification_palette_visible
+            and any(self._verification_identifier_modes.values())
+        )
+
+    def _verification_identifier_data(self) -> tuple[np.ndarray, tuple[str, ...]]:
+        batch = self._member_batch
+        if batch is None or not any(self._verification_identifier_modes.values()):
+            return np.empty((0, 3), dtype=float), ()
+
+        group_names = {
+            tuple(group.get("members", ())): str(group.get("name", "")).strip()
+            for group in self._model.verification_element_groups
+        }
+        batch_indices = {
+            name: index for index, name in enumerate(batch.names)
+            if index < len(batch.label_positions)
+        }
+        positions: list[np.ndarray] = []
+        labels: list[str] = []
+        show_name = self._verification_identifier_modes["name"]
+        show_utilization = self._verification_identifier_modes["utilization"]
+        for element in verification_elements(self._model):
+            if len(element.member_names) == 1:
+                name = self._model.verification_element_names.get(
+                    element.member_names[0], "",
+                ).strip()
+                name = name or element.member_names[0]
+            else:
+                name = group_names.get(element.member_names, "") or ", ".join(element.member_names)
+            result = self._model.verification_results.get(element.key, {})
+            utilization = result.get("utilization")
+            rate = (
+                f"{float(utilization):.0%}"
+                if utilization is not None else "N/D"
+            )
+            parts = ([name] if show_name else []) + ([rate] if show_utilization else [])
+            visible_members = [
+                member_name for member_name in element.member_names
+                if member_name in batch_indices
+            ]
+            if not visible_members or not parts:
+                continue
+
+            if len(element.member_names) == 1:
+                point = batch.label_positions[batch_indices[visible_members[0]]]
+            else:
+                midpoints: list[np.ndarray] = []
+                lengths: list[float] = []
+                label_offsets: list[float] = []
+                for member_name in element.member_names:
+                    member = self._model.bars.get(member_name)
+                    if member is None:
+                        continue
+                    start = self._model.nodes.get(member.start_node)
+                    end = self._model.nodes.get(member.end_node)
+                    if start is None or end is None:
+                        continue
+                    start_point = np.asarray((start.x, start.y, start.z), dtype=float)
+                    end_point = np.asarray((end.x, end.y, end.z), dtype=float)
+                    length = float(np.linalg.norm(end_point - start_point))
+                    if length <= 0.0:
+                        continue
+                    midpoints.append((start_point + end_point) / 2.0)
+                    lengths.append(length)
+                    if member_name in batch_indices:
+                        midpoint = midpoints[-1]
+                        label_point = batch.label_positions[batch_indices[member_name]]
+                        label_offsets.append(float(label_point[2] - midpoint[2]))
+                if not midpoints:
+                    continue
+                point = np.average(np.asarray(midpoints), axis=0, weights=lengths)
+                if label_offsets:
+                    point[2] += float(np.mean(label_offsets))
+
+            positions.append(point)
+            labels.append(" · ".join(parts))
+        array = np.asarray(positions, dtype=float).reshape((-1, 3))
+        return array, tuple(labels)
+
+    def _sync_verification_identifier_labels(self) -> None:
+        positions, labels = self._verification_identifier_data()
+        self._label_overlay.set_group(
+            "verification", positions, labels,
+            visible=self._verification_identifier_visible(),
+        )
+        if self._verification_identifier_visible():
+            self._label_overlay.sync(self.plotter.renderer)
+
+    def set_verification_identifier_visible(self, kind: str, visible: bool) -> None:
+        if kind not in self._verification_identifier_modes:
+            raise ValueError(f"Tipo de identificador de verificação desconhecido: {kind}")
+        self._verification_identifier_modes[kind] = bool(visible)
+        self._sync_verification_identifier_labels()
+        self.plotter.render()
+
+    def set_verification_palette_visible(self, visible: bool) -> None:
+        self._verification_palette_visible = bool(visible)
+        self._label_overlay.set_group_visible(
+            "verification", self._verification_identifier_visible(),
+        )
+        if self._verification_identifier_visible():
+            self._label_overlay.sync(self.plotter.renderer)
+        self.plotter.render()
+
+    def refresh_verification_identifiers(self) -> None:
+        self._sync_verification_identifier_labels()
+        if self._verification_identifier_visible():
+            self.plotter.render()
+
     def set_local_axes_visible(self, visible: bool) -> None:
         self._local_axes_visible = bool(visible)
         for actor in self._local_axis_actors:
@@ -4857,6 +4977,7 @@ class StructureScene(QWidget):
             "bar", batch.label_positions, batch.names,
             visible=self._labels_visibility["bar"],
         )
+        self._sync_verification_identifier_labels()
         self._clear_result_layer()
         self._configure_solid_picker()
         self._sync_highlights()
@@ -5007,6 +5128,7 @@ class StructureScene(QWidget):
             "bar", batch.label_positions, batch.names,
             visible=self._labels_visibility["bar"],
         )
+        self._sync_verification_identifier_labels()
         self._clear_result_layer()
         if batch.silhouette_sources:
             self._refresh_member_silhouette()

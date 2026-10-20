@@ -188,7 +188,7 @@ class FloatingPalette(QFrame):
         )
         self._add_group(
             "Verificação",
-            "verification-book-check.svg",
+            "verification-book-text.svg",
             (),
         )
         self._add_unavailable_button("Documentação", "documentation-scroll.svg")
@@ -457,6 +457,20 @@ class VerificationTopPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         self._window = window
         self._tooltip = PaletteTooltip(window)
+        self.name_button = self._identifier_button(
+            "tag.svg", "Nome", "name",
+        )
+        layout.addWidget(self.name_button)
+        self.utilization_button = self._identifier_button(
+            "percent.svg", "Taxa de solicitação", "utilization",
+        )
+        layout.addWidget(self.utilization_button)
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
         self.group_button = QToolButton(self)
         self.group_button.setFixedSize(24, 24)
         self.group_button.setIcon(
@@ -475,11 +489,50 @@ class VerificationTopPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         layout.addWidget(self.group_button)
+        self.verify_button = QToolButton(self)
+        self.verify_button.setFixedSize(24, 24)
+        self.verify_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "verification-book-check.svg"))
+        )
+        self.verify_button.setIconSize(QSize(19, 19))
+        tooltip = _command_tooltip("Verificar modelo", "VERIFY")
+        self.verify_button.setToolTip(tooltip)
+        self.verify_button.setProperty("paletteTooltip", tooltip)
+        self.verify_button.setAccessibleName("Verificar modelo")
+        self.verify_button.clicked.connect(window.verify_model)
+        self.verify_button.installEventFilter(self)
+        self.verify_button.setStyleSheet(self.group_button.styleSheet())
+        layout.addWidget(self.verify_button)
         self.hide()
+
+    def _identifier_button(self, icon_name: str, label: str, kind: str) -> QToolButton:
+        button = QToolButton(self)
+        button.setFixedSize(24, 24)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_name)))
+        button.setIconSize(QSize(19, 19))
+        button.setCheckable(True)
+        button.setChecked(False)
+        tooltip = label
+        button.setToolTip(tooltip)
+        button.setProperty("paletteTooltip", tooltip)
+        button.setAccessibleName(label)
+        button.toggled.connect(
+            lambda visible, identifier_kind=kind:
+            self._window.scene.set_verification_identifier_visible(identifier_kind, visible)
+        )
+        button.installEventFilter(self)
+        button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        return button
 
     def set_verification_visible(self, visible: bool) -> None:
         if not visible:
             self._tooltip.dismiss()
+        self._window.scene.set_verification_palette_visible(visible)
         self.setVisible(visible)
         if visible:
             self.reposition()
@@ -491,7 +544,7 @@ class VerificationTopPalette(QFrame):
         self.raise_()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.group_button:
+        if watched in (self.name_button, self.utilization_button, self.group_button, self.verify_button):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
@@ -1352,10 +1405,10 @@ class AnalysisTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "process-analysis.svg"))
         )
         process_button.setIconSize(QSize(19, 19))
-        process_tooltip = _command_tooltip("Processar estrutura", "ANALYZE")
+        process_tooltip = _command_tooltip("Analisar estrutura", "ANALYZE")
         process_button.setToolTip(process_tooltip)
         process_button.setProperty("paletteTooltip", process_tooltip)
-        process_button.setAccessibleName("Processar estrutura")
+        process_button.setAccessibleName("Analisar estrutura")
         process_button.clicked.connect(window.process_analysis)
         process_button.installEventFilter(self)
         layout.addWidget(process_button)

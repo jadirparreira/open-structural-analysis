@@ -10,8 +10,9 @@ from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService, ResultService
+from osa.verification import VerificationWorker, verification_elements
 
-from .analysis_panel import ProcessingPanel
+from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
 from .command_bar import CommandBar, CommandHistory
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
     _interface_commands = frozenset({
         "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
-        "action", "load", "selfweight", "combinations", "analyze", "grid",
+        "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
         "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
         "solids", "releases", "semirigid", "supports", "scene", "configreference",
     })
@@ -91,6 +92,9 @@ class MainWindow(QMainWindow):
         self.analysis_service = AnalysisService(self.model, PyniteAdapter())
         self._analysis_thread: QThread | None = None
         self._analysis_worker: AnalysisWorker | None = None
+        self._verification_thread: QThread | None = None
+        self._verification_worker: VerificationWorker | None = None
+        self._verification_revision: int | None = None
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
         self._project_loading_path: Path | None = None
@@ -274,6 +278,7 @@ class MainWindow(QMainWindow):
         self.properties = PropertyPanel(self)
         self.displacement_panel = DisplacementPanel(self)
         self.processing_panel = ProcessingPanel(self)
+        self.verification_panel = VerificationPanel(self)
         self.axes_panel = AxesPanel(self)
         self.reference_panel = ReferencePanel(self)
         self.axes_panel.visibility_changed.connect(self.top_icon_palette.configure_axes_button.setChecked)
@@ -345,7 +350,7 @@ class MainWindow(QMainWindow):
         orphaned_actions = self.model.remove_orphaned_actions()
         if orphaned_actions:
             self.history.append(
-                "> <b>Processamento estrutural</b> "
+                "> <b>Analisar estrutura</b> "
                 f"<span style='color:#57606a'>({len(orphaned_actions)} ação(ões) órfã(s) removida(s))</span>"
             )
             self.refresh_action_palette()
@@ -369,6 +374,66 @@ class MainWindow(QMainWindow):
         self._analysis_thread = thread
         self._analysis_worker = worker
         thread.start()
+
+    def verify_model(self) -> None:
+        """Analyze and verify every standalone bar and element group in the background."""
+        if ((self._analysis_thread is not None and self._analysis_thread.isRunning())
+                or (self._verification_thread is not None and self._verification_thread.isRunning())):
+            return
+        self.action_service.ensure_default_combinations()
+        elements = verification_elements(self.model)
+        self.verification_panel.start(len(elements))
+        if not elements:
+            self.model.verification_results = {}
+            self.verification_panel.succeed({"total": 0, "checked": 0, "approved": 0,
+                                             "rejected": 0, "not_checked": 0})
+            return
+        self._verification_revision = self.model.revision
+        thread = QThread(self)
+        worker = VerificationWorker(copy.deepcopy(self.model))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._verification_finished)
+        worker.failed.connect(self._verification_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._verification_thread_finished)
+        self._verification_thread = thread
+        self._verification_worker = worker
+        thread.start()
+
+    def _verification_finished(self, payload: object, evaluations: object) -> None:
+        if self._verification_revision != self.model.revision:
+            self.verification_panel.fail(
+                "O modelo foi alterado durante a verificação. Execute VERIFY novamente."
+            )
+            return
+        results = list(payload)
+        self.model.analysis_results = results
+        self.model.verification_results = dict(evaluations)
+        values = tuple(self.model.verification_results.values())
+        summary = {
+            "total": len(values),
+            "checked": sum(item.get("status") in {"approved", "rejected"} for item in values),
+            "approved": sum(item.get("status") == "approved" for item in values),
+            "rejected": sum(item.get("status") == "rejected" for item in values),
+            "not_checked": sum(item.get("status") == "not_checked" for item in values),
+        }
+        self.verification_panel.succeed(summary)
+        self.refresh_analysis_palette()
+        self.scene.refresh_verification_identifiers()
+        self.refresh_selected_property_panel("Verificação")
+
+    def _verification_failed(self, message: str) -> None:
+        self.verification_panel.fail(message)
+
+    def _verification_thread_finished(self) -> None:
+        thread = self._verification_thread
+        self._verification_worker = None
+        self._verification_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _analysis_finished(self, results: object) -> None:
         if self._analysis_revision != self.model.revision:
@@ -596,6 +661,8 @@ class MainWindow(QMainWindow):
             self.displacement_panel.reposition()
         if hasattr(self, "processing_panel") and self.processing_panel.isVisible():
             self.processing_panel.reposition()
+        if hasattr(self, "verification_panel") and self.verification_panel.isVisible():
+            self.verification_panel.reposition()
 
     def toggle_section_panel(self, section: str = "", button=None) -> None:
         if section in ("", "Indefinido"):
@@ -1550,13 +1617,14 @@ class MainWindow(QMainWindow):
             "selfweight": ("Ações", self.start_selfweight_command),
             "combinations": ("Análise", self.open_combinations),
             "analyze": ("Análise", self.process_analysis),
+            "verify": ("Verificação", self.verify_model),
         }
         target = callbacks.get(name)
         if target is None:
             return False
         self.palette.show_group(target[0])
         target[1]()
-        if name in {"configaxes", "configreference", "group", "combinations", "analyze"}:
+        if name in {"configaxes", "configreference", "group", "combinations", "analyze", "verify"}:
             self.history.append(f"> <b>{command_label}</b>")
         return True
 
@@ -2601,6 +2669,7 @@ class MainWindow(QMainWindow):
             self.displacement_panel,
             self.split_member_dialog,
             self.processing_panel,
+            self.verification_panel,
             self.command_bar,
             self.history,
         ):

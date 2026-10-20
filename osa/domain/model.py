@@ -48,6 +48,7 @@ class StructuralModel:
         self.load_combinations: dict[str, LoadCombination] = {}
         self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
+        self.verification_results: dict[str, dict[str, object]] = {}
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
         self.scene_view_hidden_rigid_bars: dict[str, set[str]] = {"Completo": set()}
@@ -61,6 +62,7 @@ class StructuralModel:
     def _touch(self) -> None:
         self.revision += 1
         self.analysis_results.clear()
+        self.verification_results.clear()
         self.verification_element_names = {
             name: value for name, value in self.verification_element_names.items() if name in self.bars
         }
@@ -1240,7 +1242,7 @@ class StructuralModel:
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()
-        self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear()
+        self.load_cases.clear(); self.load_combinations.clear(); self.combination_groups_initialized.clear(); self.analysis_results.clear(); self.verification_results.clear()
         self.selected_action_group = "PP+AP+AV"
         self.scene_views = {"Completo": set()}
         self.scene_view_hidden_rigid_bars = {"Completo": set()}

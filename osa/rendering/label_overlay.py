@@ -140,7 +140,9 @@ class LabelOverlay(QWidget):
             atlas_ratio=atlas_ratio,
             screen=np.empty((count, 2), dtype=float),
             on_screen=np.zeros(count, dtype=bool),
-            draw_indices=np.arange(count, dtype=np.int64),
+            # Projection is populated by sync(); keep the new group unpainted
+            # until screen coordinates and clipping state are ready.
+            draw_indices=np.empty(0, dtype=np.int64),
             visible=bool(visible),
             deduplicate=bool(deduplicate),
         )

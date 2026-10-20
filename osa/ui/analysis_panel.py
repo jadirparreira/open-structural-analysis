@@ -31,7 +31,7 @@ class ProcessingPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 16)
         layout.setSpacing(9)
-        title = QLabel("Processamento estrutural")
+        title = QLabel("Analisar estrutura")
         title.setObjectName("propertyTitle")
         layout.addWidget(title)
         self.status = QLabel("Aguardando processamento.")
@@ -109,6 +109,75 @@ class ProcessingPanel(QFrame):
     def _refresh_style(widget) -> None:
         widget.style().unpolish(widget)
         widget.style().polish(widget)
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        self.move((self.window.width() - self.width()) // 2, (self.window.height() - self.height()) // 2)
+        self.raise_()
+
+
+class VerificationPanel(QFrame):
+    """Progress card showing the verification result for each model element."""
+
+    def __init__(self, window) -> None:
+        super().__init__(window)
+        self.window = window
+        self.setObjectName("processingPanel")
+        self.setFixedWidth(390)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 12)
+        layout.setSpacing(7)
+        title = QLabel("Verificação do modelo")
+        title.setObjectName("propertyTitle")
+        layout.addWidget(title)
+        self.status = QLabel("Aguardando verificação.")
+        self.status.setObjectName("processingStatus")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.summary = QLabel()
+        self.summary.setObjectName("processingStatus")
+        self.summary.setWordWrap(True)
+        self.summary.hide()
+        layout.addWidget(self.summary)
+        self.close_button = QPushButton("Fechar")
+        self.close_button.setObjectName("secondaryButton")
+        self.close_button.clicked.connect(self.hide)
+        self.close_button.hide()
+        layout.addWidget(self.close_button)
+        self.hide()
+
+    def start(self, total_elements: int) -> None:
+        self.close_button.hide()
+        self.summary.setText(f"Total de elementos: {total_elements}")
+        self.summary.show()
+        self.status.setText("Verificando modelo")
+        self.status.setProperty("state", "active")
+        ProcessingPanel._refresh_style(self.status)
+        self.show()
+        self.reposition()
+        self.raise_()
+
+    def succeed(self, summary: dict[str, int]) -> None:
+        self.status.setText("Verificação concluída")
+        self.status.setProperty("state", "success")
+        ProcessingPanel._refresh_style(self.status)
+        self.summary.setText(
+            f"Total de elementos: {summary['total']}\n"
+            f"Verificados: {summary['checked']}\n"
+            f"Aprovados: {summary['approved']}\n"
+            f"Reprovados: {summary['rejected']}\n"
+            f"Não verificados: {summary['not_checked']}"
+        )
+        self.summary.show()
+        self.close_button.show()
+        self.reposition()
+
+    def fail(self, message: str) -> None:
+        self.status.setText(f"Não foi possível concluir a verificação: {message}")
+        self.status.setProperty("state", "error")
+        ProcessingPanel._refresh_style(self.status)
+        self.close_button.show()
+        self.reposition()
 
     def reposition(self) -> None:
         self.adjustSize()

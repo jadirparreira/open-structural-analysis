@@ -5,6 +5,7 @@ from PySide6.QtGui import QPainterPath, QPen, QRegularExpressionValidator
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
+from osa.verification.elements import verification_element_key
 
 from .color_palette import HoneycombColorPalette
 from .common import *
@@ -179,6 +180,28 @@ class PropertyPanel(QFrame):
         verification_name_label.setBuddy(self.verification_name_input)
         verification_name_layout.addWidget(verification_name_label)
         verification_name_layout.addWidget(self.verification_name_input)
+        self._verification_result_rows: list[QWidget] = []
+        self._verification_result_values: dict[str, QLineEdit] = {}
+        for field_name, label_text, accessible_name in (
+            ("critical_check", "Verificação crítica", "Verificação crítica"),
+            ("critical_combination", "Combinação crítica", "Combinação crítica"),
+        ):
+            result_row = QWidget()
+            result_layout = QVBoxLayout(result_row)
+            result_layout.setContentsMargins(0, 0, 0, 0)
+            result_layout.setSpacing(self.layout.spacing())
+            result_label = QLabel(label_text)
+            result_label.setObjectName("propertySection")
+            result_value = QLineEdit("A definir")
+            result_value.setObjectName("propertyValue")
+            result_value.setAccessibleName(accessible_name)
+            result_value.setReadOnly(True)
+            result_value.setToolTip("")
+            result_label.setBuddy(result_value)
+            result_layout.addWidget(result_label)
+            result_layout.addWidget(result_value)
+            self._verification_result_rows.append(result_row)
+            self._verification_result_values[field_name] = result_value
         self._color_palette = HoneycombColorPalette(window, self._color_selected)
         self.layout.addWidget(self.title)
         self.layout.addWidget(self.kind_control)
@@ -186,6 +209,9 @@ class PropertyPanel(QFrame):
         self.layout.addWidget(identity_row)
         self.layout.addWidget(self._verification_name_row)
         self._verification_name_row.hide()
+        for result_row in self._verification_result_rows:
+            self.layout.addWidget(result_row)
+            result_row.hide()
         self.point_mode_switch = None
         if creation_mode:
             self.point_mode_switch = SelectionKindSwitch(
@@ -331,6 +357,8 @@ class PropertyPanel(QFrame):
         self.name.setText("Identidade")
         self.identity_value.setText(name if len(names) == 1 else f"Variado ({len(names)})")
         self._verification_name_row.setVisible(verification_mode and kind == "bar")
+        for result_row in self._verification_result_rows:
+            result_row.setVisible(verification_mode and kind == "bar")
         if verification_mode and kind == "bar":
             group = self.window.model.verification_group_for(names[-1]) if names else None
             is_group = group is not None and set(names) == set(group["members"])
@@ -348,6 +376,20 @@ class PropertyPanel(QFrame):
             with QSignalBlocker(self.verification_name_input):
                 self.verification_name_input.setText(custom_name)
             self.name.setVisible(True)
+            element_key = verification_element_key(self.window.model, names)
+            evaluation = self.window.model.verification_results.get(element_key, {}) if element_key else {}
+            check = evaluation.get("critical_check")
+            utilization = evaluation.get("utilization")
+            critical_check = (
+                f"{float(utilization):.0%} {check}"
+                if check and utilization is not None else str(check or "A definir")
+            )
+            self._verification_result_values["critical_check"].setText(critical_check)
+            self._verification_result_values["critical_combination"].setText(
+                str(evaluation.get("critical_combination", "A definir"))
+            )
+            for value in self._verification_result_values.values():
+                value.setToolTip("")
         if kind == "bar":
             colors = [self.window.model.bars[member_name].color for member_name in names]
             self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
