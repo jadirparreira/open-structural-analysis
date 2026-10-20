@@ -63,10 +63,10 @@ class LoadCaseBuilder:
         density = float(action.components[0])
         member = target.members.get(action.target)
         if member is None:
-            raise ValueError(f"O membro '{action.target}' não existe no modelo PyNite.")
+            raise ValueError(f"A barra '{action.target}' não existe no modelo PyNite.")
         length = float(member.L())
         if length <= 0.0:
-            raise ValueError(f"O membro '{action.target}' deve possuir comprimento positivo.")
+            raise ValueError(f"A barra '{action.target}' deve possuir comprimento positivo.")
         segment_length = length / cls.DISTRIBUTED_MOMENT_SEGMENTS
         direction = f"M{axis.lower()}"
         for index in range(cls.DISTRIBUTED_MOMENT_SEGMENTS):

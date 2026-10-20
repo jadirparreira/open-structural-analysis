@@ -682,7 +682,7 @@ class ResultRenderer:
         curve,
         values: np.ndarray,
     ) -> None:
-        """Acumula os trechos por cor, evitando atores por membro."""
+        """Acumula os trechos por cor, evitando atores por barra."""
         for index, (value_a, value_b) in enumerate(pairwise(values)):
             if value_a == 0.0 and value_b == 0.0:
                 continue

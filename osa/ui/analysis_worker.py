@@ -37,7 +37,7 @@ def translate_analysis_error(message: str) -> str:
         return f"O nó '{node_match.group(1)}' não existe no modelo."
     member_match = re.fullmatch(r"Member '([^']+)' does not exist in the model", normalized)
     if member_match:
-        return f"O membro '{member_match.group(1)}' não existe no modelo."
+        return f"A barra '{member_match.group(1)}' não existe no modelo."
     return message
 
 

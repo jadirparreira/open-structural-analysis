@@ -270,10 +270,10 @@ class McpApplication:
             raise ValueError("visible deve ser booleano.")
         rigid_bar_names = rigid_bar_names or []
         if not member_names and not rigid_bar_names:
-            raise ValueError("Informe pelo menos um membro ou barra rígida.")
+            raise ValueError("Informe pelo menos uma barra ou barra rígida.")
         unknown = set(member_names) - self.model.bars.keys()
         if unknown:
-            raise ValueError(f"Membro '{min(unknown)}' não encontrado.")
+            raise ValueError(f"Barra '{min(unknown)}' não encontrado.")
         unknown_rigid = set(rigid_bar_names) - self.model.rigid_bars.keys()
         if unknown_rigid:
             raise ValueError(f"Barra rígida '{min(unknown_rigid)}' não encontrada.")
@@ -586,12 +586,12 @@ class McpApplication:
         member_names: list[str] | None = None,
         include_samples: bool = False,
     ) -> dict[str, Any]:
-        """Retorna esforços e deslocamentos dos membros."""
+        """Retorna esforços e deslocamentos das barras."""
         result = self._analysis_result(combination)
         names = tuple(member_names) if member_names is not None else tuple(result.member_results)
         unknown = set(names) - set(result.member_results)
         if unknown:
-            raise ValueError("Membros sem resultado: " + ", ".join(sorted(unknown)) + ".")
+            raise ValueError("Barras sem resultado: " + ", ".join(sorted(unknown)) + ".")
         members = []
         for name in names:
             values = dict(result.member_results[name])
@@ -813,7 +813,7 @@ class McpApplication:
         for material in selected_materials:
             weights.extend(self.model_service.member_selfweights(material))
         if not weights:
-            raise ValueError("Não há membros com propriedades para aplicar o peso próprio.")
+            raise ValueError("Não há barras com propriedades para aplicar o peso próprio.")
         actions = self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
         self._notify_model_changed()
         return {
@@ -867,7 +867,7 @@ class McpApplication:
         if kind == "node" and name not in self.model.nodes:
             raise ValueError(f"Nó '{name}' não encontrado.")
         if kind == "bar" and name not in self.model.bars:
-            raise ValueError(f"Membro '{name}' não encontrado.")
+            raise ValueError(f"Barra '{name}' não encontrado.")
 
     def _ensure_load_case_accepts_loads(self, load_case: str) -> None:
         if self.action_service.has_selfweight(load_case):
@@ -1010,7 +1010,7 @@ class McpApplication:
         }
 
     def list_members(self) -> dict[str, Any]:
-        """Retorna os membros do projeto atualmente aberto."""
+        """Retorna as barras do projeto atualmente aberto."""
         return {
             "revision": self.model.revision,
             "members": [
@@ -1199,7 +1199,7 @@ class McpApplication:
         geometry: dict[str, float] | None = None,
         profile: str | None = None,
     ) -> dict[str, Any]:
-        """Cria um membro entre dois nós existentes."""
+        """Cria uma barra entre dois nós existentes."""
         if any(value is not None for value in (material, section, geometry, profile)):
             if material is None or section is None or geometry is None:
                 raise ValueError("Material, seção e geometria devem ser informados juntos.")
@@ -1234,9 +1234,9 @@ class McpApplication:
         return {"revision": self.model.revision, "deleted_node": node_name}
 
     def delete_member(self, member_name: str) -> dict[str, Any]:
-        """Exclui um membro e suas ações associadas."""
+        """Exclui uma barra e suas ações associadas."""
         if member_name not in self.model.bars:
-            raise ValueError(f"Membro '{member_name}' não encontrado.")
+            raise ValueError(f"Barra '{member_name}' não encontrado.")
         self.model_service.remove_member(member_name)
         self._notify_model_changed()
         return {"revision": self.model.revision, "deleted_member": member_name}
@@ -1268,7 +1268,7 @@ class McpApplication:
         start_node: str,
         end_node: str,
     ) -> dict[str, Any]:
-        """Altera os nós inicial e final de um membro sem alterar sua identidade."""
+        """Altera os nós inicial e final de uma barra sem alterar sua identidade."""
         member = self.model_service.update_member_nodes(member_name, start_node, end_node)
         self._notify_model_changed()
         return {"revision": self.model.revision, "member": self._member_payload(member)}
@@ -1300,7 +1300,7 @@ class McpApplication:
         }
 
     def split_member(self, member_name: str, parts: int) -> dict[str, Any]:
-        """Divide um membro em partes iguais, criando nós intermediários."""
+        """Divide uma barra em partes iguais, criando nós intermediários."""
         node_names, member_names = self.model_service.split_member(member_name, parts)
         self._notify_model_changed()
         return {
@@ -1312,7 +1312,7 @@ class McpApplication:
         }
 
     def join_members(self, first_member: str, second_member: str) -> dict[str, Any]:
-        """Une dois membros adjacentes e colineares."""
+        """Une dois barras adjacentes e colineares."""
         joined = self.model_service.join_members(first_member, second_member)
         self._notify_model_changed()
         return {
@@ -1322,7 +1322,7 @@ class McpApplication:
         }
 
     def reverse_member(self, member_name: str) -> dict[str, Any]:
-        """Inverte os nós inicial e final de um membro."""
+        """Inverte os nós inicial e final de uma barra."""
         member = self.model_service.reverse_member(member_name)
         self._notify_model_changed()
         return {"revision": self.model.revision, "member": self._member_payload(member)}
@@ -1347,7 +1347,7 @@ class McpApplication:
         offset: tuple[float, float, float],
         rigid_bar_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Copia nós, membros e barras rígidas por translação."""
+        """Copia nós, barras e barras rígidas por translação."""
         rigid_bars_before = set(self.model.rigid_bars)
         copied_nodes, copied_members = self.model_service.copy_elements(
             tuple(node_names or ()),
@@ -1379,7 +1379,7 @@ class McpApplication:
         target_member: str,
         properties: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Copia propriedades selecionadas de um membro para outro."""
+        """Copia propriedades selecionadas de uma barra para outra."""
         available = {"color", "material", "section", "rotation", "offsets", "releases"}
         selected = frozenset(available if properties is None else properties)
         member = self.model_service.copy_member_properties(source_member, target_member, selected)
@@ -1394,14 +1394,14 @@ class McpApplication:
         geometry: dict[str, float],
         profile: str | None = None,
     ) -> dict[str, Any]:
-        """Atribui material e seção paramétrica a vários membros."""
+        """Atribui material e seção paramétrica a várias barras."""
         if not member_names:
-            raise ValueError("Informe pelo menos um membro.")
+            raise ValueError("Informe pelo menos uma barra.")
         self._validate_member_properties(material, section, geometry)
         names = tuple(dict.fromkeys(member_names))
         if any(name not in self.model.bars for name in names):
             missing = next(name for name in names if name not in self.model.bars)
-            raise ValueError(f"Membro '{missing}' não encontrado.")
+            raise ValueError(f"Barra '{missing}' não encontrado.")
         members = [
             self._apply_member_properties(name, material, section, geometry, profile)
             for name in names
@@ -1427,13 +1427,13 @@ class McpApplication:
         solid_section_offsets_mm: list[float] | None = None,
         color: str | None = None,
     ) -> dict[str, Any]:
-        """Atualiza qualquer combinação de propriedades editáveis dos membros."""
+        """Atualiza qualquer combinação de propriedades editáveis das barras."""
         if not member_names:
-            raise ValueError("Informe pelo menos um membro.")
+            raise ValueError("Informe pelo menos uma barra.")
         names = tuple(dict.fromkeys(member_names))
         missing = next((name for name in names if name not in self.model.bars), None)
         if missing is not None:
-            raise ValueError(f"Membro '{missing}' não encontrado.")
+            raise ValueError(f"Barra '{missing}' não encontrado.")
 
         if rotation is not None and (
             isinstance(rotation, bool) or not isinstance(rotation, (int, float))
@@ -1466,7 +1466,7 @@ class McpApplication:
                 if target_material not in self.model.materials or not target_section:
                     raise ValueError(
                         "Para alterar a geometria, informe material e seção válidos "
-                        "ou mantenha essas propriedades já definidas no membro."
+                        "ou mantenha essas propriedades já definidas na barra."
                     )
                 self._validate_member_properties(target_material, target_section, geometry)
             elif material is not None and member.section:
@@ -1478,7 +1478,7 @@ class McpApplication:
                     )
             if profile is not None and geometry is None and not member.geometry_dict():
                 raise ValueError(
-                    "Para alterar o perfil sem informar geometria, o membro precisa "
+                    "Para alterar o perfil sem informar geometria, a barra precisa "
                     "já possuir uma geometria de seção."
                 )
 

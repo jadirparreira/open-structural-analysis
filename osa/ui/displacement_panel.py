@@ -1,4 +1,4 @@
-"""Painel flutuante reservado à configuração de deslocamentos do membro."""
+"""Painel flutuante reservado à configuração de deslocamentos da barra."""
 
 from math import isfinite
 
@@ -27,7 +27,7 @@ class DisplacementPanel(QFrame):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
 
-        title = QLabel("Posicionamento do membro")
+        title = QLabel("Posicionamento da barra")
         title.setObjectName("propertyTitle")
         layout.addWidget(title)
         layout.addSpacing(6)
@@ -157,7 +157,7 @@ class DisplacementPanel(QFrame):
                 self.rotation_input,
             )
         )
-        self.rotation_input.setAccessibleName("Rotação do membro (graus)")
+        self.rotation_input.setAccessibleName("Rotação da barra (graus)")
         self.rotation_input.editingFinished.connect(self._rotation_changed)
         rotation_row.addWidget(self.rotation_input, 1)
         rotation_row.addWidget(QLabel("°"))

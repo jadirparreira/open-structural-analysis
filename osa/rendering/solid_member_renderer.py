@@ -1,4 +1,4 @@
-"""Renderização opcional dos membros como sólidos extrudados."""
+"""Renderização opcional das barras como sólidos extrudados."""
 
 from __future__ import annotations
 

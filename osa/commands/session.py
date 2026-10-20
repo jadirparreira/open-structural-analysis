@@ -89,7 +89,7 @@ class CommandSession:
         """Start the numeric prompt used by the split-member tool."""
         resolved = self.service.resolve_member_name(name)
         if resolved is None:
-            raise ValueError(f"Membro '{name}' não encontrado.")
+            raise ValueError(f"Barra '{name}' não encontrado.")
         self.cancel()
         self.pending = "split_parts"
         self.split_member_name = resolved
@@ -118,7 +118,7 @@ class CommandSession:
             self.cancel()
             return CommandResponse(
                 value,
-                f"Membro {member_name} dividido em {parts} partes.",
+                f"Barra {member_name} dividido em {parts} partes.",
                 "success",
                 True,
                 split_member_names=member_names,
@@ -169,14 +169,14 @@ class CommandSession:
                 self.pending = "node_force"
                 return CommandResponse(value, "Informe a força no nó (kN).")
             self.pending = "load_force"
-            return CommandResponse(value, "Informe a força linear no membro (kN/m).")
+            return CommandResponse(value, "Informe a força linear na barra (kN/m).")
         if self.pending == "local_force_direction":
             direction = value.upper()
             if direction not in {"X", "Y", "Z"}:
                 return CommandResponse(value, "Informe uma direção local válida: X, Y ou Z.", "error")
             self.load_direction = direction
             self.pending = "load_force"
-            return CommandResponse(value, "Informe a força linear no membro (kN/m).")
+            return CommandResponse(value, "Informe a força linear na barra (kN/m).")
         if self.pending == "load_force":
             try:
                 initial, final = parse_distributed_force(value)
@@ -302,7 +302,7 @@ class CommandSession:
                 scope = "nenhum material" if all_materials else f"o material '{material}'"
                 return CommandResponse(
                     value,
-                    f"Não há membros com {scope} para aplicar o peso próprio. Escolha outro material.",
+                    f"Não há barras com {scope} para aplicar o peso próprio. Escolha outro material.",
                     "error",
                 )
             self._pending_selfweights = tuple(SelfWeight(name, weight) for name, weight in weights)
@@ -327,7 +327,7 @@ class CommandSession:
                 )
             self.pending = "load_target"
             self.load_target = None
-            return CommandResponse(value, "Informe a identidade do nó ou do membro.")
+            return CommandResponse(value, "Informe a identidade do nó ou da barra.")
         if command == "selfweight":
             if self.active_load_case and any(
                 action.load_case == self.active_load_case
@@ -341,7 +341,7 @@ class CommandSession:
                     remove_selfweight=True,
                 )
             if not self.service.model.bars:
-                return CommandResponse(value, "Não há membros no modelo para aplicar o peso próprio.", "error")
+                return CommandResponse(value, "Não há barras no modelo para aplicar o peso próprio.", "error")
             materials = tuple(self.service.model.materials)
             if not materials:
                 return CommandResponse(value, "Não há materiais cadastrados para aplicar o peso próprio.", "error")
@@ -390,10 +390,10 @@ class CommandSession:
             elif member_name:
                 targets.append(("member", member_name))
             else:
-                raise ValueError(f"Não existe nó ou membro chamado '{identifier}'.")
+                raise ValueError(f"Não existe nó ou barra chamado '{identifier}'.")
         kinds = {kind for kind, _name in targets}
         if len(kinds) != 1:
-            raise ValueError("Os elementos informados devem ser todos nós ou todos membros.")
+            raise ValueError("Os elementos informados devem ser todos nós ou todas barras.")
         names = tuple(dict.fromkeys(name for _kind, name in targets))
         return targets[0][0], names
 

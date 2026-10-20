@@ -313,7 +313,7 @@ class StructuralModel:
             for bar in self.bars.values()
         )
         if duplicate:
-            raise DuplicateMemberError("Já existe um membro entre esses nós.")
+            raise DuplicateMemberError("Já existe uma barra entre esses nós.")
 
     def add_bar(self, name: str, start_node: str, end_node: str, *, template: Bar | None = None) -> Bar:
         name = name.strip()
@@ -369,17 +369,17 @@ class StructuralModel:
         and solid-face offsets remain only at the original outer ends.
         """
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         if len(member_names) != len(node_names) + 1:
             raise ValueError("A divisão deve criar exatamente uma parte a mais que o número de nós internos.")
         if not node_names or not member_names:
-            raise ValueError("Informe pelo menos duas partes para dividir o membro.")
+            raise ValueError("Informe pelo menos duas partes para dividir a barra.")
         if len(set(node_names)) != len(node_names) or any(node in self.nodes for node in node_names):
             raise ValueError("Não foi possível gerar nomes únicos para os nós da divisão.")
         if len(set(member_names)) != len(member_names):
-            raise ValueError("Não foi possível gerar nomes únicos para os membros da divisão.")
+            raise ValueError("Não foi possível gerar nomes únicos para as barras da divisão.")
         if any(member in self.bars and member != name for member in member_names):
-            raise ValueError("Não foi possível gerar nomes únicos para os membros da divisão.")
+            raise ValueError("Não foi possível gerar nomes únicos para as barras da divisão.")
 
         source = self.bars[name]
         start = self.nodes[source.start_node]
@@ -401,7 +401,7 @@ class StructuralModel:
                 0.0000005 * len(segment_lengths),
             )
             if not math.isclose(total_length, member_length, rel_tol=1e-9, abs_tol=tolerance):
-                raise ValueError("A soma dos segmentos deve corresponder ao comprimento do membro.")
+                raise ValueError("A soma dos segmentos deve corresponder ao comprimento da barra.")
             cumulative_lengths = tuple(math.fsum(segment_lengths[:index]) for index in range(1, len(segment_lengths)))
             positions = tuple(distance / total_length for distance in cumulative_lengths)
         coordinates = tuple(
@@ -421,7 +421,7 @@ class StructuralModel:
             if member.name != name
         }
         if any(pair in existing_pairs for pair in pairs):
-            raise DuplicateMemberError("A divisão criaria um membro que já existe.")
+            raise DuplicateMemberError("A divisão criaria uma barra que já existe.")
 
         new_nodes = {
             node_name: Node(node_name, *coordinate)
@@ -487,9 +487,9 @@ class StructuralModel:
     def join_bars(self, first_name: str, second_name: str) -> Bar:
         """Merge two contiguous, collinear bars and remove their shared node."""
         if first_name == second_name:
-            raise ValueError("Selecione dois membros diferentes para unir.")
+            raise ValueError("Selecione dois barras diferentes para unir.")
         if first_name not in self.bars or second_name not in self.bars:
-            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+            raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
 
         first = self.bars[first_name]
         second = self.bars[second_name]
@@ -497,7 +497,7 @@ class StructuralModel:
             (second.start_node, second.end_node),
         )
         if len(shared_nodes) != 1:
-            raise ValueError("Os membros devem compartilhar exatamente um nó para serem unidos.")
+            raise ValueError("As barras devem compartilhar exatamente um nó para serem unidos.")
         interface = next(iter(shared_nodes))
         first_outer = first.end_node if first.start_node == interface else first.start_node
         second_outer = second.end_node if second.start_node == interface else second.start_node
@@ -540,7 +540,7 @@ class StructuralModel:
         length_a = math.sqrt(sum(value * value for value in vector_a))
         length_b = math.sqrt(sum(value * value for value in vector_b))
         if length_a <= self.coordinate_tolerance or length_b <= self.coordinate_tolerance:
-            raise ValueError("Os membros devem possuir comprimento positivo para serem unidos.")
+            raise ValueError("As barras devem possuir comprimento positivo para serem unidos.")
         cross = (
             vector_a[1] * vector_b[2] - vector_a[2] * vector_b[1],
             vector_a[2] * vector_b[0] - vector_a[0] * vector_b[2],
@@ -555,7 +555,7 @@ class StructuralModel:
             cross_length > max(1e-9 * length_a * length_b, self.node_rounding_tolerance * outer_length)
             or direction <= 0.0
         ):
-            raise ValueError("Os membros devem ser colineares e seguir na mesma direção.")
+            raise ValueError("As barras devem ser colineares e seguir na mesma direção.")
 
         if first.start_node == interface:
             start_node, end_node = second_outer, first_outer
@@ -567,7 +567,7 @@ class StructuralModel:
             and frozenset((member.start_node, member.end_node)) == pair
             for member in self.bars.values()
         ):
-            raise DuplicateMemberError("Já existe um membro entre as extremidades da união.")
+            raise DuplicateMemberError("Já existe uma barra entre as extremidades da união.")
 
         def endpoint_data(member: Bar, node_name: str) -> tuple[tuple[bool, ...], float]:
             if member.start_node == node_name:
@@ -613,9 +613,9 @@ class StructuralModel:
         """Merge a connected collinear chain, committing only after all checks pass."""
         names = tuple(dict.fromkeys(member_names))
         if len(names) < 2:
-            raise ValueError("Selecione pelo menos dois membros diferentes para unir.")
+            raise ValueError("Selecione pelo menos dois barras diferentes para unir.")
         if any(name not in self.bars for name in names):
-            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+            raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
 
         # Join in an isolated model so a failure at the last interface cannot
         # leave the earlier members merged or discard loads/results/views.
@@ -634,7 +634,7 @@ class StructuralModel:
                 if endpoints.intersection((candidate.bars[name].start_node, candidate.bars[name].end_node))
             ), None)
             if next_name is None:
-                raise ValueError("Os membros devem formar uma sequência conectada na mesma reta.")
+                raise ValueError("As barras devem formar uma sequência conectada na mesma reta.")
             candidate.join_bars(first_name, next_name)
             remaining.remove(next_name)
 
@@ -658,14 +658,14 @@ class StructuralModel:
             "color", "material", "section", "rotation", "offsets", "releases",
         }
         if source_name == target_name:
-            raise ValueError("Selecione membros de referência e destino diferentes.")
+            raise ValueError("Selecione barras de referência e destino diferentes.")
         if source_name not in self.bars or target_name not in self.bars:
-            raise EntityNotFoundError("O membro de referência ou destino não foi encontrado.")
+            raise EntityNotFoundError("A barra de referência ou destino não foi encontrada.")
         if not properties:
             raise ValueError("Selecione pelo menos uma propriedade para copiar.")
         unknown = properties.difference(available)
         if unknown:
-            raise ValueError("Foram solicitadas propriedades de membro desconhecidas.")
+            raise ValueError("Foram solicitadas propriedades de barra desconhecidas.")
 
         source = self.bars[source_name]
         target = self.bars[target_name]
@@ -716,7 +716,7 @@ class StructuralModel:
         if any(name not in self.nodes for name in selected_nodes):
             raise EntityNotFoundError("Um dos nós selecionados não foi encontrado.")
         if any(name not in self.bars for name in selected_members):
-            raise EntityNotFoundError("Um dos membros selecionados não foi encontrado.")
+            raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
         if any(name not in self.rigid_bars for name in selected_rigid_bars):
             raise EntityNotFoundError("Uma das barras rígidas selecionadas não foi encontrada.")
 
@@ -795,7 +795,7 @@ class StructuralModel:
             start_node = node_map[source.start_node]
             end_node = node_map[source.end_node]
             if start_node == end_node:
-                raise ValueError("A cópia criaria um membro de comprimento zero na precisão de um milímetro.")
+                raise ValueError("A cópia criaria uma barra de comprimento zero na precisão de um milímetro.")
             pair = frozenset((start_node, end_node))
             if pair in existing_pairs:
                 continue
@@ -963,7 +963,7 @@ class StructuralModel:
 
     def update_member_section_mirrored(self, name: str, mirrored: bool) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         self.bars[name] = replace(self.bars[name], section_mirrored=bool(mirrored))
         self._touch()
         return self.bars[name]
@@ -971,10 +971,10 @@ class StructuralModel:
     @staticmethod
     def _member_rotation(value: int | float) -> int | float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("A rotação do membro deve ser um número em graus.")  # noqa: TRY004
+            raise ValueError("A rotação da barra deve ser um número em graus.")  # noqa: TRY004
         value = float(value)
         if not math.isfinite(value):
-            raise ValueError("A rotação do membro deve ser um número finito.")
+            raise ValueError("A rotação da barra deve ser um número finito.")
         normalized = round(value % 360.0, 2)
         if normalized >= 360.0 or normalized == 0.0:
             return 0
@@ -984,7 +984,7 @@ class StructuralModel:
 
     def update_member_rotation(self, name: str, rotation: int | float) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         rotation = self._member_rotation(rotation)
         self.bars[name] = replace(self.bars[name], rotation=rotation)
         self._touch()
@@ -993,12 +993,12 @@ class StructuralModel:
     @staticmethod
     def _member_releases(values: tuple[bool, ...]) -> tuple[bool, ...]:
         if len(values) != 12:
-            raise ValueError("As vinculações do membro devem possuir doze graus de liberdade.")
+            raise ValueError("As vinculações da barra devem possuir doze graus de liberdade.")
         return tuple(bool(value) for value in values)
 
     def update_member_releases(self, name: str, releases: tuple[bool, ...]) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         normalized = self._member_releases(releases)
         current_percent = self.bars[name].rotation_flexibility_percent
         rotation_percent = tuple(
@@ -1025,7 +1025,7 @@ class StructuralModel:
 
     def update_member_rotation_flexibility_percent(self, name: str, percent: tuple[int, ...]) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         values = self._member_rotation_flexibility_percent(percent)
         self.bars[name] = replace(self.bars[name], rotation_flexibility_percent=values)
         self._touch()
@@ -1042,7 +1042,7 @@ class StructuralModel:
 
     def update_member_solid_face_offsets(self, name: str, offsets: tuple[float, ...]) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         self.bars[name] = replace(
             self.bars[name], solid_face_offsets=self._member_solid_face_offsets(offsets),
         )
@@ -1062,7 +1062,7 @@ class StructuralModel:
         self, name: str, offsets: tuple[float, ...],
     ) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         self.bars[name] = replace(
             self.bars[name],
             solid_section_offsets=self._member_solid_section_offsets(offsets),
@@ -1073,16 +1073,16 @@ class StructuralModel:
     @staticmethod
     def _member_color(value: str) -> str:
         if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
-            raise ValueError("A cor do membro deve estar no formato hexadecimal #RRGGBB.")
+            raise ValueError("A cor da barra deve estar no formato hexadecimal #RRGGBB.")
         try:
             int(value[1:], 16)
         except ValueError as error:
-            raise ValueError("A cor do membro deve estar no formato hexadecimal #RRGGBB.") from error
+            raise ValueError("A cor da barra deve estar no formato hexadecimal #RRGGBB.") from error
         return value.lower()
 
     def update_member_color(self, name: str, color: str) -> Bar:
         if name not in self.bars:
-            raise EntityNotFoundError(f"Membro '{name}' não encontrado.")
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         self.bars[name] = replace(self.bars[name], color=self._member_color(color))
         self._touch()
         return self.bars[name]

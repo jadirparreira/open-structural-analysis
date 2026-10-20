@@ -85,7 +85,7 @@ class SelectionKindSwitch(QFrame):
         group = QButtonGroup(self)
         group.setExclusive(True)
         self._buttons: dict[str, QToolButton] = {}
-        for kind, label in choices or (("node", "Nós"), ("bar", "Membros")):
+        for kind, label in choices or (("node", "Nós"), ("bar", "Barras")):
             button = QToolButton(self)
             button.setText(label)
             button.setCheckable(True)
@@ -145,8 +145,8 @@ class PropertyPanel(QFrame):
         identity_layout.addWidget(self.identity_value, 1)
         self.member_color_button = QToolButton()
         self.member_color_button.setFixedSize(34, 34)
-        self.member_color_button.setToolTip("Definir cor do membro")
-        self.member_color_button.setAccessibleName("Definir cor do membro")
+        self.member_color_button.setToolTip("Definir cor da barra")
+        self.member_color_button.setAccessibleName("Definir cor da barra")
         self.member_color_button.clicked.connect(self._toggle_color_palette)
         identity_layout.addWidget(self.member_color_button)
         self.delete_button = QToolButton()
@@ -270,7 +270,7 @@ class PropertyPanel(QFrame):
         with QSignalBlocker(self.kind_selector):
             self.kind_selector.clear()
             for selected_kind in kinds:
-                label = {"bar": "Membros", "node": "Nós", "rigid_bar": "Barras rígidas"}[selected_kind]
+                label = {"bar": "Barras", "node": "Nós", "rigid_bar": "Barras rígidas"}[selected_kind]
                 self.kind_selector.addItem(
                     f"{label} ({len(self._selected_names(selected_kind))})", selected_kind
                 )
@@ -290,14 +290,14 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         self.member_color_button.setVisible(kind == "bar")
         self.update_delete_button_state()
-        title = {"node": "Nó", "bar": "Membro", "rigid_bar": "Barra rígida"}.get(kind, "Elemento")
+        title = {"node": "Nó", "bar": "Barra", "rigid_bar": "Barra rígida"}.get(kind, "Elemento")
         if len(self._selection) > 1:
             if len(kinds) > 1:
                 title = f"Elementos · {len(self._selection)} selecionados"
             else:
-                plural = {"node": "Nós", "bar": "Membros", "rigid_bar": "Barras rígidas"}.get(kind, "Elementos")
+                plural = {"node": "Nós", "bar": "Barras", "rigid_bar": "Barras rígidas"}.get(kind, "Elementos")
                 title = f"{plural} · {len(names)} selecionados"
-        self.title.setText("Adicionar membro" if self._creation_mode else title)
+        self.title.setText("Adicionar barra" if self._creation_mode else title)
         self.name.setVisible(not self._creation_mode)
         self._identity_row.setVisible(not self._creation_mode)
         self.name.setText("Identidade")
@@ -306,7 +306,7 @@ class PropertyPanel(QFrame):
             colors = [self.window.model.bars[member_name].color for member_name in names]
             self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
             self.member_color_button.setToolTip(
-                "Definir cor dos membros" if len(names) > 1 else "Definir cor do membro"
+                "Definir cor das barras" if len(names) > 1 else "Definir cor da barra"
             )
 
         # A rigid bar is an idealized connection, not a physical member.  Its
@@ -719,7 +719,7 @@ class PropertyPanel(QFrame):
         title = QLabel("Propriedades mecânicas")
         title.setObjectName("propertySection")
         title.setToolTip(
-            "Rigidezes equivalentes finitas: 10⁴ vezes a maior rigidez dos membros conectados."
+            "Rigidezes equivalentes finitas: 10⁴ vezes a maior rigidez das barras conectadas."
         )
         self._add_context_widget(title)
 
@@ -747,7 +747,7 @@ class PropertyPanel(QFrame):
             values_layout.addRow(label_widget, value_widget)
         if rigidities is None:
             unavailable = QLabel(
-                "Defina material e seção em pelo menos um membro conectado para calcular as rigidezes."
+                "Defina material e seção em pelo menos uma barra conectada para calcular as rigidezes."
             )
             unavailable.setWordWrap(True)
             unavailable.setObjectName("propertySection")
@@ -790,8 +790,8 @@ class PropertyPanel(QFrame):
         labels = {
             "node_force": "Força no nó",
             "node_moment": "Momento no nó",
-            "member_distributed_force": "Força distribuída no membro",
-            "member_moment": "Momento no membro",
+            "member_distributed_force": "Força distribuída na barra",
+            "member_moment": "Momento na barra",
         }
         for prefix, label in labels.items():
             if action.kind.startswith(prefix):
@@ -834,7 +834,7 @@ class PropertyPanel(QFrame):
             if action.target == name and action.load_case == load_case
         ]
         if not actions:
-            message = QLabel("Nenhum carregamento aplicado a este " + ("nó." if kind == "node" else "membro."))
+            message = QLabel("Nenhum carregamento aplicado a este " + ("nó." if kind == "node" else "barra."))
             message.setWordWrap(True)
             self._add_context_widget(message)
             return
@@ -1453,7 +1453,7 @@ class PropertyPanel(QFrame):
             if result.model_revision == self.window.model.revision
         ]
         if not results:
-            target = "no nó" if kind == "node" else "no membro"
+            target = "no nó" if kind == "node" else "na barra"
             message = QLabel(f"Nenhum resultado disponível. Processe o modelo para consultar os resultados {target}.")
             message.setWordWrap(True)
             self._add_context_widget(message)
@@ -1472,7 +1472,7 @@ class PropertyPanel(QFrame):
                 message = QLabel("Não há resultados para os nós selecionados." if len(names) > 1
                                  else "Não há resultados para este nó.")
             else:
-                label = "barra rígida" if kind == "rigid_bar" else "membro"
+                label = "barra rígida" if kind == "rigid_bar" else "barra"
                 message = QLabel(f"Não há resultados para os {label}s selecionados." if len(names) > 1
                                  else f"Não há resultados para esta {label}.")
             message.setWordWrap(True)
@@ -1999,7 +1999,7 @@ class PropertyPanel(QFrame):
         kind, name = self._selected
         if kind == "bar":
             enabled = name in self.window.model.bars
-            tooltip = "Excluir membro"
+            tooltip = "Excluir barra"
         elif kind == "rigid_bar":
             enabled = name in self.window.model.rigid_bars
             tooltip = "Excluir barra rígida"
@@ -2013,7 +2013,7 @@ class PropertyPanel(QFrame):
                 for rigid in self.window.model.rigid_bars.values()
             )
             enabled = name in self.window.model.nodes and not connected
-            tooltip = "Excluir nó" if enabled else "Remova os membros vinculados antes de excluir o nó"
+            tooltip = "Excluir nó" if enabled else "Remova as barras vinculadas antes de excluir o nó"
         self.delete_button.setEnabled(enabled)
         self.delete_button.setToolTip(tooltip)
 

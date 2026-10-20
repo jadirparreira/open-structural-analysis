@@ -251,7 +251,7 @@ def prepare_scene_geometry(
     member_renderer = BatchedMemberRenderer()
     member_renderer.position_indicators_with_section = position_indicators_with_section
     if progress is not None:
-        progress("Preparando a geometria dos membros…")
+        progress("Preparando a geometria das barras…")
     source_member_batch = member_renderer.build(model, marker_radius, yield_control=yield_control)
     member_batch = member_renderer.filter_members(source_member_batch, set(visible_bars))
     if progress is not None:

@@ -70,7 +70,7 @@ def test_opening_and_editing_do_not_create_entities_or_invalidate_results(window
     panel = editor.properties
     assert panel.isVisible()
     assert panel.width() == window.properties.width()
-    assert panel.title.text() == "Adicionar membro"
+    assert panel.title.text() == "Adicionar barra"
     assert panel.name.isHidden()
     assert panel._identity_row.isHidden()
     assert panel.nodes_title.isHidden()

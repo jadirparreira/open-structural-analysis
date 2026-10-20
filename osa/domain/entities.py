@@ -71,7 +71,7 @@ class Member:
     # sólidas nas extremidades A e B. Não participam do modelo do solver.
     solid_face_offsets: tuple[float, float] = (0.0, 0.0)
     # Deslocamento visual da seção sólida no plano local Y/Z. Não participa
-    # do modelo analítico nem altera a posição dos nós do membro.
+    # do modelo analítico nem altera a posição dos nós da barra.
     solid_section_offsets: tuple[float, float] = (0.0, 0.0)
     # Percentuais de flexibilização das rotações locais Rxa/Rxb, Rya/Ryb e
     # Rza/Rzb. Zero indica vínculo rígido; de 1% a 99% reduz a rigidez efetiva

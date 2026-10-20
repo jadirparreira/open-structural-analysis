@@ -165,7 +165,7 @@ class MemberSnapSplitDialog(QDialog):
     def __init__(self, member_name: str, node_label: str = "final", parent=None):
         super().__init__(parent)
         self.should_split = False
-        self.setWindowTitle("Ligar ao membro")
+        self.setWindowTitle("Ligar à barra")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setFixedSize(370, 170)
         self.setStyleSheet(
@@ -181,11 +181,11 @@ class MemberSnapSplitDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 14)
         layout.setSpacing(10)
-        title = QLabel("Ligar ao membro")
+        title = QLabel("Ligar à barra")
         title.setObjectName("dialogTitle")
         layout.addWidget(title)
         prompt = QLabel(
-            f"Deseja segmentar o membro {member_name} para ligar o nó {node_label} a ele?"
+            f"Deseja segmentar a barra {member_name} para ligar o nó {node_label} a ele?"
         )
         prompt.setWordWrap(True)
         layout.addWidget(prompt)
@@ -380,9 +380,9 @@ class ActionDialog(QDialog):
         target_row.setContentsMargins(0, 0, 0, 0)
         target_row.setSpacing(20)
         self.node_button = QRadioButton("Nó")
-        self.member_button = QRadioButton("Membro")
+        self.member_button = QRadioButton("Barra")
         self.node_button.setAccessibleName("Lançar ação em nós")
-        self.member_button.setAccessibleName("Lançar ação em membros")
+        self.member_button.setAccessibleName("Lançar ação em barras")
         self.node_button.setChecked(True)
         self.node_button.toggled.connect(self._target_changed)
         self.member_button.toggled.connect(self._target_changed)
@@ -1047,7 +1047,7 @@ class ProgramSettingsDialog(QDialog):
         categories.setSpacing(8)
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
-        categories.addItem("Membros")
+        categories.addItem("Barras")
         categories.addItem("Vídeo")
         categories.addItem("MCP")
         pages = QStackedWidget()
@@ -1067,10 +1067,10 @@ class ProgramSettingsDialog(QDialog):
                 row.setToolTip("Alinhamento nos eixos do plano e na direção normal ao plano")
             elif snap_kind == "perpendicular":
                 row.setToolTip(
-                    "Captura a projeção perpendicular do ponto inicial sobre um membro, referência ou aresta sólida ao medir"
+                    "Captura a projeção perpendicular do ponto inicial sobre uma barra, referência ou aresta sólida ao medir"
                 )
             elif snap_kind == "intersection":
-                row.setToolTip("Captura o cruzamento entre linhas visíveis da malha, membros, arestas, eixos e barras rígidas")
+                row.setToolTip("Captura o cruzamento entre linhas visíveis da malha, barras, arestas, eixos e barras rígidas")
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(8)
@@ -1107,10 +1107,10 @@ class ProgramSettingsDialog(QDialog):
         direction_section = QVBoxLayout()
         direction_section.setContentsMargins(0, 0, 0, 0)
         direction_section.setSpacing(6)
-        direction_label = QLabel("Normalizar a direção dos membros automaticamente")
+        direction_label = QLabel("Normalizar a direção das barras automaticamente")
         direction_label.setObjectName("hint")
         direction_label.setWordWrap(True)
-        direction_label.setAccessibleName("Normalizar a direção dos membros automaticamente")
+        direction_label.setAccessibleName("Normalizar a direção das barras automaticamente")
         direction_section.addWidget(direction_label)
         self._member_direction_switch = _SettingsChoiceSwitch(
             (("sim", "Sim"), ("nao", "Não")),
@@ -1126,12 +1126,12 @@ class ProgramSettingsDialog(QDialog):
         split_section.setContentsMargins(0, 0, 0, 0)
         split_section.setSpacing(6)
         split_label = QLabel(
-            "Segmentar membro capturado por snap intermediário ao lançar membros ou barras rígidas"
+            "Segmentar a barra capturada por snap intermediário ao lançar barras ou barras rígidas"
         )
         split_label.setObjectName("hint")
         split_label.setWordWrap(True)
         split_label.setAccessibleName(
-            "Segmentar membro capturado por snap intermediário ao lançar membros ou barras rígidas"
+            "Segmentar a barra capturada por snap intermediário ao lançar barras ou barras rígidas"
         )
         split_section.addWidget(split_label)
         self._member_split_switch = _SettingsChoiceSwitch(
@@ -1156,7 +1156,7 @@ class ProgramSettingsDialog(QDialog):
         video_layout = QVBoxLayout(video_page)
         video_layout.addSpacing(10)
         video_hint = QLabel(
-            "Ajuste a suavidade das bordas dos membros, sólidos e eixos locais. "
+            "Ajuste a suavidade das bordas das barras, sólidos e eixos locais. "
             "Valores maiores melhoram o acabamento, mas podem consumir mais recursos gráficos."
         )
         video_hint.setObjectName("hint")

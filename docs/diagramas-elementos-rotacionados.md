@@ -7,7 +7,7 @@ somente o ângulo de rotação não é suficiente para pilares e barras inclinad
 Essa conversão também se aplica às inércias, cargas locais e vinculações.
 
 **Fletor Y/Z** e **Cortante Y/Z** mostram componentes nos eixos locais de cada
-membro. Um zero nessa vista significa que a componente selecionada é nula,
+barra. Um zero nessa vista significa que a componente selecionada é nula,
 não que a barra esteja sem flexão. A rotação pode decompor a flexão entre My e
 Mz. Os sinais e as cores seguem a convenção de apresentação já usada no OpenSA.
 

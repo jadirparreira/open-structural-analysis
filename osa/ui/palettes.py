@@ -354,7 +354,7 @@ class MemberPropertyCopyPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
-        title = QLabel("Copiar propriedades do membro", self)
+        title = QLabel("Copiar propriedades da barra", self)
         title.setObjectName("memberPropertyCopyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(title)
@@ -415,9 +415,9 @@ class TopIconPalette(QFrame):
                                         ("box.svg", "Seções sólidas", "solid"),
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
-                                        ("minus-m.svg", "Identificadores dos membros", "bar"),
+                                        ("minus-m.svg", "Identificadores das barras", "bar"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
-                                        ("release.svg", "Vinculações dos membros", "releases"),
+                                        ("release.svg", "Vinculações das barras", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
                                         ("support-3d.svg", "Apoios dos nós", "supports")):
             button = QToolButton(self)
@@ -605,10 +605,10 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "member-spline.svg"))
         )
         add_member_button.setIconSize(QSize(19, 19))
-        add_member_tooltip = _command_tooltip("Adicionar membro", "MEMBER")
+        add_member_tooltip = _command_tooltip("Adicionar barra", "BAR")
         add_member_button.setToolTip(add_member_tooltip)
         add_member_button.setProperty("paletteTooltip", add_member_tooltip)
-        add_member_button.setAccessibleName("Adicionar membro")
+        add_member_button.setAccessibleName("Adicionar barra")
         add_member_button.clicked.connect(window.start_member_placement)
         add_member_button.installEventFilter(self)
         add_member_button.setStyleSheet(
@@ -625,10 +625,10 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "split-member.svg"))
         )
         split_member_button.setIconSize(QSize(19, 19))
-        split_member_tooltip = _command_tooltip("Dividir membro", "SPLIT")
+        split_member_tooltip = _command_tooltip("Dividir barra", "SPLIT")
         split_member_button.setToolTip(split_member_tooltip)
         split_member_button.setProperty("paletteTooltip", split_member_tooltip)
-        split_member_button.setAccessibleName("Dividir membro")
+        split_member_button.setAccessibleName("Dividir barra")
         split_member_button.clicked.connect(window.start_split_member)
         split_member_button.installEventFilter(self)
         split_member_button.setStyleSheet(
@@ -645,10 +645,10 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "reverse-member.svg"))
         )
         reverse_member_button.setIconSize(QSize(19, 19))
-        reverse_member_tooltip = _command_tooltip("Inverter membro", "REVERSE")
+        reverse_member_tooltip = _command_tooltip("Inverter barra", "REVERSE")
         reverse_member_button.setToolTip(reverse_member_tooltip)
         reverse_member_button.setProperty("paletteTooltip", reverse_member_tooltip)
-        reverse_member_button.setAccessibleName("Inverter membro")
+        reverse_member_button.setAccessibleName("Inverter barra")
         reverse_member_button.clicked.connect(window.start_reverse_member)
         reverse_member_button.installEventFilter(self)
         reverse_member_button.setStyleSheet(
@@ -665,10 +665,10 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "join-member-link.svg"))
         )
         join_members_button.setIconSize(QSize(19, 19))
-        join_members_tooltip = _command_tooltip("Unir membros", "JOIN")
+        join_members_tooltip = _command_tooltip("Unir barras", "JOIN")
         join_members_button.setToolTip(join_members_tooltip)
         join_members_button.setProperty("paletteTooltip", join_members_tooltip)
-        join_members_button.setAccessibleName("Unir membros")
+        join_members_button.setAccessibleName("Unir barras")
         join_members_button.clicked.connect(window.start_join_members)
         join_members_button.installEventFilter(self)
         join_members_button.setStyleSheet(
@@ -1003,8 +1003,8 @@ class ActionTopPalette(QFrame):
         for filename, tooltip, kind in (
             ("node-force.svg", "Forças nos nós", "node_forces"),
             ("node-moment.svg", "Momentos nos nós", "node_moments"),
-            ("member-force.svg", "Forças nos membros", "member_forces"),
-            ("member-moment.svg", "Momentos nos membros", "member_moments"),
+            ("member-force.svg", "Forças nas barras", "member_forces"),
+            ("member-moment.svg", "Momentos nas barras", "member_moments"),
         ):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
@@ -1184,7 +1184,7 @@ class AnalysisTopPalette(QFrame):
         self.diagram_selector = QComboBox(self)
         self.diagram_selector.addItems(self.diagram_options)
         self.diagram_selector.setToolTip(
-            "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada membro."
+            "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada barra."
         )
         self.diagram_selector.setAccessibleName("Tipo de diagrama")
         self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)

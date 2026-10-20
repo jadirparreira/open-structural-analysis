@@ -30,7 +30,7 @@ visíveis, e uma esfera azul indica sua origem global. Esse marcador tem o mesmo
 tamanho dos nós estruturais e é apenas visual. Ao fechar o quadro, o destaque e
 o marcador desaparecem.
 
-As ferramentas **Medir** e **Adicionar membro** capturam extremidades e pontos
+As ferramentas **Medir** e **Adicionar barra** capturam extremidades e pontos
 médios das linhas e polilinhas, além de centros de círculos e arcos. Essas
 capturas respeitam os controles de extremidades/centros e o botão Snap, funcionam
 também com o quadro fechado e acompanham a origem e o plano de cada referência.

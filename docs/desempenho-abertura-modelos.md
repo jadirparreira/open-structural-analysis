@@ -2,7 +2,7 @@
 
 ## Cenário e medição
 
-O cenário grande usado nesta otimização contém 3.223 nós, 8.164 membros,
+O cenário grande usado nesta otimização contém 3.223 nós, 8.164 barras,
 8.164 ações e três conjuntos de resultados salvos. O arquivo ocupa
 301.403.539 bytes (aproximadamente 288 MiB). O arquivo de referência não é
 distribuído com o repositório.
@@ -12,7 +12,7 @@ Qt `offscreen`. O tempo começa ao solicitar a abertura e termina quando a cena
 foi instalada e o quadro de carregamento foi fechado. Um temporizador de
 16 ms mede os intervalos em que a interface deixou de processar eventos.
 
-| Modelo | Nós | Membros | Abertura após otimização | Maior intervalo entre eventos |
+| Modelo | Nós | Barras | Abertura após otimização | Maior intervalo entre eventos |
 | --- | ---: | ---: | ---: | ---: |
 | Pequeno | 2 | 1 | 0,123 s | 44,5 ms |
 | Galpão gerado pelo programa | 408 | 839 | 0,571 s | 48,6 ms |
@@ -45,8 +45,8 @@ ambiente gráfico do usuário.
   armazenava uma esfera completa por nó. A cena usa um ponto por instância,
   preservando identidade, cores, seleção e atualização incremental. A
   aparência e a resolução da esfera continuam iguais.
-- A montagem dos membros reutiliza cores e arrays dos perfis. O cálculo dos
-  eixos locais evita operações genéricas repetidas. O preparo dos membros
+- A montagem das barras reutiliza cores e arrays dos perfis. O cálculo dos
+  eixos locais evita operações genéricas repetidas. O preparo das barras
   passou de 4,46 s para aproximadamente 0,9 s.
 - O JSON é validado por registros, em pequenos buffers, com oportunidades
   explícitas para a interface executar. Resultados salvos ficam disponíveis
@@ -63,7 +63,7 @@ ambiente gráfico do usuário.
   executam explicitamente na thread da interface.
 
 Não foi introduzido um limite de visibilidade ou uma redução de detalhes.
-Membros, apoios, nós e identificadores permanecem disponíveis como antes.
+Barras, apoios, nós e identificadores permanecem disponíveis como antes.
 
 ## Reprodução e verificação
 

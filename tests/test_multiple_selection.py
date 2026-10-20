@@ -387,7 +387,7 @@ def test_mixed_node_and_member_selection_can_inspect_both(qt_app):
     assert panel.identity_value.text() == "Variado (2)"
     assert not panel.selection_kind_switch.isHidden()
     assert panel.selection_kind_switch._buttons["node"].text() == "Nós"
-    assert panel.selection_kind_switch._buttons["bar"].text() == "Membros"
+    assert panel.selection_kind_switch._buttons["bar"].text() == "Barras"
     panel.selection_kind_switch._buttons["node"].click()
     assert window.selected == ("node", "N2")
     assert panel._selection == selection
@@ -409,7 +409,7 @@ def test_identity_counts_selected_members_of_its_kind(qt_app):
     panel.show_for("bar", "B4", selection=selection)
 
     assert panel.identity_value.text() == "Variado (4)"
-    assert panel.title.text() == "Membros · 4 selecionados"
+    assert panel.title.text() == "Barras · 4 selecionados"
 
 
 def test_selected_members_share_a_highlight_actor_and_nodes_keep_their_color(qt_app):

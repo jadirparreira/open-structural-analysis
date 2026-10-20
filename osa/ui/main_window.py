@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
-        "member", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
+        "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
         "action", "load", "selfweight", "combinations", "analyze", "grid",
         "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
@@ -506,7 +506,7 @@ class MainWindow(QMainWindow):
 
     def set_member_intermediate_snap_split_mode(self, mode: str) -> None:
         if mode not in {"sim", "perguntar", "nao"}:
-            raise ValueError("Opção inválida para segmentação do membro.")
+            raise ValueError("Opção inválida para segmentação da barra.")
         self._member_intermediate_snap_split_mode = mode
         self._program_settings.setValue("members/intermediateSnapSplit", mode)
         self._program_settings.remove("members/perpendicularSplit")
@@ -843,9 +843,9 @@ class MainWindow(QMainWindow):
             point = "segundo" if second_point else "primeiro"
             message = f"Clique no {point} ponto para definir a extremidade {endpoint} pelo ponto médio"
         else:
-            message = f"Clique na posição {endpoint} do membro"
+            message = f"Clique na posição {endpoint} da barra"
         self.history.append(
-            f"> <b>Adicionar membro</b> <span style='color:#57606a'>({message})</span>"
+            f"> <b>Adicionar barra</b> <span style='color:#57606a'>({message})</span>"
         )
 
     def start_measurement(self) -> None:
@@ -907,7 +907,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._pending_action_launch = dialog.launch_data()
-        target_label = "nós" if self._pending_action_launch[0] == "node" else "membros"
+        target_label = "nós" if self._pending_action_launch[0] == "node" else "barras"
         self._command_mode = "action_selection"
         self.history.append(
             "> <b>Adicionar ação</b> "
@@ -942,7 +942,7 @@ class MainWindow(QMainWindow):
             return
 
         if not self.model.bars:
-            self.show_error("Não há membros no modelo para aplicar o peso próprio.")
+            self.show_error("Não há barras no modelo para aplicar o peso próprio.")
             return
         if not self.model.materials:
             self.show_error("Não há materiais cadastrados para aplicar o peso próprio.")
@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
 
         if not weights:
             self.show_error(
-                "Não há membros associados aos materiais selecionados "
+                "Não há barras associadas aos materiais selecionados "
                 "para aplicar o peso próprio."
             )
             return
@@ -997,8 +997,8 @@ class MainWindow(QMainWindow):
 
         self._command_mode = "split_member_selection"
         self.history.append(
-            "> <b>Dividir membro</b> "
-            "<span style='color:#57606a'>(Selecione apenas um membro para dividir)</span>"
+            "> <b>Dividir barra</b> "
+            "<span style='color:#57606a'>(Selecione apenas uma barra para dividir)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1025,8 +1025,8 @@ class MainWindow(QMainWindow):
         if self.selected == ("bar", member_name):
             self.clear_selection()
         self.history.append(
-            f"> <b>Dividir membro</b> <span style='color:#57606a'>"
-            f"(Membro {escape(member_name)} dividido em {len(member_names)} segmentos)</span>"
+            f"> <b>Dividir barra</b> <span style='color:#57606a'>"
+            f"(Barra {escape(member_name)} dividida em {len(member_names)} segmentos)</span>"
         )
         self.normalize_member_directions_if_enabled()
         self.refresh_action_palette()
@@ -1049,8 +1049,8 @@ class MainWindow(QMainWindow):
         self.command_session.cancel()
         self._command_mode = "reverse_member_selection"
         self.history.append(
-            "> <b>Inverter membro</b> "
-            "<span style='color:#57606a'>(Selecione um membro ou use Ctrl para selecionar vários e ENTER para confirmar)</span>"
+            "> <b>Inverter barra</b> "
+            "<span style='color:#57606a'>(Selecione uma barra ou use Ctrl para selecionar vários e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1067,12 +1067,12 @@ class MainWindow(QMainWindow):
                 self.model_service.reverse_member(member_name)
         except ValueError as error:
             self.history.append(
-                f"> <b>Inverter membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+                f"> <b>Inverter barra</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
         self.history.append(
-            f"> <b>Inverter membro</b> <span style='color:#57606a'>"
-            f"({len(member_names)} membro(s) invertido(s))</span>"
+            f"> <b>Inverter barra</b> <span style='color:#57606a'>"
+            f"({len(member_names)} barra(s) invertida(s))</span>"
         )
         self.refresh_selected_property_panel(self.palette.active_group)
         self.refresh_scene()
@@ -1094,11 +1094,11 @@ class MainWindow(QMainWindow):
             self._join_members(*members)
             return
         if self._join_member_first is None:
-            message = "Selecione membros na mesma reta com Ctrl e pressione ENTER"
+            message = "Selecione barras na mesma reta com Ctrl e pressione ENTER"
         else:
-            message = "Selecione outro membro ou use Ctrl e ENTER para unir vários na mesma reta"
+            message = "Selecione outra barra ou use Ctrl e ENTER para unir vários na mesma reta"
         self.history.append(
-            "> <b>Unir membros</b> "
+            "> <b>Unir barras</b> "
             f"<span style='color:#57606a'>({message})</span>"
         )
         self.scene.plotter.setFocus()
@@ -1108,15 +1108,15 @@ class MainWindow(QMainWindow):
             joined = self.model_service.join_selected_members(member_names)
         except ValueError as error:
             self.history.append(
-                f"> <b>Unir membros</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+                f"> <b>Unir barras</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
         self.normalize_member_directions_if_enabled()
         self._join_member_first = None
         self._command_mode = None
         self.history.append(
-            f"> <b>Unir membros</b> <span style='color:#57606a'>"
-            f"(Membros unidos em {escape(joined.name)})</span>"
+            f"> <b>Unir barras</b> <span style='color:#57606a'>"
+            f"(Barras unidas em {escape(joined.name)})</span>"
         )
         self.clear_selection()
         self.refresh_action_palette()
@@ -1146,7 +1146,7 @@ class MainWindow(QMainWindow):
         message = (
             f"Referência: {escape(self._copy_properties_reference)}; selecione destinos com Ctrl e pressione ENTER"
             if self._copy_properties_reference is not None
-            else "Selecione o membro de referência"
+            else "Selecione a barra de referência"
         )
         self.history.append(
             "> <b>Copiar propriedades</b> "
@@ -1205,7 +1205,7 @@ class MainWindow(QMainWindow):
         self.close_displacement_panel()
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
-            "(Selecione nós, membros e barras rígidas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+            "(Selecione nós, barras e barras rígidas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1233,7 +1233,7 @@ class MainWindow(QMainWindow):
         action = "Ocultar" if mode == "hide" else "Reexibir"
         self.history.append(
             f"> <b>{action}</b> <span style='color:#57606a'>"
-            "(Selecione membros e barras rígidas; use Ctrl para multiseleção e pressione ENTER para confirmar)</span>"
+            "(Selecione barras e barras rígidas; use Ctrl para multiseleção e pressione ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1264,7 +1264,7 @@ class MainWindow(QMainWindow):
         action = "ocultado(s)" if mode == "scene_hide_selection" else "reexibido(s)"
         self.history.append(
             f"> <b>Cena</b> <span style='color:#57606a'>"
-            f"({len(member_names)} membro(s) e {len(rigid_bar_names)} barra(s) rígida(s) "
+            f"({len(member_names)} barra(s) e {len(rigid_bar_names)} barra(s) rígida(s) "
             f"{action})</span>"
         )
 
@@ -1330,13 +1330,13 @@ class MainWindow(QMainWindow):
             return
         if not members:
             self.history.append(
-                "> <span style='color:#8c959f'>(Selecione pelo menos um membro e pressione ENTER)</span>"
+                "> <span style='color:#8c959f'>(Selecione pelo menos uma barra e pressione ENTER)</span>"
             )
             return
         if mode == "split_member_selection":
             if len(members) != 1:
                 self.history.append(
-                    "> <b>Dividir membro</b> <span style='color:#8c959f'>(Selecione apenas um membro para dividir)</span>"
+                    "> <b>Dividir barra</b> <span style='color:#8c959f'>(Selecione apenas uma barra para dividir)</span>"
                 )
                 return
             self._command_mode = None
@@ -1346,14 +1346,14 @@ class MainWindow(QMainWindow):
         elif mode == "join_member_selection":
             if len(members) < 2:
                 self.history.append(
-                    "> <b>Unir membros</b> <span style='color:#8c959f'>(Selecione pelo menos dois membros e pressione ENTER)</span>"
+                    "> <b>Unir barras</b> <span style='color:#8c959f'>(Selecione pelo menos duas barras e pressione ENTER)</span>"
                 )
                 return
             self._join_members(*members)
         elif self._copy_properties_reference is None:
             if len(members) != 1:
                 self.history.append(
-                    "> <b>Copiar propriedades</b> <span style='color:#8c959f'>(Selecione apenas um membro de referência)</span>"
+                    "> <b>Copiar propriedades</b> <span style='color:#8c959f'>(Selecione apenas uma barra de referência)</span>"
                 )
                 return
             self._copy_properties_reference = members[0]
@@ -1432,7 +1432,7 @@ class MainWindow(QMainWindow):
         if copied_nodes or copied_members or copied_rigid_bars:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
-                f"({len(copied_nodes)} nó(s), {len(copied_members)} membro(s) e "
+                f"({len(copied_nodes)} nó(s), {len(copied_members)} barra(s) e "
                 f"{len(copied_rigid_bars)} barra(s) rígida(s) criada(s); "
                 "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
@@ -1499,7 +1499,7 @@ class MainWindow(QMainWindow):
             return True
 
         callbacks = {
-            "member": ("Geometria", self.start_member_placement),
+            "bar": ("Geometria", self.start_member_placement),
             "split": ("Geometria", self.start_split_member),
             "reverse": ("Geometria", self.start_reverse_member),
             "join": ("Geometria", self.start_join_members),
@@ -1616,7 +1616,7 @@ class MainWindow(QMainWindow):
         start = self._member_placement_start
         if self.model.node_coordinates(*start) == self.model.node_coordinates(*coordinates):
             self.history.append(
-                "> <b>Adicionar membro</b> "
+                "> <b>Adicionar barra</b> "
                 "<span style='color:#8c959f'>(O segundo ponto deve ser diferente do ponto inicial.)</span>"
             )
             return
@@ -1659,7 +1659,7 @@ class MainWindow(QMainWindow):
             )
         except ValueError as error:
             self.history.append(
-                f"> <b>Adicionar membro</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+                f"> <b>Adicionar barra</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             if self.member_placement_editor.point_mode == "midpoint":
                 self._show_member_placement_prompt()
@@ -1672,8 +1672,8 @@ class MainWindow(QMainWindow):
         self.scene.set_member_preview_start(None)
         self.scene.set_member_placement_mode(True, point_mode=self.member_placement_editor.point_mode)
         self.history.append(
-            f"> <b>Adicionar membro</b> <span style='color:#57606a'>"
-            f"(Membro {escape(member_name)} criado entre {escape(start_name)} e {escape(end_name)})</span>"
+            f"> <b>Adicionar barra</b> <span style='color:#57606a'>"
+            f"(Barra {escape(member_name)} criada entre {escape(start_name)} e {escape(end_name)})</span>"
         )
         self._show_member_placement_prompt()
         self.refresh_action_palette()
@@ -1846,8 +1846,8 @@ class MainWindow(QMainWindow):
             "copy_elements_reference_placement", "copy_elements_destination_placement",
         }:
             labels = {
-                "reverse_member_selection": "Inverter membro",
-                "join_member_selection": "Unir membros",
+                "reverse_member_selection": "Inverter barra",
+                "join_member_selection": "Unir barras",
                 "copy_member_properties_selection": "Copiar propriedades",
                 "copy_elements_selection": "Copiar",
                 "copy_elements_reference_placement": "Copiar",
@@ -1855,7 +1855,7 @@ class MainWindow(QMainWindow):
             }
             copy_elements_active = self._command_mode.startswith("copy_elements_")
             split_member_active = self._command_mode == "split_member_selection"
-            label = labels.get(self._command_mode, "Dividir membro")
+            label = labels.get(self._command_mode, "Dividir barra")
             self.command_session.cancel()
             self._command_mode = None
             self._join_member_first = None
@@ -1892,7 +1892,7 @@ class MainWindow(QMainWindow):
         }:
             return
         labels = {
-            "member_placement": "Adicionar membro",
+            "member_placement": "Adicionar barra",
             "node_placement": "Adicionar nó",
             "rigid_bar_placement": "Adicionar barra rígida",
         }
@@ -1998,7 +1998,7 @@ class MainWindow(QMainWindow):
             return
         target_kind, reference, values = launch
         if kind != target_kind:
-            expected = "nó" if target_kind == "node" else "membro"
+            expected = "nó" if target_kind == "node" else "barra"
             self.history.append(
                 "> <b>Adicionar ação</b> "
                 f"<span style='color:#8c959f'>(Selecione apenas {expected})</span>"
@@ -2067,8 +2067,8 @@ class MainWindow(QMainWindow):
         if self._command_mode == "split_member_selection":
             if kind != "bar":
                 self.history.append(
-                    "> <b>Dividir membro</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou uma barra rígida)</span>"
+                    "> <b>Dividir barra</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou uma barra rígida)</span>"
                 )
             else:
                 self._command_mode = None
@@ -2077,27 +2077,27 @@ class MainWindow(QMainWindow):
         elif self._command_mode == "reverse_member_selection":
             if kind != "bar":
                 self.history.append(
-                    "> <b>Inverter membro</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                    "> <b>Inverter barra</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou barra rígida)</span>"
                 )
             else:
                 self._reverse_member(name)
         elif self._command_mode == "join_member_selection":
             if kind != "bar":
                 self.history.append(
-                    "> <b>Unir membros</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                    "> <b>Unir barras</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou barra rígida)</span>"
                 )
             elif self._join_member_first is None:
                 self._join_member_first = name
                 self.history.append(
-                    "> <b>Unir membros</b> "
-                    "<span style='color:#57606a'>(Selecione o segundo membro)</span>"
+                    "> <b>Unir barras</b> "
+                    "<span style='color:#57606a'>(Selecione a segunda barra)</span>"
                 )
             elif name == self._join_member_first:
                 self.history.append(
-                    "> <b>Unir membros</b> "
-                    "<span style='color:#8c959f'>(Selecione um segundo membro diferente)</span>"
+                    "> <b>Unir barras</b> "
+                    "<span style='color:#8c959f'>(Selecione uma segunda barra diferente)</span>"
                 )
             else:
                 self._join_members(self._join_member_first, name)
@@ -2108,7 +2108,7 @@ class MainWindow(QMainWindow):
             if kind != "bar":
                 self.history.append(
                     "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro, não um nó ou barra rígida)</span>"
+                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou barra rígida)</span>"
                 )
             elif self._copy_properties_reference is None:
                 self._copy_properties_reference = name
@@ -2120,7 +2120,7 @@ class MainWindow(QMainWindow):
             elif name == self._copy_properties_reference:
                 self.history.append(
                     "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione um membro de destino diferente)</span>"
+                    "<span style='color:#8c959f'>(Selecione uma barra de destino diferente)</span>"
                 )
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)

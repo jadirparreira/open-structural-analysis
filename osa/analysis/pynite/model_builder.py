@@ -61,9 +61,9 @@ class ModelBuilder:
             )
         for member in source.bars.values():
             if member.material not in source.materials:
-                raise ValueError(f"O membro '{member.name}' não possui material válido.")
+                raise ValueError(f"A barra '{member.name}' não possui material válido.")
             if not member.section or not member.profile:
-                raise ValueError(f"O membro '{member.name}' não possui uma seção selecionada.")
+                raise ValueError(f"A barra '{member.name}' não possui uma seção selecionada.")
             properties = self.section_properties.calculate(
                 member.section,
                 member.geometry_dict(),
@@ -114,7 +114,7 @@ class ModelBuilder:
             properties = calculate_rigid_bar_properties(source, rigid)
             if properties is None:
                 raise ValueError(
-                    f"A barra rígida '{rigid.name}' não possui um membro conectado "
+                    f"A barra rígida '{rigid.name}' não possui uma barra conectada "
                     "com material e seção válidos."
                 )
             material_name = f"rigid_material::{rigid.name}"

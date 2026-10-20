@@ -41,7 +41,7 @@ class ModelService:
             raise ValueError("Informe um número inteiro maior que 1.")
         member = self.model.bars.get(name)
         if member is None:
-            raise ValueError(f"Membro '{name}' não encontrado.")
+            raise ValueError(f"Barra '{name}' não encontrado.")
 
         node_names: list[str] = []
         node_index = 1
@@ -68,7 +68,7 @@ class ModelService:
         """Divide a member at user-specified consecutive segment lengths."""
         member = self.model.bars.get(name)
         if member is None:
-            raise ValueError(f"Membro '{name}' não encontrado.")
+            raise ValueError(f"Barra '{name}' não encontrado.")
         if len(segment_lengths) < 2:
             raise ValueError("Informe pelo menos dois segmentos.")
 
@@ -136,7 +136,7 @@ class ModelService:
             split_target = member.name, distance, length - distance
             break
         if split_target is None:
-            raise ValueError(f"O ponto não está no trecho interno do membro '{name}'.")
+            raise ValueError(f"O ponto não está no trecho interno da barra '{name}'.")
         target_name, first_length, second_length = split_target
 
         node_index = 1
@@ -160,7 +160,7 @@ class ModelService:
         """Swap a member's start and end nodes without changing its identity."""
         member = self.model.bars.get(name)
         if member is None:
-            raise ValueError(f"Membro '{name}' não encontrado.")
+            raise ValueError(f"Barra '{name}' não encontrado.")
         return self.model.update_bar(name, member.end_node, member.start_node)
 
     def normalize_member_directions(self) -> tuple[str, ...]:
@@ -297,7 +297,7 @@ class ModelService:
             weights.append((member.name, -properties.mass_kg_m / 100.0))
         if missing:
             names = ", ".join(missing)
-            raise ValueError(f"Não foi possível obter o peso linear dos membros: {names}.")
+            raise ValueError(f"Não foi possível obter o peso linear das barras: {names}.")
         return tuple(weights)
 
     def remove_node(self, name: str) -> None:
@@ -323,10 +323,10 @@ class ModelService:
         members = self._unique_names(member_names)
         rigid_bars = self._unique_names(rigid_bar_names)
         if not nodes and not members and not rigid_bars:
-            raise ValueError("Informe pelo menos um nó, membro ou barra rígida.")
+            raise ValueError("Informe pelo menos um nó, barra ou barra rígida.")
 
         self._validate_existing_names(nodes, self.model.nodes, "nó")
-        self._validate_existing_names(members, self.model.bars, "membro")
+        self._validate_existing_names(members, self.model.bars, "barra")
         self._validate_existing_names(rigid_bars, self.model.rigid_bars, "barra rígida")
 
         requested_members = set(members)

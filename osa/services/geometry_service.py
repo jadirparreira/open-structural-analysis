@@ -18,7 +18,7 @@ class GeometryService:
         x_axis = np.asarray((end.x - start.x, end.y - start.y, end.z - start.z), dtype=float)
         length = np.linalg.norm(x_axis)
         if length <= self.model.coordinate_tolerance:
-            raise ValueError("Um membro deve possuir comprimento diferente de zero.")
+            raise ValueError("Uma barra deve possuir comprimento diferente de zero.")
         x_axis /= length
         reference = np.array((0.0, 0.0, 1.0))
         if abs(float(np.dot(x_axis, reference))) > 0.99:

@@ -1,7 +1,7 @@
-"""Ligações rotacionais semirrígidas para os membros do PyNite.
+"""Ligações rotacionais semirrígidas para as barras do PyNite.
 
-O PyNite oferece liberações booleanas nas extremidades dos membros, mas não
-uma mola rotacional entre a extremidade de um membro e o nó estrutural. Este
+O PyNite oferece liberações booleanas nas extremidades das barras, mas não
+uma mola rotacional entre a extremidade de uma barra e o nó estrutural. Este
 módulo representa essa mola por condensação estática do grau de liberdade de
 rotação da extremidade.
 """
@@ -21,10 +21,10 @@ _PERCENT_POSITIONS = {
 
 
 def install_semirigid_connections(target, source) -> None:
-    """Instala as ligações semirrígidas nos membros físicos do PyNite.
+    """Instala as ligações semirrígidas nas barras físicas do PyNite.
 
-    A instalação é feita no ``descritize`` do membro físico porque o PyNite
-    recria seus submembros durante a preparação de cada análise.
+    A instalação é feita no ``descritize`` da barra física porque o PyNite
+    recria seus segmentos de barra durante a preparação de cada análise.
     """
 
     for name, source_member in source.bars.items():
@@ -85,7 +85,7 @@ def _spring_stiffnesses(submember, source_member, endpoint: str) -> dict[int, fl
         if reference_stiffness <= 0.0 or not np.isfinite(reference_stiffness):
             raise ValueError(
                 f"Não foi possível calcular a rigidez rotacional da vinculação "
-                f"semirrígida no membro '{source_member.name}'."
+                f"semirrígida na barra '{source_member.name}'."
             )
         # The UI percentage is the reduction of the effective end rigidity.
         # A series spring with this value produces the requested reduction for

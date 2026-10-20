@@ -336,7 +336,7 @@ def test_load_command_validates_target_before_asking_for_its_type():
     model.add_node("N4", 1, 0, 0)
     model.add_bar("B3", "N3", "N4")
 
-    assert commands.submit("load").message == "Informe a identidade do nó ou do membro."
+    assert commands.submit("load").message == "Informe a identidade do nó ou da barra."
     response = commands.submit("n3")
     assert response.message == "Informe o tipo de ação: Força ou Momento."
     assert commands.pending == "load_type"
@@ -356,7 +356,7 @@ def test_load_command_repeats_when_target_does_not_exist():
     response = commands.submit("N99")
 
     assert response.level == "error"
-    assert response.message == "Não existe nó ou membro chamado 'N99'."
+    assert response.message == "Não existe nó ou barra chamado 'N99'."
     assert commands.pending == "load_target"
     model.add_node("N99", 0, 0, 0)
     assert commands.submit("N99").message == "Informe o tipo de ação: Força ou Momento."
@@ -372,7 +372,7 @@ def test_member_distributed_force_command_flow():
     commands.submit("B3")
     assert commands.submit("Força").message == "Informe o sistema de direção: Global ou Local."
     assert commands.submit("Global").message == "Informe a direção global: X, Y ou Z."
-    assert commands.submit("Y").message == "Informe a força linear no membro (kN/m)."
+    assert commands.submit("Y").message == "Informe a força linear na barra (kN/m)."
     response = commands.submit("-2,5;1.25")
 
     assert response.level == "success"
@@ -396,7 +396,7 @@ def test_member_distributed_force_can_use_the_local_direction():
     commands.submit("B1")
     commands.submit("força")
     assert commands.submit("local").message == "Informe a direção local: X, Y ou Z."
-    assert commands.submit("Z").message == "Informe a força linear no membro (kN/m)."
+    assert commands.submit("Z").message == "Informe a força linear na barra (kN/m)."
     response = commands.submit("1,5")
 
     load = response.distributed_member_forces[0]
@@ -497,7 +497,7 @@ def test_selfweight_locks_the_active_action_and_toggles_off():
     assert removed.remove_selfweight
     service.remove_selfweight("Peso próprio")
     assert not service.has_selfweight("Peso próprio")
-    assert commands.submit("load").message == "Informe a identidade do nó ou do membro."
+    assert commands.submit("load").message == "Informe a identidade do nó ou da barra."
 
 
 def test_force_replaces_the_same_direction_only_within_its_action():
@@ -563,7 +563,7 @@ def test_load_command_repeats_when_nodes_and_members_are_mixed():
     response = commands.submit("N1,B1")
 
     assert response.level == "error"
-    assert response.message == "Os elementos informados devem ser todos nós ou todos membros."
+    assert response.message == "Os elementos informados devem ser todos nós ou todas barras."
     assert commands.pending == "load_target"
     assert commands.submit("N1,N2").message == "Informe o tipo de ação: Força ou Momento."
 

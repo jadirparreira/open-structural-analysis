@@ -133,7 +133,7 @@ class SplitMemberDialog(QDialog):
         self._segment_lock_buttons: list[QToolButton] = []
         self._selected_segment: SegmentLengthInput | None = None
         self.setObjectName("splitMemberDialog")
-        self.setWindowTitle("Dividir membro")
+        self.setWindowTitle("Dividir barra")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.resize(400, 440)
         self.setMinimumWidth(400)
@@ -150,7 +150,7 @@ class SplitMemberDialog(QDialog):
         titlebar.setFixedHeight(40)
         title_layout = QHBoxLayout(titlebar)
         title_layout.setContentsMargins(12, 6, 8, 6)
-        title = QLabel("Dividir membro", titlebar)
+        title = QLabel("Dividir barra", titlebar)
         title.setObjectName("windowTitle")
         title_layout.addWidget(title)
         title_layout.addStretch(1)
@@ -240,7 +240,7 @@ class SplitMemberDialog(QDialog):
         member = self.window.model.bars.get(member_name)
         if member is None:
             self.member_length = None
-            self.member_identity.setText("Membro não encontrado")
+            self.member_identity.setText("Barra não encontrado")
             self.total_length_display.clear()
             self.apply_button.setEnabled(False)
             self._set_segment_lengths(())

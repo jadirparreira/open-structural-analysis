@@ -231,8 +231,8 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="list_members",
-            title="Listar membros",
-            description="Use esta ferramenta para consultar os membros do projeto aberto.",
+            title="Listar barras",
+            description="Use esta ferramenta para consultar as barras do projeto aberto.",
             annotations=read_only,
         )
         def list_members() -> dict[str, Any]:
@@ -440,10 +440,10 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="get_member_analysis_results",
-            title="Consultar resultados dos membros",
+            title="Consultar resultados das barras",
             description=(
-                "Consulta esforços e deslocamentos dos membros. include_samples inclui as 21 amostras "
-                "ao longo de cada membro para reconstruir diagramas."
+                "Consulta esforços e deslocamentos das barras. include_samples inclui as 21 amostras "
+                "ao longo de cada barra para reconstruir diagramas."
             ),
             annotations=read_only,
         )
@@ -474,7 +474,7 @@ class LocalMcpServer:
             description=(
                 "Seleciona a combinação e o diagrama exibido. Diagramas: Normal, Cortante Y, Cortante Z, "
                 "Torsor, Fletor Y, Fletor Z, Reações de apoio, Deformação X, Deformação Y, "
-                "Deformação Z e Deformação XYZ. Y/Z referem-se aos eixos locais de cada membro."
+                "Deformação Z e Deformação XYZ. Y/Z referem-se aos eixos locais de cada barra."
             ),
             annotations=write,
         )
@@ -523,9 +523,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="add_member_distributed_load",
-            title="Aplicar carga distribuída no membro",
+            title="Aplicar carga distribuída na barra",
             description=(
-                "Aplica ou atualiza uma força distribuída em kN/m no membro. "
+                "Aplica ou atualiza uma força distribuída em kN/m na barra. "
                 "Use initial e final para uma carga linearmente variável; valores iguais "
                 "representam carga uniforme. reference pode ser global ou local."
             ),
@@ -545,10 +545,10 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="add_member_moment",
-            title="Aplicar momento no membro",
+            title="Aplicar momento na barra",
             description=(
                 "Aplica ou atualiza um momento distribuído em kN·m/m no eixo local "
-                "X, Y ou Z do membro."
+                "X, Y ou Z da barra."
             ),
             annotations=write,
         )
@@ -596,7 +596,7 @@ class LocalMcpServer:
             name="apply_selfweight",
             title="Aplicar peso próprio",
             description=(
-                "Substitui os carregamentos do caso informado pelo peso próprio dos membros. "
+                "Substitui os carregamentos do caso informado pelo peso próprio das barras. "
                 "Informe materials para filtrar materiais; omitindo, todos os materiais serão usados."
             ),
             annotations=write,
@@ -630,7 +630,7 @@ class LocalMcpServer:
             title="Limpar carregamentos",
             description=(
                 "Remove carregamentos por load_case, target, targets ou uma combinação desses filtros. "
-                "target mantém o filtro de um único elemento; targets aceita vários nós e membros."
+                "target mantém o filtro de um único elemento; targets aceita vários nós e barras."
             ),
             annotations=destructive,
         )
@@ -700,7 +700,7 @@ class LocalMcpServer:
             name="get_scene_views",
             title="Consultar vistas da cena",
             description=(
-                "Lista as vistas persistentes do projeto, a vista ativa, os membros ocultos "
+                "Lista as vistas persistentes do projeto, a vista ativa, as barras ocultas "
                 "e as barras rígidas ocultas em cada vista. A vista 'Completo' mostra tudo."
             ),
             annotations=read_only,
@@ -713,7 +713,7 @@ class LocalMcpServer:
             title="Criar vista da cena",
             description=(
                 "Cria uma vista nomeada vazia e a torna ativa. Depois, use "
-                "set_scene_members_visibility para ocultar ou reexibir membros e barras rígidas nela."
+                "set_scene_members_visibility para ocultar ou reexibir barras e barras rígidas nela."
             ),
             annotations=write,
         )
@@ -754,7 +754,7 @@ class LocalMcpServer:
             name="set_scene_members_visibility",
             title="Mostrar ou ocultar elementos na vista",
             description=(
-                "Define a visibilidade de membros e barras rígidas na vista ativa. Informe "
+                "Define a visibilidade de barras e barras rígidas na vista ativa. Informe "
                 "member_names e/ou rigid_bar_names. Use visible=false para ocultar ou true "
                 "para reexibir. É necessário selecionar uma vista nomeada; a vista 'Completo' "
                 "não permite ocultar elementos."
@@ -773,7 +773,7 @@ class LocalMcpServer:
         @self.server.tool(
             name="show_all_scene_members",
             title="Reexibir todos os elementos da vista",
-            description="Remove as ocultações de membros e barras rígidas da vista nomeada ativa.",
+            description="Remove as ocultações de barras e barras rígidas da vista nomeada ativa.",
             annotations=write,
         )
         def show_all_scene_members() -> dict[str, Any]:
@@ -844,7 +844,7 @@ class LocalMcpServer:
             title="Excluir nó",
             description=(
                 "Exclui um nó pelo nome padrão retornado por list_nodes. "
-                "O nó não pode ainda estar conectado a membros."
+                "O nó não pode ainda estar conectado a barras."
             ),
             annotations=destructive,
         )
@@ -902,10 +902,10 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="create_member",
-            title="Criar membro",
+            title="Criar barra",
             description=(
-                "Cria um membro entre dois nós existentes no projeto aberto. "
-                "Consulte os nós antes de chamar esta ferramenta. O nome do membro "
+                "Cria uma barra entre dois nós existentes no projeto aberto. "
+                "Consulte os nós antes de chamar esta ferramenta. O nome da barra "
                 "é atribuído automaticamente pelo OpenSA."
             ),
             annotations=write,
@@ -918,8 +918,8 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="delete_member",
-            title="Excluir membro",
-            description="Exclui um membro pelo nome padrão retornado por list_members.",
+            title="Excluir barra",
+            description="Exclui uma barra pelo nome padrão retornado por list_members.",
             annotations=destructive,
         )
         def delete_member(member_name: str) -> dict[str, Any]:
@@ -929,10 +929,10 @@ class LocalMcpServer:
             name="delete_elements",
             title="Excluir elementos em lote",
             description=(
-                "Exclui vários nós, membros e barras rígidas em uma operação validada. "
+                "Exclui vários nós, barras e barras rígidas em uma operação validada. "
                 "Use dry_run para visualizar o plano sem alterar o modelo. Por segurança, "
                 "nós com dependências bloqueiam a operação; use cascade=true para incluir "
-                "automaticamente os membros e barras rígidas conectados."
+                "automaticamente as barras e barras rígidas conectados."
             ),
             annotations=destructive,
         )
@@ -953,9 +953,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="update_member_endpoints",
-            title="Alterar extremidades do membro",
+            title="Alterar extremidades da barra",
             description=(
-                "Altera os nós inicial e final de um membro, preservando sua identidade e propriedades."
+                "Altera os nós inicial e final de uma barra, preservando sua identidade e propriedades."
             ),
             annotations=write,
         )
@@ -968,10 +968,10 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="split_member",
-            title="Dividir membro",
+            title="Dividir barra",
             description=(
-                "Divide um membro em partes iguais, criando nós intermediários. "
-                "Informe o nome padrão do membro e o número de partes maior que 1."
+                "Divide uma barra em partes iguais, criando nós intermediários. "
+                "Informe o nome padrão da barra e o número de partes maior que 1."
             ),
             annotations=write,
         )
@@ -980,9 +980,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="join_members",
-            title="Unir membros",
+            title="Unir barras",
             description=(
-                "Une dois membros que compartilham um nó e são colineares. "
+                "Une dois barras que compartilham um nó e são colineares. "
                 "O primeiro nome é preservado."
             ),
             annotations=write,
@@ -992,8 +992,8 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="reverse_member",
-            title="Inverter membro",
-            description="Inverte a orientação de um membro, trocando seus nós inicial e final.",
+            title="Inverter barra",
+            description="Inverte a orientação de uma barra, trocando seus nós inicial e final.",
             annotations=write,
         )
         def reverse_member(member_name: str) -> dict[str, Any]:
@@ -1039,8 +1039,8 @@ class LocalMcpServer:
             name="copy_elements",
             title="Copiar elementos",
             description=(
-                "Copia nós, membros e/ou barras rígidas por uma translação. Informe listas "
-                "de nomes e um deslocamento [dx, dy, dz] nas unidades do projeto. Membros "
+                "Copia nós, barras e/ou barras rígidas por uma translação. Informe listas "
+                "de nomes e um deslocamento [dx, dy, dz] nas unidades do projeto. Barras "
                 "copiados preservam suas propriedades."
             ),
             annotations=write,
@@ -1062,9 +1062,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="copy_member_properties",
-            title="Copiar propriedades entre membros",
+            title="Copiar propriedades entre barras",
             description=(
-                "Copia propriedades de um membro de referência para um membro de destino. "
+                "Copia propriedades de uma barra de referência para uma barra de destino. "
                 "As propriedades possíveis são color, material, section, rotation, "
                 "offsets e releases. Se omitidas, todas são copiadas."
             ),
@@ -1081,7 +1081,7 @@ class LocalMcpServer:
             name="set_member_rectangular_section",
             title="Atribuir seção retangular",
             description=(
-                "Atribui uma seção retangular a um ou mais membros. Informe largura e "
+                "Atribui uma seção retangular a uma ou mais barras. Informe largura e "
                 "altura em milímetros; 15 x 30 cm corresponde a 150 x 300 mm. "
                 "O material padrão é Concreto Estrutural."
             ),
@@ -1099,9 +1099,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="set_member_properties",
-            title="Atribuir propriedades aos membros",
+            title="Atribuir propriedades aas barras",
             description=(
-                "Atribui material e seção paramétrica a um ou mais membros. "
+                "Atribui material e seção paramétrica a uma ou mais barras. "
                 "As dimensões da geometria usam milímetros; por exemplo, uma seção "
                 "retangular de 15 x 30 cm usa {b: 150, h: 300}."
             ),
@@ -1120,9 +1120,9 @@ class LocalMcpServer:
 
         @self.server.tool(
             name="update_member_properties",
-            title="Atualizar propriedades dos membros",
+            title="Atualizar propriedades das barras",
             description=(
-                "Atualiza qualquer combinação de propriedades dos membros. Informe uma lista "
+                "Atualiza qualquer combinação de propriedades das barras. Informe uma lista "
                 "de nomes e somente os campos que deseja alterar. Pode alterar material, "
                 "section, geometry, profile, rotation, releases (12 booleanos na ordem "
                 "Dxa,Dxb,Dya,Dyb,Dza,Dzb,Rxa,Rxb,Rya,Ryb,Rza,Rzb), "

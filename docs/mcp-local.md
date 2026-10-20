@@ -25,46 +25,46 @@ alterações na tela.
 
 - `get_project_summary`: consulta a quantidade de entidades e a revisão atual.
 - `list_nodes`: lista os nós do projeto aberto.
-- `list_members`: lista os membros do projeto aberto.
+- `list_members`: lista as barras do projeto aberto.
 - `list_materials`: lista os materiais disponíveis no catálogo do projeto.
 - `list_sections`: lista as famílias de seção compatíveis com um material.
 - `create_node`: cria um nó no projeto aberto usando o nome sequencial padrão do
   OpenSA (`N1`, `N2`, ...).
 - `delete_node`: exclui um nó pelo nome retornado pelo OpenSA.
 - `set_node_supports`: define as seis restrições de um nó.
-- `create_member`: cria um membro entre dois nós existentes usando o nome
+- `create_member`: cria uma barra entre dois nós existentes usando o nome
   sequencial padrão do OpenSA (`B1`, `B2`, ...).
-- `delete_member`: exclui um membro pelo nome retornado pelo OpenSA.
+- `delete_member`: exclui uma barra pelo nome retornado pelo OpenSA.
 - `set_member_rectangular_section`: atribui material e seção retangular usando
   largura e altura explícitas em milímetros.
 - `set_member_properties`: atribui material e seção paramétrica a um ou mais
-  membros. As dimensões da seção usam milímetros; uma seção de 15 x 30 cm usa
+  barras. As dimensões da seção usam milímetros; uma seção de 15 x 30 cm usa
   `{ "b": 150, "h": 300 }`.
-- `delete_elements`: exclui nós, membros e barras rígidas em lote. Use
+- `delete_elements`: exclui nós, barras e barras rígidas em lote. Use
   `dry_run` para revisar o plano e `cascade` para incluir automaticamente as
   dependências conectadas aos nós selecionados.
 - `clear_actions`: remove todas as cargas de um ou vários elementos, usando
-  `target` para um elemento ou `targets` para uma lista de nós e membros. O
+  `target` para um elemento ou `targets` para uma lista de nós e barras. O
   filtro `load_case` é opcional.
 - `list_drawing_references`: lista as referências de desenho importadas com
   identificador, plano, origem, visibilidade e contagem de entidades.
 - `update_drawing_reference`: altera a origem, o plano ou a visibilidade de uma
   referência importada.
 - `delete_drawing_reference`: remove uma referência importada do projeto.
-- `get_scene_views`: lista as vistas persistentes, a vista ativa e os membros
+- `get_scene_views`: lista as vistas persistentes, a vista ativa e as barras
   ocultos em cada vista.
 - `create_scene_view`, `select_scene_view`, `rename_scene_view` e
   `delete_scene_view`: gerencia vistas nomeadas. `Completo` é fixa e não pode
   ser renomeada ou removida.
-- `set_scene_members_visibility`: oculta ou reexibe membros e barras rígidas na
+- `set_scene_members_visibility`: oculta ou reexibe barras e barras rígidas na
   vista nomeada ativa. Selecione uma vista nomeada antes; `Completo` mostra tudo.
-- `show_all_scene_members`: reexibe todos os membros e barras rígidas da vista ativa.
+- `show_all_scene_members`: reexibe todas as barras e barras rígidas da vista ativa.
 
 Com essas ferramentas, uma IA pode modelar uma estrutura passo a passo:
 
 1. consultar materiais e seções;
 2. criar os nós nas coordenadas do projeto;
-3. criar os membros entre os nós;
+3. criar as barras entre os nós;
 4. atribuir materiais e seções;
 5. definir os apoios.
 
@@ -78,7 +78,7 @@ O servidor também expõe o fluxo da seção Análise do OpenSA:
 - `run_analysis`: processa todas as combinações ou somente as informadas;
 - `list_analysis_results`: lista os resultados disponíveis na revisão atual;
 - `get_node_analysis_results`: consulta deslocamentos, rotações e reações nodais;
-- `get_member_analysis_results`: consulta esforços, deslocamentos e, opcionalmente, as 21 amostras de cada membro;
+- `get_member_analysis_results`: consulta esforços, deslocamentos e, opcionalmente, as 21 amostras de cada barra;
 - `get_support_reactions`: consulta as reações dos nós apoiados;
 - `set_analysis_view`: seleciona a combinação e o diagrama exibido;
 - `set_analysis_diagrams_visible`: mostra ou oculta os diagramas na cena.
@@ -94,7 +94,7 @@ invalida os resultados anteriores, exigindo novo processamento.
 ### Exclusão em lote
 
 `delete_elements` valida todos os nomes e dependências antes de modificar o
-modelo. Por padrão, um nó conectado a um membro ou barra rígida bloqueia a
+modelo. Por padrão, um nó conectado a uma barra ou barra rígida bloqueia a
 operação. Com `cascade: true`, essas dependências são incluídas no lote. Ações
 aplicadas aos elementos removidos também são eliminadas, e `dry_run: true`
 retorna o plano sem fazer alterações.

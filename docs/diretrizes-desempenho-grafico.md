@@ -8,7 +8,7 @@ otimizações gráficas.
 ## Objetivo
 
 Manter a modelagem estrutural correta, legível e interativa mesmo quando o
-projeto possuir muitos nós, membros, rótulos, ações ou resultados.
+projeto possuir muitos nós, barras, rótulos, ações ou resultados.
 
 Desempenho não significa remover informação indiscriminadamente. Significa
 entregar primeiro a informação mais importante e reduzir o custo das
@@ -35,7 +35,7 @@ previsível de visibilidade ou um controle explícito para recuperá-lo.
 Mesmo em cenas densas, devem permanecer disponíveis:
 
 - a geometria e a conectividade do modelo;
-- a distinção visual entre nós, membros, apoios, ações e resultados;
+- a distinção visual entre nós, barras, apoios, ações e resultados;
 - a seleção e a identificação do elemento sob o cursor;
 - a edição do modelo sem exigir reconstrução completa da cena;
 - o contexto espacial mínimo, como orientação e referência de coordenadas;
