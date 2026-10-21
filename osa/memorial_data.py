@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from math import sqrt
 
 from osa.sections.contours import polygon_properties, w_contour_points
 from osa.verification.elements import VerificationElement, verification_elements
-from osa.verification.restraints import AnalyticalRestraints
+from osa.verification.restraints import restraint_lengths
+
+logger = logging.getLogger(__name__)
 
 
 def _plastic_modulus(points, axis: int, centroid: float) -> float:
@@ -48,7 +51,7 @@ def _w_properties(member) -> dict[str, float]:
     area_mm2, cy_mm, cz_mm, iy_mm4, iz_mm4, _ = polygon_properties(points)
     area = area_mm2 / 100.0
     iy, iz = iy_mm4 / 1e4, iz_mm4 / 1e4
-    d_cm, bf_cm, tw_cm, tf_cm, radius_cm = (value / 10.0 for value in (d, bf, tw, tf, radius))
+    d_cm, bf_cm, tw_cm, tf_cm = (value / 10.0 for value in (d, bf, tw, tf))
     torsion = (2 * bf_cm * tf_cm**3 + (d_cm - 2 * tf_cm) * tw_cm**3) / 3.0
     warping = iz * (d_cm - tf_cm) ** 2 / 4.0
     return {
@@ -75,23 +78,40 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         model.verification_element_names.get(member.name, "")
     )
     geometry = _w_properties(member) if (member.section or "") == "W Laminado" else {}
+    group_members = tuple(group.get("members", ())) if group else tuple(member_names)
+    selected_result = next((
+        model.verification_results.get(element.key)
+        for element in verification_elements(model)
+        if set(element.member_names) == set(group_members)
+    ), None)
+    checks = (selected_result or {}).get("checks", {})
+    compression_parameters = (
+        (checks.get("axial_compression") or {}).get("parameters") or {}
+    )
     lengths = {"Ly": None, "Lz": None, "Lt": None, "Lb": None}
+    cached_lengths = {
+        name: compression_parameters.get(f"{name}_cm")
+        for name in lengths
+    }
     results = getattr(model, "analysis_results", ())
-    if geometry and results:
+    if all(value is not None for value in cached_lengths.values()):
+        lengths = cached_lengths
+    elif geometry and results:
         try:
             element = VerificationElement(
                 f"memorial:{'|'.join(member.name for member in members)}",
                 element_name or member.name,
                 tuple(item.name for item in members),
             )
-            restraint = AnalyticalRestraints(model).lengths(
+            restraint = restraint_lengths(
+                model,
                 element,
                 results,
                 {"Iy": geometry["Iz"], "tw": geometry["tw"] / 10.0},
             )
             lengths = {name: restraint.lengths_m[name] * 100.0 for name in lengths}
         except Exception:
-            pass
+            logger.exception("Não foi possível determinar os comprimentos de %s no memorial.", element.name)
     material_values = model.materials.get(member.material, ())
 
     def value(key: str, scale: float = 1.0):
@@ -111,12 +131,6 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
     effective_area_cm2 = (
         net_area_factor * net_area_cm2 if net_area_cm2 is not None else None
     )
-    group_members = tuple(group.get("members", ())) if group else tuple(member_names)
-    selected_result = next((
-        model.verification_results.get(element.key)
-        for element in verification_elements(model)
-        if set(element.member_names) == set(group_members)
-    ), None)
     return {
         "element_name": element_name,
         "members": group_members,
@@ -141,6 +155,30 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
             "An_cm2": net_area_cm2,
             "Ct": net_area_factor,
             "Ae_cm2": effective_area_cm2,
-            "verification": selected_result,
+            "verification": checks.get("axial_tension", selected_result),
+        },
+        "axial_compression": {
+            "verification": checks.get("axial_compression"),
+        },
+        "flexion_y": {
+            "verification": checks.get("flexion_y"),
+        },
+        "flexion_z": {
+            "verification": checks.get("flexion_z"),
+        },
+        "shear_y": {
+            "verification": checks.get("shear_y"),
+        },
+        "shear_z": {
+            "verification": checks.get("shear_z"),
+        },
+        "flexao_obliqua": {
+            "verification": checks.get("flexao_obliqua"),
+        },
+        "flexotracao": {
+            "verification": checks.get("flexotracao"),
+        },
+        "flexocompressao": {
+            "verification": checks.get("flexocompressao"),
         },
     }

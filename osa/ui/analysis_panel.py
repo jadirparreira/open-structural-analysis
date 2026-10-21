@@ -150,7 +150,7 @@ class VerificationPanel(QFrame):
         self.status.setText("Verificando estrutura…")
         self.status.setProperty("state", "active")
         ProcessingPanel._refresh_style(self.status)
-        self.summary.setText("Análise e verificação da tração axial dos perfis W em andamento.")
+        self.summary.setText("Verificações dos elementos com rotina disponível em andamento.")
         self.show()
         self.reposition()
         self.raise_()
@@ -164,7 +164,8 @@ class VerificationPanel(QFrame):
             f"Com rotina: {summary['with_routine']}\n"
             f"Sem rotina: {summary['without_routine']}\n"
             f"Aprovados: {summary['approved']}\n"
-            f"Reprovados: {summary['rejected']}"
+            f"Reprovados: {summary['rejected']}\n"
+            f"Não verificados: {summary['unverified']}"
         )
         self.close_button.show()
         self.reposition()

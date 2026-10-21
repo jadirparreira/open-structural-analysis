@@ -49,6 +49,7 @@ class StructuralModel:
         self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
         self.verification_results: dict[str, dict[str, object]] = {}
+        self._restraint_lengths_cache = None
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
         self.scene_view_hidden_rigid_bars: dict[str, set[str]] = {"Completo": set()}
@@ -63,6 +64,7 @@ class StructuralModel:
         self.revision += 1
         self.analysis_results.clear()
         self.verification_results.clear()
+        self._restraint_lengths_cache = None
         self.verification_element_names = {
             name: value for name, value in self.verification_element_names.items() if name in self.bars
         }

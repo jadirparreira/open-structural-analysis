@@ -423,7 +423,7 @@ class PropertyPanel(QFrame):
                         f"{element_result['utilization']:.2%}".replace(".", ",")
                     )
                     self._verification_result_values["critical_check"].setText(
-                        element_result.get("critical_check", "N/D")
+                        str(element_result.get("critical_check", "N/D")).split(" — ", 1)[0]
                     )
                     self._verification_result_values["critical_combination"].setText(
                         element_result.get("critical_combination", "N/D")

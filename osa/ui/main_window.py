@@ -10,8 +10,6 @@ from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.services import AnalysisService, ResultService
-from osa.verification.elements import verification_elements
-from osa.verification.w_rolled import verify_w_tension
 from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
@@ -58,6 +56,7 @@ from .section_panel import (
 )
 from .split_member_dialog import SplitMemberDialog
 from .window_frame import TitleBar, WindowFrame
+from .verification_worker import VerificationWorker
 
 
 class MainWindow(QMainWindow):
@@ -92,6 +91,10 @@ class MainWindow(QMainWindow):
         self.analysis_service = AnalysisService(self.model, PyniteAdapter())
         self._analysis_thread: QThread | None = None
         self._analysis_worker: AnalysisWorker | None = None
+        self._verification_thread: QThread | None = None
+        self._verification_worker: VerificationWorker | None = None
+        self._verification_revision: int | None = None
+        self._verification_result_ids: tuple[int, ...] | None = None
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
         self._project_loading_path: Path | None = None
@@ -102,7 +105,6 @@ class MainWindow(QMainWindow):
         self._project_scene_timer.timeout.connect(self._advance_project_scene)
         self._project_loading_action_states: list[tuple[QAction, bool]] = []
         self._analysis_revision: int | None = None
-        self._verify_after_analysis = False
         self.command_session = CommandSession(self.model_service)
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
@@ -341,7 +343,7 @@ class MainWindow(QMainWindow):
         self.home.manual_requested.connect(self.open_manual)
         self.show_home()
 
-    def process_analysis(self, *, for_verification: bool = False) -> None:
+    def process_analysis(self, checked: bool = False) -> None:
         """Run PyNite in the background after the progress card is painted."""
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
@@ -355,8 +357,7 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
         self.action_service.ensure_default_combinations()
         self.refresh_analysis_palette()
-        if not for_verification:
-            self.processing_panel.start()
+        self.processing_panel.start()
         self._analysis_revision = self.model.revision
         snapshot = copy.deepcopy(self.model)
         thread = QThread(self)
@@ -375,85 +376,85 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def verify_model(self) -> None:
-        """Analyze when needed, then run the implemented W axial tension check."""
-        self.verification_panel.start()
-        self.processing_panel.hide()
+        """Run member checks only when current analysis results are available."""
+        if self._verification_thread is not None and self._verification_thread.isRunning():
+            return
         results_are_current = bool(self.model.analysis_results) and all(
             result.model_revision == self.model.revision
             for result in self.model.analysis_results
         )
-        if results_are_current:
-            self._run_member_verifications()
+        if not results_are_current:
             return
-        self._verify_after_analysis = True
-        self.process_analysis(for_verification=True)
+        self.verification_panel.start()
+        self._verification_revision = self.model.revision
+        self._verification_result_ids = tuple(id(result) for result in self.model.analysis_results)
+        restraint_cache = self.model._restraint_lengths_cache
+        self.model._restraint_lengths_cache = None
+        try:
+            snapshot = copy.deepcopy(self.model)
+        except Exception as error:  # noqa: BLE001
+            self._verification_revision = None
+            self._verification_result_ids = None
+            self.verification_panel.fail(str(error) or "não foi possível preparar o modelo para verificação")
+            return
+        finally:
+            self.model._restraint_lengths_cache = restraint_cache
+        thread = QThread(self)
+        worker = VerificationWorker(snapshot)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._verification_finished)
+        worker.failed.connect(self._verification_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._verification_thread_finished)
+        self._verification_thread = thread
+        self._verification_worker = worker
+        thread.start()
 
-    def _run_member_verifications(self) -> None:
-        results = {}
-        elements = verification_elements(self.model)
-        elements_with_routine = [
-            element for element in elements
-            if all(
-                name in self.model.bars and self.model.bars[name].section == "W Laminado"
-                for name in element.member_names
+    def _verification_finished(self, payload: object) -> None:
+        current_result_ids = tuple(id(result) for result in self.model.analysis_results)
+        if (self._verification_revision != self.model.revision
+                or self._verification_result_ids != current_result_ids):
+            self.verification_panel.fail(
+                "O modelo foi alterado durante a verificação. Execute as verificações novamente."
             )
-        ]
-        for element in elements_with_routine:
-            results[element.key] = verify_w_tension(element, self.model, self.model.analysis_results)
-        approved = sum(
-            result.get("status") == "checked" and result.get("utilization", 2.0) <= 1.0
-            for result in results.values()
-        )
-        rejected = sum(
-            result.get("status") == "checked" and result.get("utilization", 0.0) > 1.0
-            for result in results.values()
-        )
-        self.model.verification_results = results
+            return
+        self.model.verification_results = payload["results"]
         self.refresh_scene()
         self.refresh_selected_property_panel(self.palette.active_group)
-        self.verification_panel.succeed({
-            "total": len(elements),
-            "with_routine": len(elements_with_routine),
-            "without_routine": len(elements) - len(elements_with_routine),
-            "approved": approved,
-            "rejected": rejected,
-        })
+        self.verification_panel.succeed(payload["summary"])
         self.history.append(
             "> <b>Verificar modelo</b> "
-            f"<span style='color:#57606a'>({len(elements_with_routine)} elemento(s) W com rotina de tração axial)</span>"
+            f"<span style='color:#57606a'>({payload['summary']['with_routine']} elemento(s) W verificado(s))</span>"
         )
+
+    def _verification_failed(self, message: str) -> None:
+        self.verification_panel.fail(message)
+
+    def _verification_thread_finished(self) -> None:
+        thread = self._verification_thread
+        self._verification_worker = None
+        self._verification_thread = None
+        self._verification_revision = None
+        self._verification_result_ids = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _analysis_finished(self, results: object) -> None:
         if self._analysis_revision != self.model.revision:
-            if self._verify_after_analysis:
-                self.verification_panel.fail(
-                    "O modelo foi alterado durante a análise. Execute Verificar modelo novamente."
-                )
-                self.processing_panel.hide()
-            else:
-                self.processing_panel.fail(
-                    "O modelo foi alterado durante a análise. Execute o processamento novamente."
-                )
-            self._verify_after_analysis = False
+            self.processing_panel.fail(
+                "O modelo foi alterado durante a análise. Execute o processamento novamente."
+            )
             return
         self.model.analysis_results = list(results)
         self.refresh_analysis_palette()
         self.refresh_selected_property_panel(self.palette.active_group)
-        if self._verify_after_analysis:
-            self._verify_after_analysis = False
-            self.processing_panel.hide()
-            self._run_member_verifications()
-        else:
-            self.processing_panel.succeed(len(self.model.analysis_results))
+        self.processing_panel.succeed(len(self.model.analysis_results))
 
     def _analysis_failed(self, message: str) -> None:
-        verification_requested = self._verify_after_analysis
-        self._verify_after_analysis = False
-        if verification_requested:
-            self.verification_panel.fail(message)
-            self.processing_panel.hide()
-        else:
-            self.processing_panel.fail(message)
+        self.processing_panel.fail(message)
 
     def _analysis_thread_finished(self) -> None:
         thread = self._analysis_thread
@@ -2789,6 +2790,7 @@ class MainWindow(QMainWindow):
 
     def refresh_analysis_palette(self) -> None:
         names = tuple(result.load_reference for result in ResultService(self.model).current())
+        self.verification_top_palette.verify_button.setEnabled(bool(names))
         if not names:
             # Editing the model invalidates every analysis result.  Clear the
             # remembered result view as well, otherwise reopening the Analysis

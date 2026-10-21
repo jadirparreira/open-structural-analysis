@@ -4449,9 +4449,20 @@ class StructureScene(QWidget):
                 name = name or element.member_names[0]
             else:
                 name = group_names.get(element.member_names, "") or ", ".join(element.member_names)
-            result = getattr(self._model, "verification_results", {}).get(element.key, {})
-            utilization = result.get("utilization")
-            rate = f"{float(utilization):.0%}" if utilization is not None else "N/D"
+            result = getattr(self._model, "verification_results", {}).get(element.key)
+            if not result:
+                rate = "N/D"
+            elif result.get("status") == "not_applicable":
+                rate = "N/A"
+            elif result.get("status") == "checked":
+                utilization = result.get("utilization")
+                rate = (
+                    f"{float(utilization):.0%}"
+                    if utilization is not None and float(utilization) <= 1.0
+                    else "X"
+                )
+            else:
+                rate = "X"
             parts = ([name] if show_name else []) + ([rate] if show_utilization else [])
             visible_members = [
                 member_name for member_name in element.member_names
