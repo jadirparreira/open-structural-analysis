@@ -450,7 +450,8 @@ class PropertyPanel(QFrame):
             self._show_analysis(kind, name)
         elif kind == "node" and not verification_mode:
             node = self.window.model.nodes[name]
-            self.layout.insertWidget(4, self.coordinates_title)
+            form_index = self.layout.indexOf(self.form)
+            self.layout.insertWidget(form_index, self.coordinates_title)
             self.coordinates_title.show()
             for axis, value in zip(("X", "Y", "Z"), (node.x, node.y, node.z)):
                 field = CompactDoubleSpinBox()
@@ -471,7 +472,8 @@ class PropertyPanel(QFrame):
                 axis_label = QLabel(axis)
                 axis_label.setObjectName("propertySection")
                 self.form.addRow(axis_label, self._editable_unit_box(field, "m"))
-            self.layout.insertWidget(6, self.supports_title)
+            form_index = self.layout.indexOf(self.form)
+            self.layout.insertWidget(form_index + 1, self.supports_title)
             self.supports_title.show()
             supports = QWidget()
             self._supports_widget = supports
@@ -513,7 +515,7 @@ class PropertyPanel(QFrame):
                 row.addWidget(checkbox)
                 row.addWidget(value_box, 1)
                 supports_layout.addLayout(row)
-            self.layout.insertWidget(7, supports)
+            self.layout.insertWidget(form_index + 2, supports)
         elif not verification_mode:
             bar = self.window.model.bars[name]
             if not self._creation_mode:
