@@ -16,6 +16,60 @@ from osa.verification.w_rolled import (
     verify_w_shear_z,
     verify_w_tension,
 )
+from osa.verification.i_rolled import (
+    verify_i_compression,
+    verify_i_flexion_y,
+    verify_i_flexion_z,
+    verify_i_flexocompression,
+    verify_i_flexotension,
+    verify_i_oblique_bending,
+    verify_i_shear_y,
+    verify_i_shear_z,
+    verify_i_tension,
+)
+from osa.verification.u_rolled import (
+    verify_u_compression,
+    verify_u_flexion_y,
+    verify_u_flexion_z,
+    verify_u_flexocompression,
+    verify_u_flexotension,
+    verify_u_oblique_bending,
+    verify_u_shear_y,
+    verify_u_shear_z,
+    verify_u_tension,
+)
+
+
+_ROUTINES = {
+    "W Laminado": (
+        verify_w_tension, verify_w_compression,
+        verify_w_flexion_y, verify_w_flexion_z,
+        verify_w_shear_y, verify_w_shear_z,
+        verify_w_oblique_bending, verify_w_flexotension,
+        verify_w_flexocompression,
+    ),
+    "I Laminado": (
+        verify_i_tension, verify_i_compression,
+        verify_i_flexion_y, verify_i_flexion_z,
+        verify_i_shear_y, verify_i_shear_z,
+        verify_i_oblique_bending, verify_i_flexotension,
+        verify_i_flexocompression,
+    ),
+    "U Laminado": (
+        verify_u_tension, verify_u_compression,
+        verify_u_flexion_y, verify_u_flexion_z,
+        verify_u_shear_y, verify_u_shear_z,
+        verify_u_oblique_bending, verify_u_flexotension,
+        verify_u_flexocompression,
+    ),
+    "U Inclinado Laminado": (
+        verify_u_tension, verify_u_compression,
+        verify_u_flexion_y, verify_u_flexion_z,
+        verify_u_shear_y, verify_u_shear_z,
+        verify_u_oblique_bending, verify_u_flexotension,
+        verify_u_flexocompression,
+    ),
+}
 
 
 def verify_model(model) -> dict:
@@ -25,24 +79,30 @@ def verify_model(model) -> dict:
     elements_with_routine = [
         element for element in elements
         if all(
-            name in model.bars and model.bars[name].section == "W Laminado"
+            name in model.bars and model.bars[name].section in _ROUTINES
             for name in element.member_names
         )
+        and len({model.bars[name].section for name in element.member_names}) == 1
     ]
     for element in elements_with_routine:
-        tension = verify_w_tension(element, model, model.analysis_results)
-        compression = verify_w_compression(element, model, model.analysis_results)
-        flexion_y = verify_w_flexion_y(element, model, model.analysis_results)
-        flexion_z = verify_w_flexion_z(element, model, model.analysis_results)
-        shear_y = verify_w_shear_y(element, model, model.analysis_results)
-        shear_z = verify_w_shear_z(element, model, model.analysis_results)
-        oblique_bending = verify_w_oblique_bending(
+        (verify_tension, verify_compression, verify_flexion_y, verify_flexion_z,
+         verify_shear_y, verify_shear_z, verify_oblique_bending,
+         verify_flexotension, verify_flexocompression) = _ROUTINES[
+            model.bars[element.member_names[0]].section
+        ]
+        tension = verify_tension(element, model, model.analysis_results)
+        compression = verify_compression(element, model, model.analysis_results)
+        flexion_y = verify_flexion_y(element, model, model.analysis_results)
+        flexion_z = verify_flexion_z(element, model, model.analysis_results)
+        shear_y = verify_shear_y(element, model, model.analysis_results)
+        shear_z = verify_shear_z(element, model, model.analysis_results)
+        oblique_bending = verify_oblique_bending(
             element, model, model.analysis_results, flexion_y, flexion_z,
         )
-        flexotension = verify_w_flexotension(
+        flexotension = verify_flexotension(
             element, model, model.analysis_results, tension, flexion_y, flexion_z,
         )
-        flexocompression = verify_w_flexocompression(
+        flexocompression = verify_flexocompression(
             element, model, model.analysis_results, compression, flexion_y, flexion_z,
         )
         checks = (

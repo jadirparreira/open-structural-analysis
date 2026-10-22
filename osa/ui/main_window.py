@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
         self.verification_panel.succeed(payload["summary"])
         self.history.append(
             "> <b>Verificar modelo</b> "
-            f"<span style='color:#57606a'>({payload['summary']['with_routine']} elemento(s) W verificado(s))</span>"
+            f"<span style='color:#57606a'>({payload['summary']['with_routine']} elemento(s) verificado(s))</span>"
         )
 
     def _verification_failed(self, message: str) -> None:

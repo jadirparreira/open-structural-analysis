@@ -477,10 +477,10 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             axial_tension_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de tração axial atende somente a perfis W Laminados."
+                "A rotina atual de tração axial atende somente a perfis W, I e U Laminados."
                 "</p>"
             )
         elif verification.get("status") == "not_checked":
@@ -521,34 +521,85 @@ class CalculationMemorialDialog(QDialog):
                 if lambda0 <= 1.5 else
                 r"\dfrac{0,877}{\lambda_0^2}"
             )
+            u_section = memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+            flange_width_expression = r"b_f" if u_section else r"\dfrac{b_f}{2}"
+            flange_width_input = (
+                decimal(p.get("flange_width_mm")) if u_section else
+                decimal(2.0 * p.get("flange_width_mm"))
+            )
+            flange_piece_count = 2 if u_section else 4
+            if u_section:
+                axial_buckling_lines = (
+                    *equation_triplet(
+                        r"N_{ey}", r"\dfrac{\pi^2 E I_y}{L_y^2}",
+                        rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iy_cm4'))}}}"
+                        rf"{{{decimal(p.get('Ly_cm'))}^2}}",
+                        decimal(p.get("Ney_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_{ez}", r"\dfrac{\pi^2 E I_z}{L_z^2}",
+                        rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iz_cm4'))}}}"
+                        rf"{{{decimal(p.get('Lz_cm'))}^2}}",
+                        decimal(p.get("Nez_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_{et}", r"\dfrac{\dfrac{\pi^2 E C_w}{L_t^2}+G I_t}{r_0^2}",
+                        rf"\dfrac{{\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Cw_cm6'))}}}"
+                        rf"{{{lt_latex}^2}}+{decimal(p.get('G_kn_cm2'))} \cdot {decimal(p.get('It_cm4'))}}}"
+                        rf"{{{decimal(p.get('r0_cm'))}^2}}",
+                        decimal(p.get("Net_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"H", r"1-\dfrac{x_0^2}{r_0^2}",
+                        rf"1-\dfrac{{{decimal(p.get('x0_cm'))}^2}}{{{decimal(p.get('r0_cm'))}^2}}",
+                        decimal(p.get("H_flexotorsion")),
+                    ),
+                    *equation_triplet(
+                        r"N_{eyt}",
+                        r"\dfrac{N_{ey}+N_{et}}{2H}\left(1-\sqrt{1-\dfrac{4N_{ey}N_{et}H}{(N_{ey}+N_{et})^2}}\right)",
+                        rf"\dfrac{{{decimal(p.get('Ney_kn'))}+{decimal(p.get('Net_kn'))}}}"
+                        rf"{{2\cdot {decimal(p.get('H_flexotorsion'))}}}"
+                        rf"\left(1-\sqrt{{1-\dfrac{{4\cdot {decimal(p.get('Ney_kn'))}"
+                        rf"\cdot {decimal(p.get('Net_kn'))}\cdot {decimal(p.get('H_flexotorsion'))}}}"
+                        rf"{{({decimal(p.get('Ney_kn'))}+{decimal(p.get('Net_kn'))})^2}}}}\right)",
+                        decimal(p.get("Neyt_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_e", r"\min(N_{ez};N_{eyt})",
+                        rf"\min({decimal(p.get('Nez_kn'))};{decimal(p.get('Neyt_kn'))})",
+                        decimal(p.get("Ne_kn")), r"kN",
+                    ),
+                )
+            else:
+                axial_buckling_lines = (
+                    *equation_triplet(
+                        r"N_{ey}", r"\dfrac{\pi^2 E I_y}{L_y^2}",
+                        rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iy_cm4'))}}}"
+                        rf"{{{decimal(p.get('Ly_cm'))}^2}}",
+                        decimal(p.get("Ney_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_{ez}", r"\dfrac{\pi^2 E I_z}{L_z^2}",
+                        rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iz_cm4'))}}}"
+                        rf"{{{decimal(p.get('Lz_cm'))}^2}}",
+                        decimal(p.get("Nez_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_{et}", r"\dfrac{\dfrac{\pi^2 E C_w}{L_t^2}+G I_t}{r_0^2}",
+                        rf"\dfrac{{\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Cw_cm6'))}}}"
+                        rf"{{{lt_latex}^2}}+{decimal(p.get('G_kn_cm2'))} \cdot {decimal(p.get('It_cm4'))}}}"
+                        rf"{{{decimal(p.get('r0_cm'))}^2}}",
+                        decimal(p.get("Net_kn")), r"kN",
+                    ),
+                    *equation_triplet(
+                        r"N_e", r"\min(N_{ey};N_{ez};N_{et})",
+                        rf"\min({decimal(p.get('Ney_kn'))};{decimal(p.get('Nez_kn'))};{decimal(p.get('Net_kn'))})",
+                        decimal(p.get("Ne_kn")), r"kN",
+                    ),
+                )
             compression_steps = [
                 (
-                    (
-                        *equation_triplet(
-                            r"N_{ey}", r"\dfrac{\pi^2 E I_y}{L_y^2}",
-                            rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iy_cm4'))}}}"
-                            rf"{{{decimal(p.get('Ly_cm'))}^2}}",
-                            decimal(p.get("Ney_kn")), r"kN",
-                        ),
-                        *equation_triplet(
-                            r"N_{ez}", r"\dfrac{\pi^2 E I_z}{L_z^2}",
-                            rf"\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Iz_cm4'))}}}"
-                            rf"{{{decimal(p.get('Lz_cm'))}^2}}",
-                            decimal(p.get("Nez_kn")), r"kN",
-                        ),
-                        *equation_triplet(
-                            r"N_{et}", r"\dfrac{\dfrac{\pi^2 E C_w}{L_t^2}+G I_t}{r_0^2}",
-                            rf"\dfrac{{\dfrac{{\pi^2 \cdot {decimal(p.get('E_kn_cm2'))} \cdot {decimal(p.get('Cw_cm6'))}}}"
-                            rf"{{{lt_latex}^2}}+{decimal(p.get('G_kn_cm2'))} \cdot {decimal(p.get('It_cm4'))}}}"
-                            rf"{{{decimal(p.get('r0_cm'))}^2}}",
-                            decimal(p.get("Net_kn")), r"kN",
-                        ),
-                        *equation_triplet(
-                            r"N_e", r"\min(N_{ey};N_{ez};N_{et})",
-                            rf"\min({decimal(p.get('Ney_kn'))};{decimal(p.get('Nez_kn'))};{decimal(p.get('Net_kn'))})",
-                            decimal(p.get("Ne_kn")), r"kN",
-                        ),
-                    ),
+                    axial_buckling_lines,
                     "",
                 ),
                 (
@@ -613,8 +664,8 @@ class CalculationMemorialDialog(QDialog):
                 (
                     (
                         *equation_triplet(
-                            r"b_{f,aba}", r"\dfrac{b_f}{2}",
-                            rf"\dfrac{{{decimal(2.0 * p.get('flange_width_mm'))}}}{{2}}",
+                            r"b_{f,aba}", flange_width_expression,
+                            flange_width_input,
                             decimal(p.get("flange_width_mm")), r"mm",
                         ),
                         *equation_triplet(
@@ -659,10 +710,10 @@ class CalculationMemorialDialog(QDialog):
                 (
                     equation_triplet(
                         r"A_{ef}",
-                        r"A_g-\dfrac{(d_i-d_{ef})\cdot t_w+4\cdot(b_{f,aba}-b_{ef,f})\cdot t_f}{100}",
+                        rf"A_g-\dfrac{{(d_i-d_{{ef}})\cdot t_w+{flange_piece_count}\cdot(b_{{f,aba}}-b_{{ef,f}})\cdot t_f}}{{100}}",
                         rf"{decimal(p.get('Ag_cm2'))}-\dfrac{{"
                         rf"({decimal(p.get('web_width_mm'))}-{decimal(p.get('web_effective_mm'))})"
-                        rf"\cdot {decimal(p.get('tw_mm'))}+4\cdot"
+                        rf"\cdot {decimal(p.get('tw_mm'))}+{flange_piece_count}\cdot"
                         rf"({decimal(p.get('flange_width_mm'))}-{decimal(p.get('flange_effective_mm'))})"
                         rf"\cdot {decimal(p.get('tf_mm'))}}}{{100}}",
                         decimal(p.get("Aef_cm2")), r"cm^2",
@@ -695,10 +746,10 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             axial_compression_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de compressão axial atende somente a perfis W Laminados.</p>"
+                "A rotina atual de compressão axial atende somente a perfis W, I e U Laminados.</p>"
             )
         elif compression_verification.get("status") == "not_checked":
             axial_compression_content += (
@@ -720,7 +771,10 @@ class CalculationMemorialDialog(QDialog):
         flexion_y_content = (
             '<p style="margin:22px 0 12px;color:#57606a;font-weight:700">Flexão em Y — ABNT NBR 8800:2024, 5.4 e Anexo D</p>'
         )
-        if flexion_verification.get("status") == "checked":
+        if (
+            flexion_verification.get("status") == "checked"
+            and not (flexion_verification.get("parameters") or {}).get("slender_web_rejected")
+        ):
             p = flexion_parameters
             def interpolate_mn(lambda_value: float, lambda_p: float, lambda_r: float,
                                mcr: float, label: str) -> tuple[str, str]:
@@ -820,10 +874,16 @@ class CalculationMemorialDialog(QDialog):
                                   rf"\dfrac{{{decimal(p.get('Mn_flt_kn_cm'))}}}{{{decimal(p.get('gamma_a1'))}}}",
                                   decimal(p.get("Mrd_flt_nominal_kn_cm")), r"kN\cdot cm"),
             )
+            u_flex_y = memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+            lambda_flm_formula_y = r"\dfrac{b_f}{t_f}" if u_flex_y else r"\dfrac{b_f}{2t_f}"
+            lambda_flm_substitution_y = (
+                rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{{decimal(p.get('tf_cm'))}}}"
+                if u_flex_y else
+                rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{2\cdot {decimal(p.get('tf_cm'))}}}"
+            )
             flm_lines = (
-                *equation_triplet(r"\lambda_{FLM}", r"\dfrac{b_f}{2t_f}",
-                                  rf"\dfrac{{{decimal(p.get('bf_cm'))}}}"
-                                  rf"{{2\cdot {decimal(p.get('tf_cm'))}}}",
+                *equation_triplet(r"\lambda_{FLM}", lambda_flm_formula_y,
+                                  lambda_flm_substitution_y,
                                   decimal(p.get("lambda_flm"))),
                 *equation_triplet(r"\lambda_{p,FLM}", r"0,38\sqrt{\dfrac{E}{f_y}}",
                                   rf"0,38\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
@@ -852,6 +912,9 @@ class CalculationMemorialDialog(QDialog):
                 *equation_triplet(r"\lambda_{r,FLA}", r"5,70\sqrt{\dfrac{E}{f_y}}",
                                   rf"5,70\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
                                   decimal(p.get("lambda_r_fla"))),
+                *equation_triplet(r"M_{r,FLA}", r"W_y\cdot f_y",
+                                  rf"{decimal(p.get('Wy_cm3'))}\cdot {decimal(p.get('fy_kn_cm2'))}",
+                                  decimal(p.get("Mr_fla_kn_cm")), r"kN\cdot cm"),
                 *equation_triplet(r"M_{n,FLA}", fla_mn_formula, fla_mn_sub,
                                   decimal(p.get("Mn_fla_kn_cm")), r"kN\cdot cm"),
                 *equation_triplet(r"M_{Rd,FLA}", r"\dfrac{M_{n,FLA}}{\gamma_{a1}}",
@@ -895,10 +958,38 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_lines)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif (
+            flexion_verification.get("status") == "checked"
+            and (flexion_verification.get("parameters") or {}).get("slender_web_rejected")
+        ):
+            p = flexion_verification.get("parameters", {})
+            slenderness_lines = (
+                *equation_triplet(
+                    r"\lambda_{FLA}", r"\dfrac{h}{t_w}",
+                    rf"\dfrac{{{decimal(p.get('di_cm'))}}}{{{decimal(p.get('tw_cm'))}}}",
+                    decimal(p.get("lambda_fla")),
+                ),
+                *equation_triplet(
+                    r"\lambda_{r,FLA}", r"5,70\sqrt{\dfrac{E}{f_y}}",
+                    rf"5,70\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
+                    decimal(p.get("lambda_r_fla")),
+                ),
+                *equation_triplet(
+                    r"\eta_{FLA}", r"\dfrac{\lambda_{FLA}}{\lambda_{r,FLA}}\leq 1,0",
+                    rf"\dfrac{{{decimal(p.get('lambda_fla'))}}}{{{decimal(p.get('lambda_r_fla'))}}}",
+                    rf"{decimal(p.get('slenderness_ratio'), 2)}\quad\mathbf{{REPROVADO}}",
+                ),
+            )
+            flexion_y_content += (
+                f'{spaced_equations(slenderness_lines)}'
+                '<p style="margin:5px 0;color:#57606a">'
+                'A seção excede o limite de esbeltez da alma. O Anexo E da ABNT NBR 8800:2024 '
+                'não inclui perfis U laminados.</p>'
+            )
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             flexion_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de flexão em Y atende somente a perfis W Laminados.</p>"
+                "A rotina atual de flexão em Y atende somente a perfis W, I e U Laminados.</p>"
             )
         elif flexion_verification.get("status") == "not_checked":
             flexion_y_content += (
@@ -916,79 +1007,151 @@ class CalculationMemorialDialog(QDialog):
                 "Execute Verificar modelo após a análise para exibir as equações e os resultados.</p>"
             )
         flexion_z_verification = flexion_z.get("verification") or {}
+        u_weak_axis = memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+        flexion_z_basis = (
+            "Anexo D, Tabela D.1 e D.2.8-c e d" if u_weak_axis else
+            "Anexo D, Tabela D.1 e D.2.8-f e h"
+        )
         flexion_z_content = (
             '<p style="margin:22px 0 12px;color:#57606a;font-weight:700">'
-            "Flexão em Z — ABNT NBR 8800:2024, 5.4.2.1 e 5.4.2.2; Anexo D, Tabela D.1 e D.2.8-f e h</p>"
+            f"Flexão em Z — ABNT NBR 8800:2024, 5.4.2.1 e 5.4.2.2; {flexion_z_basis}</p>"
         )
         if flexion_z_verification.get("status") == "checked":
             p = flexion_z_verification.get("parameters", {})
-            if p["lambda_flm_z"] <= p["lambda_p_flm_z"]:
+            instability_label = "FLA" if u_weak_axis else "FLM"
+            lambda_symbol_z = rf"\lambda_{{{instability_label},Z}}"
+            lambda_p_symbol_z = rf"\lambda_{{p,{instability_label},Z}}"
+            lambda_r_symbol_z = rf"\lambda_{{r,{instability_label},Z}}"
+            lambda_coefficient_z = "1,12" if u_weak_axis else "0,38"
+            lambda_r_coefficient_z = "1,40" if u_weak_axis else "0,83"
+            lambda_formula_z = (
+                r"\dfrac{h}{t_w}" if u_weak_axis else r"\dfrac{b_f}{2\cdot t_f}"
+            )
+            lambda_substitution_z = (
+                rf"\dfrac{{{decimal(p.get('h_cm'))}}}{{{decimal(p.get('tw_cm'))}}}"
+                if u_weak_axis else
+                rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{2\cdot {decimal(p.get('tf_cm'))}}}"
+            )
+            lambda_p_formula_z = rf"{lambda_coefficient_z}\cdot\sqrt{{\dfrac{{E}}{{f_y}}}}"
+            lambda_r_formula_z = (
+                rf"{lambda_r_coefficient_z}\cdot\sqrt{{\dfrac{{E}}{{f_y}}}}"
+                if u_weak_axis else
+                rf"{lambda_r_coefficient_z}\cdot\sqrt{{\dfrac{{E}}{{f_y-\sigma_r}}}}"
+            )
+            lambda_p_substitution_z = (
+                rf"{lambda_coefficient_z}\cdot\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}"
+                rf"{{{decimal(p.get('fy_kn_cm2'))}}}}}"
+            )
+            lambda_r_substitution_z = (
+                rf"{lambda_r_coefficient_z}\cdot\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}"
+                rf"{{{decimal(p.get('fy_kn_cm2'))}}}}}"
+                if u_weak_axis else
+                rf"{lambda_r_coefficient_z}\cdot\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}"
+                rf"{{{decimal(p.get('fy_kn_cm2'))}-{decimal(p.get('sigma_r_kn_cm2'))}}}}}"
+            )
+            lambda_demand_z = p["lambda_fla_z"] if u_weak_axis else p["lambda_flm_z"]
+            lambda_p_demand_z = p["lambda_p_fla_z"] if u_weak_axis else p["lambda_p_flm_z"]
+            lambda_r_demand_z = p["lambda_r_fla_z"] if u_weak_axis else p["lambda_r_flm_z"]
+            if lambda_demand_z <= lambda_p_demand_z:
                 mn_formula_z, mn_substituted_z = r"M_{p,Z}", decimal(p.get("Mp_z_kn_cm"))
-            elif p["lambda_flm_z"] <= p["lambda_r_flm_z"]:
+            elif lambda_demand_z <= lambda_r_demand_z:
                 mn_formula_z = (
                     r"M_{p,Z}-(M_{p,Z}-M_{r,Z})\cdot"
-                    r"\dfrac{\lambda_{FLM,Z}-\lambda_{p,FLM,Z}}"
-                    r"{\lambda_{r,FLM,Z}-\lambda_{p,FLM,Z}}"
+                    rf"\dfrac{{{lambda_symbol_z}-{lambda_p_symbol_z}}}"
+                    rf"{{{lambda_r_symbol_z}-{lambda_p_symbol_z}}}"
                 )
                 mn_substituted_z = (
                     rf"{decimal(p.get('Mp_z_kn_cm'))}"
                     rf"-({decimal(p.get('Mp_z_kn_cm'))}-{decimal(p.get('Mr_z_kn_cm'))})\cdot"
-                    rf"\dfrac{{{decimal(p.get('lambda_flm_z'))}-{decimal(p.get('lambda_p_flm_z'))}}}"
-                    rf"{{{decimal(p.get('lambda_r_flm_z'))}-{decimal(p.get('lambda_p_flm_z'))}}}"
+                    rf"\dfrac{{{decimal(lambda_demand_z)}-{decimal(lambda_p_demand_z)}}}"
+                    rf"{{{decimal(lambda_r_demand_z)}-{decimal(lambda_p_demand_z)}}}"
                 )
             else:
                 mn_formula_z, mn_substituted_z = (
-                    r"M_{cr,FLM,Z}", decimal(p.get("Mcr_flm_z_kn_cm")),
+                    rf"M_{{cr,{instability_label},Z}}",
+                    decimal(p.get("Mcr_fla_z_kn_cm" if u_weak_axis else "Mcr_flm_z_kn_cm")),
                 )
 
             flm_z_lines = (
-                *equation_triplet(
+                *(() if u_weak_axis else equation_triplet(
                     r"\sigma_r", r"0,30f_y",
                     rf"0,30\cdot {decimal(p.get('fy_kn_cm2'))}",
                     decimal(p.get("sigma_r_kn_cm2")), r"kN/cm^2",
+                )),
+                *equation_triplet(
+                    lambda_symbol_z, lambda_formula_z, lambda_substitution_z,
+                    decimal(lambda_demand_z),
                 ),
                 *equation_triplet(
-                    r"\lambda_{FLM,Z}", r"\dfrac{b_f}{2\cdot t_f}",
-                    rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{2\cdot {decimal(p.get('tf_cm'))}}}",
-                    decimal(p.get("lambda_flm_z")),
+                    lambda_p_symbol_z, lambda_p_formula_z, lambda_p_substitution_z,
+                    decimal(lambda_p_demand_z),
                 ),
                 *equation_triplet(
-                    r"\lambda_{p,FLM,Z}", r"0,38\cdot\sqrt{\dfrac{E}{f_y}}",
-                    rf"0,38\cdot\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
-                    decimal(p.get("lambda_p_flm_z")),
+                    lambda_r_symbol_z, lambda_r_formula_z, lambda_r_substitution_z,
+                    decimal(lambda_r_demand_z),
                 ),
-                *equation_triplet(
-                    r"\lambda_{r,FLM,Z}", r"0,83\cdot\sqrt{\dfrac{E}{f_y-\sigma_r}}",
-                    rf"0,83\cdot\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}"
-                    rf"{{{decimal(p.get('fy_kn_cm2'))}-{decimal(p.get('sigma_r_kn_cm2'))}}}}}",
-                    decimal(p.get("lambda_r_flm_z")),
-                ),
+                *(() if not u_weak_axis else (
+                    *equation_triplet(
+                        r"\lambda_{lim,AA}", r"1,49\sqrt{\dfrac{E}{f_y}}",
+                        rf"1,49\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
+                        decimal(p.get("web_limit_AA")),
+                    ),
+                    *equation_triplet(
+                        r"\sigma_{el,AA}",
+                        r"\left(1,31\dfrac{\lambda_{lim,AA}}{\lambda_{FLA,Z}}\right)^2 f_y",
+                        rf"\left(1,31\dfrac{{{decimal(p.get('web_limit_AA'))}}}"
+                        rf"{{{decimal(p.get('lambda_fla_z'))}}}\right)^2\cdot {decimal(p.get('fy_kn_cm2'))}",
+                        decimal(p.get("web_sigma_el_AA_kn_cm2")), r"kN/cm^2",
+                    ),
+                    *equation_triplet(
+                        r"h_{ef}",
+                        (r"h\left(1-0,18\sqrt{\dfrac{\sigma_{el,AA}}{f_y}}\right)"
+                         r"\sqrt{\dfrac{\sigma_{el,AA}}{f_y}}"
+                         if p.get("lambda_fla_z", 0.0) > p.get("web_limit_AA", 0.0)
+                         else r"h"),
+                        decimal(p.get("web_effective_width_mm")), r"mm",
+                    ),
+                    *equation_triplet(
+                        r"W_{ef,Z}", r"\dfrac{I_{z,ef}}{c_{max,ef}}",
+                        rf"\dfrac{{{decimal(p.get('Iz_ef_cm4'))}}}{{{decimal(p.get('cmax_ef_cm'))}}}",
+                        decimal(p.get("Wef_z_cm3")), r"cm^3",
+                    ),
+                )),
                 *equation_triplet(
                     r"M_{p,Z}", r"Z_z\cdot f_y",
                     rf"{decimal(p.get('Zz_cm3'))}\cdot {decimal(p.get('fy_kn_cm2'))}",
                     decimal(p.get("Mp_z_kn_cm")), r"kN\cdot cm",
                 ),
                 *equation_triplet(
-                    r"M_{r,Z}", r"(f_y-\sigma_r)\cdot W_z",
-                    rf"({decimal(p.get('fy_kn_cm2'))}-{decimal(p.get('sigma_r_kn_cm2'))})"
-                    rf"\cdot {decimal(p.get('Wz_cm3'))}",
+                    r"M_{r,Z}",
+                    r"f_y\cdot W_{ef,Z}" if u_weak_axis else r"(f_y-\sigma_r)\cdot W_z",
+                    (rf"{decimal(p.get('fy_kn_cm2'))}\cdot {decimal(p.get('Wef_z_cm3'))}"
+                     if u_weak_axis else
+                     rf"({decimal(p.get('fy_kn_cm2'))}-{decimal(p.get('sigma_r_kn_cm2'))})"
+                     rf"\cdot {decimal(p.get('Wz_cm3'))}"),
                     decimal(p.get("Mr_z_kn_cm")), r"kN\cdot cm",
                 ),
                 *equation_triplet(
-                    r"M_{cr,FLM,Z}", r"\dfrac{0,69\cdot E\cdot W_z}{\lambda_{FLM,Z}^2}",
-                    rf"\dfrac{{0,69\cdot {decimal(p.get('E_kn_cm2'))}"
-                    rf"\cdot {decimal(p.get('Wz_cm3'))}}}{{{decimal(p.get('lambda_flm_z'))}^2}}",
-                    decimal(p.get("Mcr_flm_z_kn_cm")), r"kN\cdot cm",
+                    rf"M_{{cr,{instability_label},Z}}",
+                    (r"\dfrac{W_{ef,Z}^2}{W_z}\cdot f_y" if u_weak_axis else
+                     r"\dfrac{0,69\cdot E\cdot W_z}{\lambda_{FLM,Z}^2}"),
+                    (rf"\dfrac{{{decimal(p.get('Wef_z_cm3'))}^2}}"
+                     rf"{{{decimal(p.get('Wz_cm3'))}}}\cdot {decimal(p.get('fy_kn_cm2'))}"
+                     if u_weak_axis else
+                     rf"\dfrac{{0,69\cdot {decimal(p.get('E_kn_cm2'))}"
+                     rf"\cdot {decimal(p.get('Wz_cm3'))}}}{{{decimal(p.get('lambda_flm_z'))}^2}}"),
+                    decimal(p.get("Mcr_fla_z_kn_cm" if u_weak_axis else "Mcr_flm_z_kn_cm")), r"kN\cdot cm",
                 ),
                 *equation_triplet(
-                    r"M_{n,FLM,Z}", mn_formula_z, mn_substituted_z,
-                    decimal(p.get("Mn_flm_z_kn_cm")), r"kN\cdot cm",
+                    rf"M_{{n,{instability_label},Z}}", mn_formula_z, mn_substituted_z,
+                    decimal(p.get("Mn_fla_z_kn_cm" if u_weak_axis else "Mn_flm_z_kn_cm")), r"kN\cdot cm",
                 ),
                 *equation_triplet(
-                    r"M_{Rd,FLM,Z}", r"\dfrac{M_{n,FLM,Z}}{\gamma_{a1}}",
-                    rf"\dfrac{{{decimal(p.get('Mn_flm_z_kn_cm'))}}}"
+                    rf"M_{{Rd,{instability_label},Z}}",
+                    rf"\dfrac{{M_{{n,{instability_label},Z}}}}{{\gamma_{{a1}}}}",
+                    rf"\dfrac{{{decimal(p.get('Mn_fla_z_kn_cm' if u_weak_axis else 'Mn_flm_z_kn_cm'))}}}"
                     rf"{{{decimal(p.get('gamma_a1'))}}}",
-                    decimal(p.get("Mrd_flm_z_kn_cm")), r"kN\cdot cm",
+                    decimal(p.get("Mrd_fla_z_kn_cm" if u_weak_axis else "Mrd_flm_z_kn_cm")), r"kN\cdot cm",
                 ),
             )
             resistance_lines_z = (
@@ -999,9 +1162,14 @@ class CalculationMemorialDialog(QDialog):
                     decimal(p.get("Mrd_limit_kn_cm")), r"kN\cdot cm",
                 ),
                 *equation_triplet(
-                    r"M_{z,Rd}", r"\min(M_{Rd,FLM,Z};M_{Rd,max,Z})",
-                    rf"\min({decimal(p.get('Mrd_flm_z_kn_cm'))};"
-                    rf"{decimal(p.get('Mrd_limit_kn_cm'))})",
+                    r"M_{z,Rd}",
+                    (r"\min(M_{Rd,FLM,Z};M_{Rd,FLA,Z};M_{Rd,max,Z})"
+                     if u_weak_axis else rf"\min(M_{{Rd,{instability_label},Z}};M_{{Rd,max,Z}})"),
+                    (rf"\min({decimal(p.get('Mrd_flm_z_kn_cm'))};"
+                     rf"{decimal(p.get('Mrd_fla_z_kn_cm'))};{decimal(p.get('Mrd_limit_kn_cm'))})"
+                     if u_weak_axis else
+                     rf"\min({decimal(p.get('Mrd_flm_z_kn_cm'))};"
+                     rf"{decimal(p.get('Mrd_limit_kn_cm'))})"),
                     decimal(p.get("Mrd_z_kn_cm")), r"kN\cdot cm",
                 ),
             )
@@ -1009,6 +1177,57 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(flm_z_lines)}'
                 f'{spaced_equations(resistance_lines_z)}'
             )
+            if u_weak_axis:
+                flexion_z_content += (
+                    '<p style="margin:8px 0 4px;color:#57606a">'
+                    "FLM da mesa (aplicável quando a borda livre está comprimida; verificação combinada conservadora):</p>"
+                )
+                weak_axis_flm_lines = (
+                    *equation_triplet(
+                        r"\lambda_{FLM,Z}", r"\dfrac{b_f}{t_f}",
+                        rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{{decimal(p.get('tf_cm'))}}}",
+                        decimal(p.get("lambda_flm_z")),
+                    ),
+                    *equation_triplet(
+                        r"\lambda_{p,FLM,Z}", r"0,38\sqrt{\dfrac{E}{f_y}}",
+                        rf"0,38\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
+                        decimal(p.get("lambda_p_flm_z")),
+                    ),
+                    *equation_triplet(
+                        r"\lambda_{r,FLM,Z}", r"0,83\sqrt{\dfrac{E}{f_y-\sigma_r}}",
+                        rf"0,83\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}"
+                        rf"{{{decimal(p.get('fy_kn_cm2'))}-{decimal(p.get('sigma_r_flm_z_kn_cm'))}}}}}",
+                        decimal(p.get("lambda_r_flm_z")),
+                    ),
+                    *equation_triplet(
+                        r"M_{cr,FLM,Z}", r"\dfrac{0,69EW_z}{\lambda_{FLM,Z}^2}",
+                        rf"\dfrac{{0,69\cdot {decimal(p.get('E_kn_cm2'))}\cdot {decimal(p.get('Wz_cm3'))}}}"
+                        rf"{{{decimal(p.get('lambda_flm_z'))}^2}}",
+                        decimal(p.get("Mcr_flm_z_kn_cm")), r"kN\cdot cm",
+                    ),
+                    *equation_triplet(
+                        r"M_{n,FLM,Z}",
+                        (r"M_p" if p.get("lambda_flm_z", 0) <= p.get("lambda_p_flm_z", 0) else
+                         (r"M_p-(M_p-M_r)\dfrac{\lambda_{FLM,Z}-\lambda_{p,FLM,Z}}{\lambda_{r,FLM,Z}-\lambda_{p,FLM,Z}}"
+                          if p.get("lambda_flm_z", 0) <= p.get("lambda_r_flm_z", 0) else
+                          r"M_{cr,FLM,Z}")),
+                        (decimal(p.get("Mp_z_kn_cm"))
+                         if p.get("lambda_flm_z", 0) <= p.get("lambda_p_flm_z", 0) else
+                         (rf"{decimal(p.get('Mp_z_kn_cm'))}-({decimal(p.get('Mp_z_kn_cm'))}-"
+                          rf"{decimal(p.get('Mr_flm_z_kn_cm'))})"
+                          rf"\dfrac{{{decimal(p.get('lambda_flm_z'))}-{decimal(p.get('lambda_p_flm_z'))}}}"
+                          rf"{{{decimal(p.get('lambda_r_flm_z'))}-{decimal(p.get('lambda_p_flm_z'))}}}"
+                          if p.get("lambda_flm_z", 0) <= p.get("lambda_r_flm_z", 0) else
+                          decimal(p.get("Mcr_flm_z_kn_cm")))),
+                        decimal(p.get("Mn_flm_z_kn_cm")), r"kN\cdot cm",
+                    ),
+                    *equation_triplet(
+                        r"M_{Rd,FLM,Z}", r"\dfrac{M_{n,FLM,Z}}{\gamma_{a1}}",
+                        rf"\dfrac{{{decimal(p.get('Mn_flm_z_kn_cm'))}}}{{{decimal(p.get('gamma_a1'))}}}",
+                        decimal(p.get("Mrd_flm_z_kn_cm")), r"kN\cdot cm",
+                    ),
+                )
+                flexion_z_content += spaced_equations(weak_axis_flm_lines)
             applied = flexion_z_verification.get("applied_kn_cm")
             utilization = flexion_z_verification.get("utilization")
             combination_name = escape(str(flexion_z_verification.get("critical_combination", "—")))
@@ -1022,10 +1241,10 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             flexion_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de flexão em Z atende somente a perfis W Laminados.</p>"
+                "A rotina atual de flexão em Z atende somente a perfis W, I e U Laminados.</p>"
             )
         elif flexion_z_verification.get("status") == "not_checked":
             flexion_z_content += (
@@ -1049,6 +1268,7 @@ class CalculationMemorialDialog(QDialog):
         )
         if shear_y_verification.get("status") == "checked":
             p = shear_y_verification.get("parameters", {})
+            u_shear_y = memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
             lambda_y = p["lambda_y"]
             lambda_p_y = p["lambda_p_y"]
             lambda_r_y = p["lambda_r_y"]
@@ -1080,6 +1300,11 @@ class CalculationMemorialDialog(QDialog):
                     rf"{{{decimal(p.get('gamma_a1'))}}}"
                 )
 
+            lambda_y_substituted = (
+                rf"\dfrac{{{decimal(p.get('bf_cm'))}}}{{{decimal(p.get('tf_cm'))}}}"
+                if u_shear_y else
+                rf"\dfrac{{{decimal(p.get('bf_cm'))}/2}}{{{decimal(p.get('tf_cm'))}}}"
+            )
             shear_parameters_y = (
                 *equation_triplet(
                     r"A_w", r"2\cdot b_f\cdot t_f",
@@ -1093,9 +1318,9 @@ class CalculationMemorialDialog(QDialog):
                     decimal(p.get("Vp_y_kn")), r"kN",
                 ),
                 *equation_triplet(
-                    r"\lambda_Y", r"\dfrac{b_f/2}{t_f}",
-                    rf"\dfrac{{{decimal(p.get('bf_cm'))}/2}}"
-                    rf"{{{decimal(p.get('tf_cm'))}}}",
+                    r"\lambda_Y",
+                    r"\dfrac{b_f}{t_f}" if u_shear_y else r"\dfrac{b_f/2}{t_f}",
+                    lambda_y_substituted,
                     decimal(lambda_y),
                 ),
                 *equation_triplet(
@@ -1134,10 +1359,10 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_y)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             shear_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de cortante em Y atende somente a perfis W Laminados.</p>"
+                "A rotina atual de cortante em Y atende somente a perfis W, I e U Laminados.</p>"
             )
         elif shear_y_verification.get("status") == "not_checked":
             shear_y_content += (
@@ -1247,10 +1472,10 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") != "W Laminado":
+        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             shear_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
-                "A rotina atual de cortante em Z atende somente a perfis W Laminados.</p>"
+                "A rotina atual de cortante em Z atende somente a perfis W, I e U Laminados.</p>"
             )
         elif shear_z_verification.get("status") == "not_checked":
             shear_z_content += (
@@ -1279,6 +1504,32 @@ class CalculationMemorialDialog(QDialog):
                 combination_name = escape(str(verification.get("critical_combination", "—")))
                 status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
                 p = verification.get("parameters", {})
+                if p.get("slender_web_rejected"):
+                    slenderness_lines = (
+                        *equation_triplet(
+                            r"\lambda_{FLA}", r"\dfrac{h}{t_w}",
+                            rf"\dfrac{{{decimal(p.get('di_cm'))}}}{{{decimal(p.get('tw_cm'))}}}",
+                            decimal(p.get("lambda_fla")),
+                        ),
+                        *equation_triplet(
+                            r"\lambda_{r,FLA}", r"5,70\sqrt{\dfrac{E}{f_y}}",
+                            rf"5,70\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
+                            decimal(p.get("lambda_r_fla")),
+                        ),
+                        *equation_triplet(
+                            r"\eta_{FLA}", r"\dfrac{\lambda_{FLA}}{\lambda_{r,FLA}}\leq 1,0",
+                            rf"\dfrac{{{decimal(p.get('lambda_fla'))}}}{{{decimal(p.get('lambda_r_fla'))}}}",
+                            rf"{decimal(p.get('slenderness_ratio'), 2)}\quad\mathbf{{REPROVADO}}",
+                        ),
+                    )
+                    content += (
+                        f'{spaced_equations(slenderness_lines)}'
+                        '<p style="margin:5px 0;color:#57606a">'
+                        'Verificação combinada reprovada porque a seção excede o limite de esbeltez '
+                        'da alma em flexão Y.</p>'
+                        f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
+                    )
+                    return content
                 my_rd = p.get("My_Rd_kn_cm")
                 mz_rd = p.get("Mz_Rd_kn_cm")
                 my_sd = verification.get("applied_my_kn_cm")

@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from math import sqrt
 
-from osa.sections.contours import polygon_properties, w_contour_points
+from osa.sections.contours import (
+    i_contour_points, polygon_properties, u_contour_points, w_contour_points,
+)
 from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.restraints import restraint_lengths
 
@@ -66,6 +68,156 @@ def _w_properties(member) -> dict[str, float]:
     }
 
 
+def _i_properties(member) -> dict[str, float]:
+    """Return rolled I geometry using its own parametric section contour."""
+    geometry = member.geometry_dict()
+
+    def dimension(name: str) -> float:
+        value = geometry.get(name, geometry.get(f"{name}_mm"))
+        if value is None:
+            raise ValueError(f"dimensão '{name}' ausente na seção")
+        return float(value)
+
+    d, bf, tw, tf = (dimension(key) for key in ("d", "bf", "tw", "tf"))
+    r1 = float(geometry.get("r1", geometry.get("r1_mm", 0.0))) or None
+    r2 = float(geometry.get("r2", geometry.get("r2_mm", 0.0))) or None
+    flange_angle_deg = float(geometry.get("flange_angle_deg", 2.0))
+    points = i_contour_points(d, bf, tw, tf, r1, r2, flange_angle_deg)
+    area_mm2, cy_mm, cz_mm, iy_mm4, iz_mm4, _ = polygon_properties(points)
+    area = area_mm2 / 100.0
+    iy, iz = iy_mm4 / 1e4, iz_mm4 / 1e4
+    d_cm, bf_cm, tw_cm, tf_cm = (value / 10.0 for value in (d, bf, tw, tf))
+    torsion = (2 * bf_cm * tf_cm**3 + (d_cm - 2 * tf_cm) * tw_cm**3) / 3.0
+    warping = iz * (d_cm - tf_cm) ** 2 / 4.0
+    return {
+        "d": d, "bf": bf, "tw": tw, "tf": tf,
+        "area": area, "Iy": iy, "Iz": iz,
+        "Wy": iy / (d_cm / 2.0), "Wz": iz / (bf_cm / 2.0),
+        "ry": sqrt(iy / area), "rz": sqrt(iz / area),
+        "Zy": _plastic_modulus(points, 1, cz_mm) / 1000.0,
+        "Zz": _plastic_modulus(points, 0, cy_mm) / 1000.0,
+        "rt": sqrt(sqrt(iy * warping) / (iy / (d_cm / 2.0))),
+        "It": torsion, "Cw": warping,
+    }
+
+
+def _plastic_modulus_asymmetric(points, axis: int) -> float:
+    """Find the plastic neutral axis and modulus by integrating section strips.
+
+    A U contour is concave, so clipping it into one polygon can connect
+    disconnected pieces with artificial edges. Strip integration preserves
+    the separate flange intervals on the open side of the section.
+    """
+    coordinates = sorted({point[axis] for point in points})
+    low, high = coordinates[0], coordinates[-1]
+
+    def width_at(position: float) -> float:
+        intersections = []
+        for first, second in zip(points, points[1:] + points[:1]):
+            start, end = first[axis], second[axis]
+            if min(start, end) < position < max(start, end):
+                fraction = (position - start) / (end - start)
+                other_axis = 1 - axis
+                intersections.append(
+                    first[other_axis] + fraction * (second[other_axis] - first[other_axis])
+                )
+        intersections.sort()
+        return sum(
+            intersections[index + 1] - intersections[index]
+            for index in range(0, len(intersections) - 1, 2)
+        )
+
+    def area_to(position: float) -> float:
+        breaks = [low, *(value for value in coordinates if low < value < position), position]
+        return sum(
+            width_at((start + end) / 2.0) * (end - start)
+            for start, end in zip(breaks, breaks[1:])
+        )
+
+    area_total = polygon_properties(points)[0]
+    left, right = low, high
+    for _ in range(60):
+        neutral_axis = (left + right) / 2.0
+        if area_to(neutral_axis) < area_total / 2.0:
+            left = neutral_axis
+        else:
+            right = neutral_axis
+    neutral_axis = (left + right) / 2.0
+
+    breaks = sorted({low, high, neutral_axis, *coordinates})
+    modulus = 0.0
+    for start, end in zip(breaks, breaks[1:]):
+        if end <= start:
+            continue
+        width_1 = width_at(start + (end - start) / 4.0)
+        width_3 = width_at(start + 3.0 * (end - start) / 4.0)
+        span = end - start
+        slope = 2.0 * (width_3 - width_1) / span
+        width_at_start = width_1 - slope * span / 4.0
+        first_moment = (
+            width_at_start * ((start - neutral_axis) * span + span**2 / 2.0)
+            + slope * ((start - neutral_axis) * span**2 / 2.0 + span**3 / 3.0)
+        )
+        modulus += abs(first_moment)
+    return modulus
+
+
+def _u_properties(member) -> dict[str, float]:
+    """Return rolled U geometry, including its single-axis symmetry properties."""
+    geometry = member.geometry_dict()
+
+    def dimension(name: str) -> float:
+        value = geometry.get(name, geometry.get(f"{name}_mm"))
+        if value is None:
+            raise ValueError(f"dimensão '{name}' ausente na seção")
+        return float(value)
+
+    d, bf, tw, tf = (dimension(key) for key in ("d", "bf", "tw", "tf"))
+    radius = float(geometry.get("r", geometry.get("r_mm", 0.0))) or max(2.0, 1.5 * tf)
+    tip_radius = float(geometry.get("r1", geometry.get("r1_mm", 0.0))) or None
+    flange_angle = float(geometry.get("flange_angle_deg", geometry.get("angle", 2.0)))
+    # The section-properties model represents U flanges as parallel to the
+    # web; the rolled root radius is included in the contour used here.
+    points = u_contour_points(d, bf, tw, tf, radius, tip_radius, flange_angle)
+    area_mm2, cy_mm, cz_mm, iy_mm4, iz_mm4, _ = polygon_properties(points)
+    area = area_mm2 / 100.0
+    iy, iz = iy_mm4 / 1e4, iz_mm4 / 1e4
+    d_cm, bf_cm, tw_cm, tf_cm = (value / 10.0 for value in (d, bf, tw, tf))
+    flat_flange_width_cm = (bf - tw / 2.0) / 10.0
+    clear_web_cm = (d - 2.0 * tf - 2.0 * radius) / 10.0
+    web_to_flange = bf_cm - 0.5 * tw_cm
+    torsion = (2.0 * bf_cm * tf_cm**3 + (d_cm - 2.0 * tf_cm) * tw_cm**3) / 3.0
+    warping = (
+        tf_cm * web_to_flange**3 * (d_cm - tf_cm)**2
+        * (3.0 * web_to_flange * tf_cm + 2.0 * (d_cm - tf_cm) * tw_cm)
+        / (12.0 * (6.0 * web_to_flange * tf_cm + (d_cm - tf_cm) * tw_cm))
+    )
+    # Thin-wall shear-flow estimate for the offset between the centroid and shear center.
+    shear_center_offset_cm = abs(
+        tf_cm * web_to_flange**2 * clear_web_cm**2 / (4.0 * iy)
+    )
+    max_weak_axis_distance_cm = max(
+        (cy_mm + bf / 2.0) / 10.0,
+        (bf / 2.0 - cy_mm) / 10.0,
+    )
+    return {
+        "d": d, "bf": bf, "tw": tw, "tf": tf,
+        "r": radius, "r1": tip_radius or max(0.75, 0.8 * tf),
+        "flange_angle_deg": flange_angle,
+        "area": area, "Iy": iy, "Iz": iz,
+        "Wy": iy / (d_cm / 2.0), "Wz": iz / max_weak_axis_distance_cm,
+        "ry": sqrt(iy / area), "rz": sqrt(iz / area),
+        "Zy": _plastic_modulus(points, 1, cz_mm) / 1000.0,
+        "Zz": _plastic_modulus_asymmetric(points, 0) / 1000.0,
+        "rt": sqrt(sqrt(iy * warping) / (iy / (d_cm / 2.0))),
+        "It": torsion, "Cw": warping,
+        "x0": shear_center_offset_cm,
+        "cx_mm": cy_mm,
+        "h": max(0.0, d - 2.0 * tf - 2.0 * radius),
+        "flange_width": flat_flange_width_cm * 10.0,
+    }
+
+
 def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
     """Return element, W-section, and material inputs for the memorial."""
     members = [model.bars[name] for name in member_names if name in model.bars]
@@ -77,7 +229,12 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         str(group.get("name", "")).strip() if group else
         model.verification_element_names.get(member.name, "")
     )
-    geometry = _w_properties(member) if (member.section or "") == "W Laminado" else {}
+    profile_type = member.section or ""
+    geometry = (
+        _w_properties(member) if profile_type == "W Laminado" else
+        _i_properties(member) if profile_type == "I Laminado" else
+        _u_properties(member) if profile_type in {"U Laminado", "U Inclinado Laminado"} else {}
+    )
     group_members = tuple(group.get("members", ())) if group else tuple(member_names)
     selected_result = next((
         model.verification_results.get(element.key)

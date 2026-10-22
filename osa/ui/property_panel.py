@@ -326,11 +326,13 @@ class PropertyPanel(QFrame):
         dialog.exec()
 
     def _has_verification_routine(self, names: tuple[str, ...] | list[str]) -> bool:
-        return bool(names) and all(
-            name in self.window.model.bars
-            and self.window.model.bars[name].section == "W Laminado"
-            for name in names
-        )
+        members = [self.window.model.bars.get(name) for name in names]
+        if not members or any(member is None for member in members):
+            return False
+        sections = {member.section for member in members}
+        return len(sections) == 1 and sections.pop() in {
+            "W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
+        }
 
     def _verification_result_for(self, names: tuple[str, ...] | list[str]):
         selected_names = set(names)
@@ -443,6 +445,9 @@ class PropertyPanel(QFrame):
                     memory_button.setToolTip("Memorial indisponível: verificação não implementada")
             elif element_result is None or element_result.get("status") == "not_checked":
                 status_text = "Não verificado"
+                detail = str((element_result or {}).get("detail", ""))
+                for value in self._verification_result_values.values():
+                    value.setToolTip(detail)
                 if memory_button is not None:
                     memory_button.setEnabled(False)
                     memory_button.setToolTip("Memorial indisponível: elemento não verificado")
