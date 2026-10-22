@@ -15,6 +15,7 @@ from math import inf, radians, sin
 import numpy as np
 
 from osa.domain.member_axes import member_basis
+from osa.sections import calculate_section_properties
 
 
 _GEOMETRY_TOL = 1e-8
@@ -33,7 +34,7 @@ class RestraintLengths:
 
 
 def restraint_lengths(model, element, results, properties, cb=1.0) -> RestraintLengths:
-    """Share topology-derived lengths between checks and the calculation memorial."""
+    """Share restraint lengths between checks and the calculation memorial."""
     results = tuple(results)
     min_brace_angle = float(getattr(
         model, "minimum_bar_restraint_angle_degrees", _DEFAULT_MIN_BRACE_ANGLE_DEGREES,
@@ -46,7 +47,8 @@ def restraint_lengths(model, element, results, properties, cb=1.0) -> RestraintL
         model._restraint_lengths_cache = cache
     key = (tuple(sorted(element.member_names)), tuple(sorted(properties.items())), cb)
     if key not in cache["lengths"]:
-        cache["lengths"][key] = MemberChainRestraints(model, min_brace_angle).lengths(element)
+        topology = MemberChainRestraints(model, min_brace_angle)
+        cache["lengths"][key] = LargerSectionRestraints(topology).lengths(element)
     return cache["lengths"][key]
 
 
@@ -336,3 +338,110 @@ class MemberChainRestraints:
             if not node.supports[dof] or float(node.support_stiffness[dof]) > 0.0:
                 return False
         return True
+
+
+class LargerSectionRestraints:
+    """Apply geometric restraints plus a 20% gross-area cross-restraint rule."""
+
+    _AREA_RATIO = 1.20
+
+    def __init__(self, topology: MemberChainRestraints) -> None:
+        self.topology = topology
+        self.model = topology.model
+        self._area_cache: dict[str, float | None] = {}
+
+    def _area_mm2(self, member) -> float | None:
+        if member.name in self._area_cache:
+            return self._area_cache[member.name]
+        if not member.section or not member.section_geometry:
+            self._area_cache[member.name] = None
+            return None
+        try:
+            area = calculate_section_properties(
+                member.section,
+                member.geometry_dict(),
+                7850.0,
+                mirror_z=member.section_mirrored,
+            ).area_mm2
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            area = None
+        self._area_cache[member.name] = area
+        return area
+
+    def lengths(self, element) -> RestraintLengths:
+        base = self.topology.lengths(element)
+        _bars, basis, origin, _element_interval = self.topology._element_chain(element)
+        _chain_bars, stations, length, target_interval, chain_names = (
+            self.topology._connected_collinear_chain(element, basis, origin)
+        )
+        target_areas = [
+            self._area_mm2(self.model.bars[name]) for name in element.member_names
+        ]
+        # If the checked section cannot be determined completely, retain A only.
+        if not target_areas or any(area is None for area in target_areas):
+            return base
+        required_area = max(target_areas) * self._AREA_RATIO
+
+        local_y, local_z = (np.asarray(vector, dtype=float) for vector in basis[1:3])
+        directions = {"Ly": local_y, "Lz": local_z}
+        restraints = {
+            mode: {
+                point["node"]: {
+                    "position_m": point["position_m"],
+                    "reason": point["reason"],
+                }
+                for point in base.modes[mode]["points"]
+                if point["accepted"]
+            }
+            for mode in ("Ly", "Lz")
+        }
+
+        for node_name, position in stations.items():
+            for brace_name, brace in self.model.bars.items():
+                if brace_name in chain_names or node_name not in (brace.start_node, brace.end_node):
+                    continue
+                brace_area = self._area_mm2(brace)
+                if brace_area is None or brace_area + 1e-9 < required_area:
+                    continue
+                brace_basis = member_basis(
+                    self.model.nodes[brace.start_node],
+                    self.model.nodes[brace.end_node],
+                    brace.rotation,
+                )
+                if brace_basis is None:
+                    continue
+                brace_axis = np.asarray(brace_basis[0], dtype=float)
+                qualifies = {
+                    mode: abs(float(brace_axis @ direction)) + _GEOMETRY_TOL
+                    >= self.topology._min_brace_direction_component
+                    for mode, direction in directions.items()
+                }
+                for source_mode, target_mode in (("Ly", "Lz"), ("Lz", "Ly")):
+                    if qualifies[source_mode] and not qualifies[target_mode]:
+                        restraints[target_mode][node_name] = {
+                            "position_m": position,
+                            "reason": (
+                                f"barra conectada ({brace_name}) com área transversal "
+                                f"≥ {self._AREA_RATIO:.0%} da barra verificada; "
+                                f"travamento cruzado a partir de {source_mode}"
+                            ),
+                        }
+
+        modes = {
+            mode: self.topology._mode(
+                stations, length, target_interval, restraints[mode], mode,
+            )
+            for mode in ("Ly", "Lz")
+        }
+        modes["Lb"] = {**modes["Ly"], "source_mode": "Ly"}
+        torsional_source = min(("Ly", "Lz"), key=lambda name: modes[name]["length_m"])
+        modes["Lt"] = {**modes[torsional_source], "source_mode": torsional_source}
+        notes = (
+            "Uma barra conectada que qualifique geometricamente para um eixo também promove travamento no eixo transversal quando sua área bruta é pelo menos 20% maior que a maior área das barras verificadas.",
+            "A comparação usa área bruta da seção e não comprova rigidez, resistência, ligação ou ancoragem da contenção.",
+            "Lb usa o mesmo comprimento destravado calculado para Ly.",
+            "Lt é o menor entre Ly e Lz.",
+        )
+        return RestraintLengths(
+            {mode: data["length_m"] for mode, data in modes.items()}, modes, base.issues, notes,
+        )

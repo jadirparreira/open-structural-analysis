@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QListWidgetItem,
+    QScrollArea,
     QStyle,
     QStyleOptionSlider,
     QTableWidget,
@@ -35,7 +36,13 @@ class _SettingsChoiceSwitch(QFrame):
         self._on_change = on_change
         self._buttons = {}
         self._animation = None
-        widths = (46, 46) if len(self._choices) == 2 else (50, 76, 50)
+        widths = (
+            (46, 46)
+            if len(self._choices) == 2
+            else (46, 46, 46)
+            if len(self._choices) == 3 and all(len(label) <= 4 for _, label in self._choices)
+            else (50, 76, 50)
+        )
         self._widths = widths
         self.setObjectName("settingsChoiceSwitch")
         self.setFixedSize(sum(widths) + 6, 30)
@@ -1133,7 +1140,20 @@ class ProgramSettingsDialog(QDialog):
 
         members_page = QWidget()
         members_layout = QVBoxLayout(members_page)
-        members_layout.addSpacing(10)
+        members_layout.setSpacing(8)
+        members_scroll = QScrollArea()
+        members_scroll.setObjectName("memberSettingsScrollArea")
+        members_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        members_scroll.setWidgetResizable(True)
+        members_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        members_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        members_content = QWidget()
+        members_content_layout = QVBoxLayout(members_content)
+        members_content_layout.setContentsMargins(0, 10, 0, 10)
+        members_content_layout.setSpacing(0)
+        members_scroll.setWidget(members_content)
+        members_layout.addWidget(members_scroll, 1)
+        members_content_layout.addSpacing(10)
         direction_section = QVBoxLayout()
         direction_section.setContentsMargins(0, 0, 0, 0)
         direction_section.setSpacing(6)
@@ -1149,8 +1169,8 @@ class ProgramSettingsDialog(QDialog):
             self,
         )
         direction_section.addWidget(self._member_direction_switch, 0, Qt.AlignmentFlag.AlignLeft)
-        members_layout.addLayout(direction_section)
-        members_layout.addSpacing(12)
+        members_content_layout.addLayout(direction_section)
+        members_content_layout.addSpacing(12)
 
         split_section = QVBoxLayout()
         split_section.setContentsMargins(0, 0, 0, 0)
@@ -1171,8 +1191,8 @@ class ProgramSettingsDialog(QDialog):
             self,
         )
         split_section.addWidget(self._member_split_switch, 0, Qt.AlignmentFlag.AlignLeft)
-        members_layout.addLayout(split_section)
-        members_layout.addSpacing(12)
+        members_content_layout.addLayout(split_section)
+        members_content_layout.addSpacing(12)
 
         brace_angle_section = QVBoxLayout()
         brace_angle_section.setContentsMargins(0, 0, 0, 0)
@@ -1208,8 +1228,7 @@ class ProgramSettingsDialog(QDialog):
         brace_angle_box_layout.addWidget(self._brace_restraint_angle, 1)
         brace_angle_box_layout.addWidget(QLabel("°"))
         brace_angle_section.addWidget(brace_angle_box, 0, Qt.AlignmentFlag.AlignLeft)
-        members_layout.addLayout(brace_angle_section)
-        members_layout.addStretch(1)
+        members_content_layout.addLayout(brace_angle_section)
         members_close_button = QPushButton("Fechar")
         members_close_button.setObjectName("closeProperties")
         members_close_button.clicked.connect(self.accept)

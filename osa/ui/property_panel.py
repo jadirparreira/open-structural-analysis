@@ -184,6 +184,7 @@ class PropertyPanel(QFrame):
         verification_name_layout.addWidget(self.verification_name_input)
         self._verification_result_rows: list[QWidget] = []
         self._verification_result_values: dict[str, QLineEdit] = {}
+        self._verification_memory_button = None
         for field_name, label_text, accessible_name in (
             ("utilization", "Taxa de solicitação", "Taxa de solicitação"),
             ("critical_check", "Verificação crítica", "Verificação crítica"),
@@ -195,7 +196,7 @@ class PropertyPanel(QFrame):
             result_layout.setSpacing(self.layout.spacing())
             result_label = QLabel(label_text)
             result_label.setObjectName("propertySection")
-            result_value = QLineEdit("A definir")
+            result_value = QLineEdit("Não verificado")
             result_value.setObjectName("propertyValue")
             result_value.setAccessibleName(accessible_name)
             result_value.setReadOnly(True)
@@ -208,6 +209,7 @@ class PropertyPanel(QFrame):
                 value_row.setSpacing(6)
                 value_row.addWidget(result_value, 1)
                 memory_button = QToolButton(result_row)
+                self._verification_memory_button = memory_button
                 memory_button.setFixedSize(34, 34)
                 memory_button.setIcon(QIcon(str(
                     Path(__file__).parents[1] / "resources" / "icons" / "calculation-memory.svg"
@@ -219,6 +221,7 @@ class PropertyPanel(QFrame):
                     "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
                     "QToolButton:hover { background: #eaeef2; }"
                     "QToolButton:pressed { background: #d0d7de; }"
+                    "QToolButton:disabled { background: #f6f8fa; border-color: #eaeef2; }"
                 )
                 memory_button.clicked.connect(self._open_verification_memory)
                 value_row.addWidget(memory_button)
@@ -313,9 +316,31 @@ class PropertyPanel(QFrame):
     def _open_verification_memory(self) -> None:
         """Open the stored calculation memory for the selected element or group."""
         names = tuple(self._selected_names("bar"))
+        if not self._has_verification_routine(names):
+            return
+        element_result = self._verification_result_for(names)
+        if element_result is None or element_result.get("status") not in {"checked", "not_applicable"}:
+            return
         memory = calculation_memory(self.window.model, names)
         dialog = CalculationMemorialDialog(memory, self.window)
         dialog.exec()
+
+    def _has_verification_routine(self, names: tuple[str, ...] | list[str]) -> bool:
+        return bool(names) and all(
+            name in self.window.model.bars
+            and self.window.model.bars[name].section == "W Laminado"
+            for name in names
+        )
+
+    def _verification_result_for(self, names: tuple[str, ...] | list[str]):
+        selected_names = set(names)
+        element = next((
+            item for item in verification_elements(self.window.model)
+            if set(item.member_names) == selected_names
+        ), None)
+        if element is None:
+            return None
+        return self.window.model.verification_results.get(element.key)
 
     def _inspected_kind_changed(self, _index: int) -> None:
         self._switch_inspected_kind(self.kind_selector.currentData())
@@ -408,29 +433,43 @@ class PropertyPanel(QFrame):
             with QSignalBlocker(self.verification_name_input):
                 self.verification_name_input.setText(custom_name)
             self.name.setVisible(True)
-            self._verification_result_values["utilization"].setText("A definir")
-            self._verification_result_values["critical_check"].setText("A definir")
-            self._verification_result_values["critical_combination"].setText("A definir")
-            selected_names = set(names)
-            element_result = next((
-                self.window.model.verification_results.get(element.key)
-                for element in verification_elements(self.window.model)
-                if set(element.member_names) == selected_names
-            ), None)
-            if element_result:
-                if element_result.get("status") == "checked":
-                    self._verification_result_values["utilization"].setText(
-                        f"{element_result['utilization']:.2%}".replace(".", ",")
-                    )
-                    self._verification_result_values["critical_check"].setText(
-                        str(element_result.get("critical_check", "N/D")).split(" — ", 1)[0]
-                    )
-                    self._verification_result_values["critical_combination"].setText(
-                        element_result.get("critical_combination", "N/D")
-                    )
-                elif element_result.get("status") == "not_applicable":
-                    for value in self._verification_result_values.values():
-                        value.setText("N/A")
+            implemented = self._has_verification_routine(names)
+            element_result = self._verification_result_for(names) if implemented else None
+            memory_button = self._verification_memory_button
+            if not implemented:
+                status_text = "Não Implementado"
+                if memory_button is not None:
+                    memory_button.setEnabled(False)
+                    memory_button.setToolTip("Memorial indisponível: verificação não implementada")
+            elif element_result is None or element_result.get("status") == "not_checked":
+                status_text = "Não verificado"
+                if memory_button is not None:
+                    memory_button.setEnabled(False)
+                    memory_button.setToolTip("Memorial indisponível: elemento não verificado")
+            elif element_result.get("status") == "not_applicable":
+                status_text = "N/A"
+                if memory_button is not None:
+                    memory_button.setEnabled(True)
+                    memory_button.setToolTip("Abrir memorial de cálculo")
+                for value in self._verification_result_values.values():
+                    value.setText(status_text)
+            else:
+                status_text = None
+                if memory_button is not None:
+                    memory_button.setEnabled(True)
+                    memory_button.setToolTip("Abrir memorial de cálculo")
+                self._verification_result_values["utilization"].setText(
+                    f"{element_result['utilization']:.2%}".replace(".", ",")
+                )
+                self._verification_result_values["critical_check"].setText(
+                    str(element_result.get("critical_check", "N/D")).split(" — ", 1)[0]
+                )
+                self._verification_result_values["critical_combination"].setText(
+                    element_result.get("critical_combination", "N/D")
+                )
+            if status_text is not None:
+                for value in self._verification_result_values.values():
+                    value.setText(status_text)
         if kind == "bar":
             colors = [self.window.model.bars[member_name].color for member_name in names]
             self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
