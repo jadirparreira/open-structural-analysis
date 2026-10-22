@@ -188,10 +188,11 @@ class FloatingPalette(QFrame):
         )
         self._add_group(
             "Memorial",
-            "calculation-memory.svg",
+            "verification-book-text.svg",
             (),
+            palette_label="Verificação",
         )
-        self._add_unavailable_button("Documentação", "documentation-scroll.svg")
+        self._add_unavailable_button("Detalhamento", "detailing-map.svg")
         self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
         self.toggle_group("Geometria", animate=False)
 
@@ -200,13 +201,15 @@ class FloatingPalette(QFrame):
         name: str,
         icon_filename: str,
         items: tuple[tuple[str, str, object], ...],
+        *,
+        palette_label: str | None = None,
     ) -> None:
         primary = QToolButton(self)
         primary.setObjectName("palettePrimary")
         primary.setFixedSize(38, 38)
         primary.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
         primary.setIconSize(QSize(22, 22))
-        self._configure_tooltip(primary, name)
+        self._configure_tooltip(primary, palette_label or name)
         primary.setCheckable(True)
         primary.clicked.connect(lambda _checked=False, group=name: self.toggle_group(group))
         self._layout.addWidget(primary, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -558,7 +561,13 @@ class VerificationTopPalette(QFrame):
         self.raise_()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched in (self.name_button, self.utilization_button, self.group_button, self.verify_button):
+        if watched in (
+            self.name_button,
+            self.utilization_button,
+            self.group_button,
+            self.ungroup_button,
+            self.verify_button,
+        ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
