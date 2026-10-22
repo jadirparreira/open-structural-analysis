@@ -38,6 +38,13 @@ from .result_renderer import ResultRenderer
 from .snap_geometry import segment_intersections
 
 
+_UTILIZATION_COLOR_BANDS = (
+    "#2563EB", "#1E7FD9", "#1999C4", "#17ACAA", "#20B987",
+    "#35BD61", "#68BF3D", "#9FC32A", "#D0C52A", "#F2D426",
+)
+_UTILIZATION_LIMIT_COLOR = "#FF1717"
+
+
 class SnapMarker(QWidget):
     """Small blue marker identifying the active snap target in the viewport."""
 
@@ -399,6 +406,7 @@ class StructureScene(QWidget):
         self._labels_visibility = {"node": True, "bar": True}
         self._verification_identifier_modes = {"name": False, "utilization": False}
         self._verification_palette_visible = False
+        self._utilization_thermometer_visible = False
         self._solid_members_visible = False
         self._member_releases_visible = True
         self._semirigid_links_visible = True
@@ -4524,18 +4532,29 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def set_verification_palette_visible(self, visible: bool) -> None:
+        was_visible = self._verification_palette_visible
         self._verification_palette_visible = bool(visible)
         self._label_overlay.set_group_visible(
             "verification", self._verification_identifier_visible(),
         )
         if self._verification_identifier_visible():
             self._label_overlay.sync(self.plotter.renderer)
+        if (
+            was_visible != self._verification_palette_visible
+            and self._utilization_thermometer_visible
+            and self._member_batch is not None
+        ):
+            self.update_member_colors(self._member_batch.names)
         self.plotter.render()
 
     def refresh_verification_identifiers(self) -> None:
         self._sync_verification_identifier_labels()
         if self._verification_identifier_visible():
             self.plotter.render()
+
+    def refresh_utilization_thermometer(self) -> None:
+        if self._utilization_thermometer_visible and self._member_batch is not None:
+            self.update_member_colors(self._member_batch.names)
 
     def set_local_axes_visible(self, visible: bool) -> None:
         self._local_axes_visible = bool(visible)
@@ -4763,6 +4782,40 @@ class StructureScene(QWidget):
     def update_member_color(self, member_name: str) -> None:
         self.update_member_colors((member_name,))
 
+    @staticmethod
+    def _utilization_band_color(utilization: object) -> str | None:
+        try:
+            percent = float(utilization) * 100.0
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if np.isnan(percent):
+            return None
+        if percent >= 100.0:
+            return _UTILIZATION_LIMIT_COLOR
+        band = min(max(int(max(percent, 0.0) // 10.0), 0), 9)
+        return _UTILIZATION_COLOR_BANDS[band]
+
+    def _verification_utilization_colors(self) -> dict[str, str]:
+        if not self._utilization_thermometer_visible or not self._verification_palette_visible:
+            return {}
+        colors: dict[str, str] = {}
+        results = getattr(self._model, "verification_results", {})
+        for element in verification_elements(self._model):
+            result = results.get(element.key)
+            if not result or result.get("status") != "checked":
+                continue
+            color = self._utilization_band_color(result.get("utilization"))
+            if color is None:
+                continue
+            for member_name in element.member_names:
+                colors[member_name] = color
+        return colors
+
+    def set_utilization_thermometer_visible(self, visible: bool) -> None:
+        self._utilization_thermometer_visible = bool(visible)
+        if self._member_batch is not None:
+            self.update_member_colors(self._member_batch.names)
+
     def update_member_colors(self, member_names: Iterable[str]) -> None:
         """Apply a color edit to all affected batch cells in one render."""
         batch = self._member_batch
@@ -4770,8 +4823,12 @@ class StructureScene(QWidget):
             self.render_model(self._model)
             return
         positions = {name: index for index, name in enumerate(batch.names)}
+        utilization_colors = self._verification_utilization_colors()
         changed = {
-            positions[name]: np.asarray(pv.Color(self._model.bars[name].color).int_rgb, dtype=np.uint8)
+            positions[name]: np.asarray(
+                pv.Color(utilization_colors.get(name, self._model.bars[name].color)).int_rgb,
+                dtype=np.uint8,
+            )
             for name in dict.fromkeys(member_names)
             if name in positions and name in self._model.bars
         }
@@ -5131,6 +5188,8 @@ class StructureScene(QWidget):
         self._release_actor = None
         self._local_axis_actors = []
         self._add_member_batches()
+        if self._utilization_thermometer_visible and self._verification_palette_visible:
+            self.update_member_colors(batch.names)
 
         self._label_overlay.set_group(
             "bar", batch.label_positions, batch.names,

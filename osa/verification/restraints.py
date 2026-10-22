@@ -251,7 +251,7 @@ class MemberChainRestraints:
 
     def lengths(self, element) -> RestraintLengths:
         _bars, basis, origin, _element_interval = self._element_chain(element)
-        axis, local_y, local_z = (np.asarray(vector, dtype=float) for vector in basis)
+        _axis, local_y, local_z = (np.asarray(vector, dtype=float) for vector in basis)
         _chain_bars, stations, length, target_interval, component_names = (
             self._connected_collinear_chain(element, basis, origin)
         )
@@ -304,30 +304,20 @@ class MemberChainRestraints:
             for mode in ("Ly", "Lz")
         }
 
-        # The simplified bar rule does not infer torsional restraint from a
-        # transverse member. Keep these lengths finite and based on the full
-        # collinear chain unless explicit nodal twist supports split it.
-        torsional_restraints = {}
-        for node_name, position in stations.items():
-            node = self.model.nodes[node_name]
-            if self._direction_locked(node, axis, 3):
-                torsional_restraints[node_name] = {
-                    "position_m": position,
-                    "accepted": True,
-                    "reason": "apoio nodal rígido explícito à torção",
-                }
-        modes["Lt"] = self._mode(
-            stations, length, target_interval, torsional_restraints, "Lt",
+        # Lb follows the same directional restraint intervals as Ly. Lt is
+        # conservatively governed by the shorter of the Ly and Lz intervals.
+        modes["Lb"] = {**modes["Ly"], "source_mode": "Ly"}
+        torsional_source = min(
+            ("Ly", "Lz"), key=lambda mode: modes[mode]["length_m"],
         )
-        modes["Lb"] = self._mode(
-            stations, length, target_interval, torsional_restraints, "Lb",
-        )
+        modes["Lt"] = {**modes[torsional_source], "source_mode": torsional_source}
 
         notes = (
             "Comprimentos calculados percorrendo barras colineares conectadas, mesmo fora do grupo de verificação.",
             f"Barra conectada conta como travamento direcional quando atende ao ângulo mínimo de {self._min_brace_angle_degrees:g}°; o nó não divide os outros comprimentos.",
             "A regra é geométrica e simplificada: não verifica rigidez ou resistência da barra de travamento, ligações, ancoragens nem a contenção da mesa comprimida.",
-            "Lt e Lb não são reduzidos apenas pela presença de uma barra transversal; são mantidos finitos pelo comprimento da cadeia, salvo apoio nodal explícito à torção.",
+            "Lb usa o mesmo comprimento destravado calculado para Ly.",
+            "Lt é o menor entre Ly e Lz, governado pelo modo mais curto.",
         )
         return RestraintLengths(
             {mode: data["length_m"] for mode, data in modes.items()},

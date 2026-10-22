@@ -433,6 +433,7 @@ class MainWindow(QMainWindow):
             return
         self.model.verification_results = payload["results"]
         self.refresh_scene()
+        self.scene.refresh_utilization_thermometer()
         self.refresh_selected_property_panel(self.palette.active_group)
         self.verification_panel.succeed(payload["summary"])
         self.history.append(

@@ -468,6 +468,33 @@ class VerificationTopPalette(QFrame):
             "percent.svg", "Taxa de utilização", "utilization",
         )
         layout.addWidget(self.utilization_button)
+        self.utilization_thermometer_button = QToolButton(self)
+        self.utilization_thermometer_button.setObjectName("paletteUtilization")
+        self.utilization_thermometer_button.setFixedSize(24, 24)
+        thermometer_icon = QIcon(
+            str(Path(__file__).parents[1] / "resources" / "icons" / "utilization-thermometer.svg")
+        )
+        self.utilization_thermometer_button.setIcon(thermometer_icon)
+        self.utilization_thermometer_button.setIconSize(QSize(19, 19))
+        self.utilization_thermometer_button.setCheckable(True)
+        utilization_thermometer_tooltip = "Termômetro de utilização"
+        self.utilization_thermometer_button.setToolTip(utilization_thermometer_tooltip)
+        self.utilization_thermometer_button.setProperty(
+            "paletteTooltip", utilization_thermometer_tooltip
+        )
+        self.utilization_thermometer_button.setAccessibleName(utilization_thermometer_tooltip)
+        self.utilization_thermometer_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.utilization_thermometer_button.toggled.connect(
+            self._window.scene.set_utilization_thermometer_visible
+        )
+        self.utilization_thermometer_button.installEventFilter(self)
+        self.utilization_thermometer_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        layout.addWidget(self.utilization_thermometer_button)
         separator = QFrame(self)
         separator.setFrameShape(QFrame.Shape.VLine)
         separator.setFrameShadow(QFrame.Shadow.Plain)
@@ -564,6 +591,7 @@ class VerificationTopPalette(QFrame):
         if watched in (
             self.name_button,
             self.utilization_button,
+            self.utilization_thermometer_button,
             self.group_button,
             self.ungroup_button,
             self.verify_button,
