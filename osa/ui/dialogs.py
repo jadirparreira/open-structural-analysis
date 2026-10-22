@@ -1034,6 +1034,11 @@ class ProgramSettingsDialog(QDialog):
             "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
             "QLineEdit#mcpEndpoint { min-height: 32px; padding: 2px 9px; border: 1px solid #d0d7de; "
             "border-radius: 6px; background: #ffffff; color: #57606a; }"
+            "QFrame#braceRestraintAngleBox { border: 1px solid #d0d7de; border-radius: 6px; "
+            "background: #ffffff; }"
+            "QFrame#braceRestraintAngleBox QDoubleSpinBox { border: 0; background: transparent; "
+            "color: #24292f; padding: 2px 9px; }"
+            "QFrame#braceRestraintAngleBox QLabel { color: #57606a; padding-right: 9px; }"
             "QPushButton#copyEndpoint { min-height: 32px; padding: 4px 12px; border: 1px solid #d0d7de; "
             "border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#copyEndpoint:hover { background: #eaeef2; }"
@@ -1167,6 +1172,43 @@ class ProgramSettingsDialog(QDialog):
         )
         split_section.addWidget(self._member_split_switch, 0, Qt.AlignmentFlag.AlignLeft)
         members_layout.addLayout(split_section)
+        members_layout.addSpacing(12)
+
+        brace_angle_section = QVBoxLayout()
+        brace_angle_section.setContentsMargins(0, 0, 0, 0)
+        brace_angle_section.setSpacing(8)
+        brace_angle_label = QLabel("Ângulo mínimo para promover travamento entre barras")
+        brace_angle_label.setObjectName("hint")
+        brace_angle_label.setWordWrap(True)
+        brace_angle_label.setAccessibleName(
+            "Ângulo mínimo para promover travamento entre barras"
+        )
+        brace_angle_section.addWidget(brace_angle_label)
+        brace_angle_box = QFrame()
+        brace_angle_box.setObjectName("braceRestraintAngleBox")
+        brace_angle_box.setFixedSize(112, 46)
+        brace_angle_box_layout = QHBoxLayout(brace_angle_box)
+        brace_angle_box_layout.setContentsMargins(0, 0, 0, 0)
+        brace_angle_box_layout.setSpacing(0)
+        self._brace_restraint_angle = QDoubleSpinBox()
+        self._brace_restraint_angle.setRange(1.0, 90.0)
+        self._brace_restraint_angle.setDecimals(1)
+        self._brace_restraint_angle.setSingleStep(1.0)
+        self._brace_restraint_angle.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._brace_restraint_angle.setMinimumWidth(0)
+        self._brace_restraint_angle.setValue(
+            self.window.minimum_bar_restraint_angle_degrees
+        )
+        self._brace_restraint_angle.setAccessibleName(
+            "Ângulo mínimo para promover travamento entre barras"
+        )
+        self._brace_restraint_angle.valueChanged.connect(
+            self.window.set_minimum_bar_restraint_angle_degrees
+        )
+        brace_angle_box_layout.addWidget(self._brace_restraint_angle, 1)
+        brace_angle_box_layout.addWidget(QLabel("°"))
+        brace_angle_section.addWidget(brace_angle_box, 0, Qt.AlignmentFlag.AlignLeft)
+        members_layout.addLayout(brace_angle_section)
         members_layout.addStretch(1)
         members_close_button = QPushButton("Fechar")
         members_close_button.setObjectName("closeProperties")

@@ -4457,9 +4457,9 @@ class StructureScene(QWidget):
             elif result.get("status") == "checked":
                 utilization = result.get("utilization")
                 rate = (
-                    f"{float(utilization):.0%}"
-                    if utilization is not None and float(utilization) <= 1.0
-                    else "X"
+                    "+1000%" if utilization is not None and float(utilization) > 10.0
+                    else f"{float(utilization):.0%}" if utilization is not None
+                    else "N/D"
                 )
             else:
                 rate = "X"

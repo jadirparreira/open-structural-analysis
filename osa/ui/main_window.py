@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
     _project_file_filter = "Modelo OSA (*.osa)"
     _interface_commands = frozenset({
         "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
-        "nodeforce", "nodemoment", "memberforce", "membermoment", "group",
+        "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
         "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
         "solids", "releases", "semirigid", "supports", "scene", "configreference",
@@ -94,6 +94,8 @@ class MainWindow(QMainWindow):
         self._verification_thread: QThread | None = None
         self._verification_worker: VerificationWorker | None = None
         self._verification_revision: int | None = None
+        self._verification_group_revision: int | None = None
+        self._verification_restraint_angle_degrees: float | None = None
         self._verification_result_ids: tuple[int, ...] | None = None
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
@@ -122,6 +124,8 @@ class MainWindow(QMainWindow):
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        self._minimum_bar_restraint_angle_degrees = self._read_minimum_bar_restraint_angle()
+        self.model.minimum_bar_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
         split_mode = self._program_settings.value(
             "members/intermediateSnapSplit",
             self._program_settings.value("members/perpendicularSplit", "nao"),
@@ -387,6 +391,8 @@ class MainWindow(QMainWindow):
             return
         self.verification_panel.start()
         self._verification_revision = self.model.revision
+        self._verification_group_revision = self.model.verification_group_revision
+        self._verification_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
         self._verification_result_ids = tuple(id(result) for result in self.model.analysis_results)
         restraint_cache = self.model._restraint_lengths_cache
         self.model._restraint_lengths_cache = None
@@ -394,6 +400,8 @@ class MainWindow(QMainWindow):
             snapshot = copy.deepcopy(self.model)
         except Exception as error:  # noqa: BLE001
             self._verification_revision = None
+            self._verification_group_revision = None
+            self._verification_restraint_angle_degrees = None
             self._verification_result_ids = None
             self.verification_panel.fail(str(error) or "não foi possível preparar o modelo para verificação")
             return
@@ -416,6 +424,8 @@ class MainWindow(QMainWindow):
     def _verification_finished(self, payload: object) -> None:
         current_result_ids = tuple(id(result) for result in self.model.analysis_results)
         if (self._verification_revision != self.model.revision
+                or self._verification_group_revision != self.model.verification_group_revision
+                or self._verification_restraint_angle_degrees != self._minimum_bar_restraint_angle_degrees
                 or self._verification_result_ids != current_result_ids):
             self.verification_panel.fail(
                 "O modelo foi alterado durante a verificação. Execute as verificações novamente."
@@ -438,6 +448,8 @@ class MainWindow(QMainWindow):
         self._verification_worker = None
         self._verification_thread = None
         self._verification_revision = None
+        self._verification_group_revision = None
+        self._verification_restraint_angle_degrees = None
         self._verification_result_ids = None
         if thread is not None:
             thread.deleteLater()
@@ -591,6 +603,36 @@ class MainWindow(QMainWindow):
     @property
     def member_intermediate_snap_split_mode(self) -> str:
         return self._member_intermediate_snap_split_mode
+
+    @property
+    def minimum_bar_restraint_angle_degrees(self) -> float:
+        return self._minimum_bar_restraint_angle_degrees
+
+    def _read_minimum_bar_restraint_angle(self) -> float:
+        value = self._program_settings.value("members/minimumBraceRestraintAngleDegrees", 30.0)
+        try:
+            angle = float(value)
+        except (TypeError, ValueError):
+            angle = 30.0
+        return min(90.0, max(1.0, angle))
+
+    def set_minimum_bar_restraint_angle_degrees(self, angle: float) -> None:
+        angle = min(90.0, max(1.0, float(angle)))
+        if angle == self._minimum_bar_restraint_angle_degrees:
+            return
+        self._minimum_bar_restraint_angle_degrees = angle
+        self.model.minimum_bar_restraint_angle_degrees = angle
+        self.model._restraint_lengths_cache = None
+        self._program_settings.setValue("members/minimumBraceRestraintAngleDegrees", angle)
+        self._program_settings.sync()
+        if self.model.verification_results:
+            self.model.verification_results.clear()
+            self.refresh_scene()
+            self.refresh_selected_property_panel(self.palette.active_group)
+            self.verification_panel.status.setText(
+                "Ângulo de travamento alterado. Execute a verificação novamente."
+            )
+            self.verification_panel.summary.clear()
 
     def set_member_intermediate_snap_split_mode(self, mode: str) -> None:
         if mode not in {"sim", "perguntar", "nao"}:
@@ -1227,6 +1269,19 @@ class MainWindow(QMainWindow):
         self.history.append("> <b>Agrupar elementos</b> <span style='color:#57606a'>(Use Ctrl para selecionar barras alinhadas; ENTER confirma, ESC cancela)</span>")
         self.scene.plotter.setFocus()
 
+    def start_ungroup_verification_elements(self) -> None:
+        """Select a member of a verification group and remove that group."""
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self.scene.set_member_placement_mode(False)
+        self._command_mode = "verification_ungroup_selection"
+        self.scene.set_selection_highlight(())
+        self.selected_elements = []
+        self.selected = None
+        self.properties.hide()
+        self.history.append("> <b>Desagrupar elementos</b> <span style='color:#57606a'>(Selecione uma barra do grupo; ESC cancela)</span>")
+        self.scene.plotter.setFocus()
+
     def start_copy_member_properties(self) -> None:
         """Choose a reference member and then any number of destination members."""
         self._remember_last_command(self.start_copy_member_properties)
@@ -1608,6 +1663,11 @@ class MainWindow(QMainWindow):
             self.start_group_verification_elements()
             return True
 
+        if name == "ungroup":
+            self.palette.show_group("Memorial")
+            self.start_ungroup_verification_elements()
+            return True
+
         if name in geometry_visibility:
             self.palette.show_group("Geometria")
             self.top_icon_palette.toggle_visibility_command(geometry_visibility[name])
@@ -1967,13 +2027,14 @@ class MainWindow(QMainWindow):
             "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "copy_elements_selection",
             "copy_elements_reference_placement", "copy_elements_destination_placement",
-            "verification_group_selection",
+            "verification_group_selection", "verification_ungroup_selection",
         }:
             labels = {
                 "reverse_member_selection": "Inverter barra",
                 "join_member_selection": "Unir barras",
                 "copy_member_properties_selection": "Copiar propriedades",
                 "verification_group_selection": "Agrupar elementos",
+                "verification_ungroup_selection": "Desagrupar elementos",
                 "copy_elements_selection": "Copiar",
                 "copy_elements_reference_placement": "Copiar",
                 "copy_elements_destination_placement": "Copiar",
@@ -1995,7 +2056,7 @@ class MainWindow(QMainWindow):
                 self.scene.set_member_placement_mode(False)
                 self.scene.set_selection_highlight(())
                 self.clear_selection()
-            if label == "Agrupar elementos":
+            if label in {"Agrupar elementos", "Desagrupar elementos"}:
                 self.scene.cancel_ctrl_selection()
                 self.clear_selection()
             result_message = (
@@ -2186,6 +2247,23 @@ class MainWindow(QMainWindow):
         self.reference_panel.hide()
         self.selected = kind, name
         self.selected_elements = [(kind, name)]
+        if self._command_mode == "verification_ungroup_selection":
+            if kind != "bar":
+                self.history.append("> <b>Desagrupar elementos</b> <span style='color:#8c959f'>(Selecione uma barra que pertença a um grupo)</span>")
+                return
+            try:
+                group = self.model.ungroup_verification_elements(name)
+            except ValueError as error:
+                self.history.append(f"> <b>Desagrupar elementos</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                return
+            self._command_mode = None
+            self.history.append(
+                "> <b>Desagrupar elementos</b> <span style='color:#57606a'>"
+                f"({len(group['members'])} elementos desagrupados)</span>"
+            )
+            self.clear_selection()
+            self.refresh_scene()
+            return
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             return
         if self._command_mode == "action_selection":
@@ -2274,6 +2352,7 @@ class MainWindow(QMainWindow):
         if self._command_mode in {
             "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
             "reverse_member_selection", "join_member_selection", "action_selection", "verification_group_selection",
+            "verification_ungroup_selection",
         }:
             kinds = {"node", "bar", "rigid_bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:

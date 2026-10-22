@@ -489,6 +489,20 @@ class VerificationTopPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         layout.addWidget(self.group_button)
+        self.ungroup_button = QToolButton(self)
+        self.ungroup_button.setFixedSize(24, 24)
+        self.ungroup_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "ungroup-elements.svg"))
+        )
+        self.ungroup_button.setIconSize(QSize(19, 19))
+        tooltip = _command_tooltip("Desagrupar elementos", "UNGROUP")
+        self.ungroup_button.setToolTip(tooltip)
+        self.ungroup_button.setProperty("paletteTooltip", tooltip)
+        self.ungroup_button.setAccessibleName("Desagrupar elementos")
+        self.ungroup_button.clicked.connect(window.start_ungroup_verification_elements)
+        self.ungroup_button.installEventFilter(self)
+        self.ungroup_button.setStyleSheet(self.group_button.styleSheet())
+        layout.addWidget(self.ungroup_button)
         self.verify_button = QToolButton(self)
         self.verify_button.setFixedSize(24, 24)
         self.verify_button.setIcon(

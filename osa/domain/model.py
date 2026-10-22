@@ -49,6 +49,7 @@ class StructuralModel:
         self.combination_groups_initialized: set[str] = set()
         self.analysis_results: list[AnalysisResult] = []
         self.verification_results: dict[str, dict[str, object]] = {}
+        self.verification_group_revision = 0
         self._restraint_lengths_cache = None
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
@@ -662,8 +663,29 @@ class StructuralModel:
                     raise ValueError("As barras devem estar alinhadas na mesma reta.")
         group = {"members": names, "name": ""}
         self.verification_element_groups.append(group)
-        self._touch()
+        self._touch_verification_group(names)
         return group
+
+    def ungroup_verification_elements(self, member_name: str) -> dict[str, object]:
+        """Remove the verification group containing a selected member."""
+        group = self.verification_group_for(member_name)
+        if group is None:
+            raise ValueError(f"A barra '{member_name}' não pertence a um grupo de elementos.")
+        self.verification_element_groups.remove(group)
+        self._touch_verification_group(tuple(group["members"]))
+        return group
+
+    def _touch_verification_group(self, member_names: tuple[str, ...]) -> None:
+        """Invalidate only verification results whose element identity changed."""
+        affected = set(member_names)
+        for key in tuple(self.verification_results):
+            if key.startswith("bar:") and key[4:] in affected:
+                del self.verification_results[key]
+            elif key.startswith("group:") and affected.intersection(key[6:].split("|")):
+                del self.verification_results[key]
+        # Grouping changes memorial identities, not the analyzed structure.
+        self.verification_group_revision += 1
+        self.view_revision += 1
 
     def verification_group_for(self, member_name: str) -> dict[str, object] | None:
         return next((group for group in self.verification_element_groups if member_name in group["members"]), None)
