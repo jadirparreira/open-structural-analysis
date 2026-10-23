@@ -1,27 +1,29 @@
-"""Orthographic, hidden-line previews of a bounded solid-model view."""
+"""2D vector drawings projected from bounded solid-model views."""
 
 from __future__ import annotations
+
+from typing import ClassVar
 
 import numpy as np
 import pyvista as pv
 import vtk
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtWidgets import QFrame
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFrame, QVBoxLayout
-from pyvistaqt import QtInteractor
-
+from osa.rendering.detailing_2d import visible_segments_from_meshes
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
 from osa.sections import section_shape
 
 
 class DetailingViewPreview(QFrame):
-    """Render visible solid edges inside the selected plane's depth range."""
+    """Paint a 2D vector drawing of the visible solid edges in a view."""
 
-    _plane_data = {
-        "XY": ((0.0, 0.0, 1.0), (0, 1), 2, (0.0, 1.0, 0.0)),
-        "XZ": ((0.0, 1.0, 0.0), (0, 2), 1, (0.0, 0.0, 1.0)),
-        "YZ": ((1.0, 0.0, 0.0), (1, 2), 0, (0.0, 0.0, 1.0)),
+    _plane_data: ClassVar[dict] = {
+        "XY": ((0.0, 0.0, 1.0), 2, (0.0, 1.0, 0.0)),
+        "XZ": ((0.0, 1.0, 0.0), 1, (0.0, 0.0, 1.0)),
+        "YZ": ((1.0, 0.0, 0.0), 0, (0.0, 0.0, 1.0)),
     }
 
     def __init__(self, parent=None) -> None:
@@ -32,23 +34,20 @@ class DetailingViewPreview(QFrame):
             "QFrame#detailingViewPreview { background: #ffffff; "
             "border: 1px solid #d0d7de; border-radius: 6px; }"
         )
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
-        layout.setSpacing(0)
-        self._plotter = QtInteractor(
-            self,
-            off_screen=False,
-            multi_samples=0,
-            auto_update=False,
-        )
-        self._plotter.set_background("white")
-        self._plotter.enable_parallel_projection()
-        layout.addWidget(self._plotter)
         self._renderer = SolidMemberRenderer()
         self._model_cache_key = None
         self._solid_meshes: list[pv.PolyData] = []
-        self._pending_render = False
-        self._pending_view_render = None
+        self._segments_2d: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        self._bounds_2d: tuple[float, float, float, float] | None = None
+        self._zoom = 1.0
+        self._pan = QPointF()
+        self._drag_position: QPointF | None = None
+        self.setMouseTracking(True)
+
+    @property
+    def segments_2d(self) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+        """Visible vector linework in model units, suitable for a DXF writer."""
+        return tuple(self._segments_2d)
 
     def set_view(
         self,
@@ -97,12 +96,11 @@ class DetailingViewPreview(QFrame):
                 local_mesh.transform(transform, inplace=True)
                 solid_meshes.append(local_mesh)
             normal = (0.0, 0.0, 1.0)
-            display_axes = (0, 1)
             normal_axis = 2
             view_up = (0.0, 1.0, 0.0)
             coordinate_value = 0.0
         else:
-            normal, display_axes, normal_axis, view_up = plane_data
+            normal, normal_axis, view_up = plane_data
             solid_meshes = self._solid_meshes
             coordinate_value = float(coordinate)
         upper = coordinate_value + max(0.0, float(upper_offset_cm)) / 100.0
@@ -122,33 +120,23 @@ class DetailingViewPreview(QFrame):
             self._clear_preview()
             return
 
-        render_args = (
-            clipped_meshes,
-            display_axes,
-            normal,
-            normal_axis,
-            lower,
-            upper,
-            view_up,
-            orientation,
-            float(rotation_degrees),
-        )
-        if not self._plotter.isVisible():
-            self._pending_view_render = render_args
-            self._pending_render = True
-            return
         try:
-            self._render_visible_lines(*render_args)
-        except Exception:
+            self._render_visible_lines(
+                clipped_meshes,
+                normal,
+                view_up,
+                orientation,
+                float(rotation_degrees),
+            )
+        except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
 
     def _clear_preview(self) -> None:
-        self._pending_view_render = None
-        self._pending_render = False
-        self._plotter.clear()
-        self._plotter.set_background("white")
-        if self._plotter.isVisible():
-            self._plotter.render()
+        self._segments_2d.clear()
+        self._bounds_2d = None
+        self._zoom = 1.0
+        self._pan = QPointF()
+        self.update()
 
     def _ensure_model_meshes(self, model) -> None:
         cache_key = (id(model), getattr(model, "revision", None))
@@ -236,109 +224,126 @@ class DetailingViewPreview(QFrame):
     def _render_visible_lines(
         self,
         meshes: list[pv.PolyData],
-        display_axes: tuple[int, int],
         normal: tuple[float, float, float],
-        normal_axis: int,
-        lower: float,
-        upper: float,
         view_up: tuple[float, float, float],
         orientation: str,
         rotation_degrees: float,
     ) -> None:
-        """Render the clipped solids as depth-tested, uniform-weight edges."""
-        points = np.concatenate([mesh.points for mesh in meshes], axis=0)
-        min_u, max_u = points[:, display_axes[0]].min(), points[:, display_axes[0]].max()
-        min_v, max_v = points[:, display_axes[1]].min(), points[:, display_axes[1]].max()
-        span_u = max(float(max_u - min_u), 1e-3)
-        span_v = max(float(max_v - min_v), 1e-3)
-        center = [0.0, 0.0, 0.0]
-        center[display_axes[0]] = float((min_u + max_u) / 2.0)
-        center[display_axes[1]] = float((min_v + max_v) / 2.0)
-        center[normal_axis] = (lower + upper) / 2.0
-
+        """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
         if orientation == "Inferior para superior":
             camera_direction = -camera_direction
-        # Roll the camera around its viewing axis so the orthographic drawing
-        # rotates in the sheet without changing the clipping plane.
-        view_direction = -camera_direction
-        base_up = np.asarray(view_up, dtype=float)
-        angle = -np.deg2rad(float(rotation_degrees))
-        view_up = (
-            base_up * np.cos(angle)
-            + np.cross(view_direction, base_up) * np.sin(angle)
-            + view_direction * np.dot(view_direction, base_up) * (1.0 - np.cos(angle))
-        ).tolist()
-        depth = max(upper - lower, 1e-3)
-        distance = max(span_u, span_v, depth) * 2.0 + 1.0
-        camera_position = np.asarray(center) + camera_direction * distance
-
-        plotter = self._plotter
-        plotter.clear()
-        plotter.set_background("white")
-        plotter.enable_parallel_projection()
-        aspect = max(plotter.width(), 1) / max(plotter.height(), 1)
-        rotated_span_u = abs(np.cos(angle)) * span_u + abs(np.sin(angle)) * span_v
-        rotated_span_v = abs(np.sin(angle)) * span_u + abs(np.cos(angle)) * span_v
-        parallel_scale = max(rotated_span_v * 0.56, rotated_span_u / aspect * 0.56)
-        # Opaque white faces write to the depth buffer while blending into the
-        # sheet background, hiding rear lines without drawing shaded surfaces.
-        for mesh in meshes:
-            plotter.add_mesh(
-                mesh,
-                color="#ffffff",
-                lighting=False,
-                show_edges=False,
-                pickable=False,
-                reset_camera=False,
-                render=False,
-            )
-        for mesh in meshes:
-            edges = mesh.extract_feature_edges(
-                boundary_edges=True,
-                feature_edges=True,
-                manifold_edges=False,
-                non_manifold_edges=True,
-                feature_angle=25.0,
-            )
-            if not edges.n_lines:
-                continue
-            actor = plotter.add_mesh(
-                edges,
-                color="#24292f",
-                line_width=1.35,
-                lighting=False,
-                pickable=False,
-                reset_camera=False,
-                render=False,
-            )
-            mapper = actor.GetMapper()
-            mapper.SetResolveCoincidentTopologyToPolygonOffset()
-            mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
-
-        plotter.camera_position = (
-            camera_position.tolist(),
-            center,
+        self._segments_2d = visible_segments_from_meshes(
+            meshes,
+            camera_direction,
             view_up,
+            rotation_degrees,
         )
-        plotter.camera.parallel_projection = True
-        plotter.camera.parallel_scale = parallel_scale
-        plotter.reset_camera_clipping_range()
-        plotter.render()
-        self._pending_view_render = None
-        self._pending_render = False
+        if self._segments_2d:
+            points_2d = np.asarray(
+                [point for segment in self._segments_2d for point in segment],
+                dtype=float,
+            )
+            self._bounds_2d = (
+                float(points_2d[:, 0].min()),
+                float(points_2d[:, 0].max()),
+                float(points_2d[:, 1].min()),
+                float(points_2d[:, 1].max()),
+            )
+        else:
+            self._bounds_2d = None
+        self._zoom = 1.0
+        self._pan = QPointF()
+        self.update()
 
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        if self._pending_render:
-            QTimer.singleShot(0, self._render_pending_preview)
-
-    def _render_pending_preview(self) -> None:
-        render_args = self._pending_view_render
-        if not self._pending_render or render_args is None or not self._plotter.isVisible():
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.contentsRect(), QColor("#ffffff"))
+        if self._bounds_2d is None:
+            painter.end()
             return
-        try:
-            self._render_visible_lines(*render_args)
-        except Exception:
-            self._clear_preview()
+        painter.setPen(QPen(QColor("#24292f"), 1.0))
+        for start, end in self._segments_2d:
+            painter.drawLine(self._to_screen(start), self._to_screen(end))
+        painter.end()
+
+    def _fit_scale(self) -> float:
+        if self._bounds_2d is None:
+            return 1.0
+        min_x, max_x, min_y, max_y = self._bounds_2d
+        span_x = max(max_x - min_x, 1e-6)
+        span_y = max(max_y - min_y, 1e-6)
+        rect = self.contentsRect().adjusted(24, 24, -24, -24)
+        return min(max(rect.width(), 1) / span_x, max(rect.height(), 1) / span_y)
+
+    def _drawing_center(self) -> tuple[float, float]:
+        if self._bounds_2d is None:
+            return 0.0, 0.0
+        min_x, max_x, min_y, max_y = self._bounds_2d
+        return (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+
+    def _to_screen(self, point: tuple[float, float]) -> QPointF:
+        center_x, center_y = self._drawing_center()
+        rect = self.contentsRect()
+        scale = self._fit_scale() * self._zoom
+        return QPointF(
+            rect.center().x() + self._pan.x() + (point[0] - center_x) * scale,
+            rect.center().y() + self._pan.y() - (point[1] - center_y) * scale,
+        )
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self._bounds_2d is None:
+            event.ignore()
+            return
+        cursor = event.position()
+        old_scale = self._fit_scale() * self._zoom
+        center_x, center_y = self._drawing_center()
+        rect_center = self.contentsRect().center()
+        world_x = center_x + (cursor.x() - rect_center.x() - self._pan.x()) / old_scale
+        world_y = center_y - (cursor.y() - rect_center.y() - self._pan.y()) / old_scale
+        steps = event.angleDelta().y() / 120.0
+        self._zoom = min(100.0, max(0.05, self._zoom * (1.15**steps)))
+        new_scale = self._fit_scale() * self._zoom
+        self._pan = QPointF(
+            cursor.x() - rect_center.x() - (world_x - center_x) * new_scale,
+            cursor.y() - rect_center.y() + (world_y - center_y) * new_scale,
+        )
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+            self._drag_position = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_position is not None:
+            position = event.position()
+            self._pan += position - self._drag_position
+            self._drag_position = position
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+            self._drag_position = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if self._bounds_2d is not None:
+            self._zoom = 1.0
+            self._pan = QPointF()
+            self.update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
