@@ -2,6 +2,9 @@
 import copy
 import math
 import threading
+import uuid
+
+import numpy as np
 
 from PySide6.QtCore import QSettings, QThread, Signal, Slot
 
@@ -174,6 +177,7 @@ class MainWindow(QMainWindow):
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_measurement_point)
+        self.scene.placement_point_clicked.connect(self._handle_detail_plane_placement_point)
         self._make_shortcuts()
         self.palette = FloatingPalette(self)
         self.palette.reposition()
@@ -514,6 +518,81 @@ class MainWindow(QMainWindow):
         dialog = DetailingViewsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        add_plane_requested = dialog._add_plane_requested
+        dialog.deleteLater()
+        if add_plane_requested:
+            self._start_detail_plane_placement()
+
+    def _start_detail_plane_placement(self) -> None:
+        """Collect three 3D points to define a custom detailing plane."""
+        self._detail_plane_points = []
+        self._command_mode = "detail_plane_placement"
+        self.scene.set_detail_plane_point_mode(True)
+        self.history.append(
+            "> <b>Adicionar plano</b> "
+            "<span style='color:#57606a'>(Clique em 3 pontos não colineares no modelo; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _handle_detail_plane_placement_point(self, point: object) -> None:
+        if self._command_mode != "detail_plane_placement":
+            return
+        coordinates = np.asarray(tuple(float(value) for value in point), dtype=float)
+        if not hasattr(self, "_detail_plane_points"):
+            self._detail_plane_points = []
+        if self._detail_plane_points:
+            if float(np.linalg.norm(coordinates - self._detail_plane_points[-1])) <= 1e-6:
+                self.history.append(
+                    "> <b>Adicionar plano</b> "
+                    "<span style='color:#8c959f'>(Escolha pontos diferentes)</span>"
+                )
+                return
+        self._detail_plane_points.append(coordinates)
+        if len(self._detail_plane_points) < 3:
+            self.history.append(
+                "> <b>Adicionar plano</b> "
+                f"<span style='color:#57606a'>(Ponto {len(self._detail_plane_points)} de 3 selecionado; "
+                "clique no próximo)</span>"
+            )
+            return
+
+        first, second, third = self._detail_plane_points
+        first_direction = second - first
+        second_direction = third - first
+        cross = np.cross(first_direction, second_direction)
+        scale = float(np.linalg.norm(first_direction) * np.linalg.norm(second_direction))
+        if scale <= 1e-12 or float(np.linalg.norm(cross)) <= scale * 1e-6:
+            self._detail_plane_points.pop()
+            self.history.append(
+                "> <b>Adicionar plano</b> "
+                "<span style='color:#8c959f'>(Os três pontos ficaram alinhados; escolha outro terceiro ponto)</span>"
+            )
+            return
+
+        model_key = id(self.model)
+        custom_planes = getattr(self, "_detailing_custom_planes", None)
+        if custom_planes is None:
+            custom_planes = self._detailing_custom_planes = {}
+        records = custom_planes.setdefault(model_key, [])
+        record_id = uuid.uuid4().hex
+        record = {
+            "id": record_id,
+            "name": f"Plano personalizado {len(records) + 1}",
+            "points": tuple(tuple(float(value) for value in coordinates) for coordinates in self._detail_plane_points),
+        }
+        records.append(record)
+        self._detailing_preferred_view_key = (model_key, f"custom:{record_id}")
+        self._detail_plane_points = []
+        self._command_mode = None
+        self.scene.set_detail_plane_point_mode(False)
+        self.history.append(
+            f"> <b>Adicionar plano</b> <span style='color:#57606a'>({record['name']} criado)</span>"
+        )
+        QTimer.singleShot(0, self._finish_detail_plane_placement)
+
+    def _finish_detail_plane_placement(self) -> None:
+        self.refresh_scene()
+        self.open_detailing_views()
 
     def open_about(self) -> None:
         dialog = AboutDialog(self)
@@ -2060,6 +2139,15 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "detail_plane_placement":
+            self._command_mode = None
+            self._detail_plane_points = []
+            self.scene.set_detail_plane_point_mode(False)
+            self.history.append(
+                "> <b>Adicionar plano</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            QTimer.singleShot(0, self.open_detailing_views)
+            return
         if self._command_mode == "reference_axis_placement":
             self._command_mode = None
             self._reference_axis_placement_direction = None

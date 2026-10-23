@@ -993,6 +993,14 @@ class DetailingViewsDialog(QDialog):
             "QLabel#detailViewTitle { color: #57606a; font-size: 14px; font-weight: 400; "
             "background: transparent; }"
             "QLabel#detailViewSystemName { color: #57606a; font-size: 10px; background: transparent; }"
+            "QPushButton#detailViewAddPlaneButton { min-height: 36px; padding: 4px 10px; "
+            "border: 1px solid #d0d7de; border-radius: 6px; color: #24292f; background: #ffffff; }"
+            "QPushButton#detailViewAddPlaneButton:hover { background: #eaeef2; }"
+            "QToolButton#detailViewRemovePlaneButton { background: #ffffff; "
+            "border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QToolButton#detailViewRemovePlaneButton:hover { background: #eaeef2; }"
+            "QToolButton#detailViewRemovePlaneButton:disabled { background: #f6f8fa; "
+            "border-color: #eaeef2; }"
             "QLineEdit#detailViewNameInput { min-height: 34px; border: 1px solid #d0d7de; "
             "border-radius: 6px; padding: 2px 9px; background: #ffffff; color: #24292f; }"
             "QLineEdit#detailViewNameInput:focus { border: 2px solid #0969da; }"
@@ -1029,16 +1037,26 @@ class DetailingViewsDialog(QDialog):
         if parent is not None:
             if not hasattr(parent, "_detailing_view_names"):
                 parent._detailing_view_names = {}
+            if not hasattr(parent, "_detailing_view_settings"):
+                parent._detailing_view_settings = {}
+            if not hasattr(parent, "_detailing_custom_planes"):
+                parent._detailing_custom_planes = {}
             saved_view_names = parent._detailing_view_names
+            saved_view_settings = parent._detailing_view_settings
+            saved_custom_planes = parent._detailing_custom_planes
         else:
             saved_view_names = {}
+            saved_view_settings = {}
+            saved_custom_planes = {}
         self._view_items = {}
         self._view_buttons = {}
         self._view_titles = {}
         self._view_fallbacks = {}
         self._view_definitions = {}
+        self._view_is_custom = {}
         self._pending_view_name_key = None
         self._pending_view_name = ""
+        self._add_plane_requested = False
         view_keys = []
         for plane, direction in (("XY", "Z"), ("XZ", "Y"), ("YZ", "X")):
             ordered_axes = sorted(
@@ -1054,40 +1072,70 @@ class DetailingViewsDialog(QDialog):
                 fallback_name = f"Plano {plane} com {direction} em {coordinate_label}cm"
                 view_key = (model_key, system_name)
                 view_keys.append(view_key)
-                item = QListWidgetItem()
-                item.setSizeHint(QSize(0, 54))
-                view_list.addItem(item)
-                button = QPushButton()
-                button.setObjectName("detailViewButton")
-                button.setCheckable(True)
-                button.setCursor(Qt.CursorShape.PointingHandCursor)
-                button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                button.setAutoDefault(False)
-                button_layout = QVBoxLayout(button)
-                button_layout.setContentsMargins(0, 0, 0, 0)
-                button_layout.setSpacing(1)
-                title_label = ScrollingNameLabel(
-                    saved_view_names.get(view_key, "").strip() or fallback_name
+                self._append_detail_view(
+                    view_list,
+                    view_key,
+                    plane,
+                    float(axis.value),
+                    system_name,
+                    fallback_name,
+                    saved_view_names,
+                    is_custom=False,
                 )
-                title_label.setObjectName("detailViewTitle")
-                system_label = QLabel(system_name)
-                system_label.setObjectName("detailViewSystemName")
-                button_layout.addWidget(title_label)
-                button_layout.addWidget(system_label)
-                view_list.setItemWidget(item, button)
-                button.clicked.connect(
-                    lambda _checked=False, key=view_key: self._select_detail_view(key)
-                )
-                self._view_items[view_key] = item
-                self._view_buttons[view_key] = button
-                self._view_titles[view_key] = title_label
-                self._view_fallbacks[view_key] = fallback_name
-                self._view_definitions[view_key] = (plane, float(axis.value))
+        custom_plane_records = saved_custom_planes.setdefault(model_key, [])
+        for record in custom_plane_records:
+            plane = "custom"
+            coordinate = tuple(tuple(float(value) for value in point) for point in record["points"])
+            system_name = "Plano personalizado"
+            fallback_name = record.get("name", "Plano definido por 3 pontos")
+            view_key = (model_key, f"custom:{record['id']}")
+            view_keys.append(view_key)
+            self._append_detail_view(
+                view_list,
+                view_key,
+                plane,
+                coordinate,
+                system_name,
+                fallback_name,
+                saved_view_names,
+                is_custom=True,
+            )
         self._saved_view_names = saved_view_names
+        self._saved_view_settings = saved_view_settings
+        self._saved_custom_planes = saved_custom_planes
+        self._custom_plane_records = custom_plane_records
+        self._model_key = model_key
         self._active_view_key = None
         self._view_list = view_list
         self._view_keys = tuple(view_keys)
-        content.addWidget(view_list)
+        sidebar = QWidget()
+        sidebar.setFixedWidth(255)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        sidebar_layout.addWidget(view_list, 1)
+        list_actions = QHBoxLayout()
+        list_actions.setContentsMargins(8, 8, 8, 8)
+        list_actions.setSpacing(8)
+        self.add_detail_plane_button = QPushButton("Adicionar plano")
+        self.add_detail_plane_button.setObjectName("detailViewAddPlaneButton")
+        self.add_detail_plane_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_detail_plane_button.clicked.connect(self._add_detail_plane)
+        list_actions.addWidget(self.add_detail_plane_button, 1)
+        self.remove_detail_plane_button = QToolButton()
+        self.remove_detail_plane_button.setObjectName("detailViewRemovePlaneButton")
+        self.remove_detail_plane_button.setFixedSize(36, 36)
+        self.remove_detail_plane_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "delete.svg"))
+        )
+        self.remove_detail_plane_button.setIconSize(QSize(20, 20))
+        self.remove_detail_plane_button.setToolTip("Remover plano personalizado")
+        self.remove_detail_plane_button.setAccessibleName("Remover plano selecionado")
+        self.remove_detail_plane_button.setEnabled(False)
+        self.remove_detail_plane_button.clicked.connect(self._remove_selected_detail_plane)
+        list_actions.addWidget(self.remove_detail_plane_button)
+        sidebar_layout.addLayout(list_actions)
+        content.addWidget(sidebar)
 
         preview_area = QWidget()
         preview_layout = QVBoxLayout(preview_area)
@@ -1152,7 +1200,7 @@ class DetailingViewsDialog(QDialog):
             "QFrame#detailViewSettingsPanel { background: #f6f8fa; "
             "border: 1px solid #d0d7de; border-radius: 6px; }"
         )
-        self._view_settings_panel.setFixedSize(225, 240)
+        self._view_settings_panel.setFixedSize(225, 340)
         settings_layout = QVBoxLayout(self._view_settings_panel)
         settings_layout.setContentsMargins(14, 14, 14, 14)
         settings_layout.setSpacing(10)
@@ -1174,6 +1222,7 @@ class DetailingViewsDialog(QDialog):
             field.setDecimals(1)
             field.setKeyboardTracking(False)
             field.setValue(50)
+            field.valueChanged.connect(self._detail_view_settings_changed)
             field.setAccessibleName(f"{label_text} (cm)")
             unit_box = QFrame(field_group)
             unit_box.setObjectName("unitValueBox")
@@ -1196,10 +1245,66 @@ class DetailingViewsDialog(QDialog):
             field_layout.addWidget(unit_box)
             settings_layout.addWidget(field_group)
             self.view_displacement_inputs[key] = field
+        rotation_group = QWidget(self._view_settings_panel)
+        rotation_layout = QVBoxLayout(rotation_group)
+        rotation_layout.setContentsMargins(0, 0, 0, 0)
+        rotation_layout.setSpacing(4)
+        rotation_label = QLabel("Rotação", rotation_group)
+        rotation_label.setObjectName("propertySection")
+        rotation_layout.addWidget(rotation_label)
+        rotation_row = QHBoxLayout()
+        rotation_row.setContentsMargins(0, 0, 0, 0)
+        rotation_row.setSpacing(8)
+        rotation_box = QFrame(rotation_group)
+        rotation_box.setObjectName("unitValueBox")
+        rotation_box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 34px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox[focused=\"true\"] { border: 2px solid #0969da; }"
+            "QFrame#unitValueBox QDoubleSpinBox { border: 0; background: transparent; "
+            "color: #57606a; padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+        )
+        rotation_box_layout = QHBoxLayout(rotation_box)
+        rotation_box_layout.setContentsMargins(0, 0, 0, 0)
+        rotation_box_layout.setSpacing(0)
+        self.view_rotation_input = CompactDoubleSpinBox(rotation_box)
+        self.view_rotation_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.view_rotation_input.setRange(-1e12, 1e12)
+        self.view_rotation_input.setDecimals(1)
+        self.view_rotation_input.setKeyboardTracking(False)
+        self.view_rotation_input.setValue(0)
+        self.view_rotation_input.setAccessibleName("Rotação (graus)")
+        self.view_rotation_input.valueChanged.connect(self._view_rotation_changed)
+        rotation_box_layout.addWidget(self.view_rotation_input, 1)
+        rotation_box_layout.addWidget(QLabel("°", rotation_box))
+        self._detail_view_input_boxes[self.view_rotation_input] = rotation_box
+        self._detail_view_input_boxes[self.view_rotation_input.lineEdit()] = rotation_box
+        rotation_row.addWidget(rotation_box, 1)
+        self.view_rotation_button = QToolButton(rotation_group)
+        self.view_rotation_button.setFixedSize(36, 36)
+        self.view_rotation_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_rotation_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rotate-cw.svg"))
+        )
+        self.view_rotation_button.setIconSize(QSize(20, 20))
+        self.view_rotation_button.setToolTip("Girar a vista em 90°")
+        self.view_rotation_button.setAccessibleName("Girar a vista em 90 graus")
+        self.view_rotation_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        self.view_rotation_button.clicked.connect(self._advance_view_rotation)
+        rotation_row.addWidget(self.view_rotation_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        rotation_layout.addLayout(rotation_row)
+        settings_layout.addWidget(rotation_group)
         self.view_direction_selector = QComboBox(self._view_settings_panel)
         self.view_direction_selector.setObjectName("detailViewDirectionSelector")
         self.view_direction_selector.addItems(
             ("Superior para inferior", "Inferior para superior")
+        )
+        self.view_direction_selector.currentIndexChanged.connect(
+            self._detail_view_settings_changed
         )
         self.view_direction_selector.setAccessibleName("Direção da vista")
         self.view_direction_selector.setStyleSheet(
@@ -1219,8 +1324,92 @@ class DetailingViewsDialog(QDialog):
         orientation_layout.addWidget(self.view_direction_selector)
         settings_layout.addWidget(orientation_group)
         self._view_settings_panel.hide()
-        if view_keys:
+        preferred_view_key = getattr(parent, "_detailing_preferred_view_key", None)
+        if preferred_view_key in self._view_definitions:
+            self._select_detail_view(preferred_view_key)
+        elif view_keys:
             self._select_detail_view(view_keys[0])
+
+    def _append_detail_view(
+        self,
+        view_list: QListWidget,
+        view_key: tuple[int, str],
+        plane: str,
+        coordinate: object,
+        system_name: str,
+        fallback_name: str,
+        saved_view_names: dict,
+        *,
+        is_custom: bool,
+    ) -> None:
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 54))
+        view_list.addItem(item)
+        button = QPushButton()
+        button.setObjectName("detailViewButton")
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setAutoDefault(False)
+        button_layout = QVBoxLayout(button)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(1)
+        title_label = ScrollingNameLabel(
+            saved_view_names.get(view_key, "").strip() or fallback_name
+        )
+        title_label.setObjectName("detailViewTitle")
+        system_label = QLabel(system_name)
+        system_label.setObjectName("detailViewSystemName")
+        button_layout.addWidget(title_label)
+        button_layout.addWidget(system_label)
+        view_list.setItemWidget(item, button)
+        button.clicked.connect(
+            lambda _checked=False, key=view_key: self._select_detail_view(key)
+        )
+        self._view_items[view_key] = item
+        self._view_buttons[view_key] = button
+        self._view_titles[view_key] = title_label
+        self._view_fallbacks[view_key] = fallback_name
+        self._view_definitions[view_key] = (plane, coordinate)
+        self._view_is_custom[view_key] = is_custom
+
+    def _add_detail_plane(self) -> None:
+        self._add_plane_requested = True
+        parent = self.parent()
+        if parent is not None:
+            parent._detailing_preferred_view_key = self._active_view_key
+        self.done(QDialog.DialogCode.Rejected)
+
+    def _remove_selected_detail_plane(self) -> None:
+        view_key = self._active_view_key
+        if view_key is None or not self._view_is_custom.get(view_key, False):
+            return
+        self._commit_view_name_update()
+        row = self._view_list.row(self._view_items[view_key])
+        record_id = view_key[1].removeprefix("custom:")
+        self._custom_plane_records[:] = [
+            record for record in self._custom_plane_records if record["id"] != record_id
+        ]
+        self._saved_view_names.pop(view_key, None)
+        self._saved_view_settings.pop(view_key, None)
+        item = self._view_items.pop(view_key)
+        self._view_list.takeItem(row)
+        button = self._view_buttons.pop(view_key)
+        button.deleteLater()
+        self._view_titles.pop(view_key, None)
+        self._view_fallbacks.pop(view_key, None)
+        self._view_definitions.pop(view_key, None)
+        self._view_is_custom.pop(view_key, None)
+        self._view_keys = tuple(key for key in self._view_keys if key != view_key)
+        self._active_view_key = None
+        if self._view_keys:
+            self._select_detail_view(self._view_keys[min(row, len(self._view_keys) - 1)])
+        else:
+            self.view_name_input.clear()
+            self.view_name_input.setPlaceholderText("")
+            self.view_name_input.setEnabled(False)
+            self.remove_detail_plane_button.setEnabled(False)
+            self._preview.set_view(None, "", 0.0)
 
     def _toggle_view_settings(self, opened: bool) -> None:
         if not opened:
@@ -1306,10 +1495,34 @@ class DetailingViewsDialog(QDialog):
     def _select_detail_view(self, view_key: tuple[int, str]) -> None:
         if self._active_view_key != view_key:
             self._commit_view_name_update()
+            self._save_active_detail_view_settings()
         self._active_view_key = view_key
-        plane, coordinate = self._view_definitions[view_key]
-        model = self.parent().model if self.parent() is not None else None
-        self._preview.set_view(model, plane, coordinate)
+        settings = self._saved_view_settings.setdefault(
+            view_key,
+            {"top": 50.0, "bottom": 50.0, "orientation": 0, "rotation": 0.0},
+        )
+        settings.setdefault("rotation", 0.0)
+        setting_widgets = (
+            *self.view_displacement_inputs.values(),
+            self.view_rotation_input,
+            self.view_direction_selector,
+        )
+        blocked_states = [widget.blockSignals(True) for widget in setting_widgets]
+        self.view_displacement_inputs["top"].setValue(
+            max(0.0, float(settings.get("top", 50.0)))
+        )
+        self.view_displacement_inputs["bottom"].setValue(
+            max(0.0, float(settings.get("bottom", 50.0)))
+        )
+        self.view_rotation_input.setValue(
+            self._normalize_view_rotation(float(settings.get("rotation", 0.0)))
+        )
+        self.view_direction_selector.setCurrentIndex(
+            min(1, max(0, int(settings.get("orientation", 0))))
+        )
+        for widget, was_blocked in zip(setting_widgets, blocked_states):
+            widget.blockSignals(was_blocked)
+        self._refresh_selected_detail_preview()
         for key, button in self._view_buttons.items():
             button.setChecked(key == view_key)
         self._view_list.setCurrentItem(self._view_items[view_key])
@@ -1317,6 +1530,58 @@ class DetailingViewsDialog(QDialog):
         self.view_name_input.setEnabled(True)
         self.view_name_input.setText(user_name)
         self.view_name_input.setPlaceholderText(self._view_fallbacks[view_key])
+        self.remove_detail_plane_button.setEnabled(
+            self._view_is_custom.get(view_key, False)
+        )
+
+    def _save_active_detail_view_settings(self) -> None:
+        view_key = self._active_view_key
+        if view_key is None or not hasattr(self, "view_displacement_inputs"):
+            return
+        self._saved_view_settings[view_key] = {
+            "top": self.view_displacement_inputs["top"].value(),
+            "bottom": self.view_displacement_inputs["bottom"].value(),
+            "orientation": self.view_direction_selector.currentIndex(),
+            "rotation": self.view_rotation_input.value(),
+        }
+
+    def _detail_view_settings_changed(self, *_args) -> None:
+        self._save_active_detail_view_settings()
+        self._refresh_selected_detail_preview()
+
+    @staticmethod
+    def _normalize_view_rotation(value: float) -> float:
+        normalized = round(float(value) % 360.0, 1)
+        return 0.0 if normalized >= 360.0 else normalized
+
+    def _view_rotation_changed(self, value: float) -> None:
+        normalized = self._normalize_view_rotation(value)
+        if normalized != value:
+            previous = self.view_rotation_input.blockSignals(True)
+            self.view_rotation_input.setValue(normalized)
+            self.view_rotation_input.blockSignals(previous)
+        self._detail_view_settings_changed()
+
+    def _advance_view_rotation(self, _checked: bool = False) -> None:
+        current = self._normalize_view_rotation(self.view_rotation_input.value())
+        self.view_rotation_input.setValue(self._normalize_view_rotation(current + 90.0))
+
+    def _refresh_selected_detail_preview(self) -> None:
+        view_key = self._active_view_key
+        if view_key is None:
+            return
+        plane, coordinate = self._view_definitions[view_key]
+        parent = self.parent()
+        model = parent.model if parent is not None else None
+        self._preview.set_view(
+            model,
+            plane,
+            coordinate,
+            upper_offset_cm=self.view_displacement_inputs["top"].value(),
+            lower_offset_cm=self.view_displacement_inputs["bottom"].value(),
+            orientation=self.view_direction_selector.currentText(),
+            rotation_degrees=self.view_rotation_input.value(),
+        )
 
     def _queue_view_name_update(self, text: str) -> None:
         if self._pending_view_name_key is None:

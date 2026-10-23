@@ -424,6 +424,7 @@ class StructureScene(QWidget):
         self._pointer_position: tuple[float, float] | None = None
         self._member_placement_mode = False
         self._node_placement_mode = False
+        self._detail_plane_point_mode = False
         self._measurement_mode = False
         self._member_placement_press: tuple[float, float] | None = None
         self._member_preview_start: np.ndarray | None = None
@@ -2034,7 +2035,12 @@ class StructureScene(QWidget):
         self._schedule_navigation_viewport_sync()
 
     def _placement_active(self) -> bool:
-        return self._member_placement_mode or self._node_placement_mode or self._measurement_mode
+        return (
+            self._member_placement_mode
+            or self._node_placement_mode
+            or self._detail_plane_point_mode
+            or self._measurement_mode
+        )
 
     @property
     def measurement_start(self) -> tuple[float, float, float] | None:
@@ -2081,6 +2087,7 @@ class StructureScene(QWidget):
             raise ValueError("Modo de ponto desconhecido.")
         self._member_point_mode = point_mode
         self._member_midpoint_anchor = None
+        self._detail_plane_point_mode = False
         self._member_placement_mode = bool(active)
         self._node_placement_mode = False
         self._measurement_mode = False
@@ -2123,6 +2130,7 @@ class StructureScene(QWidget):
         """Enable the single-click graphical node-placement flow."""
         self._member_midpoint_anchor = None
         self._member_point_mode = "exact"
+        self._detail_plane_point_mode = False
         self._node_placement_mode = bool(active)
         self._member_placement_mode = False
         self._measurement_mode = False
@@ -2132,10 +2140,24 @@ class StructureScene(QWidget):
             self._member_preview_start = None
         self._set_point_placement_mode(active)
 
+    def set_detail_plane_point_mode(self, active: bool) -> None:
+        """Pick three visible model-space points for a custom detailing plane."""
+        self._member_midpoint_anchor = None
+        self._member_point_mode = "exact"
+        self._detail_plane_point_mode = bool(active)
+        self._member_placement_mode = False
+        self._node_placement_mode = False
+        self._measurement_mode = False
+        self._measurement_start = None
+        self._member_preview_start = None
+        self._hide_measurement_preview()
+        self._set_point_placement_mode(active)
+
     def set_measurement_mode(self, active: bool) -> None:
         """Enable the transient two-point measurement flow."""
         self._member_midpoint_anchor = None
         self._member_point_mode = "exact"
+        self._detail_plane_point_mode = False
         self._measurement_mode = bool(active)
         self._member_placement_mode = False
         self._node_placement_mode = False
@@ -2380,7 +2402,11 @@ class StructureScene(QWidget):
             self._update_coordinate_readout()
 
     def _update_coordinate_readout(self) -> None:
-        if not (self._member_placement_mode or self._node_placement_mode) or self._pointer_position is None:
+        if not (
+            self._member_placement_mode
+            or self._node_placement_mode
+            or self._detail_plane_point_mode
+        ) or self._pointer_position is None:
             self._coordinate_readout.hide()
             self._angle_readout.hide()
             if not self._measurement_mode:
@@ -3555,6 +3581,24 @@ class StructureScene(QWidget):
         far = self._display_to_world(renderer, x, y, 1.0)
         if near is None or far is None:
             return None
+        if self._detail_plane_point_mode:
+            snap = self._snap_position(near)
+            if snap is not None:
+                return np.asarray(snap[0], dtype=float)
+            locator = self._measurement_face_locator_for_current_batch()
+            if locator is not None:
+                hit_points = vtk.vtkPoints()
+                hit_cells = vtk.vtkIdList()
+                if locator.IntersectWithLine(
+                    tuple(near), tuple(far), 1e-9, hit_points, hit_cells,
+                ):
+                    ray = far - near
+                    intersections = np.asarray(
+                        [hit_points.GetPoint(index) for index in range(hit_points.GetNumberOfPoints())],
+                        dtype=float,
+                    )
+                    closest = int(np.argmin((intersections - near) @ ray))
+                    return intersections[closest]
         direction = far - near
         axis_index, offset = {
             "XY": (2, self._reference_plane_z),
@@ -3565,7 +3609,12 @@ class StructureScene(QWidget):
         if abs(denominator) <= 1e-12:
             # Resolve visible features in any view, even when the construction
             # plane is edge-on and cannot provide a free cursor intersection.
-            if self._member_placement_mode or self._measurement_mode or self._node_placement_mode:
+            if (
+                self._member_placement_mode
+                or self._measurement_mode
+                or self._node_placement_mode
+                or self._detail_plane_point_mode
+            ):
                 if self._measurement_mode:
                     target, kind = self._measurement_target(near)
                 else:
