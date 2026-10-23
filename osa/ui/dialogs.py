@@ -995,7 +995,7 @@ class DetailingViewsDialog(QDialog):
             "QLabel#detailViewSystemName { color: #57606a; font-size: 10px; background: transparent; }"
             "QLineEdit#detailViewNameInput { min-height: 34px; border: 1px solid #d0d7de; "
             "border-radius: 6px; padding: 2px 9px; background: #ffffff; color: #24292f; }"
-            "QLineEdit#detailViewNameInput:focus { border-color: #0969da; }"
+            "QLineEdit#detailViewNameInput:focus { border: 2px solid #0969da; }"
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
@@ -1152,11 +1152,12 @@ class DetailingViewsDialog(QDialog):
             "QFrame#detailViewSettingsPanel { background: #f6f8fa; "
             "border: 1px solid #d0d7de; border-radius: 6px; }"
         )
-        self._view_settings_panel.setFixedSize(300, 240)
+        self._view_settings_panel.setFixedSize(225, 240)
         settings_layout = QVBoxLayout(self._view_settings_panel)
         settings_layout.setContentsMargins(14, 14, 14, 14)
         settings_layout.setSpacing(10)
         self.view_displacement_inputs = {}
+        self._detail_view_input_boxes = {}
         for key, label_text in (
             ("top", "Deslocamento superior"),
             ("bottom", "Deslocamento inferior"),
@@ -1179,6 +1180,7 @@ class DetailingViewsDialog(QDialog):
             unit_box.setStyleSheet(
                 "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
                 "border-radius: 6px; background: #ffffff; }"
+                "QFrame#unitValueBox[focused=\"true\"] { border: 2px solid #0969da; }"
                 "QFrame#unitValueBox QDoubleSpinBox { border: 0; background: transparent; "
                 "color: #57606a; padding: 2px 9px; }"
                 "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
@@ -1188,6 +1190,8 @@ class DetailingViewsDialog(QDialog):
             unit_layout.setSpacing(0)
             unit_layout.addWidget(field, 1)
             unit_layout.addWidget(QLabel("cm", unit_box))
+            self._detail_view_input_boxes[field] = unit_box
+            self._detail_view_input_boxes[field.lineEdit()] = unit_box
             field_layout.addWidget(field_label)
             field_layout.addWidget(unit_box)
             settings_layout.addWidget(field_group)
@@ -1239,9 +1243,6 @@ class DetailingViewsDialog(QDialog):
         panel = getattr(self, "_view_settings_panel", None)
         if panel is not None:
             panel.hide()
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
         button = getattr(self, "view_settings_button", None)
         if button is not None and button.isChecked():
             button.setChecked(False)
@@ -1249,17 +1250,54 @@ class DetailingViewsDialog(QDialog):
     def eventFilter(self, watched, event) -> bool:
         panel = getattr(self, "_view_settings_panel", None)
         button = getattr(self, "view_settings_button", None)
-        if (
-            panel is not None and panel.isVisible() and button is not None
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(watched, QWidget)
+        input_boxes = getattr(self, "_detail_view_input_boxes", {})
+        input_box = input_boxes.get(watched)
+        if input_box is not None and event.type() in (
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
         ):
+            input_box.setProperty("focused", event.type() == QEvent.Type.FocusIn)
+            input_box.style().unpolish(input_box)
+            input_box.style().polish(input_box)
+            input_box.update()
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
             position = event.globalPosition().toPoint()
-            inside_panel = panel.rect().contains(panel.mapFromGlobal(position))
-            inside_button = button.rect().contains(button.mapFromGlobal(position))
-            if not inside_panel and not inside_button:
-                self._close_view_settings_panel()
+            input_field = getattr(self, "view_name_input", None)
+            if input_field is not None:
+                inside_name_input = input_field.rect().contains(
+                    input_field.mapFromGlobal(position)
+                )
+                if not inside_name_input and input_field.hasFocus():
+                    input_field.clearFocus()
+
+            if panel is not None and panel.isVisible() and button is not None:
+                inside_panel = (
+                    panel.rect().contains(panel.mapFromGlobal(position))
+                    or watched is panel
+                    or panel.isAncestorOf(watched)
+                )
+                combo_view = self.view_direction_selector.view()
+                inside_combo_popup = (
+                    combo_view.isVisible()
+                    and combo_view.rect().contains(combo_view.mapFromGlobal(position))
+                )
+                inside_button = button.rect().contains(button.mapFromGlobal(position))
+                if not inside_panel and not inside_combo_popup and not inside_button:
+                    self._close_view_settings_panel()
         return super().eventFilter(watched, event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def hideEvent(self, event) -> None:
+        self._close_view_settings_panel()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        super().hideEvent(event)
 
     def done(self, result: int) -> None:
         self._close_view_settings_panel()
