@@ -368,6 +368,8 @@ class StructureScene(QWidget):
         self._rigid_bar_actor = None
         self._grid_actor = None
         self._reference_axes_actor = None
+        self._selected_reference_axis_actor = None
+        self._selected_reference_axis: tuple[str, str] | None = None
         self._node_actor = None
         self._node_glyph_points: pv.PolyData | None = None
         self._support_actor = None
@@ -639,6 +641,7 @@ class StructureScene(QWidget):
         )
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
+        self._refresh_selected_reference_axis()
         yield
 
         if not model.nodes:
@@ -4576,10 +4579,49 @@ class StructureScene(QWidget):
         self._reference_axes_visible = bool(visible)
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(visible)
+        if self._selected_reference_axis_actor is not None:
+            self._selected_reference_axis_actor.SetVisibility(visible)
         self._label_overlay.set_group_visible("reference-axis", visible)
         self._update_coordinate_readout()
         self._update_measurement_readout()
         self.plotter.render()
+
+    def set_selected_reference_axis(self, selection: object) -> None:
+        """Highlight one named reference axis selected in the axes panel."""
+        if selection is None:
+            self._selected_reference_axis = None
+        else:
+            direction, label = selection
+            self._selected_reference_axis = (str(direction), str(label))
+        self._refresh_selected_reference_axis()
+        self.plotter.render()
+
+    def _refresh_selected_reference_axis(self) -> None:
+        actor = self._selected_reference_axis_actor
+        if actor is not None:
+            self.plotter.renderer.RemoveActor(actor)
+            self._selected_reference_axis_actor = None
+        if self._selected_reference_axis is None:
+            return
+        direction, label = self._selected_reference_axis
+        axis = next(
+            (item for item in self._model.axes.get(direction, ()) if item.label == label),
+            None,
+        )
+        if axis is None:
+            return
+        mesh = self._reference_axes_renderer.build(
+            {direction: (axis,)}, self._grid_renderer.bounds,
+            self._reference_plane_mode, self._reference_plane_z,
+        )
+        if not mesh.n_cells:
+            return
+        self._selected_reference_axis_actor = self.plotter.add_mesh(
+            mesh, color="#24292f", line_width=3.0, pickable=False,
+            render_lines_as_tubes=True, lighting=False,
+            name="selected-reference-axis", reset_camera=False, render=False,
+        )
+        self._selected_reference_axis_actor.SetVisibility(self._reference_axes_visible)
 
     def set_nodes_visible(self, visible: bool) -> None:
         """Show or hide the node markers without changing node identifiers."""
@@ -4774,6 +4816,7 @@ class StructureScene(QWidget):
                 name="reference-axes", reset_camera=False, render=False,
             )
             self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
+        self._refresh_selected_reference_axis()
         # Moving the construction plane changes visible bounds.  Update only
         # the near/far range; the user's position, orientation and zoom stay
         # untouched.
@@ -5765,6 +5808,7 @@ class StructureScene(QWidget):
             self._local_axes_renderer.RemoveActor(actor)
         self._grid_actor = None
         self._reference_axes_actor = None
+        self._selected_reference_axis_actor = None
         self._member_line_actor = None
         self._member_fallback_actor = None
         self._member_face_actor = None

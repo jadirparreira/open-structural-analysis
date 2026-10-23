@@ -967,6 +967,62 @@ class SettingsDialog(QDialog):
         )
 
 
+class DetailingViewsDialog(QDialog):
+    """Preliminary view manager for the detailing workspace."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gerenciar vistas")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.resize(960, 600)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget:focus { outline: none; border: 0; }"
+            "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#closeProperties:hover { background: #eaeef2; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        titlebar = QFrame()
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Gerenciar vistas")
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch()
+        outer.addWidget(titlebar)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+        view_list = QListWidget()
+        view_list.setFixedWidth(170)
+        view_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        content.addWidget(view_list)
+
+        preview_area = QWidget()
+        preview_layout = QVBoxLayout(preview_area)
+        preview_layout.setContentsMargins(9, 9, 9, 9)
+        preview_layout.addStretch(1)
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("closeProperties")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.accept)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(close_button)
+        preview_layout.addLayout(footer)
+        content.addWidget(preview_area, 1)
+        outer.addLayout(content, 1)
+
+
 class _SliderScale(QWidget):
     """Draw quality markers at the actual centers of a slider's handles."""
 

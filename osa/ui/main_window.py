@@ -21,6 +21,7 @@ from .dialogs import (
     ActionDialog,
     ActionGroupDialog,
     CombinationsDialog,
+    DetailingViewsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
     ProgramSettingsDialog,
@@ -37,6 +38,7 @@ from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneBu
 from .palettes import (
     ActionTopPalette,
     AnalysisTopPalette,
+    DetailingTopPalette,
     FloatingPalette,
     MemberPropertyCopyPanel,
     PaletteTooltip,
@@ -114,6 +116,7 @@ class MainWindow(QMainWindow):
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
+        self._reference_axis_placement_direction: str | None = None
         self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
         self._member_placement_start_snap_member_name: str | None = None
@@ -167,6 +170,7 @@ class MainWindow(QMainWindow):
         self.scene.placement_point_clicked.connect(self._handle_member_placement_point)
         self.scene.member_midpoint_pending.connect(self._member_midpoint_pending)
         self.scene.placement_point_clicked.connect(self._handle_node_placement_point)
+        self.scene.placement_point_clicked.connect(self._handle_reference_axis_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_rigid_bar_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_copy_placement_point)
         self.scene.placement_point_clicked.connect(self._handle_measurement_point)
@@ -192,6 +196,8 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         self.analysis_top_palette.set_analysis_visible(False)
         self.analysis_top_palette.reposition()
+        self.detailing_top_palette = DetailingTopPalette(self)
+        self.detailing_top_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -284,6 +290,7 @@ class MainWindow(QMainWindow):
         self.processing_panel = ProcessingPanel(self)
         self.verification_panel = VerificationPanel(self)
         self.axes_panel = AxesPanel(self)
+        self.axes_panel.axis_selection_changed.connect(self.scene.set_selected_reference_axis)
         self.reference_panel = ReferencePanel(self)
         self.axes_panel.visibility_changed.connect(self.top_icon_palette.configure_axes_button.setChecked)
         self.reference_panel.visibility_changed.connect(self.top_icon_palette.configure_reference_button.setChecked)
@@ -503,6 +510,11 @@ class MainWindow(QMainWindow):
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
 
+    def open_detailing_views(self) -> None:
+        dialog = DetailingViewsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
     def open_about(self) -> None:
         dialog = AboutDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
@@ -702,6 +714,8 @@ class MainWindow(QMainWindow):
             self.action_top_palette.reposition()
         if hasattr(self, "analysis_top_palette"):
             self.analysis_top_palette.reposition()
+        if hasattr(self, "detailing_top_palette"):
+            self.detailing_top_palette.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -886,7 +900,7 @@ class MainWindow(QMainWindow):
             button.setChecked(True)
 
     def toggle_axes_panel(self) -> None:
-        if self._command_mode == "member_placement":
+        if self._command_mode in {"member_placement", "reference_axis_placement"}:
             self.cancel_member_placement()
         self.reference_panel.hide()
         if self.axes_panel.isVisible():
@@ -899,8 +913,25 @@ class MainWindow(QMainWindow):
         self.axes_panel.show()
         self.axes_panel.raise_()
 
+    def start_reference_axis_placement(self, direction: str) -> None:
+        """Capture consecutive 3D points as axes in the selected direction list."""
+        if direction not in {"X", "Y", "Z"}:
+            return
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self._member_placement_start = None
+        self._reference_axis_placement_direction = direction
+        self._command_mode = "reference_axis_placement"
+        self.scene.set_node_placement_mode(True)
+        self.history.append(
+            f"> <b>Definir eixos {direction}</b> "
+            "<span style='color:#57606a'>(Clique no modelo 3D para definir o próximo eixo; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
     def toggle_reference_panel(self) -> None:
-        if self._command_mode == "member_placement":
+        if self._command_mode in {"member_placement", "reference_axis_placement"}:
             self.cancel_member_placement()
         if self.reference_panel.isVisible():
             self.reference_panel.hide()
@@ -1904,6 +1935,27 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         QTimer.singleShot(0, self.refresh_scene)
 
+    def _handle_reference_axis_placement_point(self, point: object) -> None:
+        """Store the picked coordinate and keep requesting axes until cancelled."""
+        if self._command_mode != "reference_axis_placement":
+            return
+        direction = self._reference_axis_placement_direction
+        if direction is None:
+            return
+        coordinates = tuple(float(value) for value in point)
+        if not self.axes_panel.add_axis_from_point(direction, coordinates):
+            self.history.append(
+                f"> <b>Definir eixos {direction}</b> "
+                f"<span style='color:#8c959f'>(Já existe um eixo {direction} com essa coordenada ou rótulo; escolha outro ponto)</span>"
+            )
+            return
+        value = round(coordinates[{"X": 0, "Y": 1, "Z": 2}[direction]], 3)
+        self.history.append(
+            f"> <b>Definir eixos {direction}</b> "
+            f"<span style='color:#57606a'>(Eixo definido em {direction} = {value:.3f} m; clique para definir o próximo)</span>"
+        )
+        QTimer.singleShot(0, self.refresh_scene)
+
     def _handle_rigid_bar_placement_point(self, point: object) -> None:
         """Advance the two-click graphical rigid-bar placement flow."""
         if self._command_mode != "rigid_bar_placement":
@@ -2008,6 +2060,14 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "reference_axis_placement":
+            self._command_mode = None
+            self._reference_axis_placement_direction = None
+            self.scene.set_node_placement_mode(False)
+            self.history.append(
+                "> <b>Definir eixos</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             self._command_mode = None
             self.scene.set_scene_selection_mode(None)

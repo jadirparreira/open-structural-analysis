@@ -192,7 +192,7 @@ class FloatingPalette(QFrame):
             (),
             palette_label="Verificação",
         )
-        self._add_unavailable_button("Detalhamento", "detailing-map.svg")
+        self._add_group("Detalhamento", "detailing-map.svg", ())
         self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
         self.toggle_group("Geometria", animate=False)
 
@@ -273,6 +273,7 @@ class FloatingPalette(QFrame):
             self._set_verification_view(False)
         if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
             "scene_hide_selection", "scene_reveal_selection", "member_placement",
+            "reference_axis_placement",
         }:
             self.window.cancel_member_placement()
         self._tooltip.dismiss()
@@ -298,6 +299,8 @@ class FloatingPalette(QFrame):
             if next_group == "Análise":
                 self.window.prepare_analysis_palette()
             self.window.analysis_top_palette.set_analysis_visible(next_group == "Análise")
+        if hasattr(self.window, "detailing_top_palette"):
+            self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
         if hasattr(self.window, "scene"):
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
@@ -596,6 +599,62 @@ class VerificationTopPalette(QFrame):
             self.ungroup_button,
             self.verify_button,
         ):
+            if event.type() == QEvent.Type.Enter:
+                self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._tooltip.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
+
+
+class DetailingTopPalette(QFrame):
+    """Top palette for detailing view management."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self.setObjectName("detailingTopPalette")
+        self.setStyleSheet(
+            "QFrame#detailingTopPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self._tooltip = PaletteTooltip(window)
+        button = QToolButton(self)
+        button.setFixedSize(30, 30)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
+        button.setIconSize(QSize(21, 21))
+        button.setToolTip("Gerenciar vistas")
+        button.setProperty("paletteTooltip", "Gerenciar vistas")
+        button.setAccessibleName("Gerenciar vistas")
+        button.installEventFilter(self)
+        button.clicked.connect(window.open_detailing_views)
+        button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(button)
+        self.manage_views_button = button
+        self.hide()
+
+    def set_detailing_visible(self, visible: bool) -> None:
+        if not visible:
+            self._tooltip.dismiss()
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
+        self.move((self._window.width() - self.width()) // 2, margin + 52)
+        self.raise_()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.manage_views_button:
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
