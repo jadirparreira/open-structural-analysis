@@ -213,6 +213,14 @@ class ScrollingNameLabel(QLabel):
     def minimumSizeHint(self) -> QSize:
         return QSize(1, QFontMetrics(self.font()).height())
 
+    def enterEvent(self, event) -> None:
+        self.start_scrolling()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.stop_scrolling()
+        super().leaveEvent(event)
+
     def paintEvent(self, event) -> None:
         del event
         if not self._full_text:

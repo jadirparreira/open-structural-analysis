@@ -16,7 +16,7 @@ from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
-from .home import _brand_lockup
+from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
 
 PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
@@ -974,11 +974,26 @@ class DetailingViewsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Gerenciar vistas")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.resize(960, 600)
+        self.setFixedSize(1120, 600)
         self.setStyleSheet(
             "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
             "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
+            "QListWidget::item:hover { background: #eaeef2; color: #24292f; }"
+            "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
             "QListWidget:focus { outline: none; border: 0; }"
+            "QPushButton#detailViewButton { border: 0; border-radius: 6px; padding: 8px 10px; "
+            "text-align: left; background: transparent; }"
+            "QPushButton#detailViewButton:hover { background: #eaeef2; }"
+            "QPushButton#detailViewButton:checked { background: #d0d7de; }"
+            "QPushButton#detailViewButton:hover QLabel#detailViewTitle, "
+            "QPushButton#detailViewButton:checked QLabel#detailViewTitle { color: #24292f; }"
+            "QLabel#detailViewTitle { color: #57606a; font-size: 14px; font-weight: 400; "
+            "background: transparent; }"
+            "QLabel#detailViewSystemName { color: #57606a; font-size: 10px; background: transparent; }"
+            "QLineEdit#detailViewNameInput { min-height: 34px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; padding: 2px 9px; background: #ffffff; color: #24292f; }"
+            "QLineEdit#detailViewNameInput:focus { border-color: #0969da; }"
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
@@ -1003,17 +1018,91 @@ class DetailingViewsDialog(QDialog):
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(0)
         view_list = QListWidget()
-        view_list.setFixedWidth(170)
+        view_list.setFixedWidth(255)
+        view_list.setSpacing(4)
         view_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        view_list.setCursor(Qt.CursorShape.PointingHandCursor)
+        axes = parent.model.axes if parent is not None and hasattr(parent, "model") else {}
+        model_key = id(parent.model) if parent is not None and hasattr(parent, "model") else id(self)
+        if parent is not None:
+            if not hasattr(parent, "_detailing_view_names"):
+                parent._detailing_view_names = {}
+            saved_view_names = parent._detailing_view_names
+        else:
+            saved_view_names = {}
+        self._view_items = {}
+        self._view_buttons = {}
+        self._view_titles = {}
+        self._view_fallbacks = {}
+        self._pending_view_name_key = None
+        self._pending_view_name = ""
+        view_keys = []
+        for plane, direction in (("XY", "Z"), ("XZ", "Y"), ("YZ", "X")):
+            ordered_axes = sorted(
+                axes.get(direction, ()),
+                key=lambda axis: float(axis.value),
+            )
+            for axis in ordered_axes:
+                coordinate_cm = round(float(axis.value) * 100)
+                coordinate_label = (
+                    f"−{abs(coordinate_cm)}" if coordinate_cm < 0 else str(coordinate_cm)
+                )
+                system_name = f"{plane} ({coordinate_label} cm)"
+                fallback_name = f"Plano {plane} com {direction} em {coordinate_label}cm"
+                view_key = (model_key, system_name)
+                view_keys.append(view_key)
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(0, 54))
+                view_list.addItem(item)
+                button = QPushButton()
+                button.setObjectName("detailViewButton")
+                button.setCheckable(True)
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
+                button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                button.setAutoDefault(False)
+                button_layout = QVBoxLayout(button)
+                button_layout.setContentsMargins(0, 0, 0, 0)
+                button_layout.setSpacing(1)
+                title_label = ScrollingNameLabel(
+                    saved_view_names.get(view_key, "").strip() or fallback_name
+                )
+                title_label.setObjectName("detailViewTitle")
+                system_label = QLabel(system_name)
+                system_label.setObjectName("detailViewSystemName")
+                button_layout.addWidget(title_label)
+                button_layout.addWidget(system_label)
+                view_list.setItemWidget(item, button)
+                button.clicked.connect(
+                    lambda _checked=False, key=view_key: self._select_detail_view(key)
+                )
+                self._view_items[view_key] = item
+                self._view_buttons[view_key] = button
+                self._view_titles[view_key] = title_label
+                self._view_fallbacks[view_key] = fallback_name
+        self._saved_view_names = saved_view_names
+        self._active_view_key = None
+        self._view_list = view_list
+        self._view_keys = tuple(view_keys)
         content.addWidget(view_list)
 
         preview_area = QWidget()
         preview_layout = QVBoxLayout(preview_area)
         preview_layout.setContentsMargins(9, 9, 9, 9)
+        name_row = QHBoxLayout()
+        name_label = QLabel("Nome da vista")
+        name_row.addWidget(name_label)
+        self.view_name_input = QLineEdit()
+        self.view_name_input.setObjectName("detailViewNameInput")
+        self.view_name_input.setEnabled(False)
+        self.view_name_input.textEdited.connect(self._queue_view_name_update)
+        self.view_name_input.editingFinished.connect(self._commit_view_name_update)
+        name_row.addWidget(self.view_name_input, 1)
+        preview_layout.addLayout(name_row)
         preview_layout.addStretch(1)
         close_button = QPushButton("Fechar")
         close_button.setObjectName("closeProperties")
         close_button.setAutoDefault(False)
+        close_button.clicked.connect(self._commit_view_name_update)
         close_button.clicked.connect(self.accept)
         footer = QHBoxLayout()
         footer.addStretch()
@@ -1021,6 +1110,35 @@ class DetailingViewsDialog(QDialog):
         preview_layout.addLayout(footer)
         content.addWidget(preview_area, 1)
         outer.addLayout(content, 1)
+        if view_keys:
+            self._select_detail_view(view_keys[0])
+
+    def _select_detail_view(self, view_key: tuple[int, str]) -> None:
+        if self._active_view_key != view_key:
+            self._commit_view_name_update()
+        self._active_view_key = view_key
+        for key, button in self._view_buttons.items():
+            button.setChecked(key == view_key)
+        self._view_list.setCurrentItem(self._view_items[view_key])
+        user_name = self._saved_view_names.get(view_key, "").strip()
+        self.view_name_input.setEnabled(True)
+        self.view_name_input.setText(user_name)
+        self.view_name_input.setPlaceholderText(self._view_fallbacks[view_key])
+
+    def _queue_view_name_update(self, text: str) -> None:
+        if self._pending_view_name_key is None:
+            self._pending_view_name_key = self._active_view_key
+        self._pending_view_name = text
+
+    def _commit_view_name_update(self) -> None:
+        view_key = self._pending_view_name_key
+        if view_key is None:
+            return
+        user_name = self._pending_view_name.strip()
+        self._saved_view_names[view_key] = user_name
+        self._view_titles[view_key].setText(user_name or self._view_fallbacks[view_key])
+        self._pending_view_name_key = None
+        self._pending_view_name = ""
 
 
 class _SliderScale(QWidget):
