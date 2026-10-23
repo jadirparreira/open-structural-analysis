@@ -16,8 +16,10 @@ from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
+from .detailing_preview import DetailingViewPreview
 from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
+from .property_panel import CompactDoubleSpinBox
 
 PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
 PROJECT_SITE_URL = "https://www.opensa.com.br"
@@ -1034,6 +1036,7 @@ class DetailingViewsDialog(QDialog):
         self._view_buttons = {}
         self._view_titles = {}
         self._view_fallbacks = {}
+        self._view_definitions = {}
         self._pending_view_name_key = None
         self._pending_view_name = ""
         view_keys = []
@@ -1079,6 +1082,7 @@ class DetailingViewsDialog(QDialog):
                 self._view_buttons[view_key] = button
                 self._view_titles[view_key] = title_label
                 self._view_fallbacks[view_key] = fallback_name
+                self._view_definitions[view_key] = (plane, float(axis.value))
         self._saved_view_names = saved_view_names
         self._active_view_key = None
         self._view_list = view_list
@@ -1090,15 +1094,47 @@ class DetailingViewsDialog(QDialog):
         preview_layout.setContentsMargins(9, 9, 9, 9)
         name_row = QHBoxLayout()
         name_label = QLabel("Nome da vista")
-        name_row.addWidget(name_label)
+        name_row.addWidget(name_label, 0, Qt.AlignmentFlag.AlignVCenter)
         self.view_name_input = QLineEdit()
         self.view_name_input.setObjectName("detailViewNameInput")
+        input_height = max(34, self.view_name_input.sizeHint().height())
+        self.view_name_input.setFixedHeight(input_height)
+        self.view_name_input.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        name_label.setFixedHeight(input_height)
         self.view_name_input.setEnabled(False)
         self.view_name_input.textEdited.connect(self._queue_view_name_update)
         self.view_name_input.editingFinished.connect(self._commit_view_name_update)
-        name_row.addWidget(self.view_name_input, 1)
+        name_row.addWidget(
+            self.view_name_input,
+            1,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.view_settings_button = QToolButton()
+        self.view_settings_button.setObjectName("detailViewSettingsButton")
+        self.view_settings_button.setFixedSize(input_height, input_height)
+        self.view_settings_button.setCheckable(True)
+        self.view_settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_settings_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "settings.svg"))
+        )
+        self.view_settings_button.setIconSize(QSize(19, 19))
+        self.view_settings_button.setToolTip("Configurações da vista")
+        self.view_settings_button.setAccessibleName("Configurações da vista")
+        self.view_settings_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        self.view_settings_button.toggled.connect(self._toggle_view_settings)
+        name_row.addWidget(
+            self.view_settings_button,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
         preview_layout.addLayout(name_row)
-        preview_layout.addStretch(1)
+        self._preview = DetailingViewPreview(preview_area)
+        preview_layout.addWidget(self._preview, 1)
         close_button = QPushButton("Fechar")
         close_button.setObjectName("closeProperties")
         close_button.setAutoDefault(False)
@@ -1110,13 +1146,132 @@ class DetailingViewsDialog(QDialog):
         preview_layout.addLayout(footer)
         content.addWidget(preview_area, 1)
         outer.addLayout(content, 1)
+        self._view_settings_panel = QFrame(self)
+        self._view_settings_panel.setObjectName("detailViewSettingsPanel")
+        self._view_settings_panel.setStyleSheet(
+            "QFrame#detailViewSettingsPanel { background: #f6f8fa; "
+            "border: 1px solid #d0d7de; border-radius: 6px; }"
+        )
+        self._view_settings_panel.setFixedSize(300, 240)
+        settings_layout = QVBoxLayout(self._view_settings_panel)
+        settings_layout.setContentsMargins(14, 14, 14, 14)
+        settings_layout.setSpacing(10)
+        self.view_displacement_inputs = {}
+        for key, label_text in (
+            ("top", "Deslocamento superior"),
+            ("bottom", "Deslocamento inferior"),
+        ):
+            field_group = QWidget(self._view_settings_panel)
+            field_layout = QVBoxLayout(field_group)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(4)
+            field_label = QLabel(label_text, field_group)
+            field_label.setObjectName("propertySection")
+            field = CompactDoubleSpinBox(field_group)
+            field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            field.setRange(0, 1e9)
+            field.setDecimals(1)
+            field.setKeyboardTracking(False)
+            field.setValue(50)
+            field.setAccessibleName(f"{label_text} (cm)")
+            unit_box = QFrame(field_group)
+            unit_box.setObjectName("unitValueBox")
+            unit_box.setStyleSheet(
+                "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+                "border-radius: 6px; background: #ffffff; }"
+                "QFrame#unitValueBox QDoubleSpinBox { border: 0; background: transparent; "
+                "color: #57606a; padding: 2px 9px; }"
+                "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+            )
+            unit_layout = QHBoxLayout(unit_box)
+            unit_layout.setContentsMargins(0, 0, 0, 0)
+            unit_layout.setSpacing(0)
+            unit_layout.addWidget(field, 1)
+            unit_layout.addWidget(QLabel("cm", unit_box))
+            field_layout.addWidget(field_label)
+            field_layout.addWidget(unit_box)
+            settings_layout.addWidget(field_group)
+            self.view_displacement_inputs[key] = field
+        self.view_direction_selector = QComboBox(self._view_settings_panel)
+        self.view_direction_selector.setObjectName("detailViewDirectionSelector")
+        self.view_direction_selector.addItems(
+            ("Superior para inferior", "Inferior para superior")
+        )
+        self.view_direction_selector.setAccessibleName("Direção da vista")
+        self.view_direction_selector.setStyleSheet(
+            "QComboBox { min-height: 34px; padding: 2px 9px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; color: #24292f; }"
+            "QComboBox:focus { border: 2px solid #0969da; }"
+            "QComboBox::drop-down { width: 0px; border: 0; }"
+            "QComboBox::down-arrow { image: none; }"
+        )
+        orientation_group = QWidget(self._view_settings_panel)
+        orientation_layout = QVBoxLayout(orientation_group)
+        orientation_layout.setContentsMargins(0, 0, 0, 0)
+        orientation_layout.setSpacing(4)
+        orientation_label = QLabel("Orientação", orientation_group)
+        orientation_label.setObjectName("propertySection")
+        orientation_layout.addWidget(orientation_label)
+        orientation_layout.addWidget(self.view_direction_selector)
+        settings_layout.addWidget(orientation_group)
+        self._view_settings_panel.hide()
         if view_keys:
             self._select_detail_view(view_keys[0])
+
+    def _toggle_view_settings(self, opened: bool) -> None:
+        if not opened:
+            self._close_view_settings_panel()
+            return
+        button = self.view_settings_button
+        button_position = button.mapTo(self, QPoint(0, button.height() + 9))
+        x = button_position.x() + button.width() - self._view_settings_panel.width()
+        y = button_position.y()
+        x = max(8, min(x, self.width() - self._view_settings_panel.width() - 8))
+        y = max(48, min(y, self.height() - self._view_settings_panel.height() - 8))
+        self._view_settings_panel.move(x, y)
+        self._view_settings_panel.show()
+        self._view_settings_panel.raise_()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def _close_view_settings_panel(self) -> None:
+        panel = getattr(self, "_view_settings_panel", None)
+        if panel is not None:
+            panel.hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        button = getattr(self, "view_settings_button", None)
+        if button is not None and button.isChecked():
+            button.setChecked(False)
+
+    def eventFilter(self, watched, event) -> bool:
+        panel = getattr(self, "_view_settings_panel", None)
+        button = getattr(self, "view_settings_button", None)
+        if (
+            panel is not None and panel.isVisible() and button is not None
+            and event.type() == QEvent.Type.MouseButtonPress
+            and isinstance(watched, QWidget)
+        ):
+            position = event.globalPosition().toPoint()
+            inside_panel = panel.rect().contains(panel.mapFromGlobal(position))
+            inside_button = button.rect().contains(button.mapFromGlobal(position))
+            if not inside_panel and not inside_button:
+                self._close_view_settings_panel()
+        return super().eventFilter(watched, event)
+
+    def done(self, result: int) -> None:
+        self._close_view_settings_panel()
+        super().done(result)
 
     def _select_detail_view(self, view_key: tuple[int, str]) -> None:
         if self._active_view_key != view_key:
             self._commit_view_name_update()
         self._active_view_key = view_key
+        plane, coordinate = self._view_definitions[view_key]
+        model = self.parent().model if self.parent() is not None else None
+        self._preview.set_view(model, plane, coordinate)
         for key, button in self._view_buttons.items():
             button.setChecked(key == view_key)
         self._view_list.setCurrentItem(self._view_items[view_key])
