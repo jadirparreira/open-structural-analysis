@@ -60,6 +60,39 @@ from osa.verification.t_rolled import (
     verify_t_shear_z,
     verify_t_tension,
 )
+from osa.verification.rectangular_bar import (
+    verify_rectangular_bar_compression,
+    verify_rectangular_bar_flexion_y,
+    verify_rectangular_bar_flexion_z,
+    verify_rectangular_bar_flexocompression,
+    verify_rectangular_bar_flexotension,
+    verify_rectangular_bar_oblique,
+    verify_rectangular_bar_shear_y,
+    verify_rectangular_bar_shear_z,
+    verify_rectangular_bar_tension,
+)
+from osa.verification.square_bar import (
+    verify_square_bar_compression,
+    verify_square_bar_flexion_y,
+    verify_square_bar_flexion_z,
+    verify_square_bar_flexocompression,
+    verify_square_bar_flexotension,
+    verify_square_bar_oblique,
+    verify_square_bar_shear_y,
+    verify_square_bar_shear_z,
+    verify_square_bar_tension,
+)
+from osa.verification.round_bar import (
+    verify_round_bar_compression,
+    verify_round_bar_flexion_y,
+    verify_round_bar_flexion_z,
+    verify_round_bar_flexocompression,
+    verify_round_bar_flexotension,
+    verify_round_bar_oblique,
+    verify_round_bar_shear_y,
+    verify_round_bar_shear_z,
+    verify_round_bar_tension,
+)
 
 
 _ROUTINES = {
@@ -104,6 +137,27 @@ _ROUTINES = {
         verify_t_shear_y, verify_t_shear_z,
         verify_t_oblique_bending, verify_t_flexotension,
         verify_t_flexocompression,
+    ),
+    "Barra Retangular": (
+        verify_rectangular_bar_tension, verify_rectangular_bar_compression,
+        verify_rectangular_bar_flexion_y, verify_rectangular_bar_flexion_z,
+        verify_rectangular_bar_shear_y, verify_rectangular_bar_shear_z,
+        verify_rectangular_bar_oblique, verify_rectangular_bar_flexotension,
+        verify_rectangular_bar_flexocompression,
+    ),
+    "Barra Quadrada": (
+        verify_square_bar_tension, verify_square_bar_compression,
+        verify_square_bar_flexion_y, verify_square_bar_flexion_z,
+        verify_square_bar_shear_y, verify_square_bar_shear_z,
+        verify_square_bar_oblique, verify_square_bar_flexotension,
+        verify_square_bar_flexocompression,
+    ),
+    "Barra Circular": (
+        verify_round_bar_tension, verify_round_bar_compression,
+        verify_round_bar_flexion_y, verify_round_bar_flexion_z,
+        verify_round_bar_shear_y, verify_round_bar_shear_z,
+        verify_round_bar_oblique, verify_round_bar_flexotension,
+        verify_round_bar_flexocompression,
     ),
 }
 

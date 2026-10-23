@@ -143,6 +143,66 @@ def _t_properties(member) -> dict[str, float]:
     }
 
 
+def _rectangular_bar_properties(member) -> dict[str, float]:
+    from osa.verification.rectangular_bar import _section
+
+    props = _section(member)
+    return {
+        "b": props["b_mm"], "b_mm": props["b_mm"],
+        "h": props["h_mm"], "h_mm": props["h_mm"],
+        "area": props["Ag_cm2"], "Iy": props["Iy_cm4"],
+        "Iz": props["Iz_cm4"], "Wy": props["Wy_cm3"],
+        "Wz": props["Wz_cm3"], "Zy": props["Zy_cm3"],
+        "Zz": props["Zz_cm3"], "ry": props["ry_cm"],
+        "rz": props["rz_cm"], "rt": props["r0_cm"], "It": props["It_cm4"],
+    }
+
+
+def _safe_rectangular_bar_properties(member) -> dict[str, float]:
+    try:
+        return _rectangular_bar_properties(member)
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        logger.warning("Geometria retangular inválida ao preparar o memorial da barra %s.", member.name)
+        return {}
+
+
+def _safe_square_bar_properties(member) -> dict[str, float]:
+    try:
+        from osa.verification.rectangular_bar import _section
+
+        props = _section(member)
+        return {
+            "b": props["b_mm"], "b_mm": props["b_mm"],
+            "h": props["b_mm"], "h_mm": props["b_mm"],
+            "area": props["Ag_cm2"], "Iy": props["Iy_cm4"],
+            "Iz": props["Iz_cm4"], "Wy": props["Wy_cm3"],
+            "Wz": props["Wz_cm3"], "Zy": props["Zy_cm3"],
+            "Zz": props["Zz_cm3"], "ry": props["ry_cm"],
+            "rz": props["rz_cm"], "rt": props["r0_cm"], "It": props["It_cm4"],
+        }
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        logger.warning("Geometria quadrada inválida ao preparar o memorial da barra %s.", member.name)
+        return {}
+
+
+def _safe_round_bar_properties(member) -> dict[str, float]:
+    try:
+        from osa.verification.round_bar import _section
+
+        props = _section(member)
+        return {
+            "d": props["d_mm"], "d_mm": props["d_mm"],
+            "area": props["Ag_cm2"], "Iy": props["Iy_cm4"],
+            "Iz": props["Iz_cm4"], "Wy": props["Wy_cm3"],
+            "Wz": props["Wz_cm3"], "Zy": props["Zy_cm3"],
+            "Zz": props["Zz_cm3"], "ry": props["ry_cm"],
+            "rz": props["rz_cm"], "rt": props["r0_cm"], "It": props["It_cm4"],
+        }
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        logger.warning("Geometria circular inválida ao preparar o memorial da barra %s.", member.name)
+        return {}
+
+
 def _plastic_modulus_asymmetric(points, axis: int) -> float:
     """Find the plastic neutral axis and modulus by integrating section strips.
 
@@ -277,6 +337,9 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         _i_properties(member) if profile_type == "I Laminado" else
         _safe_l_properties(member) if profile_type == "L Laminado" else
         _t_properties(member) if profile_type == "T Laminado" else
+        _safe_rectangular_bar_properties(member) if profile_type == "Barra Retangular" else
+        _safe_square_bar_properties(member) if profile_type == "Barra Quadrada" else
+        _safe_round_bar_properties(member) if profile_type == "Barra Circular" else
         _u_properties(member) if profile_type in {"U Laminado", "U Inclinado Laminado"} else {}
     )
     group_members = tuple(group.get("members", ())) if group else tuple(member_names)
@@ -299,7 +362,9 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         lengths = cached_lengths
     elif geometry and results:
         try:
-            thickness = geometry.get("tw", geometry.get("t"))
+            thickness = geometry.get("tw", geometry.get("t", min(
+                geometry.get("b", 0.0), geometry.get("h", 0.0),
+            )))
             element = VerificationElement(
                 f"memorial:{'|'.join(member.name for member in members)}",
                 element_name or member.name,
@@ -341,6 +406,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "material": member.material or "",
         "geometric_parameters": {
             "b_mm": value("b_mm"), "t_mm": value("t_mm"),
+            "h_mm": value("h_mm"),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),

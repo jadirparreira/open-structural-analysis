@@ -332,7 +332,8 @@ class PropertyPanel(QFrame):
         sections = {member.section for member in members}
         return len(sections) == 1 and sections.pop() in {
             "W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
-            "L Laminado", "T Laminado",
+            "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada",
+            "Barra Circular",
         }
 
     def _verification_result_for(self, names: tuple[str, ...] | list[str]):
