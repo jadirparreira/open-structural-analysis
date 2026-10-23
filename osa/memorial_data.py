@@ -6,7 +6,7 @@ import logging
 from math import sqrt
 
 from osa.sections.contours import (
-    i_contour_points, polygon_properties, u_contour_points, w_contour_points,
+    i_contour_points, l_contour_points, polygon_properties, u_contour_points, w_contour_points,
 )
 from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.restraints import restraint_lengths
@@ -98,6 +98,48 @@ def _i_properties(member) -> dict[str, float]:
         "Zz": _plastic_modulus(points, 0, cy_mm) / 1000.0,
         "rt": sqrt(sqrt(iy * warping) / (iy / (d_cm / 2.0))),
         "It": torsion, "Cw": warping,
+    }
+
+
+def _l_properties(member) -> dict[str, float]:
+    """Return equal-leg rolled L section properties used by checks and memorial."""
+    from osa.verification.l_rolled import _section
+
+    props = _section(member)
+    return {
+        "b": props["b_mm"], "b_mm": props["b_mm"],
+        "t": props["t_mm"], "t_mm": props["t_mm"], "area": props["Ag_cm2"],
+        "Iy": props["Iy_cm4"], "Iz": props["Iz_cm4"],
+        "Imajor_cm4": props["Imajor_cm4"], "Iminor_cm4": props["Iminor_cm4"],
+        "Wy": props["Wy_cm3"], "Wz": props["Wz_cm3"],
+        "Zy": props["Zy_cm3"], "Zz": props["Zz_cm3"],
+        "ry": props["ry_cm"], "rz": props["rz_cm"],
+        "rt": props["r0_cm"], "It": props["It_cm4"], "Cw": props["Cw_cm6"],
+    }
+
+
+def _safe_l_properties(member) -> dict[str, float]:
+    try:
+        return _l_properties(member)
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        logger.warning("Geometria L inválida ao preparar o memorial da barra %s.", member.name)
+        return {}
+
+
+def _t_properties(member) -> dict[str, float]:
+    """Return the rolled T section properties used by its resistance routine."""
+    from osa.verification.t_rolled import _section
+
+    props = _section(member)
+    return {
+        "d": props["d_mm"], "bf": props["bf_mm"],
+        "tw": props["tw_mm"], "tf": props["tf_mm"],
+        "area": props["Ag_cm2"], "Iy": props["Iy_cm4"],
+        "Iz": props["Iz_cm4"], "Wy": props["Wy_cm3"],
+        "Wz": props["Wz_cm3"], "Zy": props["Zy_cm3"],
+        "Zz": props["Zz_cm3"], "ry": props["ry_cm"],
+        "rz": props["rz_cm"], "rt": props["r0_cm"],
+        "It": props["It_cm4"], "Cw": props["Cw_cm6"],
     }
 
 
@@ -233,6 +275,8 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
     geometry = (
         _w_properties(member) if profile_type == "W Laminado" else
         _i_properties(member) if profile_type == "I Laminado" else
+        _safe_l_properties(member) if profile_type == "L Laminado" else
+        _t_properties(member) if profile_type == "T Laminado" else
         _u_properties(member) if profile_type in {"U Laminado", "U Inclinado Laminado"} else {}
     )
     group_members = tuple(group.get("members", ())) if group else tuple(member_names)
@@ -242,6 +286,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         if set(element.member_names) == set(group_members)
     ), None)
     checks = (selected_result or {}).get("checks", {})
+    results = getattr(model, "analysis_results", ())
     compression_parameters = (
         (checks.get("axial_compression") or {}).get("parameters") or {}
     )
@@ -250,11 +295,11 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         name: compression_parameters.get(f"{name}_cm")
         for name in lengths
     }
-    results = getattr(model, "analysis_results", ())
     if all(value is not None for value in cached_lengths.values()):
         lengths = cached_lengths
     elif geometry and results:
         try:
+            thickness = geometry.get("tw", geometry.get("t"))
             element = VerificationElement(
                 f"memorial:{'|'.join(member.name for member in members)}",
                 element_name or member.name,
@@ -264,7 +309,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
                 model,
                 element,
                 results,
-                {"Iy": geometry["Iz"], "tw": geometry["tw"] / 10.0},
+                {"Iy": geometry["Iz"], "tw": thickness / 10.0},
             )
             lengths = {name: restraint.lengths_m[name] * 100.0 for name in lengths}
         except Exception:
@@ -295,6 +340,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "section": member.profile or "",
         "material": member.material or "",
         "geometric_parameters": {
+            "b_mm": value("b_mm"), "t_mm": value("t_mm"),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),

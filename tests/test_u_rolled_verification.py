@@ -56,7 +56,7 @@ def test_catalog_u_profile_without_optional_radii_is_verified(family):
     ))
 
 
-def test_slender_web_u_is_not_checked_outside_annex_e_scope():
+def test_slender_web_u_is_rejected_without_explanatory_memorial_comments():
     model = StructuralModel()
     model.add_node("A", 0.0, 0.0, 0.0)
     model.add_node("B", 0.0, 0.0, 3.0)
@@ -112,6 +112,11 @@ def test_slender_web_u_is_not_checked_outside_annex_e_scope():
     memorial = CalculationMemorialDialog._render(
         calculation_memory(model, ("U1",)), equation_objects,
     )
-    assert "Verificação combinada reprovada" in memorial
+    assert "REPROVADO" in memorial or any(
+        "REPROVADO" in str(equation) for equation in equation_objects.values()
+    )
+    assert "Verificação combinada reprovada" not in memorial
+    assert "Anexo E" not in memorial
+    assert "excede o limite de esbeltez" not in memorial
     assert "Não verificado" not in memorial
     assert equation_objects

@@ -38,6 +38,28 @@ from osa.verification.u_rolled import (
     verify_u_shear_z,
     verify_u_tension,
 )
+from osa.verification.l_rolled import (
+    verify_l_compression,
+    verify_l_flexion_y,
+    verify_l_flexion_z,
+    verify_l_flexocompression,
+    verify_l_flexotension,
+    verify_l_oblique_bending,
+    verify_l_shear_y,
+    verify_l_shear_z,
+    verify_l_tension,
+)
+from osa.verification.t_rolled import (
+    verify_t_compression,
+    verify_t_flexion_y,
+    verify_t_flexion_z,
+    verify_t_flexocompression,
+    verify_t_flexotension,
+    verify_t_oblique_bending,
+    verify_t_shear_y,
+    verify_t_shear_z,
+    verify_t_tension,
+)
 
 
 _ROUTINES = {
@@ -68,6 +90,20 @@ _ROUTINES = {
         verify_u_shear_y, verify_u_shear_z,
         verify_u_oblique_bending, verify_u_flexotension,
         verify_u_flexocompression,
+    ),
+    "L Laminado": (
+        verify_l_tension, verify_l_compression,
+        verify_l_flexion_y, verify_l_flexion_z,
+        verify_l_shear_y, verify_l_shear_z,
+        verify_l_oblique_bending, verify_l_flexotension,
+        verify_l_flexocompression,
+    ),
+    "T Laminado": (
+        verify_t_tension, verify_t_compression,
+        verify_t_flexion_y, verify_t_flexion_z,
+        verify_t_shear_y, verify_t_shear_z,
+        verify_t_oblique_bending, verify_t_flexotension,
+        verify_t_flexocompression,
     ),
 }
 
