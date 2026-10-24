@@ -986,9 +986,8 @@ class DetailingViewsDialog(QDialog):
             "QListWidget:focus { outline: none; border: 0; }"
             "QPushButton#detailViewButton { border: 0; border-radius: 6px; padding: 8px 10px; "
             "text-align: left; background: transparent; }"
-            "QPushButton#detailViewButton:hover { background: #eaeef2; }"
-            "QPushButton#detailViewButton:checked { background: #d0d7de; }"
-            "QPushButton#detailViewButton:hover QLabel#detailViewTitle, "
+            "QPushButton#detailViewButton:hover, "
+            "QPushButton#detailViewButton:checked { background: transparent; }"
             "QPushButton#detailViewButton:checked QLabel#detailViewTitle { color: #24292f; }"
             "QLabel#detailViewTitle { color: #57606a; font-size: 14px; font-weight: 400; "
             "background: transparent; }"
@@ -1030,6 +1029,7 @@ class DetailingViewsDialog(QDialog):
         view_list = QListWidget()
         view_list.setFixedWidth(255)
         view_list.setSpacing(4)
+        view_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         view_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         view_list.setCursor(Qt.CursorShape.PointingHandCursor)
         axes = parent.model.axes if parent is not None and hasattr(parent, "model") else {}
@@ -1392,7 +1392,7 @@ class DetailingViewsDialog(QDialog):
         ]
         self._saved_view_names.pop(view_key, None)
         self._saved_view_settings.pop(view_key, None)
-        item = self._view_items.pop(view_key)
+        self._view_items.pop(view_key)
         self._view_list.takeItem(row)
         button = self._view_buttons.pop(view_key)
         button.deleteLater()
@@ -1573,7 +1573,7 @@ class DetailingViewsDialog(QDialog):
         plane, coordinate = self._view_definitions[view_key]
         parent = self.parent()
         model = parent.model if parent is not None else None
-        self._preview.set_view(
+        self._preview.request_view(
             model,
             plane,
             coordinate,

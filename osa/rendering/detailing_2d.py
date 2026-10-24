@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from math import ceil, cos, floor, radians, sin, sqrt
+from time import sleep
 
 import numpy as np
 import pyvista as pv
@@ -93,7 +94,10 @@ def visible_segments_from_meshes(
     rotated_up = _unit(rotated_up)
 
     triangles: list[_ProjectedTriangle] = []
-    projected_edges: list[tuple[np.ndarray, np.ndarray, float, float]] = []
+    projected_edge_groups: dict[
+        tuple[tuple[float, ...], tuple[float, ...]],
+        list[tuple[np.ndarray, np.ndarray, float, float]],
+    ] = {}
     unique_edges: set[tuple[tuple[float, ...], tuple[float, ...]]] = set()
 
     for mesh in meshes:
@@ -121,7 +125,9 @@ def visible_segments_from_meshes(
                 out=np.zeros_like(face_vectors),
                 where=face_lengths[:, None] > 1e-12,
             )
-            for indices in triangle_indices:
+            for triangle_number, indices in enumerate(triangle_indices):
+                if triangle_number % 256 == 0:
+                    sleep(0)
                 tri_points = projected[indices]
                 area = _cross2(tri_points[1] - tri_points[0], tri_points[2] - tri_points[0])
                 if abs(area) <= 1e-12:
@@ -166,31 +172,52 @@ def visible_segments_from_meshes(
                 if key in unique_edges:
                     continue
                 unique_edges.add(key)
-                projected_edges.append(
-                    (
-                        edge_projected[a],
-                        edge_projected[b],
-                        float(depths[a]),
-                        float(depths[b]),
+                start, end = edge_projected[a], edge_projected[b]
+                depth_start, depth_end = float(depths[a]), float(depths[b])
+                start_key = tuple(np.round(start, 9))
+                end_key = tuple(np.round(end, 9))
+                if end_key < start_key:
+                    start, end = end, start
+                    start_key, end_key = end_key, start_key
+                    depth_start, depth_end = depth_end, depth_start
+                group_key = (start_key, end_key)
+                depth_layers = projected_edge_groups.setdefault(group_key, [])
+                if any(
+                    other_start_depth >= depth_start - 1e-7
+                    and other_end_depth >= depth_end - 1e-7
+                    for _, _, other_start_depth, other_end_depth in depth_layers
+                ):
+                    continue
+                depth_layers[:] = [
+                    layer
+                    for layer in depth_layers
+                    if not (
+                        depth_start >= layer[2] - 1e-7
+                        and depth_end >= layer[3] - 1e-7
                     )
-                )
+                ]
+                depth_layers.append((start, end, depth_start, depth_end))
+
+    projected_edges = [
+        edge for depth_layers in projected_edge_groups.values() for edge in depth_layers
+    ]
 
     if not triangles or not projected_edges:
         return []
     index = _TriangleGrid(triangles)
     visible_segments = []
     unique_projected: set[tuple[tuple[float, ...], tuple[float, ...]]] = set()
-    for start, end, depth_start, depth_end in projected_edges:
-        candidate_triangles = index.query_segment(start, end)
+    for edge_number, (start, end, depth_start, depth_end) in enumerate(projected_edges):
+        if edge_number % 4 == 0:
+            sleep(0)
+        candidate_triangles = index.query_segment(
+            start, end, depth_start=depth_start, depth_end=depth_end
+        )
         if not candidate_triangles:
             intervals = [(0.0, 1.0)]
         else:
-            intervals = _visible_intervals_for_triangles(
-                start,
-                end,
-                depth_start,
-                depth_end,
-                (triangles[i] for i in candidate_triangles),
+            intervals = index.visible_intervals(
+                candidate_triangles, start, end, depth_start, depth_end
             )
         for lower, upper in intervals:
             if upper - lower <= 1e-8:
@@ -216,34 +243,115 @@ def _visible_intervals_for_triangles(
     *,
     depth_tolerance: float = 1e-7,
 ) -> list[tuple[float, float]]:
-    blocked: list[tuple[float, float]] = []
-    for triangle in triangles:
-        interval = _segment_triangle_interval(start, end, triangle.points)
-        if interval is None:
-            continue
-        lower, upper = interval
-        edge_delta = depth_end - depth_start
-        difference_at_lower = (
-            float(triangle.depth_plane @ (*_point_at(start, end, lower), 1.0))
-            - (depth_start + edge_delta * lower)
-            - depth_tolerance
+    triangles = tuple(triangles)
+    if not triangles:
+        return [(0.0, 1.0)]
+    return _visible_intervals_for_arrays(
+        start,
+        end,
+        depth_start,
+        depth_end,
+        np.asarray([triangle.points for triangle in triangles], dtype=float),
+        np.asarray([triangle.depth_plane for triangle in triangles], dtype=float),
+        np.asarray([triangle.bounds for triangle in triangles], dtype=float),
+        depth_tolerance=depth_tolerance,
+    )
+
+
+def _visible_intervals_for_arrays(
+    start: np.ndarray,
+    end: np.ndarray,
+    depth_start: float,
+    depth_end: float,
+    points: np.ndarray,
+    planes: np.ndarray,
+    bounds: np.ndarray | None = None,
+    *,
+    depth_tolerance: float = 1e-7,
+) -> list[tuple[float, float]]:
+    if not len(points):
+        return [(0.0, 1.0)]
+    edge_min_x = min(float(start[0]), float(end[0]))
+    edge_max_x = max(float(start[0]), float(end[0]))
+    edge_min_y = min(float(start[1]), float(end[1]))
+    edge_max_y = max(float(start[1]), float(end[1]))
+    if bounds is not None:
+        candidate_mask = (
+            (bounds[:, 1] >= edge_min_x)
+            & (bounds[:, 0] <= edge_max_x)
+            & (bounds[:, 3] >= edge_min_y)
+            & (bounds[:, 2] <= edge_max_y)
         )
-        difference_at_upper = (
-            float(triangle.depth_plane @ (*_point_at(start, end, upper), 1.0))
-            - (depth_start + edge_delta * upper)
-            - depth_tolerance
+        if not candidate_mask.any():
+            return [(0.0, 1.0)]
+        points = points[candidate_mask]
+        planes = planes[candidate_mask]
+
+    area = _cross2_batch(points[:, 1] - points[:, 0], points[:, 2] - points[:, 0])
+    direction = np.where(area > 0.0, 1.0, -1.0)
+    valid = np.abs(area) > 1e-12
+    lower = np.zeros(len(points), dtype=float)
+    upper = np.ones(len(points), dtype=float)
+    segment = end - start
+    for index in range(3):
+        vertex = points[:, index]
+        edge = points[:, (index + 1) % 3] - vertex
+        at_start = direction * _cross2_batch(edge, start - vertex)
+        slope = direction * _cross2_batch(edge, segment)
+        parallel = np.abs(slope) <= 1e-14
+        valid &= ~(parallel & (at_start < -1e-10))
+        transition = np.divide(
+            -at_start,
+            slope,
+            out=np.zeros_like(at_start),
+            where=~parallel,
         )
-        if difference_at_lower > 0.0 and difference_at_upper > 0.0:
-            blocked.append((lower, upper))
-        elif difference_at_lower > 0.0:
-            blocked.append(
-                (_root_between(lower, upper, difference_at_lower, difference_at_upper), upper)
-            )
-        elif difference_at_upper > 0.0:
-            blocked.append(
-                (lower, _root_between(lower, upper, difference_at_lower, difference_at_upper))
-            )
-    return _complement_intervals(blocked)
+        lower = np.where(slope > 0.0, np.maximum(lower, transition), lower)
+        upper = np.where(slope < 0.0, np.minimum(upper, transition), upper)
+    valid &= lower <= upper + 1e-10
+    valid &= (upper >= 0.0) & (lower <= 1.0)
+    if not valid.any():
+        return [(0.0, 1.0)]
+
+    points = points[valid]
+    planes = planes[valid]
+    lower = np.clip(lower[valid], 0.0, 1.0)
+    upper = np.clip(upper[valid], 0.0, 1.0)
+    edge_delta = depth_end - depth_start
+    at_lower = start + segment * lower[:, None]
+    at_upper = start + segment * upper[:, None]
+    difference_at_lower = (
+        planes[:, 0] * at_lower[:, 0]
+        + planes[:, 1] * at_lower[:, 1]
+        + planes[:, 2]
+        - (depth_start + edge_delta * lower)
+        - depth_tolerance
+    )
+    difference_at_upper = (
+        planes[:, 0] * at_upper[:, 0]
+        + planes[:, 1] * at_upper[:, 1]
+        + planes[:, 2]
+        - (depth_start + edge_delta * upper)
+        - depth_tolerance
+    )
+    lower_hidden = difference_at_lower > 0.0
+    upper_hidden = difference_at_upper > 0.0
+    blocked_mask = lower_hidden | upper_hidden
+    if not blocked_mask.any():
+        return [(0.0, 1.0)]
+
+    roots = np.divide(
+        lower * difference_at_upper - upper * difference_at_lower,
+        difference_at_upper - difference_at_lower,
+        out=(lower + upper) / 2.0,
+        where=np.abs(difference_at_upper - difference_at_lower) > 1e-14,
+    )
+    blocked_lower = np.where(lower_hidden & ~upper_hidden, roots, lower)
+    blocked_upper = np.where(upper_hidden & ~lower_hidden, roots, upper)
+    blocked = zip(
+        blocked_lower[blocked_mask].tolist(), blocked_upper[blocked_mask].tolist()
+    )
+    return _complement_intervals(list(blocked))
 
 
 class _TriangleGrid:
@@ -252,6 +360,14 @@ class _TriangleGrid:
     def __init__(self, triangles: list[_ProjectedTriangle]) -> None:
         self._triangles = triangles
         bounds = np.asarray([triangle.bounds for triangle in triangles], dtype=float)
+        self._bounds = bounds
+        self._points = np.asarray([triangle.points for triangle in triangles], dtype=float)
+        self._planes = np.asarray(
+            [triangle.depth_plane for triangle in triangles], dtype=float
+        )
+        self._max_depths = np.asarray(
+            [float(triangle.depths.max()) for triangle in triangles], dtype=float
+        )
         self._min_x = float(bounds[:, 0].min())
         self._max_x = float(bounds[:, 1].max())
         self._min_y = float(bounds[:, 2].min())
@@ -271,7 +387,14 @@ class _TriangleGrid:
                 for grid_y in range(y0, y1 + 1):
                     self._cells.setdefault((grid_x, grid_y), []).append(index)
 
-    def query_segment(self, start: np.ndarray, end: np.ndarray) -> set[int]:
+    def query_segment(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        *,
+        depth_start: float | None = None,
+        depth_end: float | None = None,
+    ) -> list[int]:
         dx = float(end[0] - start[0])
         dy = float(end[1] - start[1])
         distance_in_cells = max(abs(dx), abs(dy)) / max(self._cell_size, 1e-12)
@@ -283,12 +406,43 @@ class _TriangleGrid:
             for offset_x in (-1, 0, 1):
                 for offset_y in (-1, 0, 1):
                     candidates.update(self._cells.get((grid_x + offset_x, grid_y + offset_y), ()))
-        return candidates
+        if not candidates:
+            return []
+        candidate_indices = np.fromiter(candidates, dtype=np.intp)
+        candidate_bounds = self._bounds[candidate_indices]
+        overlaps = (
+            (candidate_bounds[:, 1] >= min(start[0], end[0]))
+            & (candidate_bounds[:, 0] <= max(start[0], end[0]))
+            & (candidate_bounds[:, 3] >= min(start[1], end[1]))
+            & (candidate_bounds[:, 2] <= max(start[1], end[1]))
+        )
+        if depth_start is not None and depth_end is not None:
+            minimum_edge_depth = min(depth_start, depth_end) - 1e-7
+            overlaps &= self._max_depths[candidate_indices] > minimum_edge_depth
+        return candidate_indices[overlaps].tolist()
 
     def _cell(self, x: float, y: float) -> tuple[int, int]:
         return (
             floor((x - self._min_x) / self._cell_size),
             floor((y - self._min_y) / self._cell_size),
+        )
+
+    def visible_intervals(
+        self,
+        indices: list[int],
+        start: np.ndarray,
+        end: np.ndarray,
+        depth_start: float,
+        depth_end: float,
+    ) -> list[tuple[float, float]]:
+        selected = np.asarray(indices, dtype=np.intp)
+        return _visible_intervals_for_arrays(
+            start,
+            end,
+            depth_start,
+            depth_end,
+            self._points[selected],
+            self._planes[selected],
         )
 
 
@@ -365,6 +519,8 @@ def _view_dependent_surface_edges(
     """Keep mesh boundaries, sharp creases, and view-dependent silhouettes."""
     adjacent_faces: dict[tuple[int, int], list[int]] = {}
     for face_index, (first, second, third) in enumerate(triangle_indices):
+        if face_index % 256 == 0:
+            sleep(0)
         for start, end in ((first, second), (second, third), (third, first)):
             edge = (int(min(start, end)), int(max(start, end)))
             adjacent_faces.setdefault(edge, []).append(face_index)
@@ -396,6 +552,10 @@ def _point_at(start: np.ndarray, end: np.ndarray, parameter: float) -> np.ndarra
 
 def _cross2(first: np.ndarray, second: np.ndarray) -> float:
     return float(first[0] * second[1] - first[1] * second[0])
+
+
+def _cross2_batch(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    return first[..., 0] * second[..., 1] - first[..., 1] * second[..., 0]
 
 
 def _unit(vector: np.ndarray) -> np.ndarray:
