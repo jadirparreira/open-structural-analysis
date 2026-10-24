@@ -302,6 +302,7 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "detailing_top_palette"):
             self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
         if hasattr(self.window, "scene"):
+            self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
             self.window.scene.set_verification_group_selection_active(next_group == "Memorial")
@@ -510,10 +511,10 @@ class VerificationTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "group-elements.svg"))
         )
         self.group_button.setIconSize(QSize(19, 19))
-        tooltip = _command_tooltip("Agrupar elementos", "GROUP")
+        tooltip = _command_tooltip("Agrupar barras", "GROUP")
         self.group_button.setToolTip(tooltip)
         self.group_button.setProperty("paletteTooltip", tooltip)
-        self.group_button.setAccessibleName("Agrupar elementos")
+        self.group_button.setAccessibleName("Agrupar barras")
         self.group_button.clicked.connect(window.start_group_verification_elements)
         self.group_button.installEventFilter(self)
         self.group_button.setStyleSheet(
@@ -528,10 +529,10 @@ class VerificationTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "ungroup-elements.svg"))
         )
         self.ungroup_button.setIconSize(QSize(19, 19))
-        tooltip = _command_tooltip("Desagrupar elementos", "UNGROUP")
+        tooltip = _command_tooltip("Desagrupar barras", "UNGROUP")
         self.ungroup_button.setToolTip(tooltip)
         self.ungroup_button.setProperty("paletteTooltip", tooltip)
-        self.ungroup_button.setAccessibleName("Desagrupar elementos")
+        self.ungroup_button.setAccessibleName("Desagrupar barras")
         self.ungroup_button.clicked.connect(window.start_ungroup_verification_elements)
         self.ungroup_button.installEventFilter(self)
         self.ungroup_button.setStyleSheet(self.group_button.styleSheet())
@@ -622,6 +623,35 @@ class DetailingTopPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
+        self._visibility_buttons: dict[str, QToolButton] = {}
+        for icon, label, kind in (
+            ("node-circle.svg", "Nós", "nodes"),
+            ("box.svg", "Seções sólidas", "solid"),
+        ):
+            visibility_button = QToolButton(self)
+            visibility_button.setFixedSize(24, 24)
+            visibility_button.setIcon(
+                QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon))
+            )
+            visibility_button.setIconSize(QSize(19, 19))
+            tooltip = _command_tooltip(label, "NODES" if kind == "nodes" else "SOLIDS")
+            visibility_button.setToolTip(tooltip)
+            visibility_button.setProperty("paletteTooltip", tooltip)
+            visibility_button.setAccessibleName(label)
+            visibility_button.setCheckable(True)
+            visibility_button.toggled.connect(
+                lambda _visible, shared_kind=kind:
+                window.top_icon_palette.toggle_visibility_command(shared_kind)
+            )
+            visibility_button.installEventFilter(self)
+            visibility_button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+                "QToolButton:hover { background: #eaeef2; }"
+                "QToolButton:checked { background: #d0d7de; }"
+                "QToolButton:pressed { background: #afb8c1; }"
+            )
+            layout.addWidget(visibility_button)
+            self._visibility_buttons[kind] = visibility_button
         button = QToolButton(self)
         button.setFixedSize(30, 30)
         button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
@@ -647,6 +677,15 @@ class DetailingTopPalette(QFrame):
         if visible:
             self.reposition()
 
+    def set_view_option(self, option: str, visible: bool, enabled: bool = True) -> None:
+        kind = {"nodes_visible": "nodes", "solid_members_visible": "solid"}.get(option)
+        button = self._visibility_buttons.get(kind) if kind else None
+        if button is None:
+            return
+        with QSignalBlocker(button):
+            button.setEnabled(enabled)
+            button.setChecked(bool(visible))
+
     def reposition(self) -> None:
         self.adjustSize()
         margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
@@ -654,7 +693,7 @@ class DetailingTopPalette(QFrame):
         self.raise_()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.manage_views_button:
+        if watched in (*self._visibility_buttons.values(), self.manage_views_button):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
@@ -715,7 +754,7 @@ class TopIconPalette(QFrame):
             elif kind == "reference-axes":
                 button.toggled.connect(window.scene.set_reference_axes_visible)
             elif kind == "nodes":
-                button.toggled.connect(window.scene.set_nodes_visible)
+                button.toggled.connect(self._on_node_visibility_toggled)
             elif kind == "axes":
                 button.toggled.connect(window.scene.set_local_axes_visible)
             elif kind == "solid":
@@ -1153,6 +1192,11 @@ class TopIconPalette(QFrame):
                 button.setEnabled(enabled)
                 button.setChecked(checked)
             self._solid_node_states = None
+        self._window._sync_node_solid_view_options()
+
+    def _on_node_visibility_toggled(self, visible: bool) -> None:
+        self._window.scene.set_nodes_visible(visible)
+        self._window._sync_node_solid_view_options()
 
     def toggle_visibility_command(self, kind: str) -> None:
         button = self._visibility_buttons.get(kind)

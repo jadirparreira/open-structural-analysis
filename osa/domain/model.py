@@ -31,6 +31,7 @@ class StructuralModel:
 
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
+        self.node_display_names: dict[str, str] = {}
         self.bars: dict[str, Bar] = {}
         self.verification_element_names: dict[str, str] = {}
         self.verification_element_groups: list[dict[str, object]] = []
@@ -68,6 +69,9 @@ class StructuralModel:
         self._restraint_lengths_cache = None
         self.verification_element_names = {
             name: value for name, value in self.verification_element_names.items() if name in self.bars
+        }
+        self.node_display_names = {
+            name: value for name, value in self.node_display_names.items() if name in self.nodes
         }
         self.verification_element_groups = [
             group for group in self.verification_element_groups
@@ -224,6 +228,16 @@ class StructuralModel:
         self.nodes[name] = node
         self._touch()
         return node
+
+    def set_node_display_name(self, name: str, value: str) -> None:
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        value = value.strip()
+        if value:
+            self.node_display_names[name] = value
+        else:
+            self.node_display_names.pop(name, None)
+        self._touch()
 
     def update_nodes_coordinates(
         self, changes: dict[str, tuple[float, float, float]],

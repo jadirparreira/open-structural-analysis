@@ -134,58 +134,6 @@ class DisplacementPanel(QFrame):
         self._solid_offset_inputs: dict[str, QLineEdit] = {}
         self._position_parameter_inputs: dict[str, QLineEdit] = {}
 
-        rotation_title = QLabel("Rotação")
-        rotation_title.setObjectName("propertySection")
-        values_layout.addWidget(rotation_title)
-
-        rotation_box = QFrame()
-        rotation_box.setObjectName("unitValueBox")
-        rotation_box.setStyleSheet(
-            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } "
-            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; padding: 2px 9px; } "
-            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
-        )
-        rotation_row = QHBoxLayout(rotation_box)
-        rotation_row.setContentsMargins(0, 0, 0, 0)
-        rotation_row.setSpacing(0)
-        rotation_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.rotation_input = QLineEdit()
-        self.rotation_input.setObjectName("unitValue")
-        self.rotation_input.setValidator(
-            QRegularExpressionValidator(
-                QRegularExpression(r"[+-]?(?:\d+(?:[.,]\d{0,2})?|[.,]\d{1,2})?"),
-                self.rotation_input,
-            )
-        )
-        self.rotation_input.setAccessibleName("Rotação da barra (graus)")
-        self.rotation_input.editingFinished.connect(self._rotation_changed)
-        rotation_row.addWidget(self.rotation_input, 1)
-        rotation_row.addWidget(QLabel("°"))
-        rotation_and_buttons = QHBoxLayout()
-        rotation_and_buttons.setContentsMargins(0, 0, 0, 0)
-        rotation_and_buttons.setSpacing(8)
-        rotation_and_buttons.addWidget(rotation_box, 1)
-
-        future_buttons = QWidget(values)
-        future_buttons_layout = QHBoxLayout(future_buttons)
-        future_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        future_buttons_layout.setSpacing(8)
-        future_buttons_layout.addStretch()
-        for icon_name, label in (
-            ("rotate-cw.svg", "Rotacionar 45 graus"),
-        ):
-            button = self._square_control(future_buttons)
-            button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_name)))
-            button.setIconSize(QSize(18, 18))
-            button.setToolTip(label)
-            button.setAccessibleName(label)
-            button.clicked.connect(self._rotate_45_requested)
-            self.rotate_45_button = button
-            future_buttons_layout.addWidget(button)
-        future_buttons_layout.addStretch()
-        rotation_and_buttons.addWidget(future_buttons)
-        values_layout.addLayout(rotation_and_buttons)
-
         endpoint_grid = QGridLayout()
         endpoint_grid.setContentsMargins(0, 0, 0, 0)
         endpoint_grid.setHorizontalSpacing(8)
@@ -312,14 +260,7 @@ class DisplacementPanel(QFrame):
         ) if member_name in selected else ((member_name,) if member_name in self.window.model.bars else ())
         members = self._members()
         member = members[0] if members else None
-        self.rotation_input.setEnabled(member is not None)
         self.center_button.setEnabled(member is not None)
-        rotations = [item.rotation for item in members]
-        self.rotation_input.setPlaceholderText("Variado" if len(set(rotations)) > 1 else "")
-        self.rotation_input.setText(
-            self._format_rotation(member.rotation)
-            if member is not None and len(set(rotations)) == 1 else ""
-        )
         if member is None:
             for field in self._solid_offset_inputs.values():
                 field.clear()
@@ -345,50 +286,6 @@ class DisplacementPanel(QFrame):
 
     def _refresh_positioning_status(self) -> None:
         self.window.properties.update_positioning_status(self._member_name)
-
-    def _rotation_changed(self) -> None:
-        members = self._members()
-        if not members:
-            return
-        value = self.rotation_input.text().strip()
-        if not value:
-            self.configure_for(self._member_name)
-            return
-        try:
-            rotation = float(value.replace(",", "."))
-            for member in members:
-                self.window.model_service.update_member_rotation(member.name, rotation)
-        except ValueError:
-            self.configure_for(self._member_name)
-            return
-        self.rotation_input.setText(self._format_rotation(self._members()[0].rotation))
-        self.rotation_input.setPlaceholderText("")
-        for member in members:
-            self.window.refresh_member_rotation(member.name)
-        self._refresh_positioning_status()
-
-    def _rotate_45_requested(self, _checked: bool = False) -> None:
-        """Increase the analytical member rotation by 45 degrees."""
-        members = self._members()
-        if not members:
-            return
-        try:
-            for member in members:
-                self.window.model_service.update_member_rotation(member.name, member.rotation + 45)
-        except ValueError:
-            return
-        for member in members:
-            self.window.refresh_member_rotation(member.name)
-        rotations = {member.rotation for member in self._members()}
-        self.rotation_input.setPlaceholderText("Variado" if len(rotations) > 1 else "")
-        self.rotation_input.setText(
-            self._format_rotation(next(iter(rotations))) if len(rotations) == 1 else ""
-        )
-        self._refresh_positioning_status()
-
-    @staticmethod
-    def _format_rotation(value: int | float) -> str:
-        return f"{float(value):.2f}".rstrip("0").rstrip(".").replace(".", ",") or "0"
 
     def _center_requested(self, _checked: bool) -> None:
         """Select the member's original geometric-center position."""

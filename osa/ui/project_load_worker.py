@@ -26,6 +26,7 @@ class ProjectLoadWorker(QObject):
         *,
         normalize_member_directions: bool = True,
         solid_members_visible: bool = False,
+        solid_positioning_enabled: bool = False,
         reference_plane: str = "XY",
         preferred_plane_level: float = 0.0,
     ) -> None:
@@ -33,6 +34,7 @@ class ProjectLoadWorker(QObject):
         self.path = Path(path)
         self.normalize_member_directions = normalize_member_directions
         self.solid_members_visible = solid_members_visible
+        self.solid_positioning_enabled = solid_positioning_enabled
         self.reference_plane = reference_plane
         self.preferred_plane_level = preferred_plane_level
 
@@ -58,6 +60,7 @@ class ProjectLoadWorker(QObject):
                 model,
                 solid_members_visible=self.solid_members_visible,
                 position_indicators_with_section=self.solid_members_visible,
+                solid_positioning_enabled=self.solid_positioning_enabled,
                 reference_plane=self.reference_plane,
                 preferred_plane_level=self.preferred_plane_level,
                 progress=self.progress.emit,

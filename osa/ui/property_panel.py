@@ -307,7 +307,14 @@ class PropertyPanel(QFrame):
         return [name for selected_kind, name in self._selection if selected_kind == kind]
 
     def _verification_name_changed(self) -> None:
-        if self._selected is None or self._selected[0] != "bar":
+        if self._selected is None:
+            return
+        if self._selected[0] == "node" and self.window.palette.active_group == "Detalhamento":
+            self.window.model.set_node_display_name(
+                self._selected[1], self.verification_name_input.text(),
+            )
+            return
+        if self._selected[0] != "bar":
             return
         names = tuple(self._selected_names("bar"))
         self.window.model.set_verification_element_name(names, self.verification_name_input.text())
@@ -402,6 +409,8 @@ class PropertyPanel(QFrame):
         self.supports_title.hide()
         self._color_palette.hide()
         verification_mode = section == "Memorial"
+        detailing_mode = section == "Detalhamento"
+        self.verification_name_input.setReadOnly(False)
         self.member_color_button.setVisible(kind == "bar" and not verification_mode)
         self.delete_button.setVisible(not verification_mode)
         self.update_delete_button_state()
@@ -413,11 +422,53 @@ class PropertyPanel(QFrame):
                 plural = {"node": "Nós", "bar": "Barras", "rigid_bar": "Barras rígidas"}.get(kind, "Elementos")
                 title = f"{plural} · {len(names)} selecionados"
         self.title.setText("Adicionar barra" if self._creation_mode else title)
+        if detailing_mode:
+            # Detailing exposes identity and name only, independently of the
+            # richer geometry, action, analysis, and verification inspectors.
+            self.title.setText({"node": "Nó", "bar": "Barra"}.get(kind, title))
+            self.kind_control.hide()
+            self.name.setText("Identidade")
+            self.name.show()
+            self._identity_row.show()
+            self.identity_value.setText(
+                name if len(names) == 1 else f"Variado ({len(names)})"
+            )
+            self._verification_name_row.setVisible(kind in {"bar", "node"})
+            if kind == "bar":
+                group = self.window.model.verification_group_for(names[-1]) if names else None
+                is_group = group is not None and set(names) == set(group["members"])
+                custom_name = (
+                    str(group.get("name", "")) if is_group
+                    else self.window.model.verification_element_names.get(names[-1], "") if names else ""
+                )
+                self.verification_name_input.setReadOnly(False)
+                self.verification_name_input.setAccessibleName("Nome da barra")
+                with QSignalBlocker(self.verification_name_input):
+                    self.verification_name_input.setText(custom_name)
+            elif kind == "node":
+                self.verification_name_input.setReadOnly(False)
+                self.verification_name_input.setAccessibleName("Nome do nó")
+                self.verification_name_input.setText(
+                    self.window.model.node_display_names.get(name, "")
+                )
+            if kind == "bar" and names:
+                self._show_member_solid_offsets(self.window.model.bars[names[-1]])
+            for result_row in self._verification_result_rows:
+                result_row.hide()
+            self.layout.activate()
+            self.setMinimumHeight(0)
+            self.adjustSize()
+            self.resize(self.width(), self.sizeHint().height())
+            self.show()
+            self.reposition()
+            QTimer.singleShot(0, self._refresh_size)
+            return
+        self.kind_control.setVisible(len(kinds) > 1)
         self.name.setVisible(not self._creation_mode)
         self._identity_row.setVisible(not self._creation_mode)
         self.name.setText("Identidade")
         self.identity_value.setText(name if len(names) == 1 else f"Variado ({len(names)})")
-        self._verification_name_row.setVisible(verification_mode and kind == "bar")
+        self._verification_name_row.setVisible(False)
         for result_row in self._verification_result_rows:
             result_row.setVisible(verification_mode and kind == "bar")
         if verification_mode and kind == "bar":
@@ -428,7 +479,7 @@ class PropertyPanel(QFrame):
                 names[0] if len(names) == 1 else f"Variado ({len(names)})"
             )
             self.identity_value.setText(identity)
-            title = "Grupo de elementos" if is_group else "Elemento"
+            title = "Grupo de barras" if is_group else "Barra"
             self.title.setText(title)
             custom_name = (
                 str(group.get("name", "")) if is_group
@@ -673,7 +724,6 @@ class PropertyPanel(QFrame):
                 (profiles[0] or "Indefinido") if self._all_equal(profiles) else "Variado"
             )
             self.layout.addWidget(section_profile_display)
-            self._show_member_solid_offsets(bar)
             release_labels = (
                 "Dxa", "Dxb", "Dya", "Dyb", "Dza", "Dzb",
                 "Rxa", "Rxb", "Rya", "Ryb", "Rza", "Rzb",
@@ -818,7 +868,7 @@ class PropertyPanel(QFrame):
         members = [self.window.model.bars[member_name] for member_name in self._selected_names("bar")]
         positioning = [self._positioning_summary(member) for member in members]
         signatures = [(
-            member.rotation, member.solid_face_offsets, member.solid_section_offsets,
+            member.solid_face_offsets, member.solid_section_offsets,
         ) for member in members]
         status.setText(positioning[0] if self._all_equal(signatures) else "Variado")
         status.setAccessibleName("Identificação do posicionamento")
@@ -857,7 +907,7 @@ class PropertyPanel(QFrame):
             return
         members = [self.window.model.bars[name] for name in names]
         signatures = [(
-            member.rotation, member.solid_face_offsets, member.solid_section_offsets,
+            member.solid_face_offsets, member.solid_section_offsets,
         ) for member in members]
         self._positioning_status.setText(
             self._positioning_summary(members[0]) if self._all_equal(signatures) else "Variado"
@@ -868,10 +918,7 @@ class PropertyPanel(QFrame):
         """Build the compact positioning identification shown beside the button."""
         face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        rotation = float(getattr(member, "rotation", 0))
         tokens: list[str] = []
-        if rotation != 0:
-            tokens.append(f"R{PropertyPanel._format_positioning_value(rotation)}")
         for label, value in (
             ("A", face_offsets[0] if len(face_offsets) > 0 else 0.0),
             ("B", face_offsets[1] if len(face_offsets) > 1 else 0.0),
@@ -1630,9 +1677,7 @@ class PropertyPanel(QFrame):
             if result.model_revision == self.window.model.revision
         ]
         if not results:
-            target = "no nó" if kind == "node" else "na barra"
-            message = QLabel(f"Nenhum resultado disponível. Processe o modelo para consultar os resultados {target}.")
-            message.setWordWrap(True)
+            message = QLabel("Estrutura não analisada")
             self._add_context_widget(message)
             return
 
@@ -1645,14 +1690,7 @@ class PropertyPanel(QFrame):
         names = self._selected_names(kind) or [name]
         values = [getattr(result, data_key).get(target) for target in names] if result is not None else []
         if not any(isinstance(value, dict) for value in values):
-            if kind == "node":
-                message = QLabel("Não há resultados para os nós selecionados." if len(names) > 1
-                                 else "Não há resultados para este nó.")
-            else:
-                label = "barra rígida" if kind == "rigid_bar" else "barra"
-                message = QLabel(f"Não há resultados para os {label}s selecionados." if len(names) > 1
-                                 else f"Não há resultados para esta {label}.")
-            message.setWordWrap(True)
+            message = QLabel("Estrutura não analisada")
             self._add_context_widget(message)
             return
 

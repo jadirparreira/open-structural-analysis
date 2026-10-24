@@ -198,6 +198,9 @@ class StructureScene(QWidget):
         self._drawing_reference_renderer = DrawingReferenceRenderer()
         self._member_renderer = BatchedMemberRenderer()
         self._member_renderer.position_indicators_with_section = False
+        # The main editor opens in Geometria; positioning offsets are enabled
+        # only after the user enters Detalhamento.
+        self._member_renderer.solid_positioning_enabled = False
         self._node_renderer = BatchedNodeRenderer(glyphs=True)
         self._rigid_bar_renderer = BatchedRigidBarRenderer()
         self._action_renderer = ActionRenderer()
@@ -602,6 +605,12 @@ class StructureScene(QWidget):
         self._clip_refresh_timer.stop()
         self._pending_member_geometry_names.clear()
         self._pending_member_full_names.clear()
+        if (
+            prepared_geometry is not None
+            and prepared_geometry.solid_positioning_enabled
+            != self._member_renderer.solid_positioning_enabled
+        ):
+            prepared_geometry = None
         camera_state = self._camera_state()
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
@@ -4465,6 +4474,23 @@ class StructureScene(QWidget):
             self._result_layer_key = (*self._result_layer_key[:-1], visible)
         self._apply_representation_visibility()
         self._configure_solid_picker()
+
+    def set_solid_positioning_enabled(self, enabled: bool) -> None:
+        """Apply member positioning offsets to solids only in detailing."""
+        enabled = bool(enabled)
+        if enabled == self._member_renderer.solid_positioning_enabled:
+            return
+        self._member_renderer.solid_positioning_enabled = enabled
+        self._scene_member_source = None
+        self._scene_member_source_key = None
+        self._member_geometry_cache = None
+        self._member_geometry_cache_key = None
+        # Palette construction can select its initial session before the scene
+        # has finished creating the actors required by a batch rebuild.
+        if self._model is not None and hasattr(self, "_reveal_preview_line_actor"):
+            self._refresh_member_batch()
+        else:
+            return
         self._sync_highlights()
         self._update_zoom_dependent_sizes()
         self._clip_refresh_timer.stop()

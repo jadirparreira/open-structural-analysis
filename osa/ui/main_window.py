@@ -202,6 +202,7 @@ class MainWindow(QMainWindow):
         self.analysis_top_palette.reposition()
         self.detailing_top_palette = DetailingTopPalette(self)
         self.detailing_top_palette.reposition()
+        self._sync_node_solid_view_options()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -1377,7 +1378,7 @@ class MainWindow(QMainWindow):
         self.selected_elements = []
         self.selected = None
         self.properties.hide()
-        self.history.append("> <b>Agrupar elementos</b> <span style='color:#57606a'>(Use Ctrl para selecionar barras alinhadas; ENTER confirma, ESC cancela)</span>")
+        self.history.append("> <b>Agrupar barras</b> <span style='color:#57606a'>(Use Ctrl para selecionar barras alinhadas; ENTER confirma, ESC cancela)</span>")
         self.scene.plotter.setFocus()
 
     def start_ungroup_verification_elements(self) -> None:
@@ -1390,7 +1391,7 @@ class MainWindow(QMainWindow):
         self.selected_elements = []
         self.selected = None
         self.properties.hide()
-        self.history.append("> <b>Desagrupar elementos</b> <span style='color:#57606a'>(Selecione uma barra do grupo; ESC cancela)</span>")
+        self.history.append("> <b>Desagrupar barras</b> <span style='color:#57606a'>(Selecione uma barra do grupo; ESC cancela)</span>")
         self.scene.plotter.setFocus()
 
     def start_copy_member_properties(self) -> None:
@@ -1585,15 +1586,15 @@ class MainWindow(QMainWindow):
         members = self._selected_command_members()
         if mode == "verification_group_selection":
             if len(members) < 2:
-                self.history.append("> <b>Agrupar elementos</b> <span style='color:#8c959f'>(Selecione ao menos duas barras e pressione ENTER)</span>")
+                self.history.append("> <b>Agrupar barras</b> <span style='color:#8c959f'>(Selecione ao menos duas barras e pressione ENTER)</span>")
                 return
             try:
                 self.model.group_verification_elements(members)
             except ValueError as error:
-                self.history.append(f"> <b>Agrupar elementos</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                self.history.append(f"> <b>Agrupar barras</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
                 return
             self._command_mode = None
-            self.history.append(f"> <b>Agrupar elementos</b> <span style='color:#57606a'>({len(members)} elementos agrupados)</span>")
+            self.history.append(f"> <b>Agrupar barras</b> <span style='color:#57606a'>({len(members)} barras agrupadas)</span>")
             self.clear_selection()
             self.refresh_scene()
             return
@@ -2182,8 +2183,8 @@ class MainWindow(QMainWindow):
                 "reverse_member_selection": "Inverter barra",
                 "join_member_selection": "Unir barras",
                 "copy_member_properties_selection": "Copiar propriedades",
-                "verification_group_selection": "Agrupar elementos",
-                "verification_ungroup_selection": "Desagrupar elementos",
+                "verification_group_selection": "Agrupar barras",
+                "verification_ungroup_selection": "Desagrupar barras",
                 "copy_elements_selection": "Copiar",
                 "copy_elements_reference_placement": "Copiar",
                 "copy_elements_destination_placement": "Copiar",
@@ -2205,7 +2206,7 @@ class MainWindow(QMainWindow):
                 self.scene.set_member_placement_mode(False)
                 self.scene.set_selection_highlight(())
                 self.clear_selection()
-            if label in {"Agrupar elementos", "Desagrupar elementos"}:
+            if label in {"Agrupar barras", "Desagrupar barras"}:
                 self.scene.cancel_ctrl_selection()
                 self.clear_selection()
             result_message = (
@@ -2398,17 +2399,17 @@ class MainWindow(QMainWindow):
         self.selected_elements = [(kind, name)]
         if self._command_mode == "verification_ungroup_selection":
             if kind != "bar":
-                self.history.append("> <b>Desagrupar elementos</b> <span style='color:#8c959f'>(Selecione uma barra que pertença a um grupo)</span>")
+                self.history.append("> <b>Desagrupar barras</b> <span style='color:#8c959f'>(Selecione uma barra que pertença a um grupo)</span>")
                 return
             try:
                 group = self.model.ungroup_verification_elements(name)
             except ValueError as error:
-                self.history.append(f"> <b>Desagrupar elementos</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                self.history.append(f"> <b>Desagrupar barras</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
                 return
             self._command_mode = None
             self.history.append(
-                "> <b>Desagrupar elementos</b> <span style='color:#57606a'>"
-                f"({len(group['members'])} elementos desagrupados)</span>"
+                "> <b>Desagrupar barras</b> <span style='color:#57606a'>"
+                f"({len(group['members'])} barras desagrupadas)</span>"
             )
             self.clear_selection()
             self.refresh_scene()
@@ -2701,6 +2702,7 @@ class MainWindow(QMainWindow):
             path,
             normalize_member_directions=self._member_direction_normalization_enabled,
             solid_members_visible=self.scene._solid_members_visible,
+            solid_positioning_enabled=self.palette.active_group == "Detalhamento",
             reference_plane=self.scene._reference_plane_mode,
             preferred_plane_level=self.scene._reference_plane_z,
         )
@@ -2991,6 +2993,17 @@ class MainWindow(QMainWindow):
             raise ValueError(f"Opção visual desconhecida: {option}")
         self.top_icon_palette.set_view_option(option, visible)
         self.action_top_palette.set_view_option(option, visible)
+        self._sync_node_solid_view_options()
+
+    def _sync_node_solid_view_options(self) -> None:
+        """Keep detailing node/solid buttons mirrored to the geometry palette."""
+        if not hasattr(self, "detailing_top_palette"):
+            return
+        for option, kind in (("nodes_visible", "nodes"), ("solid_members_visible", "solid")):
+            button = self.top_icon_palette._visibility_buttons[kind]
+            self.detailing_top_palette.set_view_option(
+                option, button.isChecked(), button.isEnabled(),
+            )
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""

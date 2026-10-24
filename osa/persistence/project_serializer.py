@@ -73,6 +73,7 @@ class ProjectSerializer:
             "format": FORMAT_V2,
             "analysis_axes": ANALYSIS_AXES,
             "nodes": [asdict(node) for node in model.nodes.values()],
+            "node_display_names": model.node_display_names,
             "members": [asdict(member) for member in model.bars.values()],
             "verification_element_names": model.verification_element_names,
             "verification_element_groups": model.verification_element_groups,
@@ -218,6 +219,13 @@ class ProjectSerializer:
         ):
             raise ValueError("Os nomes dos elementos de verificação são inválidos.")
         candidate.verification_element_names = dict(raw_names)
+        raw_node_names = data.get("node_display_names", {})
+        if not isinstance(raw_node_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.nodes or not isinstance(value, str)
+            for name, value in raw_node_names.items()
+        ):
+            raise ValueError("Os nomes personalizados dos nós são inválidos.")
+        candidate.node_display_names = dict(raw_node_names)
         raw_groups = data.get("verification_element_groups", [])
         if not isinstance(raw_groups, list):
             raise ValueError("Os grupos de elementos de verificação são inválidos.")
@@ -370,6 +378,7 @@ class ProjectSerializer:
             ]
 
         model.nodes = candidate.nodes
+        model.node_display_names = candidate.node_display_names
         model.bars = candidate.bars
         model.verification_element_names = candidate.verification_element_names
         model.verification_element_groups = candidate.verification_element_groups

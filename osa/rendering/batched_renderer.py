@@ -210,6 +210,7 @@ class PreparedSceneGeometry:
     visible_nodes: dict[str, object]
     source_member_batch: MemberBatch
     source_member_key: tuple[object, ...]
+    solid_positioning_enabled: bool
 
 
 def prepare_scene_geometry(
@@ -218,6 +219,7 @@ def prepare_scene_geometry(
     marker_radius: float = 0.05,
     solid_members_visible: bool = False,
     position_indicators_with_section: bool = False,
+    solid_positioning_enabled: bool = True,
     reference_plane: str = "XY",
     preferred_plane_level: float = 0.0,
     progress: Callable[[str], None] | None = None,
@@ -250,6 +252,7 @@ def prepare_scene_geometry(
 
     member_renderer = BatchedMemberRenderer()
     member_renderer.position_indicators_with_section = position_indicators_with_section
+    member_renderer.solid_positioning_enabled = solid_positioning_enabled
     if progress is not None:
         progress("Preparando a geometria das barras…")
     source_member_batch = member_renderer.build(model, marker_radius, yield_control=yield_control)
@@ -298,7 +301,7 @@ def prepare_scene_geometry(
     return PreparedSceneGeometry(
         member_batch, node_batch, rigid_names, rigid_mesh,
         member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,
-        source_member_batch, source_member_key,
+        source_member_batch, source_member_key, solid_positioning_enabled,
     )
 
 
@@ -337,6 +340,7 @@ class BatchedMemberRenderer:
     def __init__(self, solid_renderer: SolidMemberRenderer | None = None) -> None:
         self.solids = solid_renderer or SolidMemberRenderer()
         self.position_indicators_with_section = True
+        self.solid_positioning_enabled = True
 
     def build(
         self, model, marker_radius: float, *, yield_control: Callable[[], None] | None = None,
@@ -377,7 +381,10 @@ class BatchedMemberRenderer:
             end_node = model.nodes[member.end_node]
             start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
             end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
-            section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+            section_offset = (
+                LocalAxesRenderer.section_offset(member, start_node, end_node)
+                if self.solid_positioning_enabled else np.zeros(3, dtype=float)
+            )
             section_offsets[element_index] = section_offset
             indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
             delta = end - start
@@ -412,13 +419,17 @@ class BatchedMemberRenderer:
             # valores positivos aumentam o comprimento nas extremidades e
             # valores negativos o reduzem. As linhas continuam referenciando
             # os nós analíticos; os indicadores acompanham apenas Y/Z.
+            # Member rotation is a general section-orientation property and
+            # applies in every session; only positional offsets are scoped to
+            # the detailing session.
+            solid_x, solid_y, solid_z = basis
             solid_start = start.copy()
             solid_end = end.copy()
-            offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+            offsets = getattr(member, "solid_face_offsets", (0.0, 0.0)) if self.solid_positioning_enabled else (0.0, 0.0)
             if len(offsets) == 2:
-                candidate_start = start - local_x * float(offsets[0])
-                candidate_end = end + local_x * float(offsets[1])
-                if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
+                candidate_start = start - solid_x * float(offsets[0])
+                candidate_end = end + solid_x * float(offsets[1])
+                if float(np.dot(candidate_end - candidate_start, solid_x)) > 1e-9:
                     solid_start, solid_end = candidate_start, candidate_end
             solid_origin = solid_start + section_offset
             solid_delta = solid_end - solid_start
@@ -449,7 +460,7 @@ class BatchedMemberRenderer:
             face_offset = face_point_count
             face_cell_offset = len(face_indices)
             transformed_face_points = _transformed_points(
-                face_vertices, solid_origin, solid_delta, local_y, local_z,
+                face_vertices, solid_origin, solid_delta, solid_y, solid_z,
             )
             face_points.append(transformed_face_points)
             face_cells.append(_offset_cells(face_connectivity, face_offset))
@@ -462,7 +473,7 @@ class BatchedMemberRenderer:
             edge_offset = edge_point_count
             edge_cell_offset = len(edge_indices)
             transformed_edge_points = _transformed_points(
-                edge_vertices, solid_origin, solid_delta, local_y, local_z,
+                edge_vertices, solid_origin, solid_delta, solid_y, solid_z,
             )
             edge_points.append(transformed_edge_points)
             edge_cells.append(_offset_cells(edge_connectivity, edge_offset))
@@ -677,7 +688,10 @@ class BatchedMemberRenderer:
         if basis is None:
             return False
         local_x, local_y, local_z = basis
-        section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+        section_offset = (
+            LocalAxesRenderer.section_offset(member, start_node, end_node)
+            if self.solid_positioning_enabled else np.zeros(3, dtype=float)
+        )
         indicator_offset = section_offset if self.position_indicators_with_section else np.zeros(3)
         # Y/Z edits also move labels and end markers. Rebuild this member's
         # complete subset instead of updating only its section vertices.
@@ -688,12 +702,13 @@ class BatchedMemberRenderer:
             (start + end) / 2.0 + indicator_offset, rtol=0.0, atol=1e-12,
         ):
             return False
+        solid_x, solid_y, solid_z = basis
         solid_start, solid_end = start.copy(), end.copy()
-        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0)) if self.solid_positioning_enabled else (0.0, 0.0)
         if len(offsets) == 2:
-            candidate_start = start - local_x * float(offsets[0])
-            candidate_end = end + local_x * float(offsets[1])
-            if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
+            candidate_start = start - solid_x * float(offsets[0])
+            candidate_end = end + solid_x * float(offsets[1])
+            if float(np.dot(candidate_end - candidate_start, solid_x)) > 1e-9:
                 solid_start, solid_end = candidate_start, candidate_end
         solid_origin = solid_start + section_offset
         solid_delta = solid_end - solid_start
@@ -735,10 +750,10 @@ class BatchedMemberRenderer:
             return False
 
         face_points = _transformed_points(
-            face_source.points, solid_origin, solid_delta, local_y, local_z,
+            face_source.points, solid_origin, solid_delta, solid_y, solid_z,
         )
         edge_points = _transformed_points(
-            edge_source.points, solid_origin, solid_delta, local_y, local_z,
+            edge_source.points, solid_origin, solid_delta, solid_y, solid_z,
         )
         batch.faces.points[face_start:face_end] = face_points
         batch.edges.points[edge_start:edge_end] = edge_points
