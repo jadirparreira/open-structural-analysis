@@ -31,6 +31,8 @@ from osa.sections import section_shape
 class DetailingViewPreview(QFrame):
     """Paint a 2D vector drawing of the visible solid edges in a view."""
 
+    view_ready = Signal(bool)
+
     _shared_model_meshes: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
     _view_cache_limit: ClassVar[int] = 24
 
@@ -237,6 +239,7 @@ class DetailingViewPreview(QFrame):
             self._segments_2d = []
             self._bounds_2d = None
             self._render_pending = False
+            self.view_ready.emit(False)
             self.update()
             return
         self._render_pending = True
@@ -263,10 +266,12 @@ class DetailingViewPreview(QFrame):
             self._render_pending = False
             self._zoom = 1.0
             self._pan = QPointF()
+            self.view_ready.emit(bool(segments))
             self.update()
             return
 
         self._clear_preview()
+        self.view_ready.emit(False)
         self._render_pool.clear()
         model_snapshot = _ModelSnapshot(model)
         self._render_pool.start(
@@ -298,6 +303,7 @@ class DetailingViewPreview(QFrame):
         self._view_cache.move_to_end(cache_key)
         while len(self._view_cache) > self._view_cache_limit:
             self._view_cache.popitem(last=False)
+        self.view_ready.emit(bool(self._segments_2d))
         self.update()
 
     def _clear_preview(self) -> None:

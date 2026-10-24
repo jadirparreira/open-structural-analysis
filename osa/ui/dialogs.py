@@ -675,6 +675,38 @@ class ErrorDialog(QDialog):
         self.adjustSize()
 
 
+class DetailingExportSuccessDialog(QDialog):
+    """Compact confirmation for a successfully exported detailing view."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedWidth(360)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QLabel { color: #24292f; }"
+            "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#closeProperties:hover { background: #eaeef2; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(16)
+        message = QLabel("Arquivo DXF exportado com sucesso")
+        message.setWordWrap(False)
+        layout.addWidget(message)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("closeProperties")
+        close_button.setAutoDefault(False)
+        close_button.setIcon(QIcon())
+        close_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        layout.addLayout(footer)
+        self.adjustSize()
+
+
 class AboutDialog(QDialog):
     """Informações do aplicativo no mesmo quadro dos demais diálogos."""
 
@@ -1006,6 +1038,9 @@ class DetailingViewsDialog(QDialog):
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
             "QPushButton#closeProperties:hover { background: #eaeef2; }"
+            "QPushButton#detailViewExportDxfButton { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #ffffff; }"
+            "QPushButton#detailViewExportDxfButton:hover { background: #eaeef2; }"
         )
 
         outer = QVBoxLayout(self)
@@ -1204,13 +1239,24 @@ class DetailingViewsDialog(QDialog):
         )
         preview_layout.addLayout(name_row)
         self._preview = DetailingViewPreview(preview_area)
+        self._preview.view_ready.connect(self._export_dxf_button_ready)
         preview_layout.addWidget(self._preview, 1)
+        export_button = QPushButton("Exportar DXF")
+        export_button.setObjectName("detailViewExportDxfButton")
+        export_button.setAutoDefault(False)
+        export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        export_button.setToolTip("Exportar o desenho 2D da vista atual para DXF")
+        export_button.setAccessibleName("Exportar vista atual para DXF")
+        export_button.setEnabled(False)
+        export_button.clicked.connect(self._export_selected_view_dxf)
+        self.export_dxf_button = export_button
         close_button = QPushButton("Fechar")
         close_button.setObjectName("closeProperties")
         close_button.setAutoDefault(False)
         close_button.clicked.connect(self._commit_view_name_update)
         close_button.clicked.connect(self.accept)
         footer = QHBoxLayout()
+        footer.addWidget(export_button)
         footer.addStretch()
         footer.addWidget(close_button)
         preview_layout.addLayout(footer)
@@ -1627,6 +1673,51 @@ class DetailingViewsDialog(QDialog):
             orientation=self.view_direction_selector.currentText(),
             rotation_degrees=self.view_rotation_input.value(),
         )
+
+    def _export_dxf_button_ready(self, ready: bool) -> None:
+        self.export_dxf_button.setEnabled(ready)
+
+    def _export_selected_view_dxf(self) -> None:
+        segments = self._preview.segments_2d
+        if not segments or self._preview._render_pending:
+            return
+
+        self._commit_view_name_update()
+        view_key = self._active_view_key
+        if view_key is None:
+            return
+        default_name = (
+            self._saved_view_names.get(view_key, "").strip()
+            or self._view_fallbacks[view_key]
+        )
+        safe_name = "".join(
+            character if character.isalnum() or character in " -_()" else "_"
+            for character in default_name
+        ).strip(" .") or "vista"
+        filename, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Exportar vista para DXF",
+            f"{safe_name}.dxf",
+            "Desenho DXF (*.dxf)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.lower() != ".dxf":
+            path = path.with_suffix(".dxf")
+
+        try:
+            from osa.exporters.view_dxf import export_view_to_dxf
+
+            export_view_to_dxf(path, segments)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Falha ao exportar DXF",
+                f"Não foi possível salvar o desenho:\n{error}",
+            )
+            return
+        DetailingExportSuccessDialog(self).exec()
 
     def _queue_view_name_update(self, text: str) -> None:
         if self._pending_view_name_key is None:
