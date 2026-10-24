@@ -16,6 +16,8 @@ from osa.rendering.detailing_2d import (
     projected_visible_intervals,
     visible_segments_from_meshes,
 )
+from osa.rendering.solid_member_renderer import SolidMemberRenderer
+from osa.sections import section_shape
 from osa.ui.detailing_preview import DetailingViewPreview
 
 
@@ -44,6 +46,75 @@ def test_behind_face_does_not_occlude_edge():
     )
 
     assert np.allclose(visible, ((0.0, 1.0),))
+
+
+@pytest.mark.parametrize("drift", (-1e-15, 0.0, 1e-15))
+@pytest.mark.parametrize("reverse", (False, True))
+def test_almost_parallel_front_face_hides_longitudinal_edge(drift, reverse):
+    face = np.array(((-1.0, -1.0), (2.0, -1.0 + drift), (0.5, 2.0)))
+    start, end = ((1.0, 0.0), (0.0, 0.0)) if reverse else ((0.0, 0.0), (1.0, 0.0))
+
+    visible = projected_visible_intervals(start, end, 0.0, 0.0, ((face, np.ones(3)),))
+
+    assert visible == []
+
+
+@pytest.mark.parametrize("drift", (-1e-15, 0.0, 1e-15))
+def test_almost_parallel_face_preserves_edge_in_front_and_on_surface(drift):
+    face = np.array(((-1.0, -1.0), (2.0, -1.0 + drift), (0.5, 2.0)))
+    for edge_depth in (1.0, 2.0):
+        visible = projected_visible_intervals(
+            (0.0, 0.0), (1.0, 0.0), edge_depth, edge_depth, ((face, np.ones(3)),)
+        )
+
+        assert visible == [(0.0, 1.0)]
+
+
+@pytest.mark.parametrize("drift", (-1e-15, 0.0, 1e-15))
+def test_almost_parallel_face_clips_only_the_covered_part(drift):
+    face = np.array(((-0.1, -1.0), (0.7, -1.0 + drift), (0.3, 1.0)))
+
+    visible = projected_visible_intervals(
+        (0.0, 0.0), (1.0, 0.0), 0.0, 0.0, ((face, np.ones(3)),)
+    )
+
+    assert np.allclose(visible, ((0.0, 0.1), (0.5, 1.0)))
+
+
+@pytest.mark.parametrize("x_direction, y_direction", ((1, -1), (1, 1), (-1, 1), (-1, -1)))
+@pytest.mark.parametrize("upper_fillet", (True, False))
+def test_isometric_rolled_flange_hides_upper_fillet_and_keeps_lower_fillet(
+    x_direction, y_direction, upper_fillet
+):
+    shape = section_shape("W Laminado", {"d": 349.0, "bf": 127.0, "tw": 5.8, "tf": 8.5})
+    renderer = SolidMemberRenderer()
+    solid = renderer._mesh_for(shape).scale((5.0, 1.0, 1.0), inplace=False)
+    # The upper tangent lies under the top flange. The corresponding lower
+    # tangent is exposed above the bottom flange when seen from this side.
+    z = 0.166 if upper_fillet else -0.166
+    edge_points = np.array(((1.0, y_direction * 0.0129, z), (4.0, y_direction * 0.0129, z)))
+    camera = np.array((x_direction, y_direction, 1.0), dtype=float)
+    camera /= np.linalg.norm(camera)
+    up = np.array((0.0, 0.0, 1.0)) - camera[2] * camera
+    up /= np.linalg.norm(up)
+    right = np.cross(-camera, up)
+    target = np.column_stack((edge_points @ right, edge_points @ up))
+
+    segments = visible_segments_from_meshes(
+        (solid,), camera, up, feature_edge_meshes=(pv.Line(*edge_points),)
+    )
+
+    direction = target[1] - target[0]
+    on_target = []
+    for segment in segments:
+        relative = np.asarray(segment) - target[0]
+        distance = np.abs(relative[:, 0] * direction[1] - relative[:, 1] * direction[0])
+        if np.all(distance < 1e-7):
+            on_target.append(segment)
+    if upper_fillet:
+        assert on_target == []
+    else:
+        assert any(np.allclose(segment, sorted(map(tuple, target))) for segment in on_target)
 
 
 def test_cube_preview_produces_planar_vector_segments_only():

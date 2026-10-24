@@ -39,6 +39,12 @@ class DetailingViewPreview(QFrame):
         "XZ": ((0.0, 1.0, 0.0), 1, (0.0, 0.0, 1.0)),
         "YZ": ((1.0, 0.0, 0.0), 0, (0.0, 0.0, 1.0)),
     }
+    _isometric_directions: ClassVar[dict[str, tuple[float, float, float]]] = {
+        "ISO-SE": (1.0, -1.0, 1.0),
+        "ISO-NE": (1.0, 1.0, 1.0),
+        "ISO-NW": (-1.0, 1.0, 1.0),
+        "ISO-SW": (-1.0, -1.0, 1.0),
+    }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -51,6 +57,9 @@ class DetailingViewPreview(QFrame):
         self._renderer = SolidMemberRenderer()
         self._model_cache_key = None
         self._solid_meshes: list[pv.PolyData] = []
+        self._solid_shapes = []
+        self._solid_transforms: list[np.ndarray] = []
+        self._solid_edge_meshes: list[pv.PolyData] | None = None
         self._view_cache: OrderedDict[tuple, tuple] = OrderedDict()
         self._segments_2d: list[tuple[tuple[float, float], tuple[float, float]]] = []
         self._line_path = QPainterPath()
@@ -88,7 +97,8 @@ class DetailingViewPreview(QFrame):
     ) -> None:
         """Render the slab around a view plane, looking from its selected side."""
         plane_data = self._plane_data.get(plane)
-        if model is None or (plane != "custom" and plane_data is None):
+        isometric = plane in self._isometric_directions
+        if model is None or (plane != "custom" and plane_data is None and not isometric):
             self._clear_preview()
             return
 
@@ -118,6 +128,7 @@ class DetailingViewPreview(QFrame):
             return
 
         self._ensure_model_meshes(model)
+        feature_edge_meshes = None
         if plane == "custom":
             points = np.asarray(coordinate, dtype=float)
             if points.shape != (3, 3):
@@ -150,6 +161,18 @@ class DetailingViewPreview(QFrame):
             normal_axis = 2
             view_up = (0.0, 1.0, 0.0)
             coordinate_value = 0.0
+        elif isometric:
+            self._ensure_model_edge_meshes(model)
+            feature_edge_meshes = self._solid_edge_meshes
+            normal_array = np.asarray(self._isometric_directions[plane], dtype=float)
+            normal_array /= np.linalg.norm(normal_array)
+            view_up_array = np.asarray((0.0, 0.0, 1.0), dtype=float)
+            view_up_array -= np.dot(view_up_array, normal_array) * normal_array
+            view_up_array /= np.linalg.norm(view_up_array)
+            normal = tuple(float(value) for value in normal_array)
+            view_up = tuple(float(value) for value in view_up_array)
+            solid_meshes = self._solid_meshes
+            coordinate_value = 0.0
         else:
             normal, normal_axis, view_up = plane_data
             solid_meshes = self._solid_meshes
@@ -159,15 +182,18 @@ class DetailingViewPreview(QFrame):
         if upper < lower:
             upper, lower = lower, upper
 
-        clipped_meshes: list[pv.PolyData] = []
-        for solid_number, solid in enumerate(solid_meshes):
-            if solid_number % 16 == 0:
-                sleep(0)
-            clipped = self._clip_to_depth_range(
-                solid, normal, normal_axis, lower, upper
-            )
-            if clipped is not None and clipped.n_points and clipped.n_cells:
-                clipped_meshes.append(clipped)
+        if isometric:
+            clipped_meshes = list(solid_meshes)
+        else:
+            clipped_meshes: list[pv.PolyData] = []
+            for solid_number, solid in enumerate(solid_meshes):
+                if solid_number % 16 == 0:
+                    sleep(0)
+                clipped = self._clip_to_depth_range(
+                    solid, normal, normal_axis, lower, upper
+                )
+                if clipped is not None and clipped.n_points and clipped.n_cells:
+                    clipped_meshes.append(clipped)
 
         if not clipped_meshes:
             self._clear_preview()
@@ -189,8 +215,9 @@ class DetailingViewPreview(QFrame):
                 clipped_meshes,
                 normal,
                 view_up,
-                orientation,
+                "Superior para inferior" if isometric else orientation,
                 float(rotation_degrees),
+                feature_edge_meshes,
             )
         except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
@@ -298,10 +325,15 @@ class DetailingViewPreview(QFrame):
         shared = self._shared_model_meshes.get(cache_owner)
         if shared is not None and shared[0] == cache_key[1]:
             self._solid_meshes = shared[1]
+            self._solid_shapes = shared[2]
+            self._solid_transforms = shared[3]
+            self._solid_edge_meshes = None
             self._model_cache_key = cache_key
             return
 
         meshes: list[pv.PolyData] = []
+        shapes = []
+        transforms: list[np.ndarray] = []
         for member_number, member in enumerate(model.bars.values()):
             if member_number % 16 == 0:
                 sleep(0)
@@ -349,12 +381,30 @@ class DetailingViewPreview(QFrame):
                 mesh = self._renderer._mesh_for(shape).copy(deep=True)
                 mesh.transform(transform, inplace=True)
                 meshes.append(mesh)
+                shapes.append(shape)
+                transforms.append(transform)
             except (KeyError, TypeError, ValueError, RuntimeError):
                 continue
 
         self._solid_meshes = meshes
+        self._solid_shapes = shapes
+        self._solid_transforms = transforms
+        self._solid_edge_meshes = None
         self._model_cache_key = cache_key
-        self._shared_model_meshes[cache_owner] = (cache_key[1], meshes)
+        self._shared_model_meshes[cache_owner] = (
+            cache_key[1], meshes, shapes, transforms
+        )
+
+    def _ensure_model_edge_meshes(self, model) -> None:
+        if self._solid_edge_meshes is not None:
+            return
+        self._ensure_model_meshes(model)
+        edge_meshes: list[pv.PolyData] = []
+        for shape, transform in zip(self._solid_shapes, self._solid_transforms):
+            edge_mesh = self._renderer._edge_mesh_for(shape).copy(deep=True)
+            edge_mesh.transform(transform, inplace=True)
+            edge_meshes.append(edge_mesh)
+        self._solid_edge_meshes = edge_meshes
 
     @staticmethod
     def _clip_to_depth_range(
@@ -389,6 +439,7 @@ class DetailingViewPreview(QFrame):
         view_up: tuple[float, float, float],
         orientation: str,
         rotation_degrees: float,
+        feature_edge_meshes: list[pv.PolyData] | None = None,
     ) -> None:
         """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
@@ -399,6 +450,7 @@ class DetailingViewPreview(QFrame):
             camera_direction,
             view_up,
             rotation_degrees,
+            feature_edge_meshes=feature_edge_meshes,
         )
         if self._segments_2d:
             points_2d = np.asarray(
@@ -553,17 +605,23 @@ class _ViewGeometryCalculator:
     """Non-widget receiver for the existing projection pipeline in a worker."""
 
     _plane_data = DetailingViewPreview._plane_data
+    _isometric_directions = DetailingViewPreview._isometric_directions
     _shared_model_meshes = DetailingViewPreview._shared_model_meshes
     _view_cache_limit = DetailingViewPreview._view_cache_limit
     _ensure_model_meshes = DetailingViewPreview._ensure_model_meshes
+    _ensure_model_edge_meshes = DetailingViewPreview._ensure_model_edge_meshes
     _clip_to_depth_range = staticmethod(DetailingViewPreview._clip_to_depth_range)
     _render_visible_lines = DetailingViewPreview._render_visible_lines
     _clear_preview = DetailingViewPreview._clear_preview
+    _update_line_path = DetailingViewPreview._update_line_path
 
     def __init__(self) -> None:
         self._renderer = SolidMemberRenderer()
         self._model_cache_key = None
         self._solid_meshes = []
+        self._solid_shapes = []
+        self._solid_transforms = []
+        self._solid_edge_meshes = None
         self._segments_2d = []
         self._bounds_2d = None
         self._line_path = QPainterPath()

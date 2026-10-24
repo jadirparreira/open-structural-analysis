@@ -1082,6 +1082,27 @@ class DetailingViewsDialog(QDialog):
                     saved_view_names,
                     is_custom=False,
                 )
+        for direction, title in (
+            ("SE", "sudeste"),
+            ("NE", "nordeste"),
+            ("NW", "noroeste"),
+            ("SW", "sudoeste"),
+        ):
+            plane = f"ISO-{direction}"
+            system_name = f"Isométrica {direction}"
+            fallback_name = f"Vista isométrica {title}"
+            view_key = (model_key, f"isometric:{direction}")
+            view_keys.append(view_key)
+            self._append_detail_view(
+                view_list,
+                view_key,
+                plane,
+                0.0,
+                system_name,
+                fallback_name,
+                saved_view_names,
+                is_custom=False,
+            )
         custom_plane_records = saved_custom_planes.setdefault(model_key, [])
         for record in custom_plane_records:
             plane = "custom"
@@ -1106,6 +1127,7 @@ class DetailingViewsDialog(QDialog):
         self._custom_plane_records = custom_plane_records
         self._model_key = model_key
         self._active_view_key = None
+        self._initial_preview_deferred = True
         self._view_list = view_list
         self._view_keys = tuple(view_keys)
         sidebar = QWidget()
@@ -1206,6 +1228,7 @@ class DetailingViewsDialog(QDialog):
         settings_layout.setSpacing(10)
         self.view_displacement_inputs = {}
         self._detail_view_input_boxes = {}
+        self._detail_view_offset_groups = {}
         for key, label_text in (
             ("top", "Deslocamento superior"),
             ("bottom", "Deslocamento inferior"),
@@ -1244,6 +1267,7 @@ class DetailingViewsDialog(QDialog):
             field_layout.addWidget(field_label)
             field_layout.addWidget(unit_box)
             settings_layout.addWidget(field_group)
+            self._detail_view_offset_groups[key] = field_group
             self.view_displacement_inputs[key] = field
         rotation_group = QWidget(self._view_settings_panel)
         rotation_layout = QVBoxLayout(rotation_group)
@@ -1315,6 +1339,7 @@ class DetailingViewsDialog(QDialog):
             "QComboBox::down-arrow { image: none; }"
         )
         orientation_group = QWidget(self._view_settings_panel)
+        self._detail_view_orientation_group = orientation_group
         orientation_layout = QVBoxLayout(orientation_group)
         orientation_layout.setContentsMargins(0, 0, 0, 0)
         orientation_layout.setSpacing(4)
@@ -1496,6 +1521,7 @@ class DetailingViewsDialog(QDialog):
         if self._active_view_key != view_key:
             self._commit_view_name_update()
             self._save_active_detail_view_settings()
+        plane, _coordinate = self._view_definitions[view_key]
         self._active_view_key = view_key
         settings = self._saved_view_settings.setdefault(
             view_key,
@@ -1522,7 +1548,17 @@ class DetailingViewsDialog(QDialog):
         )
         for widget, was_blocked in zip(setting_widgets, blocked_states):
             widget.blockSignals(was_blocked)
-        self._refresh_selected_detail_preview()
+        isometric = plane in DetailingViewPreview._isometric_directions
+        for group in self._detail_view_offset_groups.values():
+            group.setEnabled(not isometric)
+        self._detail_view_orientation_group.setEnabled(not isometric)
+        if self._initial_preview_deferred:
+            self._initial_preview_deferred = False
+            self._preview._render_pending = True
+            self._preview.update()
+            QTimer.singleShot(16, self._start_initial_preview)
+        else:
+            self._refresh_selected_detail_preview()
         for key, button in self._view_buttons.items():
             button.setChecked(key == view_key)
         self._view_list.setCurrentItem(self._view_items[view_key])
@@ -1533,6 +1569,15 @@ class DetailingViewsDialog(QDialog):
         self.remove_detail_plane_button.setEnabled(
             self._view_is_custom.get(view_key, False)
         )
+
+    def _start_initial_preview(self) -> None:
+        if self._preview._render_generation:
+            return
+        if not self.isVisible():
+            self._preview._render_pending = False
+            self._preview.update()
+            return
+        self._refresh_selected_detail_preview()
 
     def _save_active_detail_view_settings(self) -> None:
         view_key = self._active_view_key

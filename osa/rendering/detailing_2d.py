@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from math import ceil, cos, floor, radians, sin, sqrt
 from time import sleep
 
@@ -76,15 +77,22 @@ def visible_segments_from_meshes(
     camera_direction: Iterable[float],
     view_up: Iterable[float],
     rotation_degrees: float = 0.0,
+    *,
+    feature_edge_meshes: Iterable[pv.PolyData] | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     """Create 2D visible edge segments from a set of clipped solid meshes.
 
     Coordinates are in model units in the drawing plane. Faces are used only
-    to resolve occlusion; the returned data contains 2D linework only.
+    to resolve occlusion; the returned data contains 2D linework only. When
+    feature-edge meshes are provided, they supply the geometric creases and
+    boundaries while the triangulated solids supply only view-dependent
+    silhouettes.
     """
     meshes = tuple(meshes)
     if not meshes:
         return []
+    use_feature_edges = feature_edge_meshes is not None
+    feature_edge_meshes = tuple(feature_edge_meshes or ())
     camera_direction = _unit(np.asarray(tuple(camera_direction), dtype=float))
     view_direction = -camera_direction
     base_up = _unit(np.asarray(tuple(view_up), dtype=float))
@@ -119,12 +127,22 @@ def visible_segments_from_meshes(
                 surface_points[triangle_indices[:, 2]] - surface_points[triangle_indices[:, 0]],
             )
             face_lengths = np.linalg.norm(face_vectors, axis=1)
-            face_normals = np.divide(
-                face_vectors,
-                face_lengths[:, None],
-                out=np.zeros_like(face_vectors),
-                where=face_lengths[:, None] > 1e-12,
-            )
+            if use_feature_edges:
+                face_normals = np.asarray(surface.cell_data["Normals"], dtype=float)
+                if len(face_normals) != len(triangle_indices):
+                    face_normals = np.divide(
+                        face_vectors,
+                        face_lengths[:, None],
+                        out=np.zeros_like(face_vectors),
+                        where=face_lengths[:, None] > 1e-12,
+                    )
+            else:
+                face_normals = np.divide(
+                    face_vectors,
+                    face_lengths[:, None],
+                    out=np.zeros_like(face_vectors),
+                    where=face_lengths[:, None] > 1e-12,
+                )
             for triangle_number, indices in enumerate(triangle_indices):
                 if triangle_number % 256 == 0:
                     sleep(0)
@@ -155,6 +173,7 @@ def visible_segments_from_meshes(
                 triangle_indices,
                 face_normals,
                 camera_direction,
+                silhouettes_only=use_feature_edges,
             )
             edge_projected = np.column_stack((projected[:, 0], projected[:, 1]))
             for a, b in edge_indices:
@@ -198,13 +217,63 @@ def visible_segments_from_meshes(
                 ]
                 depth_layers.append((start, end, depth_start, depth_end))
 
+    for edge_mesh in feature_edge_meshes:
+        points = np.asarray(edge_mesh.points, dtype=float)
+        lines = np.asarray(edge_mesh.lines, dtype=np.int64)
+        offset = 0
+        while offset < len(lines):
+            count = int(lines[offset])
+            indices = lines[offset + 1 : offset + count + 1]
+            for first, second in pairwise(indices):
+                a, b = int(first), int(second)
+                key_points = sorted(
+                    (tuple(np.round(points[a], 10)), tuple(np.round(points[b], 10)))
+                )
+                if key_points[0] == key_points[1]:
+                    continue
+                key = (key_points[0], key_points[1])
+                if key in unique_edges:
+                    continue
+                unique_edges.add(key)
+                start = np.asarray((np.dot(points[a], right), np.dot(points[a], rotated_up)))
+                end = np.asarray((np.dot(points[b], right), np.dot(points[b], rotated_up)))
+                depth_start = float(np.dot(points[a], camera_direction))
+                depth_end = float(np.dot(points[b], camera_direction))
+                start_key = tuple(np.round(start, 9))
+                end_key = tuple(np.round(end, 9))
+                if end_key < start_key:
+                    start, end = end, start
+                    start_key, end_key = end_key, start_key
+                    depth_start, depth_end = depth_end, depth_start
+                group_key = (start_key, end_key)
+                depth_layers = projected_edge_groups.setdefault(group_key, [])
+                if any(
+                    other_start_depth >= depth_start - 1e-7
+                    and other_end_depth >= depth_end - 1e-7
+                    for _, _, other_start_depth, other_end_depth in depth_layers
+                ):
+                    continue
+                depth_layers[:] = [
+                    layer
+                    for layer in depth_layers
+                    if not (
+                        depth_start >= layer[2] - 1e-7
+                        and depth_end >= layer[3] - 1e-7
+                    )
+                ]
+                depth_layers.append((start, end, depth_start, depth_end))
+            offset += count + 1
+
     projected_edges = [
         edge for depth_layers in projected_edge_groups.values() for edge in depth_layers
     ]
 
     if not triangles or not projected_edges:
         return []
-    index = _TriangleGrid(triangles)
+    index = _TriangleGrid(
+        triangles,
+        correct_crossing_intervals=use_feature_edges,
+    )
     visible_segments = []
     unique_projected: set[tuple[tuple[float, ...], tuple[float, ...]]] = set()
     for edge_number, (start, end, depth_start, depth_end) in enumerate(projected_edges):
@@ -242,6 +311,7 @@ def _visible_intervals_for_triangles(
     triangles: Iterable[_ProjectedTriangle],
     *,
     depth_tolerance: float = 1e-7,
+    correct_crossing_intervals: bool = True,
 ) -> list[tuple[float, float]]:
     triangles = tuple(triangles)
     if not triangles:
@@ -255,6 +325,7 @@ def _visible_intervals_for_triangles(
         np.asarray([triangle.depth_plane for triangle in triangles], dtype=float),
         np.asarray([triangle.bounds for triangle in triangles], dtype=float),
         depth_tolerance=depth_tolerance,
+        correct_crossing_intervals=correct_crossing_intervals,
     )
 
 
@@ -268,6 +339,7 @@ def _visible_intervals_for_arrays(
     bounds: np.ndarray | None = None,
     *,
     depth_tolerance: float = 1e-7,
+    correct_crossing_intervals: bool = True,
 ) -> list[tuple[float, float]]:
     if not len(points):
         return [(0.0, 1.0)]
@@ -306,8 +378,11 @@ def _visible_intervals_for_arrays(
             out=np.zeros_like(at_start),
             where=~parallel,
         )
-        lower = np.where(slope > 0.0, np.maximum(lower, transition), lower)
-        upper = np.where(slope < 0.0, np.minimum(upper, transition), upper)
+        # Parallel boundaries have no crossing parameter. Tiny signed roundoff
+        # must not turn the placeholder zero into an interval boundary: doing
+        # so discards the occluding face for longitudinal edges parallel to it.
+        lower = np.where(~parallel & (slope > 0.0), np.maximum(lower, transition), lower)
+        upper = np.where(~parallel & (slope < 0.0), np.minimum(upper, transition), upper)
     valid &= lower <= upper + 1e-10
     valid &= (upper >= 0.0) & (lower <= 1.0)
     if not valid.any():
@@ -346,8 +421,17 @@ def _visible_intervals_for_arrays(
         out=(lower + upper) / 2.0,
         where=np.abs(difference_at_upper - difference_at_lower) > 1e-14,
     )
-    blocked_lower = np.where(lower_hidden & ~upper_hidden, roots, lower)
-    blocked_upper = np.where(upper_hidden & ~lower_hidden, roots, upper)
+    if correct_crossing_intervals:
+        # If the lower endpoint is hidden, the occluded part runs from
+        # ``lower`` to the crossing. If the upper endpoint is hidden, it runs
+        # from the crossing to ``upper``.
+        blocked_lower = np.where(upper_hidden & ~lower_hidden, roots, lower)
+        blocked_upper = np.where(lower_hidden & ~upper_hidden, roots, upper)
+    else:
+        # Retain the original planar-view behavior while the revised
+        # crossing rule is limited to isometric drawings.
+        blocked_lower = np.where(lower_hidden & ~upper_hidden, roots, lower)
+        blocked_upper = np.where(upper_hidden & ~lower_hidden, roots, upper)
     blocked = zip(
         blocked_lower[blocked_mask].tolist(), blocked_upper[blocked_mask].tolist()
     )
@@ -357,8 +441,14 @@ def _visible_intervals_for_arrays(
 class _TriangleGrid:
     """Uniform projected grid for limiting visibility checks to nearby faces."""
 
-    def __init__(self, triangles: list[_ProjectedTriangle]) -> None:
+    def __init__(
+        self,
+        triangles: list[_ProjectedTriangle],
+        *,
+        correct_crossing_intervals: bool = False,
+    ) -> None:
         self._triangles = triangles
+        self._correct_crossing_intervals = correct_crossing_intervals
         bounds = np.asarray([triangle.bounds for triangle in triangles], dtype=float)
         self._bounds = bounds
         self._points = np.asarray([triangle.points for triangle in triangles], dtype=float)
@@ -443,6 +533,7 @@ class _TriangleGrid:
             depth_end,
             self._points[selected],
             self._planes[selected],
+            correct_crossing_intervals=self._correct_crossing_intervals,
         )
 
 
@@ -515,6 +606,8 @@ def _view_dependent_surface_edges(
     triangle_indices: np.ndarray,
     face_normals: np.ndarray,
     camera_direction: np.ndarray,
+    *,
+    silhouettes_only: bool = False,
 ) -> list[tuple[int, int]]:
     """Keep mesh boundaries, sharp creases, and view-dependent silhouettes."""
     adjacent_faces: dict[tuple[int, int], list[int]] = {}
@@ -530,7 +623,8 @@ def _view_dependent_surface_edges(
     result = []
     for edge, faces in adjacent_faces.items():
         if len(faces) == 1 or len(faces) > 2:
-            result.append(edge)
+            if not silhouettes_only:
+                result.append(edge)
             continue
 
         normals = face_normals[faces]
@@ -541,7 +635,7 @@ def _view_dependent_surface_edges(
             and (float(facing.max()) > grazing_tolerance or float(facing.min()) < -grazing_tolerance)
         )
         sharp_crease = float(np.dot(normals[0], normals[1])) < crease_cosine
-        if silhouette or sharp_crease:
+        if silhouette or (sharp_crease and not silhouettes_only):
             result.append(edge)
     return result
 
