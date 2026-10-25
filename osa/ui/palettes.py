@@ -162,6 +162,7 @@ class FloatingPalette(QFrame):
         self._sections: dict[str, QWidget] = {}
         self._expanded: str | None = None
         self._verification_view_state: dict[str, bool] | None = None
+        self._detailing_view_state: dict[str, bool] | None = None
         self._tooltip = PaletteTooltip(window)
         self._selection_indicator = QFrame(self)
         self._selection_indicator.setObjectName("paletteSelectionIndicator")
@@ -269,8 +270,14 @@ class FloatingPalette(QFrame):
     def toggle_group(self, name: str, *, animate: bool = True) -> None:
         next_group = name
         previous_group = self._expanded
+        if next_group == "Geometria" and hasattr(self.window, "top_icon_palette"):
+            # Geometry always keeps the node and node-label controls available,
+            # even when solid members are visible.
+            self.window.top_icon_palette.set_solid_node_controls_locked(False)
         if previous_group == "Memorial" and next_group != "Memorial":
             self._set_verification_view(False)
+        if previous_group == "Detalhamento" and next_group != "Detalhamento":
+            self._set_detailing_view(False)
         if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
             "scene_hide_selection", "scene_reveal_selection", "member_placement",
             "reference_axis_placement",
@@ -286,6 +293,8 @@ class FloatingPalette(QFrame):
         self._expanded = next_group
         if next_group == "Memorial" and previous_group != "Memorial":
             self._set_verification_view(True)
+        if next_group == "Detalhamento" and previous_group != "Detalhamento":
+            self._set_detailing_view(True)
         self._layout.activate()
         self.setFixedHeight(self.sizeHint().height())
         self._move_selection_indicator(next_group, animate=animate)
@@ -338,6 +347,31 @@ class FloatingPalette(QFrame):
                 return
             target = self._verification_view_state
             self._verification_view_state = None
+
+        for option, visible in target.items():
+            self.window._apply_mcp_view_change(option, visible)
+
+    def _set_detailing_view(self, enabled: bool) -> None:
+        """Hide modeling annotations while the detailing session is active."""
+        options = (
+            "nodes_visible",
+            "node_labels_visible",
+            "member_labels_visible",
+            "local_axes_visible",
+            "member_releases_visible",
+            "semirigid_links_visible",
+            "node_supports_visible",
+        )
+        if enabled:
+            if self._detailing_view_state is None:
+                state = self.window.scene.view_state()
+                self._detailing_view_state = {option: state[option] for option in options}
+            target = {option: False for option in options}
+        else:
+            if self._detailing_view_state is None:
+                return
+            target = self._detailing_view_state
+            self._detailing_view_state = None
 
         for option, visible in target.items():
             self.window._apply_mcp_view_change(option, visible)
@@ -625,7 +659,6 @@ class DetailingTopPalette(QFrame):
         self._tooltip = PaletteTooltip(window)
         self._visibility_buttons: dict[str, QToolButton] = {}
         for icon, label, kind in (
-            ("node-circle.svg", "Nós", "nodes"),
             ("box.svg", "Seções sólidas", "solid"),
         ):
             visibility_button = QToolButton(self)
@@ -1176,7 +1209,16 @@ class TopIconPalette(QFrame):
             self.reload_scene_views()
 
     def _on_solid_visibility_toggled(self, visible: bool) -> None:
-        if visible:
+        self._window.scene.set_solid_members_visible(visible)
+        lock_node_controls = (
+            visible and self._window.palette.active_group != "Geometria"
+        )
+        self.set_solid_node_controls_locked(lock_node_controls)
+        self._window._sync_node_solid_view_options()
+
+    def set_solid_node_controls_locked(self, locked: bool) -> None:
+        """Temporarily hide and disable node controls outside Geometria."""
+        if locked and self._solid_node_states is None:
             self._solid_node_states = {
                 kind: (self._visibility_buttons[kind].isChecked(), self._visibility_buttons[kind].isEnabled())
                 for kind in ("nodes", "node")
@@ -1185,8 +1227,7 @@ class TopIconPalette(QFrame):
                 button = self._visibility_buttons[kind]
                 button.setChecked(False)
                 button.setEnabled(False)
-        self._window.scene.set_solid_members_visible(visible)
-        if not visible and self._solid_node_states is not None:
+        elif not locked and self._solid_node_states is not None:
             for kind, (checked, enabled) in self._solid_node_states.items():
                 button = self._visibility_buttons[kind]
                 button.setEnabled(enabled)
@@ -1463,6 +1504,7 @@ class AnalysisTopPalette(QFrame):
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
+        self._window = window
         self.setObjectName("topIconPalette")
         self.setStyleSheet(
             "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
@@ -1520,6 +1562,58 @@ class AnalysisTopPalette(QFrame):
         self.result_diagrams_button = result_diagrams_button
         self.diagram_selector.currentTextChanged.connect(self._update_result_diagrams_button)
         self._update_result_diagrams_button(self.diagram_selector.currentText())
+        self.deformation_scale_button = QToolButton(self)
+        self.deformation_scale_button.setFixedSize(24, 24)
+        self.deformation_scale_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "lens.svg"))
+        )
+        self.deformation_scale_button.setIconSize(QSize(19, 19))
+        scale_button_tooltip = "Escala de deformação"
+        self.deformation_scale_button.setToolTip(scale_button_tooltip)
+        self.deformation_scale_button.setProperty("paletteTooltip", scale_button_tooltip)
+        self.deformation_scale_button.setAccessibleName("Escala da deformação")
+        self.deformation_scale_button.installEventFilter(self)
+        self.deformation_scale_button.clicked.connect(self._toggle_deformation_scale_popup)
+        selectors_layout.addWidget(self.deformation_scale_button)
+
+        self.deformation_scale_popup = QFrame(
+            window, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint,
+        )
+        self.deformation_scale_popup.setObjectName("deformationScalePopup")
+        self.deformation_scale_popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.deformation_scale_popup.setStyleSheet(
+            "QFrame#deformationScalePopup { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+            "QSlider#deformationScaleSlider { background: transparent; }"
+            "QSlider#deformationScaleSlider:vertical { min-width: 18px; }"
+            "QSlider#deformationScaleSlider::groove:vertical { width: 6px; border-radius: 3px; "
+            "background: #d0d7de; }"
+            "QSlider#deformationScaleSlider::sub-page:vertical { background: #0969da; border-radius: 2px; }"
+            "QSlider#deformationScaleSlider::add-page:vertical { background: #d0d7de; border-radius: 2px; }"
+            "QSlider#deformationScaleSlider::handle:vertical { width: 12px; height: 12px; margin: 0 -3px; "
+            "border: 2px solid #0969da; border-radius: 6px; background: #ffffff; }"
+            "QSlider#deformationScaleSlider::handle:vertical:hover { background: #ddf4ff; }"
+        )
+        popup_layout = QVBoxLayout(self.deformation_scale_popup)
+        popup_layout.setContentsMargins(4, 8, 4, 8)
+        popup_layout.setSpacing(0)
+        self.deformation_scale_slider = QSlider(
+            Qt.Orientation.Vertical, self.deformation_scale_popup,
+        )
+        self.deformation_scale_slider.setObjectName("deformationScaleSlider")
+        self.deformation_scale_slider.setRange(1, 10)
+        self.deformation_scale_slider.setSingleStep(1)
+        self.deformation_scale_slider.setPageStep(1)
+        self.deformation_scale_slider.setValue(1)
+        self.deformation_scale_slider.setInvertedAppearance(True)
+        self.deformation_scale_slider.setFixedWidth(18)
+        self.deformation_scale_slider.setFixedHeight(132)
+        self.deformation_scale_slider.setAccessibleName("Amplificação da deformação")
+        self.deformation_scale_slider.setAccessibleDescription("De 1x, deslocamento real, até 10x")
+        self.deformation_scale_slider.valueChanged.connect(self._deformation_scale_changed)
+        popup_layout.addWidget(self.deformation_scale_slider, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.diagram_selector.currentTextChanged.connect(self._update_deformation_scale_controls)
+        self._update_deformation_scale_controls(self.diagram_selector.currentText())
         self.pending = QFrame(self)
         self.pending.setObjectName("analysisPending")
         pending_layout = QHBoxLayout(self.pending)
@@ -1581,6 +1675,8 @@ class AnalysisTopPalette(QFrame):
     def set_analysis_ready(self, ready: bool) -> None:
         self.selectors.setVisible(ready)
         self.pending.setVisible(not ready)
+        if not ready:
+            self.deformation_scale_popup.hide()
         self.adjustSize()
 
     def reset_result_view(self) -> None:
@@ -1588,15 +1684,52 @@ class AnalysisTopPalette(QFrame):
         self.diagram_selector.blockSignals(True)
         self.diagram_selector.setCurrentText("Normal")
         self.diagram_selector.blockSignals(False)
-        self._update_result_diagrams_button(self.diagram_selector.currentText())
+        result_type = self.diagram_selector.currentText()
+        self._update_result_diagrams_button(result_type)
+        self._update_deformation_scale_controls(result_type)
 
     def _update_result_diagrams_button(self, result_type: str) -> None:
         """The result-visibility toggle does not apply to deformation views."""
         self.result_diagrams_button.setEnabled(not result_type.startswith("Deformação"))
 
+    def _deformation_scale_changed(self, scale: int) -> None:
+        self._window.scene.set_analysis_deformation_scale(scale)
+
+    def _update_deformation_scale_controls(self, result_type: str) -> None:
+        enabled = result_type.startswith("Deformação")
+        self.deformation_scale_button.setEnabled(enabled)
+        if not enabled:
+            self.deformation_scale_popup.hide()
+
+    def _toggle_deformation_scale_popup(self) -> None:
+        if not self.deformation_scale_button.isEnabled():
+            return
+        if self.deformation_scale_popup.isVisible():
+            self.deformation_scale_popup.hide()
+            return
+        self._position_deformation_scale_popup()
+        self.deformation_scale_popup.show()
+        self.deformation_scale_popup.raise_()
+
+    def _position_deformation_scale_popup(self) -> None:
+        self.deformation_scale_popup.setFixedWidth(max(1, self.height()))
+        self.deformation_scale_popup.adjustSize()
+        anchor = self.deformation_scale_button.mapToGlobal(
+            QPoint(self.deformation_scale_button.width() // 2, self.deformation_scale_button.height() + 10)
+        )
+        x = anchor.x() - self.deformation_scale_popup.width() // 2
+        y = anchor.y()
+        screen = QApplication.screenAt(anchor)
+        if screen is not None:
+            bounds = screen.availableGeometry()
+            x = max(bounds.left(), min(x, bounds.right() - self.deformation_scale_popup.width() + 1))
+            y = max(bounds.top(), min(y, bounds.bottom() - self.deformation_scale_popup.height() + 1))
+        self.deformation_scale_popup.move(x, y)
+
     def set_analysis_visible(self, visible: bool) -> None:
         if not visible:
             self._tooltip.dismiss()
+            self.deformation_scale_popup.hide()
         self.setVisible(visible)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -1613,3 +1746,5 @@ class AnalysisTopPalette(QFrame):
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
         self.move((self.window().width() - self.width()) // 2, margin + 52)
         self.raise_()
+        if self.deformation_scale_popup.isVisible():
+            self._position_deformation_scale_popup()

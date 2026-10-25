@@ -391,6 +391,7 @@ class StructureScene(QWidget):
         self._result_diagrams_visible = True
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
+        self._analysis_deformation_scale = 1.0
         self._action_layer_key: tuple[object, ...] | None = None
         self._result_layer_key: tuple[object, ...] | None = None
         self._action_visibility = {
@@ -1361,11 +1362,13 @@ class StructureScene(QWidget):
         self._result_actors, self._result_label_positions, self._result_labels = self._result_renderer.render(
             self.plotter, self._scene_filtered_model(), result, self._active_result_type,
             solid_members_visible=self._solid_members_visible,
+            deformation_scale=self._analysis_deformation_scale,
         )
         self._result_layer_key = (
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
-            self._active_result_type, self._solid_members_visible,
+            self._active_result_type, self._analysis_deformation_scale,
+            self._solid_members_visible,
         )
         self._result_line_widths = []
         if self._active_result_type.startswith("Deformação") and self._result_actors:
@@ -4765,7 +4768,8 @@ class StructureScene(QWidget):
         current_key = (
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
-            self._active_result_type, self._solid_members_visible,
+            self._active_result_type, self._analysis_deformation_scale,
+            self._solid_members_visible,
         )
         if not visible and self._result_actors:
             self._apply_result_layer_visibility()
@@ -4788,6 +4792,17 @@ class StructureScene(QWidget):
         if self._analysis_visible:
             self._refresh_result_layer()
         else:
+            self._result_layer_key = None
+
+    def set_analysis_deformation_scale(self, scale: float) -> None:
+        """Set the visual amplification for analysis deformation overlays."""
+        scale = max(1.0, min(10.0, float(scale)))
+        if scale == self._analysis_deformation_scale:
+            return
+        self._analysis_deformation_scale = scale
+        if self._analysis_visible and self._active_result_type.startswith("Deformação"):
+            self._refresh_result_layer()
+        elif self._result_layer_key is not None:
             self._result_layer_key = None
 
     def set_analysis_diagrams_visible(self, visible: bool) -> None:

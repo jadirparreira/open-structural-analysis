@@ -23,7 +23,6 @@ class ResultRenderer:
     POSITIVE_COLOR = "#0969da"
     NEGATIVE_COLOR = "#cf222e"
     MAX_HEIGHT = 0.75
-    MAX_DEFORMATION = 1.0
     REACTION_FORCE_LENGTH = 0.50
     REACTION_MOMENT_DIAMETER = 0.50
     REACTION_LABEL_CLEARANCE = 0.12
@@ -50,12 +49,16 @@ class ResultRenderer:
 
     def render(
         self, plotter, model, result, diagram: str, *, solid_members_visible: bool = True,
+        deformation_scale: float = 1.0,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         if result is None:
             return [], np.empty((0, 3)), ()
         if diagram.startswith("Deformação"):
             components = diagram.removeprefix("Deformação ") or "XYZ"
-            return self._render_deformation(plotter, model, result, components, solid_members_visible)
+            return self._render_deformation(
+                plotter, model, result, components, solid_members_visible,
+                deformation_scale,
+            )
         if diagram == self.REACTION_DIAGRAM:
             return self._render_reactions(plotter, model, result)
         if diagram not in self.DIAGRAMS:
@@ -417,6 +420,7 @@ class ResultRenderer:
 
     def _render_deformation(
         self, plotter, model, result, components: str, solid_members_visible: bool,
+        deformation_scale: float,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         """Sobrepõe as linhas de centro das barras na configuração deformada."""
         samples_by_member = {
@@ -427,9 +431,9 @@ class ResultRenderer:
         maximum = max(
             (
                 float(np.linalg.norm([
-                    float(sample.get("deflection_x", 0.0)),
-                    float(sample.get("deflection_y", 0.0)),
-                    float(sample.get("deflection_z", 0.0)),
+                    float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
+                    float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0,
+                    float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0,
                 ]))
                 for samples in samples_by_member.values()
                 for sample in samples
@@ -439,9 +443,9 @@ class ResultRenderer:
         actors = self._render_undeformed_reference(plotter, model)
         if maximum <= 1e-12:
             return actors, np.empty((0, 3)), ()
-        # A referência é comum às quatro opções X/Y/Z/XYZ para que elas
-        # possam ser comparadas diretamente. A resultante máxima ocupa 1 u.
-        scale = self.MAX_DEFORMATION / maximum
+        # Results are in model units; 1× therefore draws the real deformation.
+        # Larger values are an explicit visual amplification from the palette.
+        scale = max(1.0, min(10.0, float(deformation_scale)))
         face_points: list[np.ndarray] = []
         faces: list[int] = []
         edge_points: list[np.ndarray] = []
