@@ -426,3 +426,23 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
         member = window.model.bars["B1"] if operation == "member" else next(iter(window.model.rigid_bars.values()))
         node = window.model.nodes[member.end_node]
         np.testing.assert_allclose((node.x, node.y, node.z), (1, 0, 0))
+
+
+def test_member_snap_splits_rigid_bar_when_split_setting_is_enabled(window):
+    window.model.add_node("R1", -5, 0, 0)
+    window.model.add_node("R2", 5, 0, 0)
+    window.model.add_rigid_bar("R1", "R2")
+    window.set_member_intermediate_snap_split_mode("sim")
+    window.start_member_placement()
+    window._member_placement_start = (1, 4, 0)
+    window.scene.set_member_preview_start((1, 4, 0))
+    window.scene._placement_snap_element = ("rigid_bar", "R1-R2")
+
+    window._handle_member_placement_point((1, 0, 0))
+
+    assert "R1-R2" not in window.model.rigid_bars
+    assert set(window.model.rigid_bars) == {"R1-N1", "N1-R2"}
+    assert window.model.nodes["N1"].x == pytest.approx(1)
+    assert window.model.nodes["N1"].y == pytest.approx(0)
+    created = next(iter(window.model.bars.values()))
+    assert "N1" in (created.start_node, created.end_node)

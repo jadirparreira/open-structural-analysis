@@ -77,6 +77,55 @@ def test_second_point_captures_perpendicular_on_member_for_all_operations(scene,
     assert scene._snap_marker._renderers["perpendicular"].isValid()
 
 
+def test_second_point_captures_perpendicular_on_rigid_bar(scene):
+    scene._model = StructuralModel()
+    scene._model.add_node("R1", -5, 0, 0)
+    scene._model.add_node("R2", 5, 0, 0)
+    scene._model.add_rigid_bar("R1", "R2")
+    scene._snap_types.update(endpoint=False, center=False, intersection=False)
+    scene.set_member_placement_mode(True)
+    start = (1, 4, 2)
+    scene.set_member_preview_start(start)
+    target = np.asarray((1, 0, 0))
+    point_at(scene, target)
+
+    snapped, kind = scene._placement_target(np.asarray((1.02, 0.02, 0)))
+
+    assert kind == "perpendicular"
+    np.testing.assert_allclose(snapped, target)
+    assert np.dot(snapped - start, (1, 0, 0)) == pytest.approx(0)
+    assert scene._placement_snap_element == ("rigid_bar", "R1-R2")
+
+
+@pytest.mark.parametrize(("snap_kind", "target"), [
+    ("endpoint", (-5, 0, 0)),
+    ("center", (0, 0, 0)),
+])
+def test_placement_endpoint_and_center_snaps_work_on_rigid_bar(scene, snap_kind, target):
+    scene._model = StructuralModel()
+    scene._model.add_node("R1", -5, 0, 0)
+    scene._model.add_node("R2", 5, 0, 0)
+    scene._model.add_rigid_bar("R1", "R2")
+    scene._snap_types.update(
+        endpoint=snap_kind == "endpoint",
+        center=snap_kind == "center",
+        intersection=False,
+        perpendicular=False,
+    )
+    scene.set_member_placement_mode(True)
+    scene.set_member_preview_start((0, 4, 0))
+    point_at(scene, target)
+
+    snapped, kind = scene._placement_target(np.asarray(target, dtype=float))
+
+    assert kind == snap_kind
+    np.testing.assert_allclose(snapped, target)
+    if snap_kind == "center":
+        assert scene._placement_snap_element == ("rigid_bar", "R1-R2")
+    else:
+        assert scene._placement_snap_element is None
+
+
 @pytest.mark.parametrize("plane", ["XY", "XZ", "YZ"])
 def test_oblique_3d_member_uses_world_perpendicular_independently_of_plane(scene, plane):
     scene._model = StructuralModel()

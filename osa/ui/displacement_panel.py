@@ -3,12 +3,12 @@
 from math import isfinite
 
 from PySide6.QtCore import QRegularExpression
-from PySide6.QtGui import QRegularExpressionValidator, QTransform
+from PySide6.QtGui import QDoubleValidator, QRegularExpressionValidator, QTransform
 
 from osa.sections import section_shape
 
 from .common import *
-from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton, VerticalArrowButton
+from .navigation_buttons import SlopedPlaneButton
 
 
 class DisplacementPanel(QFrame):
@@ -37,29 +37,6 @@ class DisplacementPanel(QFrame):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
-
-        up = VerticalArrowButton(controls)
-        down = VerticalArrowButton(controls, point_down=True)
-        left = LeftArrowButton(controls)
-        right = RightArrowButton(controls)
-        for control, rotation_degrees, position, delta in (
-            (up, -90, "superior", (0.0, 0.001)),
-            (down, 90, "inferior", (0.0, -0.001)),
-            (left, 180, "esquerdo", (-0.001, 0.0)),
-            (right, 0, "direito", (0.001, 0.0)),
-        ):
-            control.setProperty("controlBackground", "#ffffff")
-            control.setIcon(self._rotated_icon("chevron-right.svg", rotation_degrees))
-            control.setIconSize(QSize(18, 18))
-            control.setAccessibleName(f"Controle externo {position} de posicionamento")
-            control.clicked.connect(
-                lambda _checked=False, adjustment=delta:
-                self._fine_adjustment_requested(*adjustment)
-            )
-        grid.addWidget(up, 0, 2, Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(left, 2, 0, Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(right, 2, 4, Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(down, 4, 2, Qt.AlignmentFlag.AlignCenter)
 
         for row, column, mirrored, rotation_degrees in (
             (1, 1, False, -90),  # Noroeste: 90° anti-horário.
@@ -133,28 +110,55 @@ class DisplacementPanel(QFrame):
         values_layout.setSpacing(5)
         self._solid_offset_inputs: dict[str, QLineEdit] = {}
         self._position_parameter_inputs: dict[str, QLineEdit] = {}
+        self._end_angle_inputs: dict[tuple[str, str], QLineEdit] = {}
 
         endpoint_grid = QGridLayout()
         endpoint_grid.setContentsMargins(0, 0, 0, 0)
         endpoint_grid.setHorizontalSpacing(8)
         endpoint_grid.setVerticalSpacing(5)
-        endpoint_grid.setColumnStretch(0, 1)
-        endpoint_grid.setColumnStretch(1, 1)
+        for column in range(2):
+            endpoint_grid.setColumnStretch(column, 1)
         for column, endpoint in enumerate(("A", "B")):
-            endpoint_title = QLabel(endpoint)
-            endpoint_title.setObjectName("propertySection")
-            endpoint_grid.addWidget(endpoint_title, 0, column)
+            title = QLabel(endpoint)
+            title.setObjectName("propertySection")
+            endpoint_grid.addWidget(title, 0, column)
             field_box, field = self._offset_input(values)
             field.setAccessibleName(
                 f"Deslocamento da face sólida no extremo {endpoint} (mm)"
             )
+            field.setToolTip(
+                f"Ajusta o deslocamento longitudinal da face sólida no extremo {endpoint}, em milímetros."
+            )
             field.editingFinished.connect(
-                lambda selected_endpoint=endpoint: self._solid_offset_changed(selected_endpoint)
+                lambda selected_endpoint=endpoint:
+                self._solid_offset_changed(selected_endpoint)
             )
             self._solid_offset_inputs[endpoint] = field
             endpoint_grid.addWidget(field_box, 1, column)
-        values_layout.addLayout(endpoint_grid)
 
+        for row, local_axis in enumerate(("Y", "Z"), start=2):
+            for column, endpoint in enumerate(("A", "B")):
+                title = QLabel(f"{endpoint}-α{local_axis}")
+                title.setObjectName("propertySection")
+                endpoint_grid.addWidget(title, (row - 1) * 2, column)
+                field_box, field = self._offset_input(values, unit="°")
+                field.setAccessibleName(
+                    f"Inclinação da face no extremo {endpoint}, direção do eixo local {local_axis} (graus)"
+                )
+                field.setToolTip(
+                    f"Define a inclinação da face no extremo {endpoint} na direção do eixo local {local_axis}, em graus."
+                )
+                limit = float(self.window.solid_face_angle_limit_degrees)
+                validator = QDoubleValidator(-limit, limit, 2, field)
+                validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+                field.setValidator(validator)
+                field.setText("0")
+                self._end_angle_inputs[(endpoint, local_axis)] = field
+                field.editingFinished.connect(
+                    lambda selected_endpoint=endpoint, selected_axis=local_axis:
+                    self._end_angle_changed(selected_endpoint, selected_axis)
+                )
+                endpoint_grid.addWidget(field_box, (row - 1) * 2 + 1, column)
         parameter_grid = QGridLayout()
         parameter_grid.setContentsMargins(0, 0, 0, 0)
         parameter_grid.setHorizontalSpacing(8)
@@ -162,11 +166,14 @@ class DisplacementPanel(QFrame):
         parameter_grid.setColumnStretch(0, 1)
         parameter_grid.setColumnStretch(1, 1)
         for column, parameter in enumerate(("Y", "Z")):
-            parameter_title = QLabel(parameter)
+            parameter_title = QLabel(f"{parameter} local")
             parameter_title.setObjectName("propertySection")
             parameter_grid.addWidget(parameter_title, 0, column)
             field_box, field = self._offset_input(values)
-            field.setAccessibleName(f"Parâmetro {parameter} de posicionamento (mm)")
+            field.setAccessibleName(f"Parâmetro {parameter} local de posicionamento (mm)")
+            field.setToolTip(
+                f"Desloca a seção sólida ao longo do eixo local {parameter}, em milímetros."
+            )
             field.editingFinished.connect(
                 lambda selected_parameter=parameter:
                 self._section_offset_changed(selected_parameter)
@@ -174,6 +181,7 @@ class DisplacementPanel(QFrame):
             self._position_parameter_inputs[parameter] = field
             parameter_grid.addWidget(field_box, 1, column)
         values_layout.addLayout(parameter_grid)
+        values_layout.addLayout(endpoint_grid)
 
         layout.addWidget(values)
         layout.addStretch()
@@ -195,7 +203,7 @@ class DisplacementPanel(QFrame):
         return button
 
     @staticmethod
-    def _offset_input(parent: QWidget) -> tuple[QFrame, QLineEdit]:
+    def _offset_input(parent: QWidget, *, unit: str = "mm") -> tuple[QFrame, QLineEdit]:
         box = QFrame(parent)
         box.setObjectName("unitValueBox")
         box.setStyleSheet(
@@ -217,7 +225,7 @@ class DisplacementPanel(QFrame):
             )
         )
         row.addWidget(field, 1)
-        row.addWidget(QLabel("mm"))
+        row.addWidget(QLabel(unit))
         return box, field
 
     @staticmethod
@@ -268,12 +276,18 @@ class DisplacementPanel(QFrame):
             for field in self._position_parameter_inputs.values():
                 field.clear()
                 field.setEnabled(False)
+            for field in self._end_angle_inputs.values():
+                field.clear()
+                field.setEnabled(False)
         else:
             for field in self._solid_offset_inputs.values():
                 field.setEnabled(True)
             for field in self._position_parameter_inputs.values():
                 field.setEnabled(True)
+            for field in self._end_angle_inputs.values():
+                field.setEnabled(True)
             self._update_section_offset_inputs()
+            self._update_end_angle_inputs()
             self._update_position_buttons()
             self._update_solid_offset_inputs()
         self.layout().activate()
@@ -316,29 +330,6 @@ class DisplacementPanel(QFrame):
         try:
             for member, value in zip(members, offsets):
                 self.window.model_service.update_member_solid_section_offsets(member.name, value)
-        except ValueError:
-            return
-        self._update_section_offset_inputs()
-        self._update_position_buttons()
-        for member in members:
-            self.window.refresh_member_geometry(member.name)
-        self._refresh_positioning_status()
-
-    def _fine_adjustment_requested(self, delta_y: float, delta_z: float) -> None:
-        """Move the solid section by one millimetre in local Y/Z."""
-        members = self._members()
-        if not members:
-            return
-        try:
-            for member in members:
-                offsets = list(getattr(member, "solid_section_offsets", (0.0, 0.0)))
-                if len(offsets) != 2:
-                    offsets = [0.0, 0.0]
-                offsets[0] += delta_y
-                offsets[1] += delta_z
-                self.window.model_service.update_member_solid_section_offsets(
-                    member.name, tuple(offsets)
-                )
         except ValueError:
             return
         self._update_section_offset_inputs()
@@ -412,6 +403,88 @@ class DisplacementPanel(QFrame):
         self._refresh_positioning_status()
         for member in members:
             self.window.refresh_member_geometry(member.name)
+
+    @staticmethod
+    def _format_angle(value: float) -> str:
+        return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
+
+    def _update_end_angle_inputs(self) -> None:
+        members = self._members()
+        if not members:
+            return
+        limit = float(self.window.solid_face_angle_limit_degrees)
+        for member in members:
+            current = member.solid_face_angles
+            if len(current) != 4:
+                current = (0.0, 0.0, 0.0, 0.0)
+            limited = tuple(min(limit, max(-limit, float(value))) for value in current)
+            if limited != tuple(current):
+                self.window.model_service.update_member_solid_face_angles(
+                    member.name, limited
+                )
+                self.window.refresh_member_geometry(member.name)
+        members = self._members()
+        fields = (
+            ("A", "Y", 0),
+            ("A", "Z", 1),
+            ("B", "Y", 2),
+            ("B", "Z", 3),
+        )
+        for endpoint, local_axis, index in fields:
+            values = [
+                (item.solid_face_angles if len(item.solid_face_angles) == 4 else (0.0,) * 4)[index]
+                for item in members
+            ]
+            field = self._end_angle_inputs[(endpoint, local_axis)]
+            field.setPlaceholderText("Variado" if len(set(values)) > 1 else "")
+            field.setText(self._format_angle(float(values[0])) if len(set(values)) == 1 else "")
+
+    def _end_angle_changed(self, endpoint: str, local_axis: str) -> None:
+        field = self._end_angle_inputs.get((endpoint, local_axis))
+        members = self._members()
+        if field is None or not members:
+            return
+        text = field.text().strip()
+        if not text:
+            self._update_end_angle_inputs()
+            return
+        try:
+            value = float(text.replace(",", "."))
+        except ValueError:
+            self._update_end_angle_inputs()
+            return
+        limit = float(self.window.solid_face_angle_limit_degrees)
+        value = min(limit, max(-limit, value))
+        field.setText(self._format_angle(value))
+        angle_index = {("A", "Y"): 0, ("A", "Z"): 1, ("B", "Y"): 2, ("B", "Z"): 3}[
+            endpoint, local_axis
+        ]
+        for member in members:
+            angles = list(member.solid_face_angles)
+            if len(angles) != 4:
+                angles = [0.0] * 4
+            angles[angle_index] = value
+            self.window.model_service.update_member_solid_face_angles(
+                member.name, tuple(angles)
+            )
+            self.window.refresh_member_geometry(member.name)
+        self._update_end_angle_inputs()
+        self._refresh_positioning_status()
+
+    def set_solid_face_angle_limit(self, limit: float) -> None:
+        limit = min(89.9, max(0.0, float(limit)))
+        for field in self._end_angle_inputs.values():
+            validator = field.validator()
+            if isinstance(validator, QDoubleValidator):
+                validator.setRange(-limit, limit, 2)
+            text = field.text().strip()
+            if not text:
+                continue
+            try:
+                value = float(text.replace(",", "."))
+            except ValueError:
+                continue
+            field.setText(self._format_angle(min(limit, max(-limit, value))))
 
     def _update_solid_offset_inputs(self) -> None:
         members = self._members()

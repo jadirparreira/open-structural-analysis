@@ -475,6 +475,12 @@ class StructuralModel:
                 source.solid_face_offsets[0] if index == 0 else 0.0,
                 source.solid_face_offsets[1] if index == len(member_names) - 1 else 0.0,
             )
+            angles = (
+                source.solid_face_angles[0] if index == 0 else 0.0,
+                source.solid_face_angles[1] if index == 0 else 0.0,
+                source.solid_face_angles[2] if index == len(member_names) - 1 else 0.0,
+                source.solid_face_angles[3] if index == len(member_names) - 1 else 0.0,
+            )
             new_bars[member_name] = replace(
                 source,
                 name=member_name,
@@ -482,6 +488,7 @@ class StructuralModel:
                 end_node=chain[index + 1],
                 releases=releases,
                 solid_face_offsets=offsets,
+                solid_face_angles=angles,
                 rotation_flexibility_percent=rotation_percent,
             )
 
@@ -597,21 +604,24 @@ class StructuralModel:
         ):
             raise DuplicateMemberError("Já existe uma barra entre as extremidades da união.")
 
-        def endpoint_data(member: Bar, node_name: str) -> tuple[tuple[bool, ...], float]:
+        def endpoint_data(
+            member: Bar, node_name: str,
+        ) -> tuple[tuple[bool, ...], float, tuple[float, float]]:
             if member.start_node == node_name:
-                return member.releases[:6], member.solid_face_offsets[0]
-            return member.releases[6:], member.solid_face_offsets[1]
+                return member.releases[:6], member.solid_face_offsets[0], member.solid_face_angles[:2]
+            return member.releases[6:], member.solid_face_offsets[1], member.solid_face_angles[2:]
 
         start_member = first if start_node == first_outer else second
         end_member = first if end_node == first_outer else second
-        start_releases, start_offset = endpoint_data(start_member, start_node)
-        end_releases, end_offset = endpoint_data(end_member, end_node)
+        start_releases, start_offset, start_angles = endpoint_data(start_member, start_node)
+        end_releases, end_offset, end_angles = endpoint_data(end_member, end_node)
         joined = replace(
             first,
             start_node=start_node,
             end_node=end_node,
             releases=start_releases + end_releases,
             solid_face_offsets=(start_offset, end_offset),
+            solid_face_angles=start_angles + end_angles,
         )
 
         first_action_keys = {
@@ -795,6 +805,7 @@ class StructuralModel:
         if "offsets" in properties:
             changes["solid_face_offsets"] = source.solid_face_offsets
             changes["solid_section_offsets"] = source.solid_section_offsets
+            changes["solid_face_angles"] = source.solid_face_angles
         if "releases" in properties:
             changes["releases"] = source.releases
             changes["rotation_flexibility_percent"] = source.rotation_flexibility_percent
@@ -988,6 +999,61 @@ class StructuralModel:
         self._touch()
         return rigid
 
+    def split_rigid_bar(
+        self, name: str, node_name: str, coordinates: tuple[float, float, float],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Replace one rigid link with two collinear links through a new node."""
+        source = self.rigid_bars.get(name)
+        if source is None:
+            raise EntityNotFoundError(f"Barra rígida '{name}' não encontrada.")
+        node_name = node_name.strip()
+        if not node_name or node_name in self.nodes:
+            raise ValueError("Não foi possível gerar um nome único para o nó da divisão.")
+        point = self.node_coordinates(*coordinates)
+        self._ensure_unique_coordinates(point)
+        start = self.nodes[source.start_node]
+        end = self.nodes[source.end_node]
+        origin = (start.x, start.y, start.z)
+        direction = (end.x - start.x, end.y - start.y, end.z - start.z)
+        length_squared = math.fsum(value * value for value in direction)
+        if length_squared <= self.coordinate_tolerance ** 2:
+            raise ValueError("A barra rígida precisa possuir comprimento positivo para ser dividida.")
+        delta = tuple(point[index] - origin[index] for index in range(3))
+        fraction = math.fsum(delta[index] * direction[index] for index in range(3)) / length_squared
+        projected = tuple(origin[index] + fraction * direction[index] for index in range(3))
+        line_distance = math.sqrt(math.fsum(
+            (point[index] - projected[index]) ** 2 for index in range(3)
+        ))
+        length = math.sqrt(length_squared)
+        if (
+            line_distance > max(self.coordinate_tolerance * 10, self.node_rounding_tolerance)
+            or not 0.0 < fraction < 1.0
+            or min(fraction * length, (1.0 - fraction) * length) <= self.coordinate_tolerance
+        ):
+            raise ValueError("O nó da divisão deve estar no interior da barra rígida.")
+        first_name = f"{source.start_node}-{node_name}"
+        second_name = f"{node_name}-{source.end_node}"
+        if (
+            first_name == second_name
+            or first_name in self.rigid_bars
+            or second_name in self.rigid_bars
+        ):
+            raise ValueError("Não foi possível gerar nomes únicos para as barras rígidas da divisão.")
+
+        node = Node(node_name, *point)
+        first = RigidBar(first_name, source.start_node, node_name)
+        second = RigidBar(second_name, node_name, source.end_node)
+        del self.rigid_bars[name]
+        self.nodes[node_name] = node
+        self.rigid_bars[first_name] = first
+        self.rigid_bars[second_name] = second
+        for hidden in self.scene_view_hidden_rigid_bars.values():
+            if name in hidden:
+                hidden.remove(name)
+                hidden.update((first_name, second_name))
+        self._touch()
+        return (node_name,), (first_name, second_name)
+
     def remove_rigid_bar(self, name: str) -> None:
         if name not in self.rigid_bars:
             return
@@ -1157,6 +1223,24 @@ class StructuralModel:
             raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
         self.bars[name] = replace(
             self.bars[name], solid_face_offsets=self._member_solid_face_offsets(offsets),
+        )
+        self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _member_solid_face_angles(values: tuple[float, ...]) -> tuple[float, float, float, float]:
+        if len(values) != 4:
+            raise ValueError("As inclinações das faces sólidas devem possuir quatro valores.")
+        angles = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) and abs(value) <= 89.9 for value in angles):
+            raise ValueError("As inclinações das faces sólidas devem estar entre -89,9° e 89,9°.")
+        return angles  # type: ignore[return-value]
+
+    def update_member_solid_face_angles(self, name: str, angles: tuple[float, ...]) -> Bar:
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
+        self.bars[name] = replace(
+            self.bars[name], solid_face_angles=self._member_solid_face_angles(angles),
         )
         self._touch()
         return self.bars[name]

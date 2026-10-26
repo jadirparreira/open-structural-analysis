@@ -201,6 +201,9 @@ class ProjectSerializer:
                 solid_section_offsets=candidate._member_solid_section_offsets(
                     tuple(float(value) for value in item.get("solid_section_offsets", (0.0, 0.0)))
                 ),
+                solid_face_angles=candidate._member_solid_face_angles(
+                    tuple(float(value) for value in item.get("solid_face_angles", (0.0, 0.0, 0.0, 0.0)))
+                ),
                 section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
             )

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QFrame
 
 from osa.rendering.detailing_2d import visible_segments_from_meshes
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
-from osa.rendering.solid_member_renderer import SolidMemberRenderer
+from osa.rendering.solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from osa.sections import section_shape
 
 
@@ -61,6 +61,7 @@ class DetailingViewPreview(QFrame):
         self._solid_meshes: list[pv.PolyData] = []
         self._solid_shapes = []
         self._solid_transforms: list[np.ndarray] = []
+        self._solid_face_angles: list[tuple[float, ...]] = []
         self._solid_edge_meshes: list[pv.PolyData] | None = None
         self._view_cache: OrderedDict[tuple, tuple] = OrderedDict()
         self._segments_2d: list[tuple[tuple[float, float], tuple[float, float]]] = []
@@ -333,6 +334,7 @@ class DetailingViewPreview(QFrame):
             self._solid_meshes = shared[1]
             self._solid_shapes = shared[2]
             self._solid_transforms = shared[3]
+            self._solid_face_angles = shared[4]
             self._solid_edge_meshes = None
             self._model_cache_key = cache_key
             return
@@ -340,6 +342,7 @@ class DetailingViewPreview(QFrame):
         meshes: list[pv.PolyData] = []
         shapes = []
         transforms: list[np.ndarray] = []
+        face_angles: list[tuple[float, ...]] = []
         for member_number, member in enumerate(model.bars.values()):
             if member_number % 16 == 0:
                 sleep(0)
@@ -385,20 +388,24 @@ class DetailingViewPreview(QFrame):
                 transform[:3, 2] = z_axis
                 transform[:3, 3] = start_point
                 mesh = self._renderer._mesh_for(shape).copy(deep=True)
+                angles = getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
+                mesh.points = deform_extruded_points(mesh.points, length, angles)
                 mesh.transform(transform, inplace=True)
                 meshes.append(mesh)
                 shapes.append(shape)
                 transforms.append(transform)
+                face_angles.append(tuple(angles))
             except (KeyError, TypeError, ValueError, RuntimeError):
                 continue
 
         self._solid_meshes = meshes
         self._solid_shapes = shapes
         self._solid_transforms = transforms
+        self._solid_face_angles = face_angles
         self._solid_edge_meshes = None
         self._model_cache_key = cache_key
         self._shared_model_meshes[cache_owner] = (
-            cache_key[1], meshes, shapes, transforms
+            cache_key[1], meshes, shapes, transforms, face_angles
         )
 
     def _ensure_model_edge_meshes(self, model) -> None:
@@ -406,8 +413,13 @@ class DetailingViewPreview(QFrame):
             return
         self._ensure_model_meshes(model)
         edge_meshes: list[pv.PolyData] = []
-        for shape, transform in zip(self._solid_shapes, self._solid_transforms):
+        for shape, transform, angles in zip(
+            self._solid_shapes, self._solid_transforms, self._solid_face_angles,
+        ):
             edge_mesh = self._renderer._edge_mesh_for(shape).copy(deep=True)
+            edge_mesh.points = deform_extruded_points(
+                edge_mesh.points, float(np.linalg.norm(transform[:3, 0])), angles,
+            )
             edge_mesh.transform(transform, inplace=True)
             edge_meshes.append(edge_mesh)
         self._solid_edge_meshes = edge_meshes
@@ -627,6 +639,7 @@ class _ViewGeometryCalculator:
         self._solid_meshes = []
         self._solid_shapes = []
         self._solid_transforms = []
+        self._solid_face_angles = []
         self._solid_edge_meshes = None
         self._segments_2d = []
         self._bounds_2d = None

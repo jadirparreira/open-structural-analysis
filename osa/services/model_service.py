@@ -156,6 +156,58 @@ class ModelService:
             segment_lengths=(first_length, second_length),
         )
 
+    def split_rigid_bar_at_point(
+        self, name: str, coordinates: tuple[float, float, float],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Split the rigid link containing an interior point and return its node."""
+        tolerance = self.model.coordinate_tolerance
+        rounded_point = self.model.node_coordinates(*coordinates)
+        ordered_rigids = []
+        if name in self.model.rigid_bars:
+            ordered_rigids.append(self.model.rigid_bars[name])
+        ordered_rigids.extend(
+            rigid for rigid_name, rigid in self.model.rigid_bars.items()
+            if rigid_name != name
+        )
+        split_target = None
+        for rigid in ordered_rigids:
+            start = self.model.nodes[rigid.start_node]
+            end = self.model.nodes[rigid.end_node]
+            origin = (start.x, start.y, start.z)
+            direction = (end.x - start.x, end.y - start.y, end.z - start.z)
+            length_squared = math.fsum(value * value for value in direction)
+            length = math.sqrt(length_squared)
+            if length <= tolerance:
+                continue
+            offset = tuple(float(value) - origin[index] for index, value in enumerate(coordinates))
+            fraction = math.fsum(offset[index] * direction[index] for index in range(3)) / length_squared
+            projected = tuple(origin[index] + fraction * direction[index] for index in range(3))
+            distance_from_line = math.sqrt(math.fsum(
+                (float(coordinates[index]) - projected[index]) ** 2 for index in range(3)
+            ))
+            if (
+                distance_from_line > max(tolerance * 10, self.model.node_rounding_tolerance)
+                or not 0.0 <= fraction <= 1.0
+            ):
+                continue
+            distance = length * fraction
+            if min(distance, length - distance) <= tolerance or rounded_point in (
+                self.model.node_coordinates(start.x, start.y, start.z),
+                self.model.node_coordinates(end.x, end.y, end.z),
+            ):
+                return (), ()
+            split_target = rigid.name
+            break
+        if split_target is None:
+            raise ValueError(f"O ponto não está no trecho interno da barra rígida '{name}'.")
+
+        node_index = 1
+        while f"N{node_index}" in self.model.nodes:
+            node_index += 1
+        return self.model.split_rigid_bar(
+            split_target, f"N{node_index}", rounded_point,
+        )
+
     def reverse_member(self, name: str):
         """Swap a member's start and end nodes without changing its identity."""
         member = self.model.bars.get(name)
@@ -262,6 +314,9 @@ class ModelService:
 
     def update_member_solid_face_offsets(self, name: str, offsets: tuple[float, ...]):
         return self.model.update_member_solid_face_offsets(name, offsets)
+
+    def update_member_solid_face_angles(self, name: str, angles: tuple[float, ...]):
+        return self.model.update_member_solid_face_angles(name, angles)
 
     def update_member_solid_section_offsets(self, name: str, offsets: tuple[float, ...]):
         return self.model.update_member_solid_section_offsets(name, offsets)

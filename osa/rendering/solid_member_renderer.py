@@ -13,6 +13,34 @@ from osa.sections import SectionShape, section_shape
 from .local_axes_renderer import LocalAxesRenderer
 
 
+def face_angle_displacement(y, z, alpha_y: float, alpha_z: float):
+    """Return the axial offset of a section point from its geometric centroid."""
+    return (
+        -np.tan(np.deg2rad(float(alpha_y))) * np.asarray(y, dtype=float)
+        -np.tan(np.deg2rad(float(alpha_z))) * np.asarray(z, dtype=float)
+    )
+
+
+def deform_extruded_points(
+    points: np.ndarray, member_length: float, angles: tuple[float, ...],
+) -> np.ndarray:
+    """Shear an extruded section so its end faces tilt about the section centroid.
+
+    ``angles`` is ordered A-alphaY, A-alphaZ, B-alphaY, B-alphaZ. The mesh's
+    longitudinal coordinate is normalized from zero at A to one at B.
+    """
+    values = np.asarray(points, dtype=float)
+    if len(angles) != 4 or member_length <= 1e-12 or not any(angles):
+        return values
+    result = values.copy()
+    y, z = values[:, 1], values[:, 2]
+    shift_a = face_angle_displacement(y, z, angles[0], angles[1])
+    shift_b = face_angle_displacement(y, z, angles[2], angles[3])
+    fraction_b = values[:, 0]
+    result[:, 0] += ((1.0 - fraction_b) * shift_a + fraction_b * shift_b) / member_length
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class SolidMemberVisual:
     """The face and contour-edge actors representing one solid member."""
@@ -45,8 +73,8 @@ class SolidMemberRenderer:
             )
             if shape is None:
                 return None
-            mesh = self._mesh_for(shape)
-            edge_mesh = self._edge_mesh_for(shape)
+            mesh = self._mesh_for(shape).copy(deep=True)
+            edge_mesh = self._edge_mesh_for(shape).copy(deep=True)
         except (KeyError, TypeError, ValueError):
             # A member without a complete/valid section keeps the line
             # representation as a safe fallback.
@@ -55,6 +83,23 @@ class SolidMemberRenderer:
         basis = LocalAxesRenderer.basis(start, end, rotation=member.rotation)
         if basis is None:
             return None
+        start_point = np.asarray((start.x, start.y, start.z), dtype=float)
+        end_point = np.asarray((end.x, end.y, end.z), dtype=float)
+        offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+        if len(offsets) == 2:
+            candidate_start = start_point - basis[0] * float(offsets[0])
+            candidate_end = end_point + basis[0] * float(offsets[1])
+            if float(np.dot(candidate_end - candidate_start, basis[0])) > 1e-9:
+                start_point, end_point = candidate_start, candidate_end
+        length = float(np.linalg.norm(end_point - start_point))
+        angles = getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
+        mesh.points = deform_extruded_points(mesh.points, length, angles)
+        edge_mesh.points = deform_extruded_points(edge_mesh.points, length, angles)
+        if any(angles):
+            mesh = mesh.compute_normals(
+                cell_normals=True, point_normals=False, split_vertices=True,
+                consistent_normals=True, auto_orient_normals=True, inplace=False,
+            )
         face_actor = plotter.add_mesh(
             mesh,
             color=member.color,

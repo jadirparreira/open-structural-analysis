@@ -12,7 +12,9 @@ from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
+from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
+from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
@@ -128,6 +130,9 @@ class MainWindow(QMainWindow):
         self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
         self._member_placement_start_snap_member_name: str | None = None
+        self._member_placement_start_snap_target: tuple[str, str] | None = None
+        self._endpoint_alignment_source_bar: str | None = None
+        self._connect_member_ends_first_bar: str | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
         self._copy_elements_selection: list[tuple[str, str]] = []
@@ -135,6 +140,7 @@ class MainWindow(QMainWindow):
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        self._solid_face_angle_limit_degrees = self._read_solid_face_angle_limit()
         self._minimum_bar_restraint_angle_degrees = self._read_minimum_bar_restraint_angle()
         self.model.minimum_bar_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
         split_mode = self._program_settings.value(
@@ -170,6 +176,7 @@ class MainWindow(QMainWindow):
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
         self.scene.element_clicked.connect(self.select_element)
+        self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
         self.scene.empty_clicked.connect(self.clear_selection)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
@@ -529,6 +536,425 @@ class MainWindow(QMainWindow):
         if add_plane_requested:
             self._start_detail_plane_placement()
 
+    def start_member_endpoint_alignment(self) -> None:
+        """Start the two-step command for aligning a bar end to a connected face."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._endpoint_alignment_source_bar = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "endpoint_alignment_bar_selection"
+        self.scene.set_endpoint_alignment_target(None)
+        self.history.append(
+            "> <b>Alinhar extremidade</b> "
+            "<span style='color:#57606a'>(Selecione a barra que terá uma extremidade alinhada; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _align_member_endpoint_to_face(self, hit: object) -> None:
+        """Match a connected bar end face to the clicked solid face plane."""
+        if self._command_mode != "endpoint_alignment_face_selection":
+            return
+        try:
+            target_name, _cell_id, face_point, face_normal = hit
+            face_point = np.asarray(face_point, dtype=float)
+            face_normal = np.asarray(face_normal, dtype=float)
+        except (TypeError, ValueError):
+            return
+        source_name = self._endpoint_alignment_source_bar
+        source = self.model.bars.get(source_name) if source_name is not None else None
+        target = self.model.bars.get(target_name)
+        if source is None or target is None:
+            return
+        if source_name == target_name:
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione uma face de outra barra conectada)</span>"
+            )
+            return
+
+        endpoints = (source.start_node, source.end_node)
+        target_endpoints = (target.start_node, target.end_node)
+        shared_nodes = set(endpoints).intersection(target_endpoints)
+        endpoint_pair = None
+        if len(shared_nodes) == 1:
+            shared_node = next(iter(shared_nodes))
+            endpoint_pair = shared_node, shared_node
+        elif not shared_nodes:
+            # A rigid bar connects distinct nodes, so bars on its opposite
+            # ends are connected even though they do not share a node name.
+            rigid_pairs = []
+            for rigid in self.model.rigid_bars.values():
+                if rigid.start_node in endpoints and rigid.end_node in target_endpoints:
+                    rigid_pairs.append((rigid.start_node, rigid.end_node))
+                if rigid.end_node in endpoints and rigid.start_node in target_endpoints:
+                    rigid_pairs.append((rigid.end_node, rigid.start_node))
+            if len(rigid_pairs) == 1:
+                endpoint_pair = rigid_pairs[0]
+        if endpoint_pair is None:
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#8c959f'>(A face deve pertencer a uma barra ligada diretamente ou pela outra ponta de uma barra rígida)</span>"
+            )
+            return
+
+        source_endpoint_node, _target_endpoint_node = endpoint_pair
+        endpoint_index = 0 if source_endpoint_node == source.start_node else 1
+        start_node = self.model.nodes[source.start_node]
+        end_node = self.model.nodes[source.end_node]
+        basis = LocalAxesRenderer.basis(start_node, end_node, rotation=source.rotation)
+        base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
+        if basis is None or base_basis is None:
+            return
+        start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
+        end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
+        length = float(np.linalg.norm(end - start))
+        normal_length = float(np.linalg.norm(face_normal))
+        if length <= 1e-12 or normal_length <= 1e-12:
+            return
+        face_normal /= normal_length
+        normal_x = float(np.dot(face_normal, basis[0]))
+        if abs(normal_x) <= 1e-8:
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#8c959f'>(Essa face é paralela ao eixo da barra e não pode formar a face da extremidade)</span>"
+            )
+            return
+
+        # The deformed end face has local normal proportional to
+        # (1, tan(alphaY), tan(alphaZ)); use the selected face normal to set
+        # both angles, then solve A/B for the plane's position through the hit.
+        if normal_x < 0.0:
+            face_normal = -face_normal
+            normal_x = -normal_x
+        alpha_y = math.degrees(math.atan(float(np.dot(face_normal, basis[1])) / normal_x))
+        alpha_z = math.degrees(math.atan(float(np.dot(face_normal, basis[2])) / normal_x))
+        limit = self.solid_face_angle_limit_degrees
+        if abs(alpha_y) > limit + 1e-9 or abs(alpha_z) > limit + 1e-9:
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                f"<span style='color:#8c959f'>(O corte exige inclinações acima do limite de {limit:.1f}°)</span>"
+            )
+            return
+
+        endpoint = "A" if endpoint_index == 0 else "B"
+        endpoint_point = start if endpoint_index == 0 else end
+        offset_sign = -1.0 if endpoint_index == 0 else 1.0
+        section_translation = (
+            base_basis[1] * float(source.solid_section_offsets[0])
+            + base_basis[2] * float(source.solid_section_offsets[1])
+        )
+        offset = float(
+            np.dot(face_normal, face_point - endpoint_point - section_translation)
+            / (offset_sign * normal_x)
+        )
+        offsets = list(source.solid_face_offsets)
+        offsets[endpoint_index] = offset
+        if length + offsets[0] + offsets[1] <= 1e-9:
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#8c959f'>(O alinhamento resultaria em uma barra sem comprimento)</span>"
+            )
+            return
+        angles = list(source.solid_face_angles)
+        angle_index = endpoint_index * 2
+        angles[angle_index:angle_index + 2] = alpha_y, alpha_z
+        try:
+            self.model_service.update_member_solid_face_offsets(source_name, tuple(offsets))
+            self.model_service.update_member_solid_face_angles(source_name, tuple(angles))
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Alinhar extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        self._command_mode = "endpoint_alignment_bar_selection"
+        self._endpoint_alignment_source_bar = None
+        self.scene.set_endpoint_alignment_target(None)
+        self.refresh_member_geometry(source_name)
+        self.properties.update_positioning_status(source_name)
+        offset_mm = offset * 1000.0
+        self.history.append(
+            "> <b>Alinhar extremidade</b> "
+            f"<span style='color:#57606a'>(Extremidade {endpoint} alinhada; "
+            f"{endpoint} = {offset_mm:.2f} mm; αY/αZ = {alpha_y:.2f}°/{alpha_z:.2f}°. "
+            "Selecione outra barra para continuar; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_connect_member_ends(self) -> None:
+        """Start the two-bar command that makes their connected faces coplanar."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._connect_member_ends_first_bar = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self.scene.set_endpoint_alignment_target(None)
+        self._command_mode = "connect_member_ends_selection"
+        self.history.append(
+            "> <b>Conectar extremidades</b> "
+            "<span style='color:#57606a'>(Selecione a primeira barra; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _connect_member_end_faces(self, first_name: str, second_name: str) -> bool:
+        """Create a shared miter plane at the common node of two bars."""
+        first = self.model.bars.get(first_name)
+        second = self.model.bars.get(second_name)
+        if first is None or second is None:
+            return False
+        shared_nodes = {
+            node_name for node_name in (first.start_node, first.end_node)
+            if node_name in {second.start_node, second.end_node}
+        }
+        if len(shared_nodes) != 1:
+            self.history.append(
+                "> <b>Conectar extremidades</b> "
+                "<span style='color:#8c959f'>(As barras devem compartilhar exatamente uma extremidade)</span>"
+            )
+            return False
+
+        shared_node = next(iter(shared_nodes))
+        node = self.model.nodes[shared_node]
+        node_point = np.asarray((node.x, node.y, node.z), dtype=float)
+
+        def endpoint_data(member):
+            start_node = self.model.nodes[member.start_node]
+            end_node = self.model.nodes[member.end_node]
+            basis = LocalAxesRenderer.basis(
+                start_node, end_node, rotation=member.rotation,
+            )
+            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
+            if basis is None or base_basis is None:
+                return None
+            endpoint_index = 0 if shared_node == member.start_node else 1
+            # The offset sign follows the rendered face center: A moves along
+            # -local-X and B along +local-X. The ray points into the bar.
+            offset_sign = -1.0 if endpoint_index == 0 else 1.0
+            ray = -offset_sign * basis[0]
+            section_translation = (
+                base_basis[1] * float(member.solid_section_offsets[0])
+                + base_basis[2] * float(member.solid_section_offsets[1])
+            )
+            length = float(np.linalg.norm(
+                np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
+                - np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
+            ))
+            return endpoint_index, offset_sign, basis, section_translation, ray, length
+
+        first_data = endpoint_data(first)
+        second_data = endpoint_data(second)
+        if first_data is None or second_data is None:
+            self.history.append(
+                "> <b>Conectar extremidades</b> "
+                "<span style='color:#8c959f'>(Não foi possível determinar os eixos locais das barras)</span>"
+            )
+            return False
+
+        first_ray, second_ray = first_data[4], second_data[4]
+        ray_cosine = min(1.0, max(-1.0, float(np.dot(first_ray, second_ray))))
+        transverse_sine = float(np.linalg.norm(second_ray - ray_cosine * first_ray))
+        profile_midpoints = (0.0, 0.0)
+        first_transverse = second_transverse = None
+        if transverse_sine > 1e-8:
+            first_transverse = (
+                second_ray - ray_cosine * first_ray
+            ) / transverse_sine
+            second_transverse = (
+                first_ray - ray_cosine * second_ray
+            ) / transverse_sine
+
+            def profile_extent(member, basis, direction):
+                try:
+                    shape = section_shape(
+                        member.section,
+                        member.geometry_dict(),
+                        arc_steps=24,
+                        mirror_z=member.section_mirrored,
+                    )
+                except (KeyError, TypeError, ValueError):
+                    shape = None
+                if shape is None or not shape.loops:
+                    return None
+                points = np.asarray(
+                    [point for loop in shape.loops for point in loop], dtype=float,
+                )
+                world_points = (
+                    points[:, 0, None] * basis[1]
+                    + points[:, 1, None] * basis[2]
+                ) * 1e-3
+                projections = world_points @ direction
+                minimum, maximum = float(np.min(projections)), float(np.max(projections))
+                return max(maximum - minimum, 1e-9), (minimum + maximum) / 2.0
+
+            first_extent = profile_extent(
+                first, first_data[2], first_transverse,
+            )
+            second_extent = profile_extent(
+                second, second_data[2], second_transverse,
+            )
+            if first_extent is None or second_extent is None:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#8c959f'>(Não foi possível obter as dimensões das seções para calcular o ângulo de conexão)</span>"
+                )
+                return False
+            first_width, first_midpoint = first_extent
+            second_width, second_midpoint = second_extent
+            # The miter angle follows the projected section depths. This makes
+            # the two cut spans equal; equal depths give 45° at a right angle.
+            transverse_factor = (
+                -second_width / first_width - ray_cosine
+            ) / transverse_sine
+            plane_normal = first_ray + transverse_factor * first_transverse
+            plane_normal /= float(np.linalg.norm(plane_normal))
+            profile_midpoints = (first_midpoint, second_midpoint)
+        else:
+            # Parallel or collinear bars have no unique joint plane from their
+            # section heights; keep the cut perpendicular to their axes.
+            plane_normal = first_ray.copy()
+        limit = self.solid_face_angle_limit_degrees
+        face_data = []
+        for member, data, transverse, midpoint in (
+            (first, first_data, first_transverse if transverse_sine > 1e-8 else None, profile_midpoints[0]),
+            (second, second_data, second_transverse if transverse_sine > 1e-8 else None, profile_midpoints[1]),
+        ):
+            endpoint_index, offset_sign, basis, section_translation, _ray, length = data
+            normal_x = float(np.dot(plane_normal, basis[0]))
+            if abs(normal_x) <= 1e-8:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#8c959f'>(O ângulo entre as barras exige um corte paralelo ao eixo de uma delas)</span>"
+                )
+                return False
+            alpha_y = math.degrees(
+                math.atan(float(np.dot(plane_normal, basis[1])) / normal_x)
+            )
+            alpha_z = math.degrees(
+                math.atan(float(np.dot(plane_normal, basis[2])) / normal_x)
+            )
+            if abs(alpha_y) > limit + 1e-9 or abs(alpha_z) > limit + 1e-9:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    f"<span style='color:#8c959f'>(O corte exige inclinações acima do limite de {limit:.1f}°)</span>"
+                )
+                return False
+
+            old_offset = float(member.solid_face_offsets[endpoint_index])
+            profile_center_offset = (
+                np.zeros(3, dtype=float) if transverse is None
+                else transverse * midpoint
+            )
+            current_plane_position = (
+                float(np.dot(plane_normal, section_translation + profile_center_offset))
+                + offset_sign * normal_x * old_offset
+            )
+            face_data.append((
+                member, endpoint_index, offset_sign, normal_x, data[4],
+                section_translation, length, alpha_y, alpha_z,
+                section_translation + profile_center_offset, current_plane_position,
+            ))
+
+        if transverse_sine > 1e-8:
+            joint_normal = np.cross(first_ray, second_ray)
+            joint_normal /= float(np.linalg.norm(joint_normal))
+            plane_tangent = np.cross(joint_normal, plane_normal)
+            plane_tangent /= float(np.linalg.norm(plane_tangent))
+
+            def cut_center_terms(data):
+                (
+                    _member, _endpoint_index, _offset_sign, _normal_x, ray,
+                    _section_translation, _length, _alpha_y, _alpha_z,
+                    center_offset, _current_plane_position,
+                ) = data
+                normal_ray = float(np.dot(plane_normal, ray))
+                tangent_ray = float(np.dot(plane_tangent, ray))
+                ratio = tangent_ray / normal_ray
+                base = (
+                    float(np.dot(plane_tangent, center_offset))
+                    - ratio * float(np.dot(plane_normal, center_offset))
+                )
+                return base, ratio
+
+            first_base, first_ratio = cut_center_terms(face_data[0])
+            second_base, second_ratio = cut_center_terms(face_data[1])
+            coefficient = first_ratio - second_ratio
+            if abs(coefficient) > 1e-10:
+                # Set the cut so the centers of the two projected profile
+                # extents meet along the common face, including Y/Z offsets.
+                plane_position = (second_base - first_base) / coefficient
+            else:
+                plane_position = sum(item[8] for item in face_data) / len(face_data)
+        else:
+            # Collinear bars use the midpoint of their current end planes.
+            plane_position = sum(item[8] for item in face_data) / len(face_data)
+
+        updates = []
+        for (
+            member, endpoint_index, offset_sign, normal_x, _ray, section_translation,
+            length, alpha_y, alpha_z, _center_offset, _current_plane_position,
+        ) in face_data:
+            offset = (
+                plane_position - float(np.dot(plane_normal, section_translation))
+            ) / (offset_sign * normal_x)
+            offsets = list(member.solid_face_offsets)
+            offsets[endpoint_index] = offset
+            if length + offsets[0] + offsets[1] <= 1e-9:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    f"<span style='color:#8c959f'>(O corte deixaria a barra {escape(member.name)} sem comprimento)</span>"
+                )
+                return False
+            angles = list(member.solid_face_angles)
+            angle_index = endpoint_index * 2
+            angles[angle_index:angle_index + 2] = alpha_y, alpha_z
+            updates.append((member.name, endpoint_index, tuple(offsets), tuple(angles), alpha_y, alpha_z))
+
+        try:
+            for name, _index, offsets, angles, _alpha_y, _alpha_z in updates:
+                self.model_service.update_member_solid_face_offsets(name, offsets)
+                self.model_service.update_member_solid_face_angles(name, angles)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Conectar extremidades</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return False
+
+        self._command_mode = "connect_member_ends_selection"
+        self._connect_member_ends_first_bar = None
+        self.clear_selection()
+        for name, endpoint_index, _offsets, _angles, _alpha_y, _alpha_z in updates:
+            self.refresh_member_geometry(name)
+            self.properties.update_positioning_status(name)
+        first_update, second_update = updates
+        self.history.append(
+            "> <b>Conectar extremidades</b> "
+            f"<span style='color:#57606a'>(Faces {('A', 'B')[first_update[1]]} e "
+            f"{('A', 'B')[second_update[1]]} ajustadas para compartilhar o corte; "
+            f"αY/αZ = {first_update[4]:.2f}°/{first_update[5]:.2f}° e "
+            f"{second_update[4]:.2f}°/{second_update[5]:.2f}°. Selecione outras barras para continuar; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+        return True
+
     def _start_detail_plane_placement(self) -> None:
         """Collect three 3D points to define a custom detailing plane."""
         self._detail_plane_points = []
@@ -705,6 +1131,37 @@ class MainWindow(QMainWindow):
     @property
     def minimum_bar_restraint_angle_degrees(self) -> float:
         return self._minimum_bar_restraint_angle_degrees
+
+    @property
+    def solid_face_angle_limit_degrees(self) -> float:
+        return self._solid_face_angle_limit_degrees
+
+    def _read_solid_face_angle_limit(self) -> float:
+        value = self._program_settings.value("members/solidFaceAngleLimitDegrees", 75.0)
+        try:
+            angle = float(value)
+        except (TypeError, ValueError):
+            angle = 75.0
+        return round(min(89.9, max(0.0, angle)), 1)
+
+    def set_solid_face_angle_limit_degrees(self, angle: float) -> None:
+        angle = round(min(89.9, max(0.0, float(angle))), 1)
+        if angle == self._solid_face_angle_limit_degrees:
+            return
+        self._solid_face_angle_limit_degrees = angle
+        self._program_settings.setValue("members/solidFaceAngleLimitDegrees", angle)
+        self._program_settings.sync()
+        for name, member in tuple(self.model.bars.items()):
+            current = member.solid_face_angles
+            if len(current) != 4:
+                current = (0.0, 0.0, 0.0, 0.0)
+            limited = tuple(min(angle, max(-angle, float(value))) for value in current)
+            if limited != tuple(current):
+                self.model_service.update_member_solid_face_angles(name, limited)
+                self.refresh_member_geometry(name)
+        panel = getattr(self, "displacement_panel", None)
+        if panel is not None:
+            panel.set_solid_face_angle_limit(angle)
 
     def _read_minimum_bar_restraint_angle(self) -> float:
         value = self._program_settings.value("members/minimumBraceRestraintAngleDegrees", 30.0)
@@ -1065,6 +1522,7 @@ class MainWindow(QMainWindow):
         self.command_session.cancel()
         self._member_placement_start = None
         self._member_placement_start_snap_member_name = None
+        self._member_placement_start_snap_target = None
         self._command_mode = "member_placement"
         self.clear_selection()
         self.member_placement_editor.show()
@@ -1127,6 +1585,7 @@ class MainWindow(QMainWindow):
         self.command_session.cancel()
         self._member_placement_start = None
         self._member_placement_start_snap_member_name = None
+        self._member_placement_start_snap_target = None
         self._command_mode = "rigid_bar_placement"
         self.scene.set_member_placement_mode(True)
         self.history.append(
@@ -1899,6 +2358,28 @@ class MainWindow(QMainWindow):
                 ),
             )
 
+    def _current_placement_snap_target(self) -> tuple[str, str] | None:
+        target = self.scene._placement_snap_element
+        if target is not None:
+            return target
+        # Preserve compatibility with member-only placement integrations.
+        member_name = self.scene._placement_snap_member_name
+        return ("bar", member_name) if member_name is not None else None
+
+    def _split_snapped_element_at_point(
+        self, target: tuple[str, str], coordinates: tuple[float, float, float],
+    ) -> str | None:
+        kind, name = target
+        if kind == "rigid_bar":
+            node_names, _rigid_names = self.model_service.split_rigid_bar_at_point(
+                name, coordinates,
+            )
+        else:
+            node_names, _member_names = self.model_service.split_member_at_point(
+                name, coordinates,
+            )
+        return node_names[0] if node_names else self._node_at_coordinates(coordinates)
+
     def _handle_member_placement_point(self, point: object) -> None:
         """Advance the two-click graphical member placement flow."""
         if self._command_mode != "member_placement":
@@ -1906,7 +2387,12 @@ class MainWindow(QMainWindow):
         coordinates = tuple(float(value) for value in point)
         if self._member_placement_start is None:
             self._member_placement_start = coordinates
-            self._member_placement_start_snap_member_name = self.scene._placement_snap_member_name
+            self._member_placement_start_snap_target = self._current_placement_snap_target()
+            self._member_placement_start_snap_member_name = (
+                self._member_placement_start_snap_target[1]
+                if self._member_placement_start_snap_target is not None
+                and self._member_placement_start_snap_target[0] == "bar" else None
+            )
             self.scene.set_member_preview_start(coordinates)
             self._show_member_placement_prompt()
             return
@@ -1920,33 +2406,27 @@ class MainWindow(QMainWindow):
             return
 
         snapped_points = (
-            ("inicial", self._member_placement_start_snap_member_name, start),
-            ("final", self.scene._placement_snap_member_name, coordinates),
+            ("inicial", self._member_placement_start_snap_target, start),
+            ("final", self._current_placement_snap_target(), coordinates),
         )
         split_mode = self.member_intermediate_snap_split_mode
-        split_decisions: list[tuple[str, str, tuple[float, float, float]]] = []
-        for node_label, member_name, snap_point in snapped_points:
-            if member_name is None:
+        split_decisions: list[tuple[str, tuple[str, str], tuple[float, float, float]]] = []
+        for node_label, target, snap_point in snapped_points:
+            if target is None:
                 continue
             should_split = split_mode == "sim"
             if split_mode == "perguntar":
-                dialog = MemberSnapSplitDialog(member_name, node_label, self)
+                dialog = MemberSnapSplitDialog(target[1], node_label, self)
                 dialog.move(self.geometry().center() - dialog.rect().center())
                 should_split = dialog.exec() == QDialog.DialogCode.Accepted and dialog.should_split
             if should_split:
-                split_decisions.append((node_label, member_name, snap_point))
+                split_decisions.append((node_label, target, snap_point))
 
         start_node_name = None
         end_node_name = None
         try:
-            for node_label, member_name, snap_point in split_decisions:
-                node_names, _member_names = self.model_service.split_member_at_point(
-                    member_name, snap_point,
-                )
-                node_name = (
-                    node_names[0] if node_names
-                    else self._node_at_coordinates(snap_point)
-                )
+            for node_label, target, snap_point in split_decisions:
+                node_name = self._split_snapped_element_at_point(target, snap_point)
                 if node_label == "inicial":
                     start_node_name = node_name
                 else:
@@ -1965,6 +2445,7 @@ class MainWindow(QMainWindow):
 
         self._member_placement_start = None
         self._member_placement_start_snap_member_name = None
+        self._member_placement_start_snap_target = None
         self.command_session.cancel()
         self._command_mode = "member_placement"
         self.scene.set_member_preview_start(None)
@@ -2046,7 +2527,12 @@ class MainWindow(QMainWindow):
         coordinates = tuple(float(value) for value in point)
         if self._member_placement_start is None:
             self._member_placement_start = coordinates
-            self._member_placement_start_snap_member_name = self.scene._placement_snap_member_name
+            self._member_placement_start_snap_target = self._current_placement_snap_target()
+            self._member_placement_start_snap_member_name = (
+                self._member_placement_start_snap_target[1]
+                if self._member_placement_start_snap_target is not None
+                and self._member_placement_start_snap_target[0] == "bar" else None
+            )
             self.scene.set_member_preview_start(coordinates)
             self.history.append(
                 "> <b>Adicionar barra rígida</b> "
@@ -2062,25 +2548,25 @@ class MainWindow(QMainWindow):
             )
             return
         snapped_points = (
-            ("inicial", self._member_placement_start_snap_member_name, start),
-            ("final", self.scene._placement_snap_member_name, coordinates),
+            ("inicial", self._member_placement_start_snap_target, start),
+            ("final", self._current_placement_snap_target(), coordinates),
         )
-        split_decisions: list[tuple[str, str, tuple[float, float, float]]] = []
+        split_decisions: list[tuple[str, tuple[str, str], tuple[float, float, float]]] = []
         split_mode = self.member_intermediate_snap_split_mode
-        for node_label, member_name, snap_point in snapped_points:
-            if member_name is None:
+        for node_label, target, snap_point in snapped_points:
+            if target is None:
                 continue
             should_split = split_mode == "sim"
             if split_mode == "perguntar":
-                dialog = MemberSnapSplitDialog(member_name, node_label, self)
+                dialog = MemberSnapSplitDialog(target[1], node_label, self)
                 dialog.move(self.geometry().center() - dialog.rect().center())
                 should_split = dialog.exec() == QDialog.DialogCode.Accepted and dialog.should_split
             if should_split:
-                split_decisions.append((node_label, member_name, snap_point))
+                split_decisions.append((node_label, target, snap_point))
 
         try:
-            for _node_label, member_name, snap_point in split_decisions:
-                self.model_service.split_member_at_point(member_name, snap_point)
+            for _node_label, target, snap_point in split_decisions:
+                self._split_snapped_element_at_point(target, snap_point)
             start_name, end_name, rigid_name = self._create_graphical_rigid_bar(start, coordinates)
         except ValueError as error:
             self.history.append(
@@ -2091,6 +2577,7 @@ class MainWindow(QMainWindow):
 
         self._member_placement_start = None
         self._member_placement_start_snap_member_name = None
+        self._member_placement_start_snap_target = None
         self.command_session.cancel()
         self._command_mode = "rigid_bar_placement"
         self.scene.set_member_preview_start(None)
@@ -2143,6 +2630,27 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "connect_member_ends_selection":
+            self._command_mode = None
+            self._connect_member_ends_first_bar = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Conectar extremidades</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
+            "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
+        }:
+            self._command_mode = None
+            self._endpoint_alignment_source_bar = None
+            self.scene.set_endpoint_alignment_target(None)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode == "detail_plane_placement":
             self._command_mode = None
             self._detail_plane_points = []
@@ -2241,6 +2749,7 @@ class MainWindow(QMainWindow):
         label = labels[self._command_mode]
         self._member_placement_start = None
         self._member_placement_start_snap_member_name = None
+        self._member_placement_start_snap_target = None
         self._command_mode = None
         self.command_session.cancel()
         self.scene.set_member_placement_mode(False)
@@ -2400,6 +2909,52 @@ class MainWindow(QMainWindow):
         self.reference_panel.hide()
         self.selected = kind, name
         self.selected_elements = [(kind, name)]
+        if self._command_mode == "connect_member_ends_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                )
+                self.clear_selection()
+                return
+            if self._connect_member_ends_first_bar is None:
+                self._connect_member_ends_first_bar = name
+                self.clear_selection()
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#57606a'>(Selecione a segunda barra ligada à primeira; Esc cancela)</span>"
+                )
+                self.scene.plotter.setFocus()
+                return
+            if name == self._connect_member_ends_first_bar:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#8c959f'>(Selecione uma segunda barra diferente)</span>"
+                )
+                self.clear_selection()
+                return
+            first_name = self._connect_member_ends_first_bar
+            if not self._connect_member_end_faces(first_name, name):
+                self.clear_selection()
+            return
+        if self._command_mode == "endpoint_alignment_bar_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Alinhar extremidade</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                )
+                self.clear_selection()
+                return
+            self._endpoint_alignment_source_bar = name
+            self._command_mode = "endpoint_alignment_face_selection"
+            self.clear_selection()
+            self.scene.set_endpoint_alignment_target(name)
+            self.history.append(
+                "> <b>Alinhar extremidade</b> "
+                "<span style='color:#57606a'>(Selecione uma face de uma barra conectada; Esc cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
         if self._command_mode == "verification_ungroup_selection":
             if kind != "bar":
                 self.history.append("> <b>Desagrupar barras</b> <span style='color:#8c959f'>(Selecione uma barra que pertença a um grupo)</span>")

@@ -411,8 +411,11 @@ class PropertyPanel(QFrame):
         verification_mode = section == "Memorial"
         detailing_mode = section == "Detalhamento"
         self.verification_name_input.setReadOnly(False)
-        self.member_color_button.setVisible(kind == "bar" and not verification_mode)
-        self.delete_button.setVisible(not verification_mode)
+        self.member_color_button.setVisible(kind == "bar" and section == "Geometria")
+        # Member and node deletion stays in the main delete command/shortcut,
+        # keeping their property identity row free of a delete control.
+        # Rigid bars retain their dedicated delete control.
+        self.delete_button.setVisible(kind == "rigid_bar" and not verification_mode)
         self.update_delete_button_state()
         title = {"node": "Nó", "bar": "Barra", "rigid_bar": "Barra rígida"}.get(kind, "Elemento")
         if len(self._selection) > 1:
@@ -433,6 +436,12 @@ class PropertyPanel(QFrame):
             self.identity_value.setText(
                 name if len(names) == 1 else f"Variado ({len(names)})"
             )
+            if kind == "bar" and names:
+                colors = [self.window.model.bars[member_name].color for member_name in names]
+                self._set_member_color_button(colors[0] if self._all_equal(colors) else "#ffffff")
+                self.member_color_button.setToolTip(
+                    "Definir cor das barras" if len(names) > 1 else "Definir cor da barra"
+                )
             self._verification_name_row.setVisible(kind in {"bar", "node"})
             if kind == "bar":
                 group = self.window.model.verification_group_for(names[-1]) if names else None
@@ -868,7 +877,7 @@ class PropertyPanel(QFrame):
         members = [self.window.model.bars[member_name] for member_name in self._selected_names("bar")]
         positioning = [self._positioning_summary(member) for member in members]
         signatures = [(
-            member.solid_face_offsets, member.solid_section_offsets,
+            member.solid_face_offsets, member.solid_section_offsets, member.solid_face_angles,
         ) for member in members]
         status.setText(positioning[0] if self._all_equal(signatures) else "Variado")
         status.setAccessibleName("Identificação do posicionamento")
@@ -907,7 +916,7 @@ class PropertyPanel(QFrame):
             return
         members = [self.window.model.bars[name] for name in names]
         signatures = [(
-            member.solid_face_offsets, member.solid_section_offsets,
+            member.solid_face_offsets, member.solid_section_offsets, member.solid_face_angles,
         ) for member in members]
         self._positioning_status.setText(
             self._positioning_summary(members[0]) if self._all_equal(signatures) else "Variado"
@@ -918,6 +927,7 @@ class PropertyPanel(QFrame):
         """Build the compact positioning identification shown beside the button."""
         face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
+        face_angles = getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
         tokens: list[str] = []
         for label, value in (
             ("A", face_offsets[0] if len(face_offsets) > 0 else 0.0),
@@ -930,6 +940,11 @@ class PropertyPanel(QFrame):
                 continue
             sign = "+" if value_mm > 0.0 else "-"
             tokens.append(f"{label}{sign}{PropertyPanel._format_positioning_value(abs(value_mm))}")
+        for label, value in zip(("AαY", "AαZ", "BαY", "BαZ"), face_angles):
+            if abs(float(value)) <= 1e-9:
+                continue
+            sign = "+" if value > 0.0 else "-"
+            tokens.append(f"{label}{sign}{PropertyPanel._format_positioning_value(abs(float(value)))}°")
         if tokens:
             return " ".join(tokens)
         return "Centro geométrico"

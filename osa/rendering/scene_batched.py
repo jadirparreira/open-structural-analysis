@@ -128,6 +128,7 @@ class StructureScene(QWidget):
     _default_antialiasing_samples = 4
 
     element_clicked = Signal(str, str, object)
+    solid_face_clicked = Signal(object)
     empty_clicked = Signal()
     selection_changed = Signal(object)
     placement_point_clicked = Signal(object)
@@ -332,6 +333,7 @@ class StructureScene(QWidget):
         self._orientation_widget = NavigationWidget.create(self.plotter)
         self._model = StructuralModel()
         self._verification_group_selection_active = False
+        self._detailing_session_active = False
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
         self._member_geometry_cache_key: tuple[object, ...] | None = None
@@ -418,6 +420,9 @@ class StructureScene(QWidget):
         self._semirigid_links_visible = True
         self._node_supports_visible = True
         self._hovered: tuple[str, str] | None = None
+        self._endpoint_alignment_target: str | None = None
+        self._endpoint_alignment_face_hover: tuple[str, tuple[int, ...]] | None = None
+        self._endpoint_alignment_highlight_actor = None
         self._selected: tuple[str, str] | None = None
         self._selected_elements: tuple[tuple[str, str], ...] = ()
         self._scene_selection_mode: str | None = None
@@ -442,7 +447,9 @@ class StructureScene(QWidget):
         self._perpendicular_snap_cache: tuple[tuple[object, ...], tuple[np.ndarray, ...]] | None = None
         self._perpendicular_feet_cache: tuple | None = None
         self._perpendicular_snap_member_name: str | None = None
+        self._perpendicular_snap_element: tuple[str, str] | None = None
         self._placement_snap_member_name: str | None = None
+        self._placement_snap_element: tuple[str, str] | None = None
         self._pick_projection_cache: tuple[tuple[object, ...], tuple] | None = None
         self._wheel_interaction_timer = QTimer(self)
         self._wheel_interaction_timer.setSingleShot(True)
@@ -1186,6 +1193,7 @@ class StructureScene(QWidget):
                 lighting=False, opacity=0.7, pickable=False,
                 reset_camera=False, render=False, render_lines_as_tubes=True,
             )
+            self._reveal_rigid_bar_actor.SetVisibility(self._rigid_bars_visible_for_session())
 
     def _add_local_axis_overlay(self, mesh: pv.PolyData, color: str):
         mapper = vtk.vtkPolyDataMapper()
@@ -1277,6 +1285,7 @@ class StructureScene(QWidget):
             pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
             lighting=False,
         )
+        self._rigid_bar_actor.SetVisibility(self._rigid_bars_visible_for_session())
         rigid_mapper = self._rigid_bar_actor.GetMapper()
         # Rigid bars share the members' depth level. They must not receive a
         # special foreground/background offset when crossing a member or node.
@@ -1517,6 +1526,11 @@ class StructureScene(QWidget):
         )
 
     def _pick_solid_member(self, *, preview: bool = False) -> tuple[str, str] | None:
+        hit = self._pick_solid_face(preview=preview)
+        return ("bar", hit[0]) if hit is not None else None
+
+    def _pick_solid_face(self, *, preview: bool = False):
+        """Return the visible solid face under the pointer and its plane."""
         batch = self._reveal_preview_batch if preview else self._member_batch
         actor = self._reveal_preview_face_actor if preview else self._member_face_actor
         if (
@@ -1563,7 +1577,111 @@ class StructureScene(QWidget):
         element_index = int(batch.faces.cell_data["element_index"][cell_id])
         if element_index < 0 or element_index >= len(batch.names):
             return None
-        return "bar", batch.names[element_index]
+        cell = batch.faces.GetCell(cell_id)
+        cell_points = cell.GetPoints()
+        vertices = np.asarray(
+            [cell_points.GetPoint(index) for index in range(cell_points.GetNumberOfPoints())],
+            dtype=float,
+        )
+        normal = None
+        for index in range(1, len(vertices) - 1):
+            candidate = np.cross(vertices[index] - vertices[0], vertices[index + 1] - vertices[0])
+            magnitude = float(np.linalg.norm(candidate))
+            if magnitude > 1e-12:
+                normal = candidate / magnitude
+                break
+        if normal is None:
+            return None
+        return batch.names[element_index], cell_id, points[closest], normal
+
+    def set_endpoint_alignment_target(self, member_name: str | None) -> None:
+        """Route hover and clicks to a single-face alignment pick when active."""
+        self._endpoint_alignment_target = member_name
+        self._hovered = None
+        self._clear_endpoint_alignment_face_highlight()
+        self._sync_highlights()
+        self.plotter.render()
+
+    def _clear_endpoint_alignment_face_highlight(self) -> bool:
+        self._endpoint_alignment_face_hover = None
+        actor = self._endpoint_alignment_highlight_actor
+        self._endpoint_alignment_highlight_actor = None
+        if actor is not None:
+            self.plotter.remove_actor(actor, reset_camera=False, render=False)
+        return actor is not None
+
+    def _set_endpoint_alignment_face_highlight(self, hit) -> bool:
+        if hit is None:
+            return self._clear_endpoint_alignment_face_highlight()
+        member_name, cell_id, _point, hit_normal = hit
+        batch = self._member_batch
+        if batch is None or member_name not in batch.face_cell_ranges:
+            return self._clear_endpoint_alignment_face_highlight()
+        cell_start, cell_end = batch.face_cell_ranges[member_name]
+        normals = batch.faces.cell_data.get("Normals")
+        plane_point = np.asarray(
+            [batch.faces.GetCell(cell_id).GetPoints().GetPoint(index)
+             for index in range(batch.faces.GetCell(cell_id).GetNumberOfPoints())],
+            dtype=float,
+        ).mean(axis=0)
+        plane_normal = np.asarray(hit_normal, dtype=float)
+        bounds = np.asarray(batch.faces.bounds, dtype=float)
+        scale = max(1.0, float(np.linalg.norm(bounds[1::2] - bounds[::2])))
+        tolerance = max(1e-8, scale * 1e-8)
+        coplanar_cells = []
+        for candidate_id in range(cell_start, cell_end):
+            candidate = batch.faces.GetCell(candidate_id)
+            candidate_points = np.asarray(
+                [candidate.GetPoints().GetPoint(index)
+                 for index in range(candidate.GetNumberOfPoints())],
+                dtype=float,
+            )
+            if not len(candidate_points):
+                continue
+            candidate_normal = (
+                np.asarray(normals[candidate_id], dtype=float).copy()
+                if normals is not None else None
+            )
+            if candidate_normal is None or float(np.linalg.norm(candidate_normal)) <= 1e-12:
+                continue
+            candidate_normal /= float(np.linalg.norm(candidate_normal))
+            if abs(float(np.dot(candidate_normal, plane_normal))) < 1.0 - 1e-7:
+                continue
+            if np.max(np.abs((candidate_points - plane_point) @ plane_normal)) > tolerance:
+                continue
+            coplanar_cells.append(candidate_id)
+        if not coplanar_cells:
+            coplanar_cells = [cell_id]
+        key = member_name, tuple(coplanar_cells)
+        if key == self._endpoint_alignment_face_hover:
+            return False
+        self._clear_endpoint_alignment_face_highlight()
+        self._endpoint_alignment_face_hover = key
+        surface = batch.faces.extract_cells(coplanar_cells).extract_surface(
+            algorithm="dataset_surface",
+        )
+        outline = surface.extract_feature_edges(
+            boundary_edges=True, feature_edges=False,
+            manifold_edges=False, non_manifold_edges=False,
+        )
+        if not outline.n_cells:
+            return True
+        actor = self.plotter.add_mesh(
+            outline,
+            color="#24292f",
+            line_width=self._highlight_line_width("hover", "bar", member_name),
+            render_lines_as_tubes=True, lighting=False, pickable=False,
+            reset_camera=False, render=False,
+        )
+        actor.SetObjectName("highlight:endpoint-alignment-face")
+        self._endpoint_alignment_highlight_actor = actor
+        return True
+
+    def _pick_and_highlight_endpoint_alignment_face(self) -> bool:
+        if self._endpoint_alignment_target is None:
+            return self._clear_endpoint_alignment_face_highlight()
+        hit = self._pick_solid_face()
+        return self._set_endpoint_alignment_face_highlight(hit)
 
     @staticmethod
     def _distance_to_segment_2d(
@@ -1837,6 +1955,9 @@ class StructureScene(QWidget):
             self._hide_member_preview()
             self._hide_measurement_preview()
             self._hide_orthogonal_guide()
+            if self._endpoint_alignment_target is not None:
+                if self._clear_endpoint_alignment_face_highlight():
+                    self.plotter.render()
         if (
             watched is self.plotter
             and event.type() == QEvent.Type.KeyPress
@@ -2085,6 +2206,9 @@ class StructureScene(QWidget):
             # otherwise block the cursor for a full frame on a dense model.
             return
         if self._orientation_widget.is_pointer_over(x, y):
+            if self._endpoint_alignment_target is not None:
+                if self._clear_endpoint_alignment_face_highlight():
+                    self.plotter.render()
             if self._hovered is not None:
                 self._hovered = None
                 self._sync_highlights()
@@ -2638,6 +2762,7 @@ class StructureScene(QWidget):
 
     def _snap_position(self, position: np.ndarray) -> tuple[np.ndarray, str] | None:
         self._placement_snap_member_name = None
+        self._placement_snap_element = None
         if not self._snap_enabled or self._pointer_position is None:
             return None
         candidates: list[tuple[float, int, str, np.ndarray, str | None]] = []
@@ -2691,16 +2816,31 @@ class StructureScene(QWidget):
                     # a vertical view can put distinct 3D points at the same
                     # cursor position, and node/centre snaps take precedence.
                     if distance <= perpendicular_distance + 1e-6:
-                        self._placement_snap_member_name = owner if kind == "center" else None
+                        self._placement_snap_element = owner if kind == "center" else None
+                        self._placement_snap_member_name = (
+                            owner[1] if owner is not None and owner[0] == "bar" else None
+                        )
                         return candidate, kind
-            self._placement_snap_member_name = self._perpendicular_snap_member_name
+            self._placement_snap_element = self._perpendicular_snap_element
+            if self._placement_snap_element is None and self._perpendicular_snap_member_name:
+                # Keep compatibility with callers/tests that provide the
+                # previous member-only snap owner.
+                self._placement_snap_element = ("bar", self._perpendicular_snap_member_name)
+            self._placement_snap_member_name = (
+                self._placement_snap_element[1]
+                if self._placement_snap_element is not None
+                and self._placement_snap_element[0] == "bar" else None
+            )
             return perpendicular, "perpendicular"
         if not candidates:
             return None
         _distance, _priority, kind, candidate, owner = min(
             candidates, key=lambda item: (item[0], item[1])
         )
-        self._placement_snap_member_name = owner if kind == "center" else None
+        self._placement_snap_element = owner if kind == "center" else None
+        self._placement_snap_member_name = (
+            owner[1] if owner is not None and owner[0] == "bar" else None
+        )
         return candidate, kind
 
     def _projected_snap_points(
@@ -2724,7 +2864,7 @@ class StructureScene(QWidget):
             dtype=float,
         ).reshape((-1, 3))
         centers = []
-        center_member_names = []
+        center_elements = []
         for member in visible_model.bars.values():
             start = visible_model.nodes.get(member.start_node)
             end = visible_model.nodes.get(member.end_node)
@@ -2734,13 +2874,23 @@ class StructureScene(QWidget):
                     (start.y + end.y) * 0.5,
                     (start.z + end.z) * 0.5,
                 ))
-                center_member_names.append(member.name)
+                center_elements.append(("bar", member.name))
+        for rigid in visible_model.rigid_bars.values():
+            start = visible_model.nodes.get(rigid.start_node)
+            end = visible_model.nodes.get(rigid.end_node)
+            if start is not None and end is not None:
+                centers.append((
+                    (start.x + end.x) * 0.5,
+                    (start.y + end.y) * 0.5,
+                    (start.z + end.z) * 0.5,
+                ))
+                center_elements.append(("rigid_bar", rigid.name))
         center_points = np.asarray(centers, dtype=float).reshape((-1, 3))
         if reference_snaps:
             endpoints, reference_centers = self._drawing_reference_renderer.snap_points(self._model.references)
             node_points = np.concatenate((node_points, endpoints))
             center_points = np.concatenate((center_points, reference_centers))
-            center_member_names.extend(None for _ in reference_centers)
+            center_elements.extend(None for _ in reference_centers)
         node_screens, node_visible = project_world_to_screen(
             node_points, matrix, width, height,
         )
@@ -2750,7 +2900,7 @@ class StructureScene(QWidget):
         projected = (
             node_points, node_screens, node_visible,
             center_points, center_screens, center_visible,
-            np.asarray(center_member_names, dtype=object),
+            tuple(center_elements),
         )
         self._projected_snap_cache = key, projected
         return projected
@@ -3652,6 +3802,10 @@ class StructureScene(QWidget):
     def _update_hover(self) -> None:
         if self._camera_interacting or self._placement_active():
             return
+        if self._endpoint_alignment_target is not None:
+            if self._pick_and_highlight_endpoint_alignment_face():
+                self.plotter.render()
+            return
         picked = self._pick()
         if picked == self._hovered:
             return
@@ -3682,6 +3836,14 @@ class StructureScene(QWidget):
             or np.hypot(x - start[0], y - start[1]) > self._placement_drag_tolerance_pixels
         ):
             return
+        if self._endpoint_alignment_target is not None:
+            hit = self._pick_solid_face()
+            if hit is not None:
+                QTimer.singleShot(
+                    0,
+                    lambda selected_face=hit: self.solid_face_clicked.emit(selected_face),
+                )
+            return
         position = (int(x), int(y))
         picked = (
             self._hovered
@@ -3702,12 +3864,16 @@ class StructureScene(QWidget):
     def _placement_world_position(self) -> np.ndarray | None:
         if self._manual_edit_target is not None:
             self._perpendicular_snap_member_name = None
+            self._perpendicular_snap_element = None
             self._placement_snap_member_name = None
+            self._placement_snap_element = None
             return self._manual_edit_target.copy()
         position = self._cursor_world_position()
         if position is None:
             self._perpendicular_snap_member_name = None
+            self._perpendicular_snap_element = None
             self._placement_snap_member_name = None
+            self._placement_snap_element = None
             return None
         if self._measurement_mode:
             target, _snap_kind = self._measurement_target(position)
@@ -3773,12 +3939,13 @@ class StructureScene(QWidget):
         return None
 
     def _perpendicular_snap_target(self, *, projection=None) -> np.ndarray | None:
-        """Capture the foot on members/references and, when measuring, solid edges.
+        """Capture the foot on bars, rigid links, references and solid edges.
 
         Fixed-start projections are cached until the model, view or camera
         changes. Pointer motion only searches the resulting screen points.
         """
         self._perpendicular_snap_member_name = None
+        self._perpendicular_snap_element = None
         if not self._snap_enabled or not self._snap_types["perpendicular"] or self._pointer_position is None:
             return None
         start = (
@@ -3815,13 +3982,19 @@ class StructureScene(QWidget):
                 edge_segments = np.stack((starts[edge_mask], ends[edge_mask]), axis=1)
             model = self._scene_filtered_model()
             segments = []
-            member_names = []
+            owners = []
             for member in model.bars.values():
                 a = model.nodes.get(member.start_node)
                 b = model.nodes.get(member.end_node)
                 if a is not None and b is not None:
                     segments.append(((a.x, a.y, a.z), (b.x, b.y, b.z)))
-                    member_names.append(member.name)
+                    owners.append(("bar", member.name))
+            for rigid in model.rigid_bars.values():
+                a = model.nodes.get(rigid.start_node)
+                b = model.nodes.get(rigid.end_node)
+                if a is not None and b is not None:
+                    segments.append(((a.x, a.y, a.z), (b.x, b.y, b.z)))
+                    owners.append(("rigid_bar", rigid.name))
             endpoints = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
             reference_starts, reference_ends = self._drawing_reference_renderer.snap_segments(
                 self._model.references,
@@ -3829,7 +4002,10 @@ class StructureScene(QWidget):
             if len(reference_starts):
                 reference_segments = np.stack((reference_starts, reference_ends), axis=1)
                 endpoints = np.concatenate((endpoints, reference_segments), axis=0)
-            owners = np.asarray((*member_names, *(None for _ in reference_starts)), dtype=object)
+            owners.extend(None for _ in reference_starts)
+            owner_values = np.empty(len(owners), dtype=object)
+            owner_values[:] = owners
+            owners = owner_values
             surfaces = np.concatenate((np.zeros(len(endpoints), dtype=bool), np.ones(len(edge_segments), dtype=bool)))
             endpoints = np.concatenate((endpoints, edge_segments))
             owners = np.concatenate((owners, np.full(len(edge_segments), None, dtype=object)))
@@ -3874,7 +4050,12 @@ class StructureScene(QWidget):
         if not len(nearby):
             return None
         index = int(nearby[np.argmin(distances[nearby])])
-        self._perpendicular_snap_member_name = self._perpendicular_feet_cache[2][index]
+        self._perpendicular_snap_element = self._perpendicular_feet_cache[2][index]
+        if (
+            self._perpendicular_snap_element is not None
+            and self._perpendicular_snap_element[0] == "bar"
+        ):
+            self._perpendicular_snap_member_name = self._perpendicular_snap_element[1]
         return targets[index].copy()
 
     def _normal_snap_target(self) -> np.ndarray | None:
@@ -4431,6 +4612,7 @@ class StructureScene(QWidget):
         self._solid_members_visible = visible
         self._member_renderer.position_indicators_with_section = visible
         self._elastic_support_overlay.follow_section = visible
+        self._apply_rigid_bar_session_visibility()
         self._hovered = None
         self._tab_hover_candidates = []
         self._tab_hover_position = None
@@ -4477,6 +4659,7 @@ class StructureScene(QWidget):
             self._result_layer_key = (*self._result_layer_key[:-1], visible)
         self._apply_representation_visibility()
         self._configure_solid_picker()
+        self.plotter.render()
 
     def set_solid_positioning_enabled(self, enabled: bool) -> None:
         """Apply member positioning offsets to solids only in detailing."""
@@ -4502,6 +4685,22 @@ class StructureScene(QWidget):
         self._refresh_member_silhouette()
         self._sync_labels(render_preview=False)
         self.plotter.render()
+
+    def set_detailing_session_active(self, enabled: bool) -> None:
+        """Show rigid bars in detailing only while solid members are hidden."""
+        self._detailing_session_active = bool(enabled)
+        self._apply_rigid_bar_session_visibility()
+        if self._model is not None:
+            self.plotter.render()
+
+    def _rigid_bars_visible_for_session(self) -> bool:
+        return not self._detailing_session_active or not self._solid_members_visible
+
+    def _apply_rigid_bar_session_visibility(self) -> None:
+        visible = self._rigid_bars_visible_for_session()
+        for actor in (self._rigid_bar_actor, self._reveal_rigid_bar_actor):
+            if actor is not None:
+                actor.SetVisibility(visible)
 
     def set_labels_visible(self, kind: str, visible: bool) -> None:
         self._labels_visibility[kind] = bool(visible)

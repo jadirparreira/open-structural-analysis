@@ -73,6 +73,9 @@ class Member:
     # Deslocamento visual da seção sólida no plano local Y/Z. Não participa
     # do modelo analítico nem altera a posição dos nós da barra.
     solid_section_offsets: tuple[float, float] = (0.0, 0.0)
+    # Inclinação visual das faces A/B nas direções dos eixos locais Y/Z,
+    # em graus, medida a partir do corte perpendicular ao eixo da barra.
+    solid_face_angles: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     # Percentuais de flexibilização das rotações locais Rxa/Rxb, Rya/Ryb e
     # Rza/Rzb. Zero indica vínculo rígido; de 1% a 99% reduz a rigidez efetiva
     # por uma mola rotacional equivalente; 100% libera a rotação.

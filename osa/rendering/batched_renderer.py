@@ -21,7 +21,7 @@ from osa.sections import section_shape
 
 from .grid_renderer import GridRenderer
 from .local_axes_renderer import LocalAxesRenderer
-from .solid_member_renderer import SolidMemberRenderer
+from .solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from .support_renderer import build_support_mesh
 
 
@@ -89,13 +89,16 @@ def _transformed_points(
     delta: np.ndarray,
     local_y: np.ndarray,
     local_z: np.ndarray,
+    face_angles: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0),
 ) -> np.ndarray:
     """Transform section vertices without wrapping each member in PolyData."""
+    length = float(np.linalg.norm(delta))
+    local_points = deform_extruded_points(points, length, face_angles)
     return (
         start
-        + points[:, 0, None] * delta
-        + points[:, 1, None] * local_y
-        + points[:, 2, None] * local_z
+        + local_points[:, 0, None] * delta
+        + local_points[:, 1, None] * local_y
+        + local_points[:, 2, None] * local_z
     )
 
 
@@ -426,6 +429,10 @@ class BatchedMemberRenderer:
             solid_start = start.copy()
             solid_end = end.copy()
             offsets = getattr(member, "solid_face_offsets", (0.0, 0.0)) if self.solid_positioning_enabled else (0.0, 0.0)
+            face_angles = (
+                getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
+                if self.solid_positioning_enabled else (0.0, 0.0, 0.0, 0.0)
+            )
             if len(offsets) == 2:
                 candidate_start = start - solid_x * float(offsets[0])
                 candidate_end = end + solid_x * float(offsets[1])
@@ -460,7 +467,7 @@ class BatchedMemberRenderer:
             face_offset = face_point_count
             face_cell_offset = len(face_indices)
             transformed_face_points = _transformed_points(
-                face_vertices, solid_origin, solid_delta, solid_y, solid_z,
+                face_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
             )
             face_points.append(transformed_face_points)
             face_cells.append(_offset_cells(face_connectivity, face_offset))
@@ -473,7 +480,7 @@ class BatchedMemberRenderer:
             edge_offset = edge_point_count
             edge_cell_offset = len(edge_indices)
             transformed_edge_points = _transformed_points(
-                edge_vertices, solid_origin, solid_delta, solid_y, solid_z,
+                edge_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
             )
             edge_points.append(transformed_edge_points)
             edge_cells.append(_offset_cells(edge_connectivity, edge_offset))
@@ -705,6 +712,10 @@ class BatchedMemberRenderer:
         solid_x, solid_y, solid_z = basis
         solid_start, solid_end = start.copy(), end.copy()
         offsets = getattr(member, "solid_face_offsets", (0.0, 0.0)) if self.solid_positioning_enabled else (0.0, 0.0)
+        face_angles = (
+            getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
+            if self.solid_positioning_enabled else (0.0, 0.0, 0.0, 0.0)
+        )
         if len(offsets) == 2:
             candidate_start = start - solid_x * float(offsets[0])
             candidate_end = end + solid_x * float(offsets[1])
@@ -750,10 +761,10 @@ class BatchedMemberRenderer:
             return False
 
         face_points = _transformed_points(
-            face_source.points, solid_origin, solid_delta, solid_y, solid_z,
+            face_source.points, solid_origin, solid_delta, solid_y, solid_z, face_angles,
         )
         edge_points = _transformed_points(
-            edge_source.points, solid_origin, solid_delta, solid_y, solid_z,
+            edge_source.points, solid_origin, solid_delta, solid_y, solid_z, face_angles,
         )
         batch.faces.points[face_start:face_end] = face_points
         batch.edges.points[edge_start:edge_end] = edge_points
@@ -763,6 +774,15 @@ class BatchedMemberRenderer:
         batch.edges.Modified()
 
         source_normals = face_source.cell_data.get("Normals")
+        if any(face_angles):
+            deformed_source = pv.PolyData(
+                deform_extruded_points(face_source.points, float(np.linalg.norm(solid_delta)), face_angles),
+                faces=face_source.faces,
+            ).compute_normals(
+                cell_normals=True, point_normals=False, split_vertices=False,
+                consistent_normals=True, auto_orient_normals=True, inplace=False,
+            )
+            source_normals = deformed_source.cell_data.get("Normals")
         target_normals = batch.faces.cell_data.get("Normals")
         if source_normals is not None and target_normals is not None:
             rotation = np.column_stack((local_x, local_y, local_z))

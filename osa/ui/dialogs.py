@@ -1997,6 +1997,47 @@ class ProgramSettingsDialog(QDialog):
         brace_angle_box_layout.addWidget(QLabel("°"))
         brace_angle_section.addWidget(brace_angle_box, 0, Qt.AlignmentFlag.AlignLeft)
         members_content_layout.addLayout(brace_angle_section)
+        members_content_layout.addSpacing(12)
+
+        solid_face_angle_section = QVBoxLayout()
+        solid_face_angle_section.setContentsMargins(0, 0, 0, 0)
+        solid_face_angle_section.setSpacing(8)
+        solid_face_angle_label = QLabel("Limite angular para face de barras")
+        solid_face_angle_label.setObjectName("hint")
+        solid_face_angle_label.setWordWrap(True)
+        solid_face_angle_label.setAccessibleName(
+            "Limite angular para face de barras"
+        )
+        solid_face_angle_section.addWidget(solid_face_angle_label)
+        solid_face_angle_box = QFrame()
+        solid_face_angle_box.setObjectName("braceRestraintAngleBox")
+        solid_face_angle_box.setFixedSize(112, 46)
+        solid_face_angle_box_layout = QHBoxLayout(solid_face_angle_box)
+        solid_face_angle_box_layout.setContentsMargins(0, 0, 0, 0)
+        solid_face_angle_box_layout.setSpacing(0)
+        self._solid_face_angle_limit = QDoubleSpinBox()
+        self._solid_face_angle_limit.setRange(0.0, 89.9)
+        self._solid_face_angle_limit.setDecimals(1)
+        self._solid_face_angle_limit.setSingleStep(1.0)
+        self._solid_face_angle_limit.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self._solid_face_angle_limit.setMinimumWidth(0)
+        self._solid_face_angle_limit.setValue(
+            self.window.solid_face_angle_limit_degrees
+        )
+        self._solid_face_angle_limit.setAccessibleName(
+            "Limite angular para face de barras"
+        )
+        self._solid_face_angle_limit.valueChanged.connect(
+            self.window.set_solid_face_angle_limit_degrees
+        )
+        solid_face_angle_box_layout.addWidget(self._solid_face_angle_limit, 1)
+        solid_face_angle_box_layout.addWidget(QLabel("°"))
+        solid_face_angle_section.addWidget(
+            solid_face_angle_box, 0, Qt.AlignmentFlag.AlignLeft
+        )
+        members_content_layout.addLayout(solid_face_angle_section)
         members_close_button = QPushButton("Fechar")
         members_close_button.setObjectName("closeProperties")
         members_close_button.clicked.connect(self.accept)

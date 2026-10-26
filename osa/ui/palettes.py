@@ -278,7 +278,13 @@ class FloatingPalette(QFrame):
             self._set_verification_view(False)
         if previous_group == "Detalhamento" and next_group != "Detalhamento":
             self._set_detailing_view(False)
-        if name != "Geometria" and getattr(self.window, "_command_mode", None) in {
+        command_mode = getattr(self.window, "_command_mode", None)
+        if command_mode in {
+            "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
+            "connect_member_ends_selection",
+        } and next_group != "Detalhamento":
+            self.window.cancel_member_placement()
+        elif name != "Geometria" and command_mode in {
             "scene_hide_selection", "scene_reveal_selection", "member_placement",
             "reference_axis_placement",
         }:
@@ -311,6 +317,7 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "detailing_top_palette"):
             self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
         if hasattr(self.window, "scene"):
+            self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
             self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
@@ -685,6 +692,48 @@ class DetailingTopPalette(QFrame):
             )
             layout.addWidget(visibility_button)
             self._visibility_buttons[kind] = visibility_button
+        separator = QFrame(self)
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        separator.setFixedHeight(18)
+        separator.setStyleSheet("QFrame { color: #d0d7de; }")
+        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.additional_detailing_button = QToolButton(self)
+        self.additional_detailing_button.setFixedSize(30, 30)
+        self.additional_detailing_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "detailing-layout.svg"))
+        )
+        self.additional_detailing_button.setIconSize(QSize(21, 21))
+        self.additional_detailing_button.setToolTip("Alinhar extremidade")
+        self.additional_detailing_button.setProperty(
+            "paletteTooltip", "Alinhar extremidade"
+        )
+        self.additional_detailing_button.setAccessibleName("Alinhar extremidade")
+        self.additional_detailing_button.clicked.connect(window.start_member_endpoint_alignment)
+        self.additional_detailing_button.installEventFilter(self)
+        self.additional_detailing_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.additional_detailing_button)
+        self.connect_ends_button = QToolButton(self)
+        self.connect_ends_button.setFixedSize(30, 30)
+        self.connect_ends_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "connect-bar-ends.svg"))
+        )
+        self.connect_ends_button.setIconSize(QSize(21, 21))
+        self.connect_ends_button.setToolTip("Conectar extremidades")
+        self.connect_ends_button.setProperty("paletteTooltip", "Conectar extremidades")
+        self.connect_ends_button.setAccessibleName("Conectar extremidades")
+        self.connect_ends_button.clicked.connect(window.start_connect_member_ends)
+        self.connect_ends_button.installEventFilter(self)
+        self.connect_ends_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.connect_ends_button)
         button = QToolButton(self)
         button.setFixedSize(30, 30)
         button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
@@ -726,7 +775,12 @@ class DetailingTopPalette(QFrame):
         self.raise_()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched in (*self._visibility_buttons.values(), self.manage_views_button):
+        if watched in (
+            *self._visibility_buttons.values(),
+            self.additional_detailing_button,
+            self.connect_ends_button,
+            self.manage_views_button,
+        ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):

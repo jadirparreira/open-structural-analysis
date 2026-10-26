@@ -523,9 +523,10 @@ class ResultRenderer:
                 longitudinal_edge_indices = self._solid_member_renderer.longitudinal_edge_indices(shape)
                 self._append_deformed_member_solid(
                     face_points, faces, face_colors, edge_points, edges, edge_colors,
-                    positioned_centerline, local_y, local_z, shape.loops,
+                    positioned_centerline, local_x, local_y, local_z, shape.loops,
                     longitudinal_edge_indices, color,
                     np.clip(color.astype(float) * 0.65, 0, 255).astype(np.uint8),
+                    getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0)),
                 )
             except (KeyError, TypeError, ValueError):
                 self._append_colored_polyline(
@@ -607,15 +608,24 @@ class ResultRenderer:
 
     def _append_deformed_member_solid(
         self, face_points, faces, face_colors, edge_points, edges, edge_colors,
-        centerline, local_y, local_z, loops, longitudinal_edge_indices, color, edge_color,
+        centerline, local_x, local_y, local_z, loops, longitudinal_edge_indices,
+        color, edge_color, face_angles,
     ) -> None:
         """Extruda a seção real ao longo da configuração deformada calculada."""
+        angle_tangents = np.tan(np.deg2rad(np.asarray(face_angles, dtype=float)))
         for loop_index, loop in enumerate(loops):
             ring_offsets: list[int] = []
-            for center in centerline:
+            for ring_index, center in enumerate(centerline):
                 ring_offsets.append(len(face_points))
+                fraction_b = ring_index / max(1, len(centerline) - 1)
                 face_points.extend(
-                    center + local_y * y * self._millimeters_to_model_units + local_z * z * self._millimeters_to_model_units
+                    center
+                    - local_x * self._millimeters_to_model_units * (
+                        y * ((1.0 - fraction_b) * angle_tangents[0] + fraction_b * angle_tangents[2])
+                        + z * ((1.0 - fraction_b) * angle_tangents[1] + fraction_b * angle_tangents[3])
+                    )
+                    + local_y * y * self._millimeters_to_model_units
+                    + local_z * z * self._millimeters_to_model_units
                     for y, z in loop
                 )
             size = len(loop)
