@@ -64,6 +64,11 @@ from .window_frame import TitleBar, WindowFrame
 from .verification_worker import VerificationWorker
 
 
+class _ProjectLoadingDialog(QDialog):
+    def reject(self) -> None:
+        """Keep the modal loading state visible until the load finishes."""
+
+
 class MainWindow(QMainWindow):
     mcp_model_changed = Signal()
     mcp_view_changed = Signal(str, bool)
@@ -781,8 +786,6 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "member_placement_editor"):
             self.member_placement_editor.reposition()
-        if hasattr(self, "_project_loading_overlay"):
-            self._project_loading_overlay.setGeometry(self.rect())
         if hasattr(self, "palette"):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
@@ -2723,6 +2726,10 @@ class MainWindow(QMainWindow):
         for action, _enabled in self._project_loading_action_states:
             action.setEnabled(False)
         self._project_loading_description.setText("Preparando a abertura do modelo…")
+        self._project_loading_overlay.adjustSize()
+        self._project_loading_overlay.move(
+            self.geometry().center() - self._project_loading_overlay.rect().center()
+        )
         self._project_loading_overlay.show()
         self._project_loading_overlay.raise_()
         QTimer.singleShot(0, thread.start)
@@ -2825,33 +2832,30 @@ class MainWindow(QMainWindow):
             thread.deleteLater()
 
     def _create_project_loading_overlay(self) -> None:
-        overlay = QWidget(self)
-        overlay.setObjectName("projectLoadingOverlay")
-        overlay.setStyleSheet("#projectLoadingOverlay { background: rgba(20, 28, 38, 105); }")
-        layout = QVBoxLayout(overlay)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card = QFrame(overlay)
-        card.setFixedWidth(340)
-        card.setStyleSheet(
-            "QFrame { background: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; }"
+        overlay = _ProjectLoadingDialog(self)
+        overlay.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        overlay.setModal(True)
+        overlay.setWindowTitle("Abrindo modelo")
+        overlay.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
         )
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(28, 24, 28, 24)
-        card_layout.setSpacing(14)
-        title = QLabel("Abrindo modelo…", card)
+        overlay.setObjectName("projectLoadingOverlay")
+        layout = QVBoxLayout(overlay)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+        title = QLabel("Abrindo modelo…", overlay)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
-        description = QLabel("Aguarde enquanto os dados são carregados.", card)
+        description = QLabel("Aguarde enquanto os dados são carregados.", overlay)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")
         description.setWordWrap(True)
         self._project_loading_description = description
-        progress = LoadingIndicator(card)
-        card_layout.addWidget(title)
-        card_layout.addWidget(description)
-        card_layout.addWidget(progress)
-        layout.addWidget(card)
-        overlay.setGeometry(self.rect())
+        progress = LoadingIndicator(overlay)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(progress)
+        overlay.setFixedWidth(400)
         overlay.hide()
         self._project_loading_overlay = overlay
 
