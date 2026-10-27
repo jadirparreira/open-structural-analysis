@@ -161,6 +161,8 @@ class FloatingPalette(QFrame):
         self._primary_buttons: dict[str, QToolButton] = {}
         self._sections: dict[str, QWidget] = {}
         self._expanded: str | None = None
+        self._actions_view_state: dict[str, bool] | None = None
+        self._analysis_view_state: dict[str, bool] | None = None
         self._verification_view_state: dict[str, bool] | None = None
         self._detailing_view_state: dict[str, bool] | None = None
         self._tooltip = PaletteTooltip(window)
@@ -278,6 +280,11 @@ class FloatingPalette(QFrame):
             self._set_verification_view(False)
         if previous_group == "Detalhamento" and next_group != "Detalhamento":
             self._set_detailing_view(False)
+            self._restore_geometry_solid_representation()
+        if previous_group == "Ações" and next_group != "Ações":
+            self._set_actions_view(False)
+        if previous_group == "Análise" and next_group != "Análise":
+            self._set_analysis_view(False)
         command_mode = getattr(self.window, "_command_mode", None)
         if command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
@@ -301,6 +308,11 @@ class FloatingPalette(QFrame):
             self._set_verification_view(True)
         if next_group == "Detalhamento" and previous_group != "Detalhamento":
             self._set_detailing_view(True)
+            self.window.scene.set_solid_members_visible(True)
+        if next_group == "Ações" and previous_group != "Ações":
+            self._set_actions_view(True)
+        if next_group == "Análise" and previous_group != "Análise":
+            self._set_analysis_view(True)
         self._layout.activate()
         self.setFixedHeight(self.sizeHint().height())
         self._move_selection_indicator(next_group, animate=animate)
@@ -321,16 +333,25 @@ class FloatingPalette(QFrame):
             self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
             self.window.scene.set_actions_visible(next_group == "Ações")
             self.window.scene.set_analysis_visible(next_group == "Análise")
-            self.window.scene.set_verification_group_selection_active(next_group == "Memorial")
+            self.window.scene.set_verification_group_selection_active(
+                next_group in {"Memorial", "Detalhamento"},
+            )
         if hasattr(self.window, "refresh_selected_property_panel"):
             self.window.refresh_selected_property_panel(next_group)
+
+    def _restore_geometry_solid_representation(self) -> None:
+        """Restore the solid/analytical choice made in the Geometry palette."""
+        palette = getattr(self.window, "top_icon_palette", None)
+        if palette is None:
+            return
+        solid_button = palette._visibility_buttons.get("solid")
+        if solid_button is not None:
+            self.window.scene.set_solid_members_visible(solid_button.isChecked())
 
     def _set_verification_view(self, enabled: bool) -> None:
         """Hide modeling annotations while the verification session is active."""
         options = (
             "nodes_visible",
-            "node_labels_visible",
-            "member_labels_visible",
             "local_axes_visible",
             "member_releases_visible",
             "semirigid_links_visible",
@@ -342,8 +363,6 @@ class FloatingPalette(QFrame):
                 self._verification_view_state = {option: state[option] for option in options}
             target = {
                 "nodes_visible": True,
-                "node_labels_visible": False,
-                "member_labels_visible": False,
                 "local_axes_visible": False,
                 "member_releases_visible": False,
                 "semirigid_links_visible": False,
@@ -380,6 +399,38 @@ class FloatingPalette(QFrame):
             target = self._detailing_view_state
             self._detailing_view_state = None
 
+        for option, visible in target.items():
+            self.window._apply_mcp_view_change(option, visible)
+
+    def _set_actions_view(self, enabled: bool) -> None:
+        self._set_annotation_view(
+            enabled,
+            "_actions_view_state",
+            ("local_axes_visible", "member_releases_visible", "semirigid_links_visible"),
+        )
+
+    def _set_analysis_view(self, enabled: bool) -> None:
+        self._set_annotation_view(
+            enabled,
+            "_analysis_view_state",
+            ("local_axes_visible", "member_releases_visible", "semirigid_links_visible"),
+        )
+
+    def _set_annotation_view(
+        self, enabled: bool, state_attribute: str, options: tuple[str, ...],
+    ) -> None:
+        saved_state = getattr(self, state_attribute)
+        if enabled:
+            if saved_state is None:
+                state = self.window.scene.view_state()
+                saved_state = {option: state[option] for option in options}
+                setattr(self, state_attribute, saved_state)
+            target = {option: False for option in options}
+        else:
+            if saved_state is None:
+                return
+            target = saved_state
+            setattr(self, state_attribute, None)
         for option, visible in target.items():
             self.window._apply_mcp_view_change(option, visible)
 
@@ -505,10 +556,6 @@ class VerificationTopPalette(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         self._window = window
         self._tooltip = PaletteTooltip(window)
-        self.name_button = self._identifier_button(
-            "tag.svg", "Nome", "name",
-        )
-        layout.addWidget(self.name_button)
         self.utilization_button = self._identifier_button(
             "percent.svg", "Taxa de utilização", "utilization",
         )
@@ -634,7 +681,6 @@ class VerificationTopPalette(QFrame):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched in (
-            self.name_button,
             self.utilization_button,
             self.utilization_thermometer_button,
             self.group_button,
@@ -664,34 +710,8 @@ class DetailingTopPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         self._tooltip = PaletteTooltip(window)
-        self._visibility_buttons: dict[str, QToolButton] = {}
-        for icon, label, kind in (
-            ("box.svg", "Seções sólidas", "solid"),
-        ):
-            visibility_button = QToolButton(self)
-            visibility_button.setFixedSize(24, 24)
-            visibility_button.setIcon(
-                QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon))
-            )
-            visibility_button.setIconSize(QSize(19, 19))
-            tooltip = _command_tooltip(label, "NODES" if kind == "nodes" else "SOLIDS")
-            visibility_button.setToolTip(tooltip)
-            visibility_button.setProperty("paletteTooltip", tooltip)
-            visibility_button.setAccessibleName(label)
-            visibility_button.setCheckable(True)
-            visibility_button.toggled.connect(
-                lambda _visible, shared_kind=kind:
-                window.top_icon_palette.toggle_visibility_command(shared_kind)
-            )
-            visibility_button.installEventFilter(self)
-            visibility_button.setStyleSheet(
-                "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
-                "QToolButton:hover { background: #eaeef2; }"
-                "QToolButton:checked { background: #d0d7de; }"
-                "QToolButton:pressed { background: #afb8c1; }"
-            )
-            layout.addWidget(visibility_button)
-            self._visibility_buttons[kind] = visibility_button
+        self.name_button = self._identifier_button(window)
+        layout.addWidget(self.name_button)
         separator = QFrame(self)
         separator.setFrameShape(QFrame.Shape.VLine)
         separator.setFrameShadow(QFrame.Shadow.Plain)
@@ -759,14 +779,27 @@ class DetailingTopPalette(QFrame):
         if visible:
             self.reposition()
 
-    def set_view_option(self, option: str, visible: bool, enabled: bool = True) -> None:
-        kind = {"nodes_visible": "nodes", "solid_members_visible": "solid"}.get(option)
-        button = self._visibility_buttons.get(kind) if kind else None
-        if button is None:
-            return
-        with QSignalBlocker(button):
-            button.setEnabled(enabled)
-            button.setChecked(bool(visible))
+    def _identifier_button(self, window: "MainWindow") -> QToolButton:
+        button = QToolButton(self)
+        button.setFixedSize(24, 24)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "tag.svg")))
+        button.setIconSize(QSize(19, 19))
+        button.setToolTip("Nome")
+        button.setProperty("paletteTooltip", "Nome")
+        button.setAccessibleName("Nome")
+        button.setCheckable(True)
+        button.setChecked(window.scene._verification_identifier_modes["name"])
+        button.toggled.connect(
+            lambda visible: window.scene.set_verification_identifier_visible("name", visible)
+        )
+        button.installEventFilter(self)
+        button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        return button
 
     def reposition(self) -> None:
         self.adjustSize()
@@ -776,7 +809,7 @@ class DetailingTopPalette(QFrame):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched in (
-            *self._visibility_buttons.values(),
+            self.name_button,
             self.additional_detailing_button,
             self.connect_ends_button,
             self.manage_views_button,
@@ -852,6 +885,14 @@ class TopIconPalette(QFrame):
                 button.toggled.connect(window.scene.set_semirigid_links_visible)
             elif kind == "supports":
                 button.toggled.connect(window.scene.set_node_supports_visible)
+            elif kind == "node":
+                button.toggled.connect(
+                    lambda visible: window._apply_mcp_view_change("node_labels_visible", visible)
+                )
+            elif kind == "bar":
+                button.toggled.connect(
+                    lambda visible: window._apply_mcp_view_change("member_labels_visible", visible)
+                )
             else:
                 button.toggled.connect(lambda visible, element_kind=kind:
                                        window.scene.set_labels_visible(element_kind, visible))
@@ -1268,7 +1309,6 @@ class TopIconPalette(QFrame):
             visible and self._window.palette.active_group != "Geometria"
         )
         self.set_solid_node_controls_locked(lock_node_controls)
-        self._window._sync_node_solid_view_options()
 
     def set_solid_node_controls_locked(self, locked: bool) -> None:
         """Temporarily hide and disable node controls outside Geometria."""
@@ -1287,11 +1327,9 @@ class TopIconPalette(QFrame):
                 button.setEnabled(enabled)
                 button.setChecked(checked)
             self._solid_node_states = None
-        self._window._sync_node_solid_view_options()
 
     def _on_node_visibility_toggled(self, visible: bool) -> None:
         self._window.scene.set_nodes_visible(visible)
-        self._window._sync_node_solid_view_options()
 
     def toggle_visibility_command(self, kind: str) -> None:
         button = self._visibility_buttons.get(kind)
@@ -1501,9 +1539,9 @@ class ActionTopPalette(QFrame):
             "member_forces_visible": "member_forces",
             "member_moments_visible": "member_moments",
         }.get(option)
-        if kind is not None:
-            button = self._action_visibility_buttons.get(kind)
-            if button is not None:
+        button = self._action_visibility_buttons.get(kind) if kind is not None else None
+        if button is not None:
+            with QSignalBlocker(button):
                 button.setChecked(bool(visible))
 
     def set_actions(

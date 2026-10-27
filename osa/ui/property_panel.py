@@ -11,6 +11,7 @@ from osa.verification.elements import verification_elements
 from .color_palette import HoneycombColorPalette
 from .common import *
 from .calculation_memorial_dialog import CalculationMemorialDialog
+from .group_positioning import group_endpoint_faces
 from .window_frame import WindowFrame
 
 
@@ -316,7 +317,10 @@ class PropertyPanel(QFrame):
             return
         if self._selected[0] != "bar":
             return
-        names = tuple(self._selected_names("bar"))
+        names = tuple(dict.fromkeys(self._selected_names("bar")))
+        group = self.window.model.verification_group_for(names[0]) if names else None
+        if group is not None and set(names) == set(group["members"]):
+            names = tuple(group["members"])
         self.window.model.set_verification_element_name(names, self.verification_name_input.text())
         self.window.refresh_scene()
 
@@ -405,6 +409,7 @@ class PropertyPanel(QFrame):
         self.coordinates_title.hide()
         self.nodes_title.hide()
         self.solid_offsets_title.hide()
+        self.solid_offsets_title.setText("Posicionamento")
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
@@ -426,15 +431,20 @@ class PropertyPanel(QFrame):
                 title = f"{plural} · {len(names)} selecionados"
         self.title.setText("Adicionar barra" if self._creation_mode else title)
         if detailing_mode:
-            # Detailing exposes identity and name only, independently of the
-            # richer geometry, action, analysis, and verification inspectors.
-            self.title.setText({"node": "Nó", "bar": "Barra"}.get(kind, title))
+            group = self.window.model.verification_group_for(names[-1]) if kind == "bar" and names else None
+            is_group = group is not None and set(names) == set(group["members"])
+            # Keep the group identity in Detalhamento consistent with Memorial:
+            # the identity is the list of member elements that form the group.
+            self.title.setText(
+                "Grupo de barras" if is_group else {"node": "Nó", "bar": "Barra"}.get(kind, title)
+            )
             self.kind_control.hide()
             self.name.setText("Identidade")
             self.name.show()
             self._identity_row.show()
             self.identity_value.setText(
-                name if len(names) == 1 else f"Variado ({len(names)})"
+                ", ".join(group["members"]) if is_group
+                else name if len(names) == 1 else f"Variado ({len(names)})"
             )
             if kind == "bar" and names:
                 colors = [self.window.model.bars[member_name].color for member_name in names]
@@ -444,14 +454,14 @@ class PropertyPanel(QFrame):
                 )
             self._verification_name_row.setVisible(kind in {"bar", "node"})
             if kind == "bar":
-                group = self.window.model.verification_group_for(names[-1]) if names else None
-                is_group = group is not None and set(names) == set(group["members"])
                 custom_name = (
                     str(group.get("name", "")) if is_group
                     else self.window.model.verification_element_names.get(names[-1], "") if names else ""
                 )
                 self.verification_name_input.setReadOnly(False)
-                self.verification_name_input.setAccessibleName("Nome da barra")
+                self.verification_name_input.setAccessibleName(
+                    "Nome do grupo de barras" if is_group else "Nome da barra"
+                )
                 with QSignalBlocker(self.verification_name_input):
                     self.verification_name_input.setText(custom_name)
             elif kind == "node":
@@ -461,6 +471,9 @@ class PropertyPanel(QFrame):
                     self.window.model.node_display_names.get(name, "")
                 )
             if kind == "bar" and names:
+                self.solid_offsets_title.setText(
+                    "Posicionamento do grupo" if is_group else "Posicionamento"
+                )
                 self._show_member_solid_offsets(self.window.model.bars[names[-1]])
             for result_row in self._verification_result_rows:
                 result_row.hide()
@@ -874,12 +887,24 @@ class PropertyPanel(QFrame):
         status = QLineEdit()
         status.setReadOnly(True)
         status.setObjectName("identityDisplay")
-        members = [self.window.model.bars[member_name] for member_name in self._selected_names("bar")]
-        positioning = [self._positioning_summary(member) for member in members]
+        names = self._selected_names("bar")
+        is_group = self._is_selected_verification_group(names)
+        members = [self.window.model.bars[member_name] for member_name in names]
+        group_faces = group_endpoint_faces(self.window.model, tuple(names)) if is_group else None
+        positioning = [
+            self._positioning_summary(
+                member, is_group=is_group,
+                endpoint_faces=group_faces if is_group else None,
+                group_members={name: self.window.model.bars[name] for name in names} if is_group else None,
+            )
+            for member in members[:1]
+        ]
         signatures = [(
             member.solid_face_offsets, member.solid_section_offsets, member.solid_face_angles,
         ) for member in members]
-        status.setText(positioning[0] if self._all_equal(signatures) else "Variado")
+        status.setText(
+            positioning[0] if is_group or self._all_equal(signatures) else "Variado"
+        )
         status.setAccessibleName("Identificação do posicionamento")
         offset_layout.addWidget(status, 1)
 
@@ -918,22 +943,53 @@ class PropertyPanel(QFrame):
         signatures = [(
             member.solid_face_offsets, member.solid_section_offsets, member.solid_face_angles,
         ) for member in members]
+        is_group = self._is_selected_verification_group(names)
         self._positioning_status.setText(
-            self._positioning_summary(members[0]) if self._all_equal(signatures) else "Variado"
+            self._positioning_summary(
+                members[0], is_group=is_group,
+                endpoint_faces=group_endpoint_faces(self.window.model, tuple(names)) if is_group else None,
+                group_members={name: self.window.model.bars[name] for name in names} if is_group else None,
+            ) if is_group or self._all_equal(signatures) else "Variado"
         )
 
+    def _is_selected_verification_group(self, names: list[str]) -> bool:
+        group = self.window.model.verification_group_for(names[0]) if names else None
+        return group is not None and set(names) == set(group["members"])
+
     @staticmethod
-    def _positioning_summary(member) -> str:
+    def _positioning_summary(
+        member, *, is_group: bool = False, endpoint_faces=None, group_members=None,
+    ) -> str:
         """Build the compact positioning identification shown beside the button."""
         face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
         section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
         face_angles = getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0))
+        if endpoint_faces:
+            endpoint_offsets = []
+            endpoint_angles = []
+            for endpoint in ("A", "B"):
+                member_name, endpoint_index = endpoint_faces[endpoint]
+                endpoint_member = (group_members or {}).get(member_name)
+                if endpoint_member is None:
+                    endpoint_offsets.append(0.0)
+                    endpoint_angles.extend((0.0, 0.0))
+                    continue
+                offsets = getattr(endpoint_member, "solid_face_offsets", (0.0, 0.0))
+                angles = getattr(endpoint_member, "solid_face_angles", (0.0,) * 4)
+                endpoint_offsets.append(offsets[endpoint_index] if len(offsets) > endpoint_index else 0.0)
+                angle_index = endpoint_index * 2
+                endpoint_angles.extend((
+                    angles[angle_index] if len(angles) > angle_index else 0.0,
+                    angles[angle_index + 1] if len(angles) > angle_index + 1 else 0.0,
+                ))
+            face_offsets = tuple(endpoint_offsets)
+            face_angles = tuple(endpoint_angles)
         tokens: list[str] = []
         for label, value in (
             ("A", face_offsets[0] if len(face_offsets) > 0 else 0.0),
             ("B", face_offsets[1] if len(face_offsets) > 1 else 0.0),
-            ("Y", section_offsets[0] if len(section_offsets) > 0 else 0.0),
-            ("Z", section_offsets[1] if len(section_offsets) > 1 else 0.0),
+            ("X" if is_group else "Y", section_offsets[0] if len(section_offsets) > 0 else 0.0),
+            ("Y" if is_group else "Z", section_offsets[1] if len(section_offsets) > 1 else 0.0),
         ):
             value_mm = float(value) * 1000.0
             if abs(value_mm) <= 1e-9:

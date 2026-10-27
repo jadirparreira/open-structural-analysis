@@ -355,6 +355,7 @@ class StructureScene(QWidget):
         self._rendered_axes: tuple[tuple[str, tuple[object, ...]], ...] = ()
         self._rendered_actions: tuple[object, ...] = ()
         self._rendered_revision = -1
+        self._rendered_verification_group_revision = -1
         self._rigid_bar_names: tuple[str, ...] = ()
         self._rigid_bar_mesh: pv.PolyData | None = None
         self._measurement_face_locator: vtk.vtkCellLocator | None = None
@@ -364,6 +365,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._verification_group_edge_actor = None
         self._member_silhouette_actor = None
         self._reveal_rigid_bar_actor = None
         self._member_preview_actor = None
@@ -811,10 +813,14 @@ class StructureScene(QWidget):
         )
         self._rendered_actions = tuple(self._model.actions.values())
         self._rendered_revision = self._model.revision
+        self._rendered_verification_group_revision = self._model.verification_group_revision
 
     def refresh_model_changes(self, model: StructuralModel) -> None:
         """Refresh only layers affected by edits to an existing structure."""
         self._drawing_reference_renderer.sync(self.plotter, model.references)
+        if model.verification_group_revision != self._rendered_verification_group_revision:
+            self.render_model(model)
+            return
         if model.active_scene_view != "Completo" or self._scene_selection_mode is not None:
             self.render_model(model)
             return
@@ -1100,6 +1106,7 @@ class StructureScene(QWidget):
                 lighting=False,
             )
             self._release_actor.SetVisibility(self._member_releases_visible)
+        self._refresh_verification_group_edges()
 
     def _scene_hidden_members(self) -> set[str]:
         return set(self._model.scene_views.get(self._model.active_scene_view, ())).intersection(
@@ -1424,7 +1431,7 @@ class StructureScene(QWidget):
         if self._member_batch is not None:
             yield from self._label_overlay.set_group_steps(
                 "bar", self._member_batch.label_positions, self._member_batch.names,
-                visible=self._labels_visibility["bar"],
+                visible=self._bar_identifier_overlay_visible(),
             )
         positions, labels = self._verification_identifier_data()
         yield from self._label_overlay.set_group_steps(
@@ -4361,20 +4368,47 @@ class StructureScene(QWidget):
     ) -> pv.PolyData | None:
         """Merge selected strokes into one actor without changing their shape."""
         kind = targets[0][0]
-        if slot == "hover" and kind == "bar":
-            meshes = [
-                mesh for _, name in targets
-                if (mesh := self._member_highlight_mesh(name)) is not None
-            ]
-            if not meshes:
-                return None
-            if len(meshes) == 1:
-                return meshes[0]
-            append = vtk.vtkAppendPolyData()
-            for mesh in meshes:
-                append.AddInputData(mesh)
-            append.Update()
-            return pv.wrap(append.GetOutput())
+        if kind == "bar" and (
+            slot == "hover"
+            or (slot.startswith("selected") and self._verification_group_selection_active)
+        ):
+            highlighted_names = tuple(name for _, name in targets)
+            highlighted_set = set(highlighted_names)
+            complete_groups: dict[tuple[str, ...], dict[str, tuple[tuple[np.ndarray, np.ndarray, float], ...]]] = {}
+            if self._verification_group_selection_active:
+                for name in highlighted_names:
+                    group = self._model.verification_group_for(name)
+                    if group is None:
+                        continue
+                    group_names = tuple(group["members"])
+                    if set(group_names).issubset(highlighted_set):
+                        complete_groups.setdefault(
+                            group_names,
+                            self._verification_group_interface_planes(group_names),
+                        )
+            # Hover and selection both merge each complete group into one
+            # outline and remove the interfaces between its member bars.
+            if slot == "hover" or complete_groups:
+                interfaces = {
+                    name: planes
+                    for group_interfaces in complete_groups.values()
+                    for name, planes in group_interfaces.items()
+                }
+                meshes = [
+                    self._filter_interface_lines(mesh, interfaces.get(name, ()))
+                    for _, name in targets
+                    if (mesh := self._member_highlight_mesh(name)) is not None
+                ]
+                if not meshes:
+                    return None
+                if len(meshes) == 1:
+                    return meshes[0]
+                append = vtk.vtkAppendPolyData()
+                for mesh in meshes:
+                    append.AddInputData(mesh)
+                append.Update()
+                return pv.wrap(append.GetOutput())
+
         if kind == "rigid_bar" or (kind == "bar" and not self._solid_members_visible):
             elements = self._model.rigid_bars if kind == "rigid_bar" else self._model.bars
             points = np.empty((len(targets) * 2, 3), dtype=float)
@@ -4444,6 +4478,64 @@ class StructureScene(QWidget):
         if not points:
             return None
         return pv.PolyData(np.vstack(points), lines=np.concatenate(lines))
+
+    def _verification_group_interface_planes(
+        self, member_names: tuple[str, ...],
+    ) -> dict[str, tuple[tuple[np.ndarray, np.ndarray, float], ...]]:
+        planes: dict[str, list[tuple[np.ndarray, np.ndarray, float]]] = {}
+        names = tuple(name for name in member_names if name in self._model.bars)
+        for offset, first_name in enumerate(names):
+            first = self._model.bars[first_name]
+            for second_name in names[offset + 1:]:
+                second = self._model.bars[second_name]
+                shared = {first.start_node, first.end_node}.intersection((second.start_node, second.end_node))
+                for node_name in shared:
+                    node = self._model.nodes[node_name]
+                    point = np.asarray((node.x, node.y, node.z), dtype=float)
+                    for name in (first_name, second_name):
+                        member = self._model.bars[name]
+                        start = self._model.nodes[member.start_node]
+                        end = self._model.nodes[member.end_node]
+                        direction = np.asarray((end.x-start.x, end.y-start.y, end.z-start.z), dtype=float)
+                        length = float(np.linalg.norm(direction))
+                        if length > 1e-12:
+                            planes.setdefault(name, []).append(
+                                (point, direction / length, max(1e-8, length * 1e-8)),
+                            )
+        return {name: tuple(values) for name, values in planes.items()}
+
+    @staticmethod
+    def _filter_interface_lines(
+        mesh: pv.PolyData,
+        planes: tuple[tuple[np.ndarray, np.ndarray, float], ...],
+    ) -> pv.PolyData:
+        if not planes or not mesh.n_cells or not mesh.lines.size:
+            return mesh
+        connectivity = np.asarray(mesh.lines, dtype=np.int64)
+        keep = np.ones(mesh.n_cells, dtype=bool)
+        cursor = 0
+        cell = 0
+        while cursor < len(connectivity):
+            count = int(connectivity[cursor])
+            point_ids = connectivity[cursor + 1:cursor + count + 1]
+            if count == 2:
+                points = np.asarray(mesh.points[point_ids], dtype=float)
+                for point, direction, tolerance in planes:
+                    if np.all(np.abs((points - point) @ direction) <= tolerance):
+                        keep[cell] = False
+                        break
+            cursor += count + 1
+            cell += 1
+        if np.all(keep):
+            return mesh
+        lines = []
+        cursor = 0
+        for selected in keep:
+            count = int(connectivity[cursor])
+            if selected:
+                lines.extend(connectivity[cursor:cursor + count + 1])
+            cursor += count + 1
+        return pv.PolyData(np.asarray(mesh.points), lines=np.asarray(lines, dtype=np.int64))
 
     def _sync_node_highlight_colors(self, node_colors: dict[str, str], *, force: bool) -> None:
         """Recolor selected node glyphs with one VTK data update."""
@@ -4569,7 +4661,11 @@ class StructureScene(QWidget):
         if self._member_face_actor is not None:
             self._member_face_actor.SetVisibility(solid)
         if self._member_edge_actor is not None:
-            self._member_edge_actor.SetVisibility(solid)
+            self._member_edge_actor.SetVisibility(
+                solid and self._verification_group_edge_actor is None,
+            )
+        if self._verification_group_edge_actor is not None:
+            self._verification_group_edge_actor.SetVisibility(solid)
         if self._member_silhouette_actor is not None:
             self._member_silhouette_actor.SetVisibility(solid)
         if self._member_fallback_actor is not None:
@@ -4638,7 +4734,8 @@ class StructureScene(QWidget):
             self._member_renderer.set_indicators_with_section(self._reveal_preview_batch, visible)
 
         self._label_overlay.set_group(
-            "bar", batch.label_positions, batch.names, visible=self._labels_visibility["bar"],
+            "bar", batch.label_positions, batch.names,
+            visible=self._bar_identifier_overlay_visible(),
         )
         self._elastic_support_overlay.set_members(
             (self._model.bars[name] for name in batch.names),
@@ -4690,6 +4787,8 @@ class StructureScene(QWidget):
         """Show rigid bars in detailing only while solid members are hidden."""
         self._detailing_session_active = bool(enabled)
         self._apply_rigid_bar_session_visibility()
+        self._refresh_verification_group_edges()
+        self._sync_verification_identifier_labels()
         if self._model is not None:
             self.plotter.render()
 
@@ -4704,17 +4803,35 @@ class StructureScene(QWidget):
 
     def set_labels_visible(self, kind: str, visible: bool) -> None:
         self._labels_visibility[kind] = bool(visible)
-        self._label_overlay.set_group_visible(kind, visible)
+        if kind == "bar":
+            self._label_overlay.set_group_visible(
+                "bar", self._bar_identifier_overlay_visible(),
+            )
+            self._sync_verification_identifier_labels()
+        else:
+            self._label_overlay.set_group_visible(kind, visible)
+
+    def _bar_identifier_overlay_visible(self) -> bool:
+        """Route verification bar IDs through element labels so groups stay unified."""
+        return bool(
+            self._labels_visibility["bar"]
+            and not self._verification_palette_visible
+        )
 
     def _verification_identifier_visible(self) -> bool:
-        return (
+        return bool(
             self._verification_palette_visible
-            and any(self._verification_identifier_modes.values())
+            and (
+                self._verification_identifier_modes["utilization"]
+                or self._labels_visibility["bar"]
+            )
+            or self._detailing_session_active
+            and self._verification_identifier_modes["name"]
         )
 
     def _verification_identifier_data(self) -> tuple[np.ndarray, tuple[str, ...]]:
         batch = self._member_batch
-        if batch is None or not any(self._verification_identifier_modes.values()):
+        if batch is None or not self._verification_identifier_visible():
             return np.empty((0, 3), dtype=float), ()
 
         group_names = {
@@ -4727,16 +4844,27 @@ class StructureScene(QWidget):
         }
         positions: list[np.ndarray] = []
         labels: list[str] = []
-        show_name = self._verification_identifier_modes["name"]
-        show_utilization = self._verification_identifier_modes["utilization"]
+        show_name = (
+            self._verification_identifier_modes["name"] and self._detailing_session_active
+        )
+        show_utilization = (
+            self._verification_identifier_modes["utilization"]
+            and self._verification_palette_visible
+        )
+        show_bar_identifier = (
+            self._labels_visibility["bar"] and self._verification_palette_visible
+        )
         for element in verification_elements(self._model):
             if len(element.member_names) == 1:
-                name = self._model.verification_element_names.get(
-                    element.member_names[0], "",
-                ).strip()
-                name = name or element.member_names[0]
+                member_name = element.member_names[0]
+                verification_name = self._model.verification_element_names.get(
+                    member_name, "",
+                ).strip() or member_name
+                bar_identifier = member_name
             else:
-                name = group_names.get(element.member_names, "") or ", ".join(element.member_names)
+                group_name = group_names.get(element.member_names, "")
+                verification_name = group_name or ", ".join(element.member_names)
+                bar_identifier = group_name or ", ".join(element.member_names)
             result = getattr(self._model, "verification_results", {}).get(element.key)
             if not result:
                 rate = "N/D"
@@ -4751,7 +4879,13 @@ class StructureScene(QWidget):
                 )
             else:
                 rate = "X"
-            parts = ([name] if show_name else []) + ([rate] if show_utilization else [])
+            parts = []
+            if show_bar_identifier:
+                parts.append(bar_identifier)
+            if show_name:
+                parts.append(verification_name)
+            if show_utilization:
+                parts.append(rate)
             visible_members = [
                 member_name for member_name in element.member_names
                 if member_name in batch_indices
@@ -4808,12 +4942,20 @@ class StructureScene(QWidget):
         if kind not in self._verification_identifier_modes:
             raise ValueError(f"Tipo de identificador de verificação desconhecido: {kind}")
         self._verification_identifier_modes[kind] = bool(visible)
+        self._label_overlay.set_group_visible(
+            "bar", self._bar_identifier_overlay_visible(),
+        )
         self._sync_verification_identifier_labels()
         self.plotter.render()
 
     def set_verification_palette_visible(self, visible: bool) -> None:
         was_visible = self._verification_palette_visible
         self._verification_palette_visible = bool(visible)
+        self._refresh_verification_group_edges()
+        self._label_overlay.set_group_visible(
+            "bar", self._bar_identifier_overlay_visible(),
+        )
+        self._sync_verification_identifier_labels()
         self._label_overlay.set_group_visible(
             "verification", self._verification_identifier_visible(),
         )
@@ -4826,6 +4968,114 @@ class StructureScene(QWidget):
         ):
             self.update_member_colors(self._member_batch.names)
         self.plotter.render()
+
+    def _refresh_verification_group_edges(self) -> None:
+        """Hide shared end-section edges while grouped bars are verified."""
+        batch = self._member_batch
+        base_actor = self._member_edge_actor
+        if base_actor is None or batch is None:
+            return
+        show_edges = self._solid_members_visible and not (
+            self._analysis_visible and self._active_result_type.startswith("Deformação")
+        )
+
+        def restore_base_edges() -> None:
+            if self._verification_group_edge_actor is not None:
+                self.plotter.remove_actor(
+                    self._verification_group_edge_actor, reset_camera=False, render=False,
+                )
+                self._verification_group_edge_actor = None
+            base_actor.SetVisibility(show_edges)
+
+        if not (self._verification_palette_visible or self._detailing_session_active) or not self._model.verification_element_groups:
+            restore_base_edges()
+            return
+
+        mesh = batch.edges
+        if not mesh.n_cells or not mesh.lines.size or "element_index" not in mesh.cell_data:
+            restore_base_edges()
+            return
+        cell_members = np.asarray(mesh.cell_data["element_index"], dtype=int)
+        if len(cell_members) != mesh.n_cells:
+            restore_base_edges()
+            return
+        keep = np.ones(mesh.n_cells, dtype=bool)
+        member_indices = {name: index for index, name in enumerate(batch.names)}
+        interfaces: dict[int, list[tuple[np.ndarray, np.ndarray, float]]] = {}
+        for group in self._model.verification_element_groups:
+            members = [
+                name for name in group.get("members", ())
+                if name in member_indices and name in self._model.bars
+            ]
+            for offset, first_name in enumerate(members):
+                first = self._model.bars[first_name]
+                for second_name in members[offset + 1:]:
+                    second = self._model.bars[second_name]
+                    shared = {first.start_node, first.end_node}.intersection(
+                        (second.start_node, second.end_node),
+                    )
+                    for node_name in shared:
+                        node = self._model.nodes[node_name]
+                        point = np.asarray((node.x, node.y, node.z), dtype=float)
+                        for name in (first_name, second_name):
+                            member = self._model.bars[name]
+                            start = self._model.nodes[member.start_node]
+                            end = self._model.nodes[member.end_node]
+                            direction = np.asarray(
+                                (end.x-start.x, end.y-start.y, end.z-start.z), dtype=float,
+                            )
+                            length = float(np.linalg.norm(direction))
+                            if length > 1e-12:
+                                interfaces.setdefault(member_indices[name], []).append(
+                                    (point, direction / length, max(1e-8, length * 1e-8)),
+                                )
+        if not interfaces:
+            restore_base_edges()
+            return
+
+        connectivity = np.asarray(mesh.lines, dtype=np.int64)
+        cursor = 0
+        cell = 0
+        while cursor < len(connectivity):
+            count = int(connectivity[cursor])
+            point_ids = connectivity[cursor + 1:cursor + count + 1]
+            if cell_members[cell] in interfaces and count == 2:
+                points = np.asarray(mesh.points[point_ids], dtype=float)
+                for point, direction, tolerance in interfaces[int(cell_members[cell])]:
+                    if np.all(np.abs((points - point) @ direction) <= tolerance):
+                        keep[cell] = False
+                        break
+            cursor += count + 1
+            cell += 1
+        if np.all(keep):
+            restore_base_edges()
+            return
+
+        lines = []
+        cursor = 0
+        for selected in keep:
+            count = int(connectivity[cursor])
+            if selected:
+                lines.extend(connectivity[cursor:cursor + count + 1])
+            cursor += count + 1
+        filtered = pv.PolyData(np.asarray(mesh.points), lines=np.asarray(lines, dtype=np.int64))
+        for name, values in mesh.cell_data.items():
+            filtered.cell_data[name] = np.asarray(values)[keep]
+        if self._verification_group_edge_actor is not None:
+            self.plotter.remove_actor(
+                self._verification_group_edge_actor, reset_camera=False, render=False,
+            )
+        self._verification_group_edge_actor = self._add_colored_mesh(
+            filtered, "batch:verification-group-edges", line_width=1.5, lighting=False,
+        )
+        if self._verification_group_edge_actor is not None:
+            self._verification_group_edge_actor.SetPickable(False)
+            mapper = self._verification_group_edge_actor.GetMapper()
+            mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+            self._verification_group_edge_actor.SetVisibility(show_edges)
+        base_actor.SetVisibility(False)
 
     def refresh_verification_identifiers(self) -> None:
         self._sync_verification_identifier_labels()
@@ -5213,6 +5463,7 @@ class StructureScene(QWidget):
                 self._highlight_state_key[0], self._model.revision,
                 *self._highlight_state_key[2:],
             )
+        self._refresh_verification_group_edges()
         self.plotter.render()
         self._capture_rendered_state()
 
@@ -5372,7 +5623,7 @@ class StructureScene(QWidget):
             )
         self._label_overlay.set_group(
             "bar", batch.label_positions, batch.names,
-            visible=self._labels_visibility["bar"],
+            visible=self._bar_identifier_overlay_visible(),
         )
         self._sync_verification_identifier_labels()
         self._clear_result_layer()
@@ -5506,7 +5757,8 @@ class StructureScene(QWidget):
         for actor in (
             self._member_line_actor, self._member_fallback_actor,
             self._member_face_actor, self._member_edge_actor,
-            self._member_silhouette_actor, self._release_actor,
+            self._verification_group_edge_actor, self._member_silhouette_actor,
+            self._release_actor,
         ):
             if actor is not None:
                 self.plotter.renderer.RemoveActor(actor)
@@ -5516,6 +5768,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._verification_group_edge_actor = None
         self._member_silhouette_actor = None
         self._release_actor = None
         self._local_axis_actors = []
@@ -5525,7 +5778,7 @@ class StructureScene(QWidget):
 
         self._label_overlay.set_group(
             "bar", batch.label_positions, batch.names,
-            visible=self._labels_visibility["bar"],
+            visible=self._bar_identifier_overlay_visible(),
         )
         self._sync_verification_identifier_labels()
         self._clear_result_layer()
@@ -6102,6 +6355,7 @@ class StructureScene(QWidget):
         self._member_fallback_actor = None
         self._member_face_actor = None
         self._member_edge_actor = None
+        self._verification_group_edge_actor = None
         self._member_silhouette_actor = None
         self._reveal_preview_line_actor = None
         self._reveal_preview_face_actor = None

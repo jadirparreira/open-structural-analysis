@@ -8,6 +8,7 @@ from PySide6.QtGui import QDoubleValidator, QRegularExpressionValidator, QTransf
 from osa.sections import section_shape
 
 from .common import *
+from .group_positioning import group_endpoint_faces
 from .navigation_buttons import SlopedPlaneButton
 
 
@@ -27,9 +28,9 @@ class DisplacementPanel(QFrame):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
 
-        title = QLabel("Posicionamento da barra")
-        title.setObjectName("propertyTitle")
-        layout.addWidget(title)
+        self.title = QLabel("Posicionamento da barra")
+        self.title.setObjectName("propertyTitle")
+        layout.addWidget(self.title)
         layout.addSpacing(6)
 
         controls = QWidget()
@@ -110,6 +111,7 @@ class DisplacementPanel(QFrame):
         values_layout.setSpacing(5)
         self._solid_offset_inputs: dict[str, QLineEdit] = {}
         self._position_parameter_inputs: dict[str, QLineEdit] = {}
+        self._position_parameter_titles: dict[str, QLabel] = {}
         self._end_angle_inputs: dict[tuple[str, str], QLineEdit] = {}
 
         endpoint_grid = QGridLayout()
@@ -169,6 +171,7 @@ class DisplacementPanel(QFrame):
             parameter_title = QLabel(f"{parameter} local")
             parameter_title.setObjectName("propertySection")
             parameter_grid.addWidget(parameter_title, 0, column)
+            self._position_parameter_titles[parameter] = parameter_title
             field_box, field = self._offset_input(values)
             field.setAccessibleName(f"Parâmetro {parameter} local de posicionamento (mm)")
             field.setToolTip(
@@ -187,6 +190,8 @@ class DisplacementPanel(QFrame):
         layout.addStretch()
         self._member_name = ""
         self._member_names: tuple[str, ...] = ()
+        self._group_endpoint_faces: dict[str, tuple[str, int]] = {}
+        self._is_group_positioning = False
         self.hide()
 
     @staticmethod
@@ -266,6 +271,25 @@ class DisplacementPanel(QFrame):
         self._member_names = tuple(
             name for name in selected if name in self.window.model.bars
         ) if member_name in selected else ((member_name,) if member_name in self.window.model.bars else ())
+        group = self.window.model.verification_group_for(member_name)
+        if group is not None and set(self._member_names) == set(group["members"]):
+            self._group_endpoint_faces = group_endpoint_faces(
+                self.window.model, tuple(group["members"]),
+            )
+        else:
+            self._group_endpoint_faces = {}
+        self._is_group_positioning = bool(self._group_endpoint_faces and len(self._member_names) > 1)
+        self.title.setText(
+            "Posicionamento do grupo" if self._is_group_positioning
+            else "Posicionamento da barra"
+        )
+        for parameter, label in self._position_parameter_titles.items():
+            group_axis = {"Y": "X", "Z": "Y"}[parameter]
+            label.setText(f"{group_axis if self._is_group_positioning else parameter} local")
+            self._position_parameter_inputs[parameter].setAccessibleName(
+                f"Parâmetro {group_axis if self._is_group_positioning else parameter} local do grupo (mm)"
+                if self._is_group_positioning else f"Parâmetro {parameter} local de posicionamento (mm)"
+            )
         members = self._members()
         member = members[0] if members else None
         self.center_button.setEnabled(member is not None)
@@ -339,7 +363,7 @@ class DisplacementPanel(QFrame):
         self._refresh_positioning_status()
 
     def _section_offset_changed(self, parameter: str) -> None:
-        """Apply a direct Y/Z value entered in millimetres."""
+        """Apply a direct local section offset entered in millimetres."""
         members = self._members()
         field = self._position_parameter_inputs.get(parameter)
         if not members or field is None or parameter not in {"Y", "Z"}:
@@ -388,10 +412,16 @@ class DisplacementPanel(QFrame):
         except ValueError:
             self._update_solid_offset_inputs()
             return
+        endpoint_target = self._group_endpoint_faces.get(endpoint)
+        targets = (
+            [(self.window.model.bars[endpoint_target[0]], endpoint_target[1])]
+            if endpoint_target is not None
+            else [(member, 0 if endpoint == "A" else 1) for member in members]
+        )
         try:
-            for member in members:
+            for member, endpoint_index in targets:
                 offsets = list(getattr(member, "solid_face_offsets", (0.0, 0.0)))
-                offsets[0 if endpoint == "A" else 1] = value_mm / 1000.0
+                offsets[endpoint_index] = value_mm / 1000.0
                 self.window.model_service.update_member_solid_face_offsets(
                     member.name, tuple(offsets)
                 )
@@ -401,7 +431,7 @@ class DisplacementPanel(QFrame):
         self._update_solid_offset_inputs()
         self._update_position_buttons()
         self._refresh_positioning_status()
-        for member in members:
+        for member, _endpoint_index in targets:
             self.window.refresh_member_geometry(member.name)
 
     @staticmethod
@@ -431,10 +461,17 @@ class DisplacementPanel(QFrame):
             ("B", "Z", 3),
         )
         for endpoint, local_axis, index in fields:
-            values = [
-                (item.solid_face_angles if len(item.solid_face_angles) == 4 else (0.0,) * 4)[index]
-                for item in members
-            ]
+            endpoint_target = self._group_endpoint_faces.get(endpoint)
+            if endpoint_target is not None:
+                member = self.window.model.bars[endpoint_target[0]]
+                angle_index = endpoint_target[1] * 2 + (0 if local_axis == "Y" else 1)
+                angles = member.solid_face_angles if len(member.solid_face_angles) == 4 else (0.0,) * 4
+                values = [angles[angle_index]]
+            else:
+                values = [
+                    (item.solid_face_angles if len(item.solid_face_angles) == 4 else (0.0,) * 4)[index]
+                    for item in members
+                ]
             field = self._end_angle_inputs[(endpoint, local_axis)]
             field.setPlaceholderText("Variado" if len(set(values)) > 1 else "")
             field.setText(self._format_angle(float(values[0])) if len(set(values)) == 1 else "")
@@ -456,13 +493,17 @@ class DisplacementPanel(QFrame):
         limit = float(self.window.solid_face_angle_limit_degrees)
         value = min(limit, max(-limit, value))
         field.setText(self._format_angle(value))
-        angle_index = {("A", "Y"): 0, ("A", "Z"): 1, ("B", "Y"): 2, ("B", "Z"): 3}[
-            endpoint, local_axis
-        ]
-        for member in members:
+        endpoint_target = self._group_endpoint_faces.get(endpoint)
+        targets = (
+            [(self.window.model.bars[endpoint_target[0]], endpoint_target[1])]
+            if endpoint_target is not None
+            else [(member, 0 if endpoint == "A" else 1) for member in members]
+        )
+        for member, endpoint_index in targets:
             angles = list(member.solid_face_angles)
             if len(angles) != 4:
                 angles = [0.0] * 4
+            angle_index = endpoint_index * 2 + (0 if local_axis == "Y" else 1)
             angles[angle_index] = value
             self.window.model_service.update_member_solid_face_angles(
                 member.name, tuple(angles)
@@ -491,10 +532,16 @@ class DisplacementPanel(QFrame):
         if not members:
             return
         for index, endpoint in enumerate(("A", "B")):
-            values = [
-                (member.solid_face_offsets if len(member.solid_face_offsets) == 2 else (0.0, 0.0))[index]
-                for member in members
-            ]
+            endpoint_target = self._group_endpoint_faces.get(endpoint)
+            if endpoint_target is not None:
+                member = self.window.model.bars[endpoint_target[0]]
+                offsets = member.solid_face_offsets if len(member.solid_face_offsets) == 2 else (0.0, 0.0)
+                values = [offsets[endpoint_target[1]]]
+            else:
+                values = [
+                    (member.solid_face_offsets if len(member.solid_face_offsets) == 2 else (0.0, 0.0))[index]
+                    for member in members
+                ]
             field = self._solid_offset_inputs[endpoint]
             field.setPlaceholderText("Variado" if len(set(values)) > 1 else "")
             field.setText(self._format_solid_offset(values[0]) if len(set(values)) == 1 else "")

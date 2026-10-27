@@ -35,6 +35,7 @@ from .dialogs import (
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
+from .group_positioning import group_endpoint_faces
 from .home import HomePage
 from .loading_indicator import LoadingIndicator
 from .mcp_dispatcher import McpQtDispatcher
@@ -214,7 +215,6 @@ class MainWindow(QMainWindow):
         self.analysis_top_palette.reposition()
         self.detailing_top_palette = DetailingTopPalette(self)
         self.detailing_top_palette.reposition()
-        self._sync_node_solid_view_options()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -536,6 +536,16 @@ class MainWindow(QMainWindow):
         if add_plane_requested:
             self._start_detail_plane_placement()
 
+    def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
+        """Expand a picked bar to its group only while detailing is active."""
+        group = (
+            self.model.verification_group_for(member_name)
+            if self.palette.active_group == "Detalhamento" else None
+        )
+        if group is not None:
+            return tuple(name for name in group["members"] if name in self.model.bars)
+        return (member_name,) if member_name in self.model.bars else ()
+
     def start_member_endpoint_alignment(self) -> None:
         """Start the two-step command for aligning a bar end to a connected face."""
         if self._command_mode is not None:
@@ -571,42 +581,67 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return
         source_name = self._endpoint_alignment_source_bar
-        source = self.model.bars.get(source_name) if source_name is not None else None
         target = self.model.bars.get(target_name)
-        if source is None or target is None:
+        if source_name is None or target is None:
             return
-        if source_name == target_name:
+        source_names = self._detailing_group_member_names(source_name)
+        if target_name in source_names:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
                 "<span style='color:#8c959f'>(Selecione uma face de outra barra conectada)</span>"
             )
             return
 
-        endpoints = (source.start_node, source.end_node)
+        outer_faces = group_endpoint_faces(self.model, source_names)
+        outer_nodes = {
+            (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
+             else self.model.bars[member_name].end_node)
+            for member_name, endpoint_index in outer_faces.values()
+        }
+        target_group_names = self._detailing_group_member_names(target_name)
+        target_outer_nodes = {
+            (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
+             else self.model.bars[member_name].end_node)
+            for member_name, endpoint_index in group_endpoint_faces(
+                self.model, target_group_names,
+            ).values()
+        }
         target_endpoints = (target.start_node, target.end_node)
-        shared_nodes = set(endpoints).intersection(target_endpoints)
-        endpoint_pair = None
-        if len(shared_nodes) == 1:
-            shared_node = next(iter(shared_nodes))
-            endpoint_pair = shared_node, shared_node
-        elif not shared_nodes:
-            # A rigid bar connects distinct nodes, so bars on its opposite
-            # ends are connected even though they do not share a node name.
-            rigid_pairs = []
-            for rigid in self.model.rigid_bars.values():
-                if rigid.start_node in endpoints and rigid.end_node in target_endpoints:
-                    rigid_pairs.append((rigid.start_node, rigid.end_node))
-                if rigid.end_node in endpoints and rigid.start_node in target_endpoints:
-                    rigid_pairs.append((rigid.end_node, rigid.start_node))
-            if len(rigid_pairs) == 1:
-                endpoint_pair = rigid_pairs[0]
-        if endpoint_pair is None:
+        candidates = []
+        for candidate_name in source_names:
+            source_candidate = self.model.bars.get(candidate_name)
+            if source_candidate is None:
+                continue
+            endpoints = (source_candidate.start_node, source_candidate.end_node)
+            for source_node in endpoints:
+                if (candidate_name, source_node) not in outer_nodes:
+                    continue
+                shared_nodes = set(endpoints).intersection(target_endpoints)
+                if (
+                    source_node in shared_nodes and len(shared_nodes) == 1
+                    and (target_name, source_node) in target_outer_nodes
+                ):
+                    candidates.append((source_candidate, (source_node, source_node)))
+                    continue
+                # A rigid bar connects distinct nodes at the ends of two bars.
+                for rigid in self.model.rigid_bars.values():
+                    if (
+                        rigid.start_node == source_node and rigid.end_node in target_endpoints
+                        and (target_name, rigid.end_node) in target_outer_nodes
+                    ):
+                        candidates.append((source_candidate, (source_node, rigid.end_node)))
+                    elif (
+                        rigid.end_node == source_node and rigid.start_node in target_endpoints
+                        and (target_name, rigid.start_node) in target_outer_nodes
+                    ):
+                        candidates.append((source_candidate, (source_node, rigid.start_node)))
+        if len(candidates) != 1:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#8c959f'>(A face deve pertencer a uma barra ligada diretamente ou pela outra ponta de uma barra rígida)</span>"
+                "<span style='color:#8c959f'>(A face deve pertencer a uma barra ligada a uma extremidade externa do grupo)</span>"
             )
             return
-
+        source, endpoint_pair = candidates[0]
         source_endpoint_node, _target_endpoint_node = endpoint_pair
         endpoint_index = 0 if source_endpoint_node == source.start_node else 1
         start_node = self.model.nodes[source.start_node]
@@ -669,8 +704,8 @@ class MainWindow(QMainWindow):
         angle_index = endpoint_index * 2
         angles[angle_index:angle_index + 2] = alpha_y, alpha_z
         try:
-            self.model_service.update_member_solid_face_offsets(source_name, tuple(offsets))
-            self.model_service.update_member_solid_face_angles(source_name, tuple(angles))
+            self.model_service.update_member_solid_face_offsets(source.name, tuple(offsets))
+            self.model_service.update_member_solid_face_angles(source.name, tuple(angles))
         except ValueError as error:
             self.history.append(
                 f"> <b>Alinhar extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
@@ -680,8 +715,8 @@ class MainWindow(QMainWindow):
         self._command_mode = "endpoint_alignment_bar_selection"
         self._endpoint_alignment_source_bar = None
         self.scene.set_endpoint_alignment_target(None)
-        self.refresh_member_geometry(source_name)
-        self.properties.update_positioning_status(source_name)
+        self.refresh_member_geometry(source.name)
+        self.properties.update_positioning_status(source.name)
         offset_mm = offset * 1000.0
         self.history.append(
             "> <b>Alinhar extremidade</b> "
@@ -2922,19 +2957,58 @@ class MainWindow(QMainWindow):
                 self.clear_selection()
                 self.history.append(
                     "> <b>Conectar extremidades</b> "
-                    "<span style='color:#57606a'>(Selecione a segunda barra ligada à primeira; Esc cancela)</span>"
+                    "<span style='color:#57606a'>(Selecione a segunda barra ou grupo ligado ao primeiro; Esc cancela)</span>"
                 )
                 self.scene.plotter.setFocus()
                 return
-            if name == self._connect_member_ends_first_bar:
+            first_names = set(self._detailing_group_member_names(self._connect_member_ends_first_bar))
+            second_names = set(self._detailing_group_member_names(name))
+            if first_names.intersection(second_names):
                 self.history.append(
                     "> <b>Conectar extremidades</b> "
-                    "<span style='color:#8c959f'>(Selecione uma segunda barra diferente)</span>"
+                    "<span style='color:#8c959f'>(Selecione outra barra ou grupo)</span>"
                 )
                 self.clear_selection()
                 return
             first_name = self._connect_member_ends_first_bar
-            if not self._connect_member_end_faces(first_name, name):
+            first_group = self._detailing_group_member_names(first_name)
+            second_group = self._detailing_group_member_names(name)
+            first_outer_faces = group_endpoint_faces(self.model, first_group).values()
+            second_outer_faces = group_endpoint_faces(self.model, second_group).values()
+            first_outer_nodes = {
+                (member, self.model.bars[member].start_node if index == 0
+                 else self.model.bars[member].end_node)
+                for member, index in first_outer_faces
+            }
+            second_outer_nodes = {
+                (member, self.model.bars[member].start_node if index == 0
+                 else self.model.bars[member].end_node)
+                for member, index in second_outer_faces
+            }
+            connected_pairs = []
+            for first_member in first_group:
+                first_bar = self.model.bars[first_member]
+                for second_member in second_group:
+                    second_bar = self.model.bars[second_member]
+                    shared = set((first_bar.start_node, first_bar.end_node)).intersection(
+                        (second_bar.start_node, second_bar.end_node)
+                    )
+                    if len(shared) != 1:
+                        continue
+                    shared_node = next(iter(shared))
+                    if (
+                        (first_member, shared_node) in first_outer_nodes
+                        and (second_member, shared_node) in second_outer_nodes
+                    ):
+                        connected_pairs.append((first_member, second_member))
+            if len(connected_pairs) != 1:
+                self.history.append(
+                    "> <b>Conectar extremidades</b> "
+                    "<span style='color:#8c959f'>(Os elementos devem compartilhar uma única extremidade de conexão)</span>"
+                )
+                self.clear_selection()
+                return
+            if not self._connect_member_end_faces(*connected_pairs[0]):
                 self.clear_selection()
             return
         if self._command_mode == "endpoint_alignment_bar_selection":
@@ -3043,7 +3117,7 @@ class MainWindow(QMainWindow):
                 self._copy_member_properties(self._copy_properties_reference, name)
                 self.clear_selection()
         if self.selected is not None and self._command_mode != "split_member_selection":
-            if kind == "bar" and self.palette.active_group == "Memorial":
+            if kind == "bar" and self.palette.active_group in {"Memorial", "Detalhamento"}:
                 group = self.model.verification_group_for(name)
                 if group is not None:
                     self.selected_elements = [("bar", member) for member in group["members"]]
@@ -3051,6 +3125,21 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self.palette.active_group == "Detalhamento":
+            expanded = list(elements)
+            seen = set(expanded)
+            for kind, member_name in elements:
+                if kind != "bar":
+                    continue
+                group = self.model.verification_group_for(member_name)
+                if group is None:
+                    continue
+                for group_member in group["members"]:
+                    target = ("bar", group_member)
+                    if target not in seen:
+                        expanded.append(target)
+                        seen.add(target)
+            elements = tuple(expanded)
         if self._command_mode in {"scene_hide_selection", "scene_reveal_selection"}:
             self.selected_elements = [
                 target for target in elements if target[0] in {"bar", "rigid_bar"}
@@ -3552,17 +3641,6 @@ class MainWindow(QMainWindow):
             raise ValueError(f"Opção visual desconhecida: {option}")
         self.top_icon_palette.set_view_option(option, visible)
         self.action_top_palette.set_view_option(option, visible)
-        self._sync_node_solid_view_options()
-
-    def _sync_node_solid_view_options(self) -> None:
-        """Keep detailing node/solid buttons mirrored to the geometry palette."""
-        if not hasattr(self, "detailing_top_palette"):
-            return
-        for option, kind in (("nodes_visible", "nodes"), ("solid_members_visible", "solid")):
-            button = self.top_icon_palette._visibility_buttons[kind]
-            self.detailing_top_palette.set_view_option(
-                option, button.isChecked(), button.isEnabled(),
-            )
 
     def refresh_action_palette(self) -> None:
         """Atualiza o seletor a partir do grupo de ações atualmente ativo."""
