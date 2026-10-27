@@ -84,6 +84,8 @@ class CommandHistory(QFrame):
         self.setFixedHeight(min(220, 24 * min(len(self._lines), 5) + 12))
         self.show_history()
         self.reposition()
+        if not self.window.command_bar.input.hasFocus():
+            self.schedule_fade()
         QTimer.singleShot(0, self._refresh_layout)
 
     def _scroll_to_latest(self) -> None:

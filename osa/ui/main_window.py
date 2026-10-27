@@ -127,6 +127,8 @@ class MainWindow(QMainWindow):
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
+        self._detailing_views_dialog_open = False
+        self._detailing_views_dialog: DetailingViewsDialog | None = None
         self._reference_axis_placement_direction: str | None = None
         self._last_command_callback = None
         self._member_placement_start: tuple[float, float, float] | None = None
@@ -528,11 +530,29 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_detailing_views(self) -> None:
-        dialog = DetailingViewsDialog(self)
-        dialog.move(self.geometry().center() - dialog.rect().center())
-        dialog.exec()
-        add_plane_requested = dialog._add_plane_requested
-        dialog.deleteLater()
+        if self._detailing_views_dialog_open:
+            return
+        self._detailing_views_dialog_open = True
+        dialog = None
+        cancel_action = getattr(self, "_cancel_placement_action", None)
+        cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
+        try:
+            if cancel_action is not None:
+                cancel_action.setEnabled(False)
+            dialog = DetailingViewsDialog(self)
+            self._detailing_views_dialog = dialog
+            dialog._add_plane_requested = False
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            dialog.exec()
+            add_plane_requested = dialog._add_plane_requested
+        finally:
+            self._detailing_views_dialog_open = False
+            self._detailing_views_dialog = None
+            if dialog is not None:
+                dialog._preview.shutdown()
+                dialog.deleteLater()
+            if cancel_action is not None:
+                cancel_action.setEnabled(cancel_action_was_enabled)
         if add_plane_requested:
             self._start_detail_plane_placement()
 
@@ -1058,8 +1078,12 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._finish_detail_plane_placement)
 
     def _finish_detail_plane_placement(self) -> None:
+        dialog = self._detailing_views_dialog
+        self._detailing_views_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
         self.refresh_scene()
-        self.open_detailing_views()
+        QTimer.singleShot(0, self.open_detailing_views)
 
     def open_about(self) -> None:
         dialog = AboutDialog(self)
@@ -1270,7 +1294,9 @@ class MainWindow(QMainWindow):
             action = QAction(label, self)
             action.setShortcut(shortcut)
             if label == "Cancelar lançamento":
-                action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+                action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+                action.setAutoRepeat(False)
+                self._cancel_placement_action = action
             action.triggered.connect(callback)
             self.addAction(action)
 

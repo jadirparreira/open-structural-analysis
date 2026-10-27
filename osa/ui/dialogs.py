@@ -16,7 +16,7 @@ from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
-from .detailing_preview import DetailingViewPreview
+from .detailing_viewport import DetailingViewViewport
 from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
 from .property_panel import CompactDoubleSpinBox
@@ -1238,7 +1238,10 @@ class DetailingViewsDialog(QDialog):
             Qt.AlignmentFlag.AlignVCenter,
         )
         preview_layout.addLayout(name_row)
-        self._preview = DetailingViewPreview(preview_area)
+        self._preview = DetailingViewViewport(
+            preview_area,
+            antialiasing_samples=parent.scene.antialiasing_samples(),
+        )
         self._preview.view_ready.connect(self._export_dxf_button_ready)
         preview_layout.addWidget(self._preview, 1)
         export_button = QPushButton("Exportar DXF")
@@ -1480,7 +1483,7 @@ class DetailingViewsDialog(QDialog):
             self.view_name_input.setPlaceholderText("")
             self.view_name_input.setEnabled(False)
             self.remove_detail_plane_button.setEnabled(False)
-            self._preview.set_view(None, "", 0.0)
+            self._preview.request_view(None, "", 0.0)
 
     def _toggle_view_settings(self, opened: bool) -> None:
         if not opened:
@@ -1594,7 +1597,7 @@ class DetailingViewsDialog(QDialog):
         )
         for widget, was_blocked in zip(setting_widgets, blocked_states):
             widget.blockSignals(was_blocked)
-        isometric = plane in DetailingViewPreview._isometric_directions
+        isometric = plane in DetailingViewViewport._isometric_directions
         for group in self._detail_view_offset_groups.values():
             group.setEnabled(not isometric)
         self._detail_view_orientation_group.setEnabled(not isometric)
@@ -1678,8 +1681,7 @@ class DetailingViewsDialog(QDialog):
         self.export_dxf_button.setEnabled(ready)
 
     def _export_selected_view_dxf(self) -> None:
-        segments = self._preview.segments_2d
-        if not segments or self._preview._render_pending:
+        if self._preview._render_pending:
             return
 
         self._commit_view_name_update()
@@ -1707,6 +1709,29 @@ class DetailingViewsDialog(QDialog):
             path = path.with_suffix(".dxf")
 
         try:
+            plane, coordinate = self._view_definitions[self._active_view_key]
+            parent = self.parent()
+            model = parent.model if parent is not None else None
+            if model is None:
+                return
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
+            segments = self._preview.generate_dxf_segments(
+                model,
+                plane,
+                coordinate,
+                upper_offset_cm=self.view_displacement_inputs["top"].value(),
+                lower_offset_cm=self.view_displacement_inputs["bottom"].value(),
+                orientation=self.view_direction_selector.currentText(),
+                rotation_degrees=self.view_rotation_input.value(),
+            )
+            if not segments:
+                QMessageBox.warning(
+                    self,
+                    "Vista sem geometria",
+                    "Não foi possível gerar linhas para exportar esta vista.",
+                )
+                return
             from osa.exporters.view_dxf import export_view_to_dxf
 
             export_view_to_dxf(path, segments)
@@ -1717,6 +1742,9 @@ class DetailingViewsDialog(QDialog):
                 f"Não foi possível salvar o desenho:\n{error}",
             )
             return
+        finally:
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
         DetailingExportSuccessDialog(self).exec()
 
     def _queue_view_name_update(self, text: str) -> None:

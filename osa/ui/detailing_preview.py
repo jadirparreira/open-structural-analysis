@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QFrame
 
-from osa.rendering.detailing_2d import visible_segments_from_meshes
+from osa.rendering.detailing_2d import prepare_surface_data, visible_segments_from_meshes
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from osa.sections import section_shape
@@ -34,6 +34,8 @@ class DetailingViewPreview(QFrame):
     view_ready = Signal(bool)
 
     _shared_model_meshes: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
+    _shared_model_edge_meshes: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
+    _shared_model_surface_data: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
     _view_cache_limit: ClassVar[int] = 24
 
     _plane_data: ClassVar[dict] = {
@@ -133,6 +135,7 @@ class DetailingViewPreview(QFrame):
 
         self._ensure_model_meshes(model)
         feature_edge_meshes = None
+        surface_data = None
         if plane == "custom":
             points = np.asarray(coordinate, dtype=float)
             if points.shape != (3, 3):
@@ -168,6 +171,7 @@ class DetailingViewPreview(QFrame):
         elif isometric:
             self._ensure_model_edge_meshes(model)
             feature_edge_meshes = self._solid_edge_meshes
+            surface_data = self._ensure_model_surface_data(model)
             normal_array = np.asarray(self._isometric_directions[plane], dtype=float)
             normal_array /= np.linalg.norm(normal_array)
             view_up_array = np.asarray((0.0, 0.0, 1.0), dtype=float)
@@ -181,6 +185,7 @@ class DetailingViewPreview(QFrame):
             normal, normal_axis, view_up = plane_data
             solid_meshes = self._solid_meshes
             coordinate_value = float(coordinate)
+            surface_data = None
         upper = coordinate_value + max(0.0, float(upper_offset_cm)) / 100.0
         lower = coordinate_value - max(0.0, float(lower_offset_cm)) / 100.0
         if upper < lower:
@@ -229,6 +234,7 @@ class DetailingViewPreview(QFrame):
                 line_interfaces,
                 [interfaces_by_member.get(name, ()) for name in self._solid_member_names]
                 if feature_edge_meshes is not None else None,
+                surface_data,
             )
         except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
@@ -428,6 +434,12 @@ class DetailingViewPreview(QFrame):
         if self._solid_edge_meshes is not None:
             return
         self._ensure_model_meshes(model)
+        cache_owner = getattr(self, "_mesh_cache_owner", model)
+        revision = getattr(model, "revision", None)
+        shared = self._shared_model_edge_meshes.get(cache_owner)
+        if shared is not None and shared[0] == revision:
+            self._solid_edge_meshes = shared[1]
+            return
         edge_meshes: list[pv.PolyData] = []
         for shape, transform, angles in zip(
             self._solid_shapes, self._solid_transforms, self._solid_face_angles,
@@ -439,6 +451,18 @@ class DetailingViewPreview(QFrame):
             edge_mesh.transform(transform, inplace=True)
             edge_meshes.append(edge_mesh)
         self._solid_edge_meshes = edge_meshes
+        self._shared_model_edge_meshes[cache_owner] = (revision, edge_meshes)
+
+    def _ensure_model_surface_data(self, model):
+        """Reuse triangulation, normals, and edge adjacency across isometric views."""
+        cache_owner = getattr(self, "_mesh_cache_owner", model)
+        revision = getattr(model, "revision", None)
+        shared = self._shared_model_surface_data.get(cache_owner)
+        if shared is not None and shared[0] == revision:
+            return shared[1]
+        surface_data = tuple(prepare_surface_data(mesh) for mesh in self._solid_meshes)
+        self._shared_model_surface_data[cache_owner] = (revision, surface_data)
+        return surface_data
 
     @staticmethod
     def _clip_to_depth_range(
@@ -476,6 +500,7 @@ class DetailingViewPreview(QFrame):
         feature_edge_meshes: list[pv.PolyData] | None = None,
         ignored_interface_planes=None,
         feature_edge_interface_planes=None,
+        surface_data=None,
     ) -> None:
         """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
@@ -489,6 +514,7 @@ class DetailingViewPreview(QFrame):
             feature_edge_meshes=feature_edge_meshes,
             ignored_interface_planes=ignored_interface_planes,
             feature_edge_interface_planes=feature_edge_interface_planes,
+            surface_data=surface_data,
         )
         if self._segments_2d:
             points_2d = np.asarray(
@@ -684,9 +710,12 @@ class _ViewGeometryCalculator:
     _plane_data = DetailingViewPreview._plane_data
     _isometric_directions = DetailingViewPreview._isometric_directions
     _shared_model_meshes = DetailingViewPreview._shared_model_meshes
+    _shared_model_edge_meshes = DetailingViewPreview._shared_model_edge_meshes
+    _shared_model_surface_data = DetailingViewPreview._shared_model_surface_data
     _view_cache_limit = DetailingViewPreview._view_cache_limit
     _ensure_model_meshes = DetailingViewPreview._ensure_model_meshes
     _ensure_model_edge_meshes = DetailingViewPreview._ensure_model_edge_meshes
+    _ensure_model_surface_data = DetailingViewPreview._ensure_model_surface_data
     _group_interface_planes = staticmethod(DetailingViewPreview._group_interface_planes)
     _clip_to_depth_range = staticmethod(DetailingViewPreview._clip_to_depth_range)
     _render_visible_lines = DetailingViewPreview._render_visible_lines

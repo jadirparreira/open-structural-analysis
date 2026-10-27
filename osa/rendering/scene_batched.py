@@ -2649,7 +2649,11 @@ class StructureScene(QWidget):
             self._measurement_readout.hide()
             self._measurement_start_marker.hide()
             self._hide_measurement_preview()
-            if not self._member_placement_mode and not self._node_placement_mode:
+            if not (
+                self._member_placement_mode
+                or self._node_placement_mode
+                or self._detail_plane_point_mode
+            ):
                 self._snap_marker.hide()
             return
 
