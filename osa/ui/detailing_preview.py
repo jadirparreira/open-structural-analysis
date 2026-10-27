@@ -374,6 +374,11 @@ class DetailingViewPreview(QFrame):
                     candidate_end = end_point + x_axis * float(face_offsets[1])
                     if float(np.dot(candidate_end - candidate_start, x_axis)) > 1e-9:
                         start_point, end_point = candidate_start, candidate_end
+                # Section offsets translate the whole solid perpendicular to
+                # its axis. Measure the extrusion before translating its
+                # origin; otherwise the offset is mistaken for an axial
+                # length increase and the far end drifts along the member.
+                length = float(np.linalg.norm(end_point - start_point))
                 section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
                 if len(section_offsets) == 2:
                     start_point += (
@@ -381,7 +386,6 @@ class DetailingViewPreview(QFrame):
                         + base_z_axis * float(section_offsets[1])
                     )
 
-                length = float(np.linalg.norm(end_point - start_point))
                 transform = np.eye(4, dtype=float)
                 transform[:3, 0] = x_axis * length
                 transform[:3, 1] = y_axis

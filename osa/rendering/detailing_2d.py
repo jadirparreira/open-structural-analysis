@@ -12,6 +12,13 @@ import numpy as np
 import pyvista as pv
 
 
+# Treat sub-micron depth differences as coincident surfaces. Endpoint
+# alignment comes from picked VTK faces and can leave a few tenths of a
+# micrometre of numerical drift; a smaller tolerance incorrectly hides the
+# aligned member's contact edge in the vector drawing.
+_DEPTH_TOLERANCE = 5e-7
+
+
 @dataclass(frozen=True)
 class _ProjectedTriangle:
     points: np.ndarray
@@ -27,7 +34,7 @@ def projected_visible_intervals(
     edge_depth_end: float,
     triangles: Iterable[tuple[np.ndarray, np.ndarray]],
     *,
-    depth_tolerance: float = 1e-7,
+    depth_tolerance: float = _DEPTH_TOLERANCE,
 ) -> list[tuple[float, float]]:
     """Return visible parameter intervals for one projected vector edge."""
     start_point = np.asarray(start, dtype=float)
@@ -310,7 +317,7 @@ def _visible_intervals_for_triangles(
     depth_end: float,
     triangles: Iterable[_ProjectedTriangle],
     *,
-    depth_tolerance: float = 1e-7,
+    depth_tolerance: float = _DEPTH_TOLERANCE,
     correct_crossing_intervals: bool = True,
 ) -> list[tuple[float, float]]:
     triangles = tuple(triangles)
@@ -338,7 +345,7 @@ def _visible_intervals_for_arrays(
     planes: np.ndarray,
     bounds: np.ndarray | None = None,
     *,
-    depth_tolerance: float = 1e-7,
+    depth_tolerance: float = _DEPTH_TOLERANCE,
     correct_crossing_intervals: bool = True,
 ) -> list[tuple[float, float]]:
     if not len(points):
