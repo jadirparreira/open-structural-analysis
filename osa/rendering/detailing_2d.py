@@ -86,6 +86,8 @@ def visible_segments_from_meshes(
     rotation_degrees: float = 0.0,
     *,
     feature_edge_meshes: Iterable[pv.PolyData] | None = None,
+    ignored_interface_planes: Iterable[Iterable[tuple[np.ndarray, np.ndarray, float]]] | None = None,
+    feature_edge_interface_planes: Iterable[Iterable[tuple[np.ndarray, np.ndarray, float]]] | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     """Create 2D visible edge segments from a set of clipped solid meshes.
 
@@ -100,6 +102,8 @@ def visible_segments_from_meshes(
         return []
     use_feature_edges = feature_edge_meshes is not None
     feature_edge_meshes = tuple(feature_edge_meshes or ())
+    ignored_interface_planes = tuple(ignored_interface_planes or ())
+    feature_edge_interface_planes = tuple(feature_edge_interface_planes or ())
     camera_direction = _unit(np.asarray(tuple(camera_direction), dtype=float))
     view_direction = -camera_direction
     base_up = _unit(np.asarray(tuple(view_up), dtype=float))
@@ -115,7 +119,11 @@ def visible_segments_from_meshes(
     ] = {}
     unique_edges: set[tuple[tuple[float, ...], tuple[float, ...]]] = set()
 
-    for mesh in meshes:
+    for mesh_number, mesh in enumerate(meshes):
+        interface_planes = (
+            ignored_interface_planes[mesh_number]
+            if mesh_number < len(ignored_interface_planes) else ()
+        )
         surface = mesh.triangulate().compute_normals(
             cell_normals=True,
             point_normals=False,
@@ -184,6 +192,8 @@ def visible_segments_from_meshes(
             )
             edge_projected = np.column_stack((projected[:, 0], projected[:, 1]))
             for a, b in edge_indices:
+                if _edge_is_on_interface(surface_points[a], surface_points[b], interface_planes):
+                    continue
                 # Exact duplicate 3D edges from coincident solid surfaces need
                 # only one stroke. Distinct nearby edges remain independent.
                 key_points = sorted(
@@ -224,7 +234,11 @@ def visible_segments_from_meshes(
                 ]
                 depth_layers.append((start, end, depth_start, depth_end))
 
-    for edge_mesh in feature_edge_meshes:
+    for edge_number, edge_mesh in enumerate(feature_edge_meshes):
+        interface_planes = (
+            feature_edge_interface_planes[edge_number]
+            if edge_number < len(feature_edge_interface_planes) else ()
+        )
         points = np.asarray(edge_mesh.points, dtype=float)
         lines = np.asarray(edge_mesh.lines, dtype=np.int64)
         offset = 0
@@ -233,6 +247,8 @@ def visible_segments_from_meshes(
             indices = lines[offset + 1 : offset + count + 1]
             for first, second in pairwise(indices):
                 a, b = int(first), int(second)
+                if _edge_is_on_interface(points[a], points[b], interface_planes):
+                    continue
                 key_points = sorted(
                     (tuple(np.round(points[a], 10)), tuple(np.round(points[b], 10)))
                 )
@@ -308,6 +324,21 @@ def visible_segments_from_meshes(
                 unique_projected.add(key)
                 visible_segments.append((key_points[0], key_points[1]))
     return visible_segments
+
+
+def _edge_is_on_interface(
+    start: np.ndarray,
+    end: np.ndarray,
+    planes: Iterable[tuple[np.ndarray, np.ndarray, float]],
+) -> bool:
+    """Return whether a full edge lies on a grouped-member interface plane."""
+    for origin, normal, tolerance in planes:
+        if (
+            abs(float(np.dot(start - origin, normal))) <= tolerance
+            and abs(float(np.dot(end - origin, normal))) <= tolerance
+        ):
+            return True
+    return False
 
 
 def _visible_intervals_for_triangles(

@@ -59,6 +59,7 @@ class DetailingViewPreview(QFrame):
         self._renderer = SolidMemberRenderer()
         self._model_cache_key = None
         self._solid_meshes: list[pv.PolyData] = []
+        self._solid_member_names: list[str] = []
         self._solid_shapes = []
         self._solid_transforms: list[np.ndarray] = []
         self._solid_face_angles: list[tuple[float, ...]] = []
@@ -185,11 +186,13 @@ class DetailingViewPreview(QFrame):
         if upper < lower:
             upper, lower = lower, upper
 
+        clipped_member_names: list[str] = []
         if isometric:
             clipped_meshes = list(solid_meshes)
+            clipped_member_names = list(self._solid_member_names)
         else:
             clipped_meshes: list[pv.PolyData] = []
-            for solid_number, solid in enumerate(solid_meshes):
+            for solid_number, (member_name, solid) in enumerate(zip(self._solid_member_names, solid_meshes)):
                 if solid_number % 16 == 0:
                     sleep(0)
                 clipped = self._clip_to_depth_range(
@@ -197,23 +200,25 @@ class DetailingViewPreview(QFrame):
                 )
                 if clipped is not None and clipped.n_points and clipped.n_cells:
                     clipped_meshes.append(clipped)
+                    clipped_member_names.append(member_name)
 
-        if not clipped_meshes:
-            self._clear_preview()
-            return
-
-        if len(clipped_meshes) > 1:
-            append = vtk.vtkAppendPolyData()
-            for clipped in clipped_meshes:
-                append.AddInputData(clipped)
-            append.Update()
-            combined = pv.wrap(append.GetOutput()).copy(deep=True)
-            clipped_meshes = [combined] if combined.n_points and combined.n_cells else []
         if not clipped_meshes:
             self._clear_preview()
             return
 
         try:
+            interfaces_by_member = self._group_interface_planes(model)
+            if plane == "custom":
+                transformed_interfaces = {}
+                for member_name, planes in interfaces_by_member.items():
+                    transformed_interfaces[member_name] = tuple(
+                        (transform[:3, :3] @ point + transform[:3, 3],
+                         transform[:3, :3] @ direction,
+                         tolerance)
+                        for point, direction, tolerance in planes
+                    )
+                interfaces_by_member = transformed_interfaces
+            line_interfaces = [interfaces_by_member.get(name, ()) for name in clipped_member_names]
             self._render_visible_lines(
                 clipped_meshes,
                 normal,
@@ -221,6 +226,9 @@ class DetailingViewPreview(QFrame):
                 "Superior para inferior" if isometric else orientation,
                 float(rotation_degrees),
                 feature_edge_meshes,
+                line_interfaces,
+                [interfaces_by_member.get(name, ()) for name in self._solid_member_names]
+                if feature_edge_meshes is not None else None,
             )
         except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
@@ -335,6 +343,7 @@ class DetailingViewPreview(QFrame):
             self._solid_shapes = shared[2]
             self._solid_transforms = shared[3]
             self._solid_face_angles = shared[4]
+            self._solid_member_names = shared[5]
             self._solid_edge_meshes = None
             self._model_cache_key = cache_key
             return
@@ -343,6 +352,7 @@ class DetailingViewPreview(QFrame):
         shapes = []
         transforms: list[np.ndarray] = []
         face_angles: list[tuple[float, ...]] = []
+        member_names: list[str] = []
         for member_number, member in enumerate(model.bars.values()):
             if member_number % 16 == 0:
                 sleep(0)
@@ -399,6 +409,7 @@ class DetailingViewPreview(QFrame):
                 shapes.append(shape)
                 transforms.append(transform)
                 face_angles.append(tuple(angles))
+                member_names.append(member.name)
             except (KeyError, TypeError, ValueError, RuntimeError):
                 continue
 
@@ -406,10 +417,11 @@ class DetailingViewPreview(QFrame):
         self._solid_shapes = shapes
         self._solid_transforms = transforms
         self._solid_face_angles = face_angles
+        self._solid_member_names = member_names
         self._solid_edge_meshes = None
         self._model_cache_key = cache_key
         self._shared_model_meshes[cache_owner] = (
-            cache_key[1], meshes, shapes, transforms, face_angles
+            cache_key[1], meshes, shapes, transforms, face_angles, member_names
         )
 
     def _ensure_model_edge_meshes(self, model) -> None:
@@ -462,6 +474,8 @@ class DetailingViewPreview(QFrame):
         orientation: str,
         rotation_degrees: float,
         feature_edge_meshes: list[pv.PolyData] | None = None,
+        ignored_interface_planes=None,
+        feature_edge_interface_planes=None,
     ) -> None:
         """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
@@ -473,6 +487,8 @@ class DetailingViewPreview(QFrame):
             view_up,
             rotation_degrees,
             feature_edge_meshes=feature_edge_meshes,
+            ignored_interface_planes=ignored_interface_planes,
+            feature_edge_interface_planes=feature_edge_interface_planes,
         )
         if self._segments_2d:
             points_2d = np.asarray(
@@ -490,6 +506,41 @@ class DetailingViewPreview(QFrame):
         self._zoom = 1.0
         self._pan = QPointF()
         self.update()
+
+    @staticmethod
+    def _group_interface_planes(model) -> dict[str, tuple[tuple[np.ndarray, np.ndarray, float], ...]]:
+        """Find internal joint planes whose section edges are hidden in group drawings."""
+        planes: dict[str, list[tuple[np.ndarray, np.ndarray, float]]] = {}
+        for group in getattr(model, "verification_element_groups", ()):
+            member_names = tuple(name for name in group.get("members", ()) if name in model.bars)
+            for offset, first_name in enumerate(member_names):
+                first = model.bars[first_name]
+                for second_name in member_names[offset + 1:]:
+                    second = model.bars[second_name]
+                    shared_nodes = {first.start_node, first.end_node}.intersection(
+                        (second.start_node, second.end_node)
+                    )
+                    for node_name in shared_nodes:
+                        node = model.nodes.get(node_name)
+                        if node is None:
+                            continue
+                        point = np.asarray((node.x, node.y, node.z), dtype=float)
+                        for name in (first_name, second_name):
+                            member = model.bars[name]
+                            start = model.nodes.get(member.start_node)
+                            end = model.nodes.get(member.end_node)
+                            if start is None or end is None:
+                                continue
+                            direction = np.asarray(
+                                (end.x - start.x, end.y - start.y, end.z - start.z),
+                                dtype=float,
+                            )
+                            length = float(np.linalg.norm(direction))
+                            if length > 1e-12:
+                                planes.setdefault(name, []).append(
+                                    (point, direction / length, max(1e-8, length * 1e-8)),
+                                )
+        return {name: tuple(values) for name, values in planes.items()}
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -621,6 +672,10 @@ class _ModelSnapshot:
         self.revision = getattr(model, "revision", None)
         self.nodes = dict(model.nodes)
         self.bars = dict(model.bars)
+        self.verification_element_groups = tuple(
+            {"members": tuple(group.get("members", ()))}
+            for group in getattr(model, "verification_element_groups", ())
+        )
 
 
 class _ViewGeometryCalculator:
@@ -632,6 +687,7 @@ class _ViewGeometryCalculator:
     _view_cache_limit = DetailingViewPreview._view_cache_limit
     _ensure_model_meshes = DetailingViewPreview._ensure_model_meshes
     _ensure_model_edge_meshes = DetailingViewPreview._ensure_model_edge_meshes
+    _group_interface_planes = staticmethod(DetailingViewPreview._group_interface_planes)
     _clip_to_depth_range = staticmethod(DetailingViewPreview._clip_to_depth_range)
     _render_visible_lines = DetailingViewPreview._render_visible_lines
     _clear_preview = DetailingViewPreview._clear_preview
@@ -641,6 +697,7 @@ class _ViewGeometryCalculator:
         self._renderer = SolidMemberRenderer()
         self._model_cache_key = None
         self._solid_meshes = []
+        self._solid_member_names = []
         self._solid_shapes = []
         self._solid_transforms = []
         self._solid_face_angles = []
