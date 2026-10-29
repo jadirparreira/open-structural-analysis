@@ -80,6 +80,9 @@ class Member:
     # Rza/Rzb. Zero indica vínculo rígido; de 1% a 99% reduz a rigidez efetiva
     # por uma mola rotacional equivalente; 100% libera a rotação.
     rotation_flexibility_percent: tuple[int, int, int, int, int, int] = (0,) * 6
+    # Overrides used only by member verification, in native units: lengths in
+    # metres and Ct/Cb dimensionless. Missing entries retain automatic values.
+    calculation_property_overrides: tuple[tuple[str, float], ...] = ()
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

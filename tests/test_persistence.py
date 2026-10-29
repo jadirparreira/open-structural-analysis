@@ -96,6 +96,32 @@ def test_saved_results_remain_available_after_source_replacement_and_resave(tmp_
     assert reloaded.analysis_results[0].member_results["B1"] == member_values
 
 
+def test_member_calculation_property_overrides_round_trip_and_legacy_models_default_to_auto(tmp_path):
+    model = StructuralModel()
+    model.add_node("N1", 0, 0, 0)
+    model.add_node("N2", 0, 0, 2)
+    model.add_bar("B1", "N1", "N2")
+    model.update_bar_calculation_property("B1", "Lb", 1.25)
+    model.update_bar_calculation_property("B1", "Cb", 1.7)
+
+    path = tmp_path / "calculation-properties.osa"
+    model.save(path)
+    restored = StructuralModel()
+    restored.load(path)
+
+    assert dict(restored.bars["B1"].calculation_property_overrides) == {
+        "Lb": 1.25, "Cb": 1.7,
+    }
+    legacy = {
+        "format": "open-structural-analysis/v2",
+        "nodes": [{"name": "A", "x": 0, "y": 0, "z": 0},
+                  {"name": "B", "x": 0, "y": 0, "z": 1}],
+        "members": [{"name": "M1", "start_node": "A", "end_node": "B"}],
+    }
+    restored.load_dict(legacy)
+    assert restored.bars["M1"].calculation_property_overrides == ()
+
+
 def test_copying_and_serializing_deferred_results_does_not_expand_live_records():
     import copy
 

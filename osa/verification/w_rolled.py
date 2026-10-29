@@ -5,6 +5,7 @@ from __future__ import annotations
 from math import pi, sqrt
 
 from osa.sections.contours import polygon_properties, w_contour_points
+from osa.verification.calculation_properties import calculation_property
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -60,7 +61,8 @@ def verify_w_tension(element, model, results) -> dict:
         ag_cm2 = _gross_area_cm2(members[0])
         # O modelo não contém furos ou recortes da ligação: An = Ag nesta etapa.
         an_cm2 = ag_cm2
-        ae_cm2 = CT_INITIAL * an_cm2
+        ct = calculation_property(model, element, "Ct", CT_INITIAL)
+        ae_cm2 = ct * an_cm2
         # Model strengths are stored in kN/m²; divide by 10 000 for kN/cm².
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
         fu_kn_cm2 = fu_kn_m2 / 10_000.0
@@ -110,7 +112,7 @@ def verify_w_tension(element, model, results) -> dict:
         "applied_kn": critical["applied_kn"] if critical else None,
         "parameters": {
             "Ag_cm2": ag_cm2, "An_cm2": an_cm2, "Ae_cm2": ae_cm2,
-            "Ct": CT_INITIAL, "fy_kn_m2": fy_kn_m2, "fu_kn_m2": fu_kn_m2,
+            "Ct": ct, "fy_kn_m2": fy_kn_m2, "fu_kn_m2": fu_kn_m2,
             "fy_kn_cm2": fy_kn_cm2, "fu_kn_cm2": fu_kn_cm2,
             "gamma_a1": GAMMA_A1, "gamma_a2": GAMMA_A2,
             "Nt_Rd1_kn": nt_rd1_kn, "Nt_Rd2_kn": nt_rd2_kn,
@@ -188,7 +190,7 @@ def verify_w_flexion_y(element, model, results) -> dict:
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
         tr_kn_cm2 = 0.30 * fy_kn_cm2
         gamma_a1 = GAMMA_A1
-        cb = CB_INITIAL
+        cb = calculation_property(model, element, "Cb", CB_INITIAL)
         mp_kn_cm = zy_cm3 * fy_kn_cm2
         mr_kn_cm = 0.70 * wy_cm3 * fy_kn_cm2
 

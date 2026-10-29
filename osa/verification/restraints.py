@@ -16,7 +16,7 @@ import numpy as np
 
 from osa.domain.member_axes import member_basis
 from osa.sections import calculate_section_properties
-
+from osa.verification.calculation_properties import calculation_property
 
 _GEOMETRY_TOL = 1e-8
 _DEFAULT_MIN_BRACE_ANGLE_DEGREES = 30.0
@@ -40,7 +40,10 @@ def restraint_lengths(model, element, results, properties, cb=1.0) -> RestraintL
         model, "minimum_bar_restraint_angle_degrees", _DEFAULT_MIN_BRACE_ANGLE_DEGREES,
     ))
     min_brace_angle = min(90.0, max(1.0, min_brace_angle))
-    token = (model.revision, tuple(id(result) for result in results), min_brace_angle)
+    token = (
+        model.revision, getattr(model, "calculation_properties_revision", 0),
+        tuple(id(result) for result in results), min_brace_angle,
+    )
     cache = getattr(model, "_restraint_lengths_cache", None)
     if cache is None or cache["token"] != token:
         cache = {"token": token, "results": results, "lengths": {}}
@@ -48,7 +51,23 @@ def restraint_lengths(model, element, results, properties, cb=1.0) -> RestraintL
     key = (tuple(sorted(element.member_names)), tuple(sorted(properties.items())), cb)
     if key not in cache["lengths"]:
         topology = MemberChainRestraints(model, min_brace_angle)
-        cache["lengths"][key] = LargerSectionRestraints(topology).lengths(element)
+        automatic = LargerSectionRestraints(topology).lengths(element)
+        lengths = dict(automatic.lengths_m)
+        modes = dict(automatic.modes)
+        notes = list(automatic.notes)
+        for name in ("Ly", "Lz", "Lt", "Lb"):
+            override = calculation_property(model, element, name, None)
+            if override is None:
+                continue
+            lengths[name] = override
+            modes[name] = {
+                **modes[name], "length_m": override, "automatic_length_m": automatic.lengths_m[name],
+                "manual_override": True,
+            }
+            notes.append(f"{name} definido manualmente pelo usuário: {override:g} m.")
+        cache["lengths"][key] = RestraintLengths(
+            lengths, modes, automatic.issues, tuple(notes),
+        )
     return cache["lengths"][key]
 
 

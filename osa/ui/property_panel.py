@@ -147,6 +147,26 @@ class PropertyPanel(QFrame):
         identity_layout.setContentsMargins(0, 0, 0, 0)
         identity_layout.setSpacing(6)
         identity_layout.addWidget(self.identity_value, 1)
+        self._calculation_properties_button = QToolButton()
+        self._calculation_properties_button.setFixedSize(34, 34)
+        self._calculation_properties_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "sliders-horizontal.svg"
+        )))
+        self._calculation_properties_button.setIconSize(QSize(18, 18))
+        self._calculation_properties_button.setCheckable(True)
+        self._calculation_properties_button.setToolTip("Propriedades de Cálculo")
+        self._calculation_properties_button.setAccessibleName("Propriedades de Cálculo")
+        self._calculation_properties_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        self._calculation_properties_button.clicked.connect(
+            lambda: window.toggle_calculation_properties_panel(
+                self._calculation_properties_button,
+            )
+        )
+        identity_layout.addWidget(self._calculation_properties_button)
         self.member_color_button = QToolButton()
         self.member_color_button.setFixedSize(34, 34)
         self.member_color_button.setToolTip("Definir cor da barra")
@@ -265,6 +285,23 @@ class PropertyPanel(QFrame):
         self.form = QFormLayout()
         self.form.setSpacing(7)
         self.layout.addLayout(self.form)
+        self.verify_bar_container = QWidget()
+        verify_bar_layout = QVBoxLayout(self.verify_bar_container)
+        verify_bar_layout.setContentsMargins(0, 7, 0, 0)
+        verify_bar_layout.setSpacing(0)
+        self.verify_bar_button = QPushButton("Verificar barra")
+        self.verify_bar_button.setObjectName("verifyBarButton")
+        self.verify_bar_button.setAccessibleName("Verificar barra isoladamente")
+        self.verify_bar_button.setStyleSheet(
+            "QPushButton { background: #0969da; color: #ffffff; border: 0; "
+            "border-radius: 6px; padding: 8px 12px; font-weight: 600; }"
+            "QPushButton:hover { background: #0550ae; }"
+            "QPushButton:disabled { background: #d0d7de; color: #57606a; }"
+        )
+        self.verify_bar_button.clicked.connect(window.verify_selected_bar)
+        verify_bar_layout.addWidget(self.verify_bar_button)
+        self.layout.addWidget(self.verify_bar_container)
+        self.verify_bar_container.hide()
         self.fields: list[QDoubleSpinBox | QComboBox] = []
         self._coordinates_widget: QWidget | None = None
         self._supports_widget: QWidget | None = None
@@ -353,9 +390,20 @@ class PropertyPanel(QFrame):
             item for item in verification_elements(self.window.model)
             if set(item.member_names) == selected_names
         ), None)
-        if element is None:
-            return None
-        return self.window.model.verification_results.get(element.key)
+        if element is not None:
+            result = self.window.model.verification_results.get(element.key)
+            if result is not None:
+                return result
+        if len(names) == 1:
+            result = self.window.model.verification_results.get(f"bar:{names[0]}")
+            if result is not None:
+                return result
+            group = self.window.model.verification_group_for(names[0])
+            if group is not None:
+                return self.window.model.verification_results.get(
+                    f"group:{'|'.join(group['members'])}"
+                )
+        return None
 
     def _inspected_kind_changed(self, _index: int) -> None:
         self._switch_inspected_kind(self.kind_selector.currentData())
@@ -415,8 +463,28 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         verification_mode = section == "Memorial"
         detailing_mode = section == "Detalhamento"
+        show_verify_bar = (
+            verification_mode and kind == "bar" and bool(names)
+        )
+        self.verify_bar_container.setVisible(show_verify_bar)
+        analysis_is_current = bool(self.window.model.analysis_results) and all(
+            result.model_revision == self.window.model.revision
+            for result in self.window.model.analysis_results
+        )
+        verification_target_exists = any(
+            set(element.member_names) == set(names)
+            for element in verification_elements(self.window.model)
+        ) or len(names) == 1
+        self.verify_bar_button.setEnabled(
+            verification_mode and kind == "bar" and bool(names)
+            and self._has_verification_routine(names)
+            and analysis_is_current and verification_target_exists
+        )
         self.verification_name_input.setReadOnly(False)
         self.member_color_button.setVisible(kind == "bar" and section == "Geometria")
+        self._calculation_properties_button.setVisible(
+            kind == "bar" and verification_mode and bool(names)
+        )
         # Member and node deletion stays in the main delete command/shortcut,
         # keeping their property identity row free of a delete control.
         # Rigid bars retain their dedicated delete control.

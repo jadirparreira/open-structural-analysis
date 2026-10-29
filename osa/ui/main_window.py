@@ -5,19 +5,20 @@ import threading
 import uuid
 
 import numpy as np
-
 from PySide6.QtCore import QSettings, QThread, Signal, Slot
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
+from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
-from osa.rendering.local_axes_renderer import LocalAxesRenderer
+
 from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
+from .calculation_properties_panel import CalculationPropertiesPanel
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
@@ -63,8 +64,8 @@ from .section_panel import (
     WLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
-from .window_frame import TitleBar, WindowFrame
 from .verification_worker import VerificationWorker
+from .window_frame import TitleBar, WindowFrame
 
 
 class _ProjectLoadingDialog(QDialog):
@@ -106,8 +107,10 @@ class MainWindow(QMainWindow):
         self._analysis_worker: AnalysisWorker | None = None
         self._verification_thread: QThread | None = None
         self._verification_worker: VerificationWorker | None = None
+        self._verification_scope_names: tuple[str, ...] | None = None
         self._verification_revision: int | None = None
         self._verification_group_revision: int | None = None
+        self._verification_properties_revision: int | None = None
         self._verification_restraint_angle_degrees: float | None = None
         self._verification_result_ids: tuple[int, ...] | None = None
         self._project_load_thread: QThread | None = None
@@ -306,6 +309,7 @@ class MainWindow(QMainWindow):
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
         self.displacement_panel = DisplacementPanel(self)
+        self.calculation_properties_panel = CalculationPropertiesPanel(self)
         self.processing_panel = ProcessingPanel(self)
         self.verification_panel = VerificationPanel(self)
         self.axes_panel = AxesPanel(self)
@@ -409,6 +413,57 @@ class MainWindow(QMainWindow):
         """Run member checks only when current analysis results are available."""
         if self._verification_thread is not None and self._verification_thread.isRunning():
             return
+        if self._has_calculation_property_overrides() and self._confirm_reset_calculation_properties():
+            self._reset_calculation_property_overrides()
+            self.refresh_scene()
+            self.refresh_selected_property_panel(self.palette.active_group)
+            if self.calculation_properties_panel.isVisible():
+                self.calculation_properties_panel.configure_for(
+                    tuple(self.properties._selected_names("bar")),
+                )
+        self._start_verification()
+
+    def verify_selected_bar(self) -> None:
+        """Verify only the selected bar or verification group with current overrides."""
+        names = tuple(dict.fromkeys(self.properties._selected_names("bar")))
+        if not names or self._verification_is_running():
+            return
+        self._start_verification(names)
+
+    def _verification_is_running(self) -> bool:
+        if self._verification_thread is not None and self._verification_thread.isRunning():
+            return True
+        return False
+
+    def _has_calculation_property_overrides(self) -> bool:
+        return any(
+            member.calculation_property_overrides
+            for member in self.model.bars.values()
+        )
+
+    def _confirm_reset_calculation_properties(self) -> bool:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle("Propriedades de cálculo alteradas")
+        dialog.setText(
+            "Há barras com propriedades de cálculo alteradas manualmente. "
+            "Deseja restaurar os valores padrão antes de verificar o modelo?"
+        )
+        restore_button = dialog.addButton("Sim", QMessageBox.ButtonRole.YesRole)
+        keep_button = dialog.addButton("Não", QMessageBox.ButtonRole.NoRole)
+        dialog.setDefaultButton(keep_button)
+        dialog.exec()
+        return dialog.clickedButton() is restore_button
+
+    def _reset_calculation_property_overrides(self) -> None:
+        for name, member in tuple(self.model.bars.items()):
+            for property_name, _value in member.calculation_property_overrides:
+                self.model.update_bar_calculation_property(name, property_name, None)
+
+    def _start_verification(self, member_names: tuple[str, ...] | None = None) -> None:
+        """Run checks using a private snapshot of the current model."""
+        if self._verification_is_running():
+            return
         results_are_current = bool(self.model.analysis_results) and all(
             result.model_revision == self.model.revision
             for result in self.model.analysis_results
@@ -418,6 +473,7 @@ class MainWindow(QMainWindow):
         self.verification_panel.start()
         self._verification_revision = self.model.revision
         self._verification_group_revision = self.model.verification_group_revision
+        self._verification_properties_revision = self.model.calculation_properties_revision
         self._verification_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
         self._verification_result_ids = tuple(id(result) for result in self.model.analysis_results)
         restraint_cache = self.model._restraint_lengths_cache
@@ -425,8 +481,10 @@ class MainWindow(QMainWindow):
         try:
             snapshot = copy.deepcopy(self.model)
         except Exception as error:  # noqa: BLE001
+            self._verification_scope_names = None
             self._verification_revision = None
             self._verification_group_revision = None
+            self._verification_properties_revision = None
             self._verification_restraint_angle_degrees = None
             self._verification_result_ids = None
             self.verification_panel.fail(str(error) or "não foi possível preparar o modelo para verificação")
@@ -434,9 +492,10 @@ class MainWindow(QMainWindow):
         finally:
             self.model._restraint_lengths_cache = restraint_cache
         thread = QThread(self)
-        worker = VerificationWorker(snapshot)
+        worker = VerificationWorker(snapshot, member_names)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        self._verification_scope_names = member_names
         worker.finished.connect(self._verification_finished)
         worker.failed.connect(self._verification_failed)
         worker.finished.connect(thread.quit)
@@ -448,22 +507,28 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _verification_finished(self, payload: object) -> None:
+        member_names = self._verification_scope_names
         current_result_ids = tuple(id(result) for result in self.model.analysis_results)
         if (self._verification_revision != self.model.revision
                 or self._verification_group_revision != self.model.verification_group_revision
+                or self._verification_properties_revision != self.model.calculation_properties_revision
                 or self._verification_restraint_angle_degrees != self._minimum_bar_restraint_angle_degrees
                 or self._verification_result_ids != current_result_ids):
             self.verification_panel.fail(
                 "O modelo foi alterado durante a verificação. Execute as verificações novamente."
             )
             return
-        self.model.verification_results = payload["results"]
+        if member_names is None:
+            self.model.verification_results = payload["results"]
+        else:
+            self.model.verification_results.update(payload["results"])
         self.refresh_scene()
         self.scene.refresh_utilization_thermometer()
         self.refresh_selected_property_panel(self.palette.active_group)
         self.verification_panel.succeed(payload["summary"])
+        action = "Verificar barra" if member_names is not None else "Verificar modelo"
         self.history.append(
-            "> <b>Verificar modelo</b> "
+            f"> <b>{action}</b> "
             f"<span style='color:#57606a'>({payload['summary']['with_routine']} elemento(s) verificado(s))</span>"
         )
 
@@ -474,8 +539,10 @@ class MainWindow(QMainWindow):
         thread = self._verification_thread
         self._verification_worker = None
         self._verification_thread = None
+        self._verification_scope_names = None
         self._verification_revision = None
         self._verification_group_revision = None
+        self._verification_properties_revision = None
         self._verification_restraint_angle_degrees = None
         self._verification_result_ids = None
         if thread is not None:
@@ -1337,6 +1404,8 @@ class MainWindow(QMainWindow):
             self.section_panel.reposition()
         if hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.displacement_panel.reposition()
+        if hasattr(self, "calculation_properties_panel") and self.calculation_properties_panel.isVisible():
+            self.calculation_properties_panel.reposition()
         if hasattr(self, "processing_panel") and self.processing_panel.isVisible():
             self.processing_panel.reposition()
         if hasattr(self, "verification_panel") and self.verification_panel.isVisible():
@@ -1359,6 +1428,7 @@ class MainWindow(QMainWindow):
             self.close_displacement_panel(button)
             return
         self.properties.close_color_palette()
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_section_panel(self.properties._section_settings_button)
         member_name = self.selected[1] if self.selected and self.selected[0] == "bar" else ""
         self.displacement_panel.configure_for(member_name)
@@ -1478,6 +1548,30 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(False)
 
+    def close_calculation_properties_panel(self, button=None) -> None:
+        self.calculation_properties_panel.hide()
+        if button is not None:
+            button.setChecked(False)
+
+    def toggle_calculation_properties_panel(self, button=None) -> None:
+        if self.calculation_properties_panel.isVisible():
+            self.close_calculation_properties_panel(button)
+            return
+        names = self.properties._selected_names("bar")
+        if not names:
+            if button is not None:
+                button.setChecked(False)
+            return
+        self.properties.close_color_palette()
+        self.close_section_panel(self.properties._section_settings_button)
+        self.close_displacement_panel(self.properties._displacement_settings_button)
+        self.calculation_properties_panel.configure_for(names)
+        self.calculation_properties_panel.reposition()
+        self.calculation_properties_panel.show()
+        self.calculation_properties_panel.raise_()
+        if button is not None:
+            button.setChecked(True)
+
     def show_section_panel(self, section: str, button=None) -> None:
         """Show the geometry panel that corresponds to a section family."""
         panel = self.section_panels.get(section)
@@ -1486,6 +1580,7 @@ class MainWindow(QMainWindow):
                 button.setChecked(False)
             return
         self.properties.close_color_palette()
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_displacement_panel(self.properties._displacement_settings_button)
         for candidate in self.section_panels.values():
             candidate.hide()
@@ -3210,6 +3305,8 @@ class MainWindow(QMainWindow):
             self.close_section_panel()
         if active_section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.close_displacement_panel()
+        if active_section != "Memorial" and hasattr(self, "calculation_properties_panel"):
+            self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         if self.selected is not None and hasattr(self, "properties"):
             self.properties.show_for(
                 *self.selected, active_section,
@@ -3228,6 +3325,14 @@ class MainWindow(QMainWindow):
                 if self.displacement_panel.isVisible():
                     self.displacement_panel.configure_for(member_name)
                     self.properties._displacement_settings_button.setChecked(True)
+            elif active_section == "Memorial" and self.selected[0] == "bar":
+                if self.calculation_properties_panel.isVisible():
+                    names = self.properties._selected_names("bar")
+                    if names:
+                        self.calculation_properties_panel.configure_for(names)
+                        self.properties._calculation_properties_button.setChecked(True)
+                    else:
+                        self.close_calculation_properties_panel()
             elif active_section == "Geometria":
                 self.close_section_panel()
                 self.close_displacement_panel()
@@ -3240,6 +3345,7 @@ class MainWindow(QMainWindow):
         self.properties.hide()
         self.section_panel.hide()
         self.displacement_panel.hide()
+        self.calculation_properties_panel.hide()
         self.axes_panel.hide()
         self.reference_panel.hide()
         if self._command_mode == "copy_elements_selection":
@@ -3591,6 +3697,7 @@ class MainWindow(QMainWindow):
             self.next_plane_button,
             self.properties,
             self.displacement_panel,
+            self.calculation_properties_panel,
             self.split_member_dialog,
             self.processing_panel,
             self.verification_panel,

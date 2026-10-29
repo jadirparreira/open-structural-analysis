@@ -51,6 +51,7 @@ class StructuralModel:
         self.analysis_results: list[AnalysisResult] = []
         self.verification_results: dict[str, dict[str, object]] = {}
         self.verification_group_revision = 0
+        self.calculation_properties_revision = 0
         self._restraint_lengths_cache = None
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
@@ -1137,6 +1138,57 @@ class StructuralModel:
             self.bars[name], profile=profile, section_geometry=tuple((key, float(value)) for key, value in geometry.items())
         )
         self._touch()
+        return self.bars[name]
+
+    @staticmethod
+    def _calculation_property_value(property_name: str, value: float) -> float:
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("O valor da propriedade de cálculo deve ser finito.")
+        limits = {
+            "Ly": (0.0, math.inf), "Lz": (0.0, math.inf),
+            "Lt": (0.0, math.inf), "Lb": (0.0, math.inf),
+            "Ct": (0.0, 1.0), "Cb": (1.0, 2.5),
+        }
+        if property_name not in limits:
+            raise ValueError("Propriedade de cálculo desconhecida.")
+        minimum, maximum = limits[property_name]
+        if value <= minimum or value > maximum:
+            if property_name == "Cb":
+                raise ValueError("Cb deve estar entre 1,0 e 2,5.")
+            if property_name == "Ct":
+                raise ValueError("Ct deve ser maior que zero e no máximo 1,0.")
+            raise ValueError(f"{property_name} deve ser maior que zero.")
+        return value
+
+    def update_bar_calculation_property(
+        self, name: str, property_name: str, value: float | None,
+    ) -> Bar:
+        """Set or clear one design-check override without invalidating analysis."""
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
+        if property_name not in {"Ly", "Lz", "Lt", "Lb", "Ct", "Cb"}:
+            raise ValueError("Propriedade de cálculo desconhecida.")
+        overrides = dict(self.bars[name].calculation_property_overrides)
+        if value is None:
+            overrides.pop(property_name, None)
+        else:
+            overrides[property_name] = self._calculation_property_value(property_name, value)
+        ordered = tuple((key, overrides[key]) for key in ("Ly", "Lz", "Lt", "Lb", "Ct", "Cb")
+                        if key in overrides)
+        if ordered == self.bars[name].calculation_property_overrides:
+            return self.bars[name]
+        self.bars[name] = replace(self.bars[name], calculation_property_overrides=ordered)
+        self.calculation_properties_revision += 1
+        self._restraint_lengths_cache = None
+        group = self.verification_group_for(name)
+        affected_names = set(group["members"]) if group else {name}
+        for key in tuple(self.verification_results):
+            if key == f"bar:{name}":
+                del self.verification_results[key]
+            elif key.startswith("group:") and affected_names.intersection(key[6:].split("|")):
+                del self.verification_results[key]
+        self.view_revision += 1
         return self.bars[name]
 
     def update_member_section_mirrored(self, name: str, mirrored: bool) -> Bar:

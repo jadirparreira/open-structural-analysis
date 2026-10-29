@@ -206,6 +206,10 @@ class ProjectSerializer:
                 ),
                 section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
+                calculation_property_overrides=tuple(
+                    (str(key), candidate._calculation_property_value(str(key), float(value)))
+                    for key, value in item.get("calculation_property_overrides", ())
+                ),
             )
             previous = candidate.bars.get(member.name)
             if previous is not None:
@@ -402,5 +406,6 @@ class ProjectSerializer:
         model.scene_views = candidate.scene_views
         model.scene_view_hidden_rigid_bars = candidate.scene_view_hidden_rigid_bars
         model.active_scene_view = candidate.active_scene_view
+        model.calculation_properties_revision += 1
         model.view_revision += 1
         model.revision += 1

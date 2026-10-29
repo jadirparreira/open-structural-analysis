@@ -4,11 +4,19 @@ import re
 from html import escape
 from math import isinf
 
-from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout,
-)
 from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
+from PySide6.QtGui import QTextBlockFormat, QTextCharFormat
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTextBrowser,
+    QVBoxLayout,
+)
 
 from .math_equations import (
     EQUATION_OBJECT_TYPE,
@@ -16,6 +24,38 @@ from .math_equations import (
     SvgEquationObject,
     equation_svg,
 )
+from .memorial_docx_export import export_calculation_memorial_docx
+
+
+class MemorialExportSuccessDialog(QDialog):
+    """Compact success confirmation matching the detailing DXF export dialog."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedWidth(360)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QLabel { color: #24292f; }"
+            "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#closeProperties:hover { background: #eaeef2; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(16)
+        message = QLabel("Memorial exportado com sucesso")
+        message.setWordWrap(False)
+        layout.addWidget(message)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("closeProperties")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        layout.addLayout(footer)
+        self.adjustSize()
 
 
 class CalculationMemorialDialog(QDialog):
@@ -30,9 +70,9 @@ class CalculationMemorialDialog(QDialog):
             "QTextBrowser#calculationMemory { border: 0; border-left: 1px solid #d0d7de; "
             "border-right: 1px solid #d0d7de; background: #ffffff; color: #24292f; "
             "padding: 10px 16px; selection-background-color: #ddf4ff; }"
-            "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "QPushButton#closeProperties, QPushButton#exportMemorial { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
             "border-radius: 7px; color: #24292f; background: #f6f8fa; }"
-            "QPushButton#closeProperties:hover { background: #eaeef2; }"
+            "QPushButton#closeProperties:hover, QPushButton#exportMemorial:hover { background: #eaeef2; }"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -50,12 +90,18 @@ class CalculationMemorialDialog(QDialog):
         self.content.setObjectName("calculationMemory")
         self.content.setOpenExternalLinks(False)
         equation_objects: dict[str, bytes] = {}
+        self._equation_latex: dict[str, str] = {}
         html = self._render(
             memory or {}, equation_objects,
             max_equation_width=max(250.0, float(self.width() - 56)),
+            equation_latex=self._equation_latex,
         )
+        self._memorial_html = html
         self.content.setHtml(html)
         document = self.content.document()
+        text_option = document.defaultTextOption()
+        text_option.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        document.setDefaultTextOption(text_option)
         self._equation_handler = SvgEquationObject(self.content)
         document.documentLayout().registerHandler(EQUATION_OBJECT_TYPE, self._equation_handler)
         for marker, svg_data in equation_objects.items():
@@ -66,9 +112,19 @@ class CalculationMemorialDialog(QDialog):
             text_format.setObjectType(EQUATION_OBJECT_TYPE)
             text_format.setProperty(EQUATION_SVG_PROPERTY, QByteArray(svg_data))
             cursor.insertText("\uFFFC", text_format)
+            block_format = QTextBlockFormat(cursor.blockFormat())
+            block_format.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            block_format.setLeftMargin(0.0)
+            block_format.setRightMargin(0.0)
+            block_format.setTextIndent(0.0)
+            cursor.setBlockFormat(block_format)
         outer.addWidget(self.content, 1)
         footer = QHBoxLayout()
         footer.setContentsMargins(16, 8, 16, 12)
+        export_button = QPushButton("Exportar")
+        export_button.setObjectName("exportMemorial")
+        export_button.clicked.connect(self._export_docx)
+        footer.addWidget(export_button)
         footer.addStretch()
         close_button = QPushButton("Fechar")
         close_button.setObjectName("closeProperties")
@@ -81,8 +137,10 @@ class CalculationMemorialDialog(QDialog):
         memory: dict,
         equation_objects: dict[str, bytes] | None = None,
         max_equation_width: float = 644.0,
+        equation_latex: dict[str, str] | None = None,
     ) -> str:
         equation_objects = equation_objects if equation_objects is not None else {}
+        equation_latex = equation_latex if equation_latex is not None else {}
 
         def formatted(value, unit: str = "") -> str:
             if value is None or value == "":
@@ -251,6 +309,7 @@ class CalculationMemorialDialog(QDialog):
                     return escape(fallback)
                 marker = f"OSA_EQUATION_OBJECT_{len(equation_objects):04d}_END"
                 equation_objects[marker] = svg_data
+                equation_latex[marker] = latex
                 indent = "&nbsp;&nbsp;&nbsp;&nbsp;" if index and indent_continuations else ""
                 rendered_lines.append(f"{indent}{marker}")
             return "<br/>".join(rendered_lines)
@@ -417,7 +476,8 @@ class CalculationMemorialDialog(QDialog):
                         f'{escape(name)} ({escape(equation_reference(variable))})</p>'
                     )
                 rendered.append(
-                    f'<p style="margin:0 0 {spacing_px}px;color:#57606a">'
+                    f'<p align="center" style="margin:0 0 {spacing_px}px;padding-left:0;text-indent:0;'
+                    f'color:#57606a;text-align:center">'
                     f'{equation((latex_line,), fallback, indent_continuations=False)}</p>'
                 )
             return "".join(rendered)
@@ -2226,3 +2286,29 @@ class CalculationMemorialDialog(QDialog):
             + flexocompressao_content
             + "</div>"
         )
+
+    def _export_docx(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar memorial de cálculo",
+            "Memorial de cálculo.docx",
+            "Documento Word (*.docx)",
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith(".docx"):
+            filename += ".docx"
+        try:
+            export_calculation_memorial_docx(
+                self._memorial_html,
+                self._equation_latex,
+                filename,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(
+                self,
+                "Falha ao exportar memorial",
+                f"Não foi possível gerar o arquivo DOCX.\n\n{exc}",
+            )
+            return
+        MemorialExportSuccessDialog(self).exec()

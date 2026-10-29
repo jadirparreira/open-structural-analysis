@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from math import pi, sqrt
 
+from osa.verification.calculation_properties import calculation_property
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -106,12 +107,14 @@ def verify_round_bar_tension(element, model, results):
     try:
         members, p, _, _, fy, fu = _base(element, model, results)
         gross = p["Ag_cm2"] * fy / GAMMA_A1
-        rupture = p["Ag_cm2"] * fu / GAMMA_A2
+        ct = calculation_property(model, element, "Ct", 1.0)
+        ae = p["Ag_cm2"] * ct
+        rupture = ae * fu / GAMMA_A2
         capacity = min(gross, rupture)
         out = _axial_result(results, members, False, capacity)
         out["parameters"] = {
-            "Ag_cm2": p["Ag_cm2"], "An_cm2": p["Ag_cm2"], "Ae_cm2": p["Ag_cm2"],
-            "Ct": 1.0, "fy_kn_cm2": fy, "fu_kn_cm2": fu,
+            "Ag_cm2": p["Ag_cm2"], "An_cm2": p["Ag_cm2"], "Ae_cm2": ae,
+            "Ct": ct, "fy_kn_cm2": fy, "fu_kn_cm2": fu,
             "gamma_a1": GAMMA_A1, "gamma_a2": GAMMA_A2,
             "Nt_Rd1_kn": gross, "Nt_Rd2_kn": rupture, "Nt_Rd_kn": capacity,
             "d_mm": p["d_mm"],

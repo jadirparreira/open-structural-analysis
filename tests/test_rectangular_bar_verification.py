@@ -1,5 +1,7 @@
 import math
 
+import pytest
+
 from osa.domain import AnalysisResult
 from osa.memorial_data import calculation_memory
 from osa.model import StructuralModel
@@ -126,3 +128,33 @@ def test_axial_only_case_does_not_become_unverified_due_to_no_bending_demand():
     assert checks["flexion_y"]["status"] == "not_applicable"
     assert checks["flexion_z"]["status"] == "not_applicable"
     assert checks["flexocompressao"]["status"] == "checked"
+
+
+def test_manual_calculation_properties_override_automatic_lengths_ct_and_cb():
+    model = _model()
+    model.update_bar_calculation_property("R1", "Ly", 1.25)
+    model.update_bar_calculation_property("R1", "Lb", 1.5)
+    model.update_bar_calculation_property("R1", "Ct", 0.75)
+    model.update_bar_calculation_property("R1", "Cb", 1.8)
+
+    checks = verify_model(model)["results"]["bar:R1"]["checks"]
+
+    assert math.isclose(checks["axial_compression"]["parameters"]["Ly_cm"], 125.0)
+    assert math.isclose(checks["flexion_y"]["parameters"]["Lb_cm"], 150.0)
+    assert math.isclose(checks["axial_tension"]["parameters"]["Ct"], 0.75)
+    assert math.isclose(checks["flexion_y"]["parameters"]["Cb"], 1.8)
+
+
+def test_manual_calculation_property_validation_and_reset_to_automatic():
+    model = _model()
+    original_revision = model.revision
+    original_result_revision = model.analysis_results[0].model_revision
+
+    model.update_bar_calculation_property("R1", "Lb", 1.25)
+    assert model.revision == original_revision
+    assert model.analysis_results[0].model_revision == original_result_revision
+    model.update_bar_calculation_property("R1", "Lb", None)
+    assert "Lb" not in dict(model.bars["R1"].calculation_property_overrides)
+
+    with pytest.raises(ValueError):
+        model.update_bar_calculation_property("R1", "Cb", 0.5)

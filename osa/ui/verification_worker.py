@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from osa.verification.elements import verification_elements
+from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.w_rolled import (
     verify_w_compression,
     verify_w_flexion_y,
@@ -162,10 +162,25 @@ _ROUTINES = {
 }
 
 
-def verify_model(model) -> dict:
+def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
     """Run checks against a private model snapshot and return UI-ready results."""
     results = {}
     elements = verification_elements(model)
+    if member_names is not None:
+        selected_members = set(member_names)
+        matching_elements = [
+            element for element in elements
+            if set(element.member_names) == selected_members
+        ]
+        if not matching_elements and len(member_names) == 1:
+            member_name = member_names[0]
+            if member_name in model.bars:
+                custom_name = model.verification_element_names.get(member_name, "").strip()
+                display_name = f"{custom_name} ({member_name})" if custom_name else member_name
+                matching_elements = [
+                    VerificationElement(f"bar:{member_name}", display_name, (member_name,))
+                ]
+        elements = matching_elements
     elements_with_routine = [
         element for element in elements
         if all(
@@ -255,14 +270,15 @@ class VerificationWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, model) -> None:
+    def __init__(self, model, member_names: tuple[str, ...] | None = None) -> None:
         super().__init__()
         self.model = model
+        self.member_names = member_names
 
     @Slot()
     def run(self) -> None:
         try:
-            result = verify_model(self.model)
+            result = verify_model(self.model, self.member_names)
         except Exception as error:  # noqa: BLE001
             self.failed.emit(str(error) or "erro inesperado durante as verificações")
             return

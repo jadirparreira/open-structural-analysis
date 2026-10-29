@@ -19,6 +19,9 @@ dependencies = [
     "PyNiteFEA>=1.5",
     "mcp>=1.26,<2",
     "ezdxf>=1.4.3,<2",
+    "python-docx>=1.2.0",
+    "latex2mathml>=3.81.1",
+    "mathml2omml-as>=0.1.0",
 ]
 
 [project.optional-dependencies]
