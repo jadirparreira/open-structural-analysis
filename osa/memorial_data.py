@@ -404,7 +404,9 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "members": group_members,
         "profile_type": member.section or "",
         "section": member.profile or "",
-        **({"verification_summary": selected_result} if profile_type in {"W Laminado", "HP Laminado"} else {}),
+        **({"verification_summary": selected_result} if profile_type in {
+            "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado",
+        } else {}),
         **({
             "w_restraint_notes": tuple(
                 tuple(compression_parameters.get("restraint_issues", ()))
@@ -417,7 +419,9 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
             "h_mm": value("h_mm"),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
-            **({"r_mm": value("r")} if profile_type in {"W Laminado", "HP Laminado"} else {}),
+            **({"r_mm": value("r")} if profile_type in {
+                "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado",
+            } else {}),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),
             "ry_cm": value("ry"), "Zy_cm3": value("Zy"),
             "Iz_cm4": value("Iz"), "Wz_cm3": value("Wz"),

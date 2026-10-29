@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import pi, sqrt
 
-from osa.sections.contours import polygon_properties, w_contour_points
+from osa.sections.contours import polygon_properties, u_contour_points, w_contour_points
 from osa.verification.calculation_properties import calculation_property
 from osa.verification.restraints import restraint_lengths
 
@@ -783,7 +783,7 @@ def verify_w_shear_z(element, model, results) -> dict:
 
 
 def verify_w_biaxial_shear(element, model, results) -> dict:
-    """Check simultaneous transverse shear in W sections per NBR 8800:2024.
+    """Check simultaneous transverse shear in W/HP/U sections per NBR 8800:2024.
 
     Elastic shear stresses are recovered with the thin-plate Q/(I t) method:
     the flange contribution is taken at the flange root and the web contribution
@@ -795,12 +795,14 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
+    supported_sections = {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}
+    if any(member.section not in supported_sections for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W, HP e U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
         return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
+    is_u = members[0].section in {"U Laminado", "U Inclinado Laminado"}
     if not results or any(
         member_name not in result.member_results
         for result in results for member_name in element.member_names
@@ -817,9 +819,9 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
         return {"status": "not_checked", "detail": "propriedades do material inválidas"}
 
     try:
-        from osa.memorial_data import _w_properties
+        from osa.memorial_data import _u_properties, _w_properties
 
-        geometry = _w_properties(members[0])
+        geometry = _u_properties(members[0]) if is_u else _w_properties(members[0])
         bf_cm, tf_cm = geometry["bf"] / 10.0, geometry["tf"] / 10.0
         tw_cm = geometry["tw"] / 10.0
         d_cm = geometry["d"] / 10.0
@@ -836,16 +838,23 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
         # At the flange root, Q is the first moment of half a flange. Include
         # the full upper fillet area in this branch for a conservative estimate.
         fillet_area_cm2 = (1.0 - pi / 4.0) * radius_cm**2
+        flange_width_cm = bf_cm if is_u else bf_cm / 2.0
         q_flange_cm3 = (
-            (bf_cm / 2.0 * tf_cm) * ((d_cm - tf_cm) / 2.0)
+            (flange_width_cm * tf_cm) * ((d_cm - tf_cm) / 2.0)
             + fillet_area_cm2 * (d_cm / 2.0 - tf_cm - radius_cm / 3.0)
         )
         # At the web neutral axis, Q includes the complete upper half-section.
         # Integrate the actual sampled W contour above its centroidal axis so
         # the flange/web fillets are included in the web first moment.
-        points = w_contour_points(
-            geometry["d"], geometry["bf"], geometry["tw"], geometry["tf"], geometry["r"],
-        )
+        if is_u:
+            points = u_contour_points(
+                geometry["d"], geometry["bf"], geometry["tw"], geometry["tf"],
+                geometry["r"], geometry.get("r1"), geometry.get("flange_angle_deg", 2.0),
+            )
+        else:
+            points = w_contour_points(
+                geometry["d"], geometry["bf"], geometry["tw"], geometry["tf"], geometry["r"],
+            )
         upper = []
         previous = points[-1]
         previous_inside = previous[1] >= 0.0
@@ -866,9 +875,10 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
         tau_z_per_kn = q_web_cm3 / (iy_cm4 * tw_cm)
 
         poisson_factor = 12.0 * (1.0 - poisson**2)
+        shear_width_cm = bf_cm if is_u else bf_cm / 2.0
         tau_e_y_kn_cm2 = (
             1.2 * pi**2 * elastic_kn_cm2 / poisson_factor
-            * (tf_cm / (bf_cm / 2.0))**2
+            * (tf_cm / shear_width_cm)**2
         )
         tau_e_z_kn_cm2 = (
             5.34 * pi**2 * elastic_kn_cm2 / poisson_factor
@@ -936,10 +946,24 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
         "tau_rd_kn_cm2": tau_rd_kn_cm2,
         "stress_method": "Q/(I t), máximos de mesa e alma combinados conservadoramente",
         "criterion": "NBR 8800:2024, 5.5.1.3 e 5.5.2.3(b), (d)",
+        **({
+            "conservative_estimate": True,
+            "non_colocated_maxima": True,
+            "torsion_included": False,
+        } if is_u else {}),
     }
+    u_shear_failed = bool(is_u and critical and critical["utilization"] > 1.0)
     return {
-        "status": "checked" if critical else "not_applicable",
-        "detail": "" if critical else "nenhuma combinação apresentou cortantes simultâneos significativos",
+        "status": (
+            "checked" if critical else "not_applicable"
+        ),
+        "detail": (
+            "verificação de cortantes simultâneos em Y e Z reprovada"
+            if u_shear_failed else
+            "verificação de cortantes simultâneos em Y e Z concluída"
+            if is_u and critical else
+            "nenhuma combinação apresentou cortantes simultâneos significativos"
+        ),
         "utilization": critical["utilization"] if critical else None,
         "critical_check": "Cortantes simultâneos em Y e Z" if critical else "N/A",
         "critical_combination": critical["combination"] if critical else "N/A",

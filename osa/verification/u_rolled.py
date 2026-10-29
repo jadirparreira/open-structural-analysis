@@ -124,6 +124,62 @@ def verify_u_tension(element, model, results) -> dict:
     }
 
 
+def verify_u_slenderness(element, model, results) -> dict:
+    """Report the NBR recommended member slenderness limits for U sections.
+
+    The values are informational (5.2.8.1 and 5.3.7.1) and do not participate
+    in the member approval/rejection decision.
+    """
+    members = [model.bars[name] for name in element.member_names if name in model.bars]
+    if not members or len(members) != len(element.member_names):
+        return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
+    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
+    if any(not member.section_geometry for member in members):
+        return {"status": "not_checked", "detail": "geometria da seção incompleta"}
+    if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
+        return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
+    try:
+        from osa.memorial_data import _u_properties
+
+        geometry = _u_properties(members[0])
+        area_cm2 = geometry["area"]
+        iy_cm4, iz_cm4 = geometry["Iy"], geometry["Iz"]
+        if min(area_cm2, iy_cm4, iz_cm4) <= 0:
+            raise ValueError("propriedades geométricas inválidas para a esbeltez")
+        lengths = restraint_lengths(
+            model, element, results or (), {"Iy": iz_cm4, "tw": geometry["tw"] / 10.0},
+        )
+        ly_cm = lengths.lengths_m["Ly"] * 100.0
+        lz_cm = lengths.lengths_m["Lz"] * 100.0
+        ry_cm, rz_cm = sqrt(iy_cm4 / area_cm2), sqrt(iz_cm4 / area_cm2)
+        if min(ly_cm, lz_cm, ry_cm, rz_cm) <= 0:
+            raise ValueError("comprimentos destravados ou raios de giração inválidos")
+        lambda_y, lambda_z = ly_cm / ry_cm, lz_cm / rz_cm
+        has_tension = any(
+            float(sample.get("axial", 0.0)) <= -MIN_SIGNIFICANT_TENSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+        has_compression = any(
+            float(sample.get("axial", 0.0)) >= MIN_SIGNIFICANT_COMPRESSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, ArithmeticError) as error:
+        return {"status": "not_checked", "detail": str(error) or "geometria inválida"}
+    return {
+        "status": "checked", "has_tension": has_tension,
+        "has_compression": has_compression,
+        "parameters": {
+            "Ly_cm": ly_cm, "Lz_cm": lz_cm, "ry_cm": ry_cm, "rz_cm": rz_cm,
+            "lambda_y": lambda_y, "lambda_z": lambda_z,
+            "lambda_tension_max": max(lambda_y, lambda_z),
+            "tension_limit": 300.0, "compression_limit": 200.0,
+        },
+    }
+
+
 def _compression_local_width(width_mm: float, thickness_mm: float, limit: float,
                              chi: float, c1: float, c2: float, fy_kn_cm2: float) -> float:
     slenderness = width_mm / thickness_mm
@@ -257,39 +313,15 @@ def verify_u_flexion_y(element, model, results) -> dict:
         mr_fla_kn_cm = wy_cm3 * fy_kn_cm2
         if lambda_fla > lambda_r_fla:
             slenderness_ratio = lambda_fla / lambda_r_fla
-            rejected_combinations = []
-            critical = None
-            for result in results:
-                demand = None
-                for member_name in element.member_names:
-                    for sample in result.member_results[member_name].get("samples", ()):
-                        moment_kn_cm = abs(float(sample.get("moment_y", 0.0))) * 100.0
-                        if demand is None or moment_kn_cm > demand[0]:
-                            demand = (moment_kn_cm, member_name, sample.get("x"))
-                item = {
-                    "combination": result.load_reference,
-                    "member": demand[1] if demand else None,
-                    "position_m": demand[2] if demand else None,
-                    "applied_kn_cm": demand[0] if demand else 0.0,
-                    "utilization": slenderness_ratio,
-                    "status": "REPROVADO",
-                }
-                rejected_combinations.append(item)
-                if critical is None or item["applied_kn_cm"] > critical["applied_kn_cm"]:
-                    critical = item
             return {
-                "status": "checked",
+                "status": "not_checked",
                 "detail": (
-                    "reprovado: esbeltez da alma excede o limite aplicável da Tabela D.1; "
-                    "o Anexo E não abrange perfis U laminados"
+                    "a esbeltez da alma excede o limite da Tabela D.1 e o Anexo E não "
+                    "fornece procedimento de resistência para perfis U laminados"
                 ),
-                "utilization": slenderness_ratio,
-                "critical_check": "Flexão Y — FLA (limite de esbeltez)",
-                "critical_combination": critical["combination"] if critical else "N/A",
-                "critical_member": critical["member"] if critical else None,
-                "applied_kn_cm": critical["applied_kn_cm"] if critical else 0.0,
+                "critical_check": "Flexão Y — FLA (fora do escopo do Anexo E)",
                 "parameters": {
-                    "slender_web_rejected": True,
+                    "slender_web_not_verified": True,
                     "lambda_fla": lambda_fla,
                     "lambda_r_fla": lambda_r_fla,
                     "di_cm": di_cm,
@@ -299,7 +331,7 @@ def verify_u_flexion_y(element, model, results) -> dict:
                     "slenderness_ratio": slenderness_ratio,
                     **restraint_parameters,
                 },
-                "combinations": rejected_combinations,
+                "combinations": [],
             }
         if lambda_fla <= lambda_p_fla:
             mn_fla_kn_cm = mp_kn_cm
@@ -836,8 +868,7 @@ def _verify_u_combined_actions(element, model, results, mode: str,
         nrd_kn = None
     flexion_y_parameters = (flexion_y_check or {}).get("parameters") or {}
     flexion_z_parameters = (flexion_z_check or {}).get("parameters") or {}
-    slender_web_rejected = bool(flexion_y_parameters.get("slender_web_rejected"))
-    slenderness_ratio = float(flexion_y_parameters.get("slenderness_ratio", 1.0))
+    slender_web_not_verified = bool(flexion_y_parameters.get("slender_web_not_verified"))
     myrd_kn_cm = flexion_y_parameters.get("Mrd_kn_cm")
     mzrd_kn_cm = flexion_z_parameters.get("Mrd_z_kn_cm")
 
@@ -878,25 +909,19 @@ def _verify_u_combined_actions(element, model, results, mode: str,
                     continue
 
                 if has_my and (myrd_kn_cm is None or float(myrd_kn_cm) <= 0.0):
-                    if slender_web_rejected:
-                        item = {
-                            "combination": result.load_reference,
-                            "member": member_name,
-                            "position_m": sample.get("x"),
-                            "axial_signed_kn": axial_signed_kn,
-                            "applied_kn": axial_kn,
-                            "applied_my_kn_cm": moment_y_kn_cm,
-                            "applied_mz_kn_cm": moment_z_kn_cm,
-                            "utilization": slenderness_ratio,
-                            "status": "REPROVADO",
-                            "slender_web_rejected": True,
+                    if slender_web_not_verified:
+                        return {
+                            "status": "not_checked",
+                            "detail": (
+                                "a interação depende da resistência à flexão Y, não verificada "
+                                "porque o Anexo E não abrange perfis U laminados com alma esbelta"
+                            ),
+                            "parameters": {
+                                "slender_web_not_verified": True,
+                                "lambda_fla": flexion_y_parameters.get("lambda_fla"),
+                                "lambda_r_fla": flexion_y_parameters.get("lambda_r_fla"),
+                            },
                         }
-                        if (
-                            combination_critical is None
-                            or item["utilization"] > combination_critical["utilization"]
-                        ):
-                            combination_critical = item
-                        continue
                     return {"status": "not_checked", "detail": "resistência à flexão em Y indisponível"}
                 if mode != "flexao_obliqua" and (nrd_kn is None or nrd_kn <= 0.0):
                     axial_label = "compressão" if mode == "flexocompression" else "tração"
@@ -970,30 +995,21 @@ def _verify_u_combined_actions(element, model, results, mode: str,
         "Mz_Rd_kn_cm": float(mzrd_kn_cm) if mzrd_kn_cm is not None else None,
         "criterion": "NBR 8800:2024, 5.5.1.2",
     }
-    if slender_web_rejected:
+    if slender_web_not_verified:
         parameters.update({
-            "slender_web_rejected": True,
+            "slender_web_not_verified": True,
             "lambda_fla": flexion_y_parameters.get("lambda_fla"),
             "lambda_r_fla": flexion_y_parameters.get("lambda_r_fla"),
             "di_cm": flexion_y_parameters.get("di_cm"),
             "tw_cm": flexion_y_parameters.get("tw_cm"),
             "E_kn_cm2": flexion_y_parameters.get("E_kn_cm2"),
             "fy_kn_cm2": flexion_y_parameters.get("fy_kn_cm2"),
-            "slenderness_ratio": slenderness_ratio,
         })
     return {
         "status": "checked" if critical else "not_applicable",
-        "detail": (
-            "reprovado por exceder o limite de esbeltez da alma na verificação de flexão Y"
-            if critical and critical.get("slender_web_rejected") else
-            "" if any_applicable else detail
-        ),
+        "detail": "" if any_applicable else detail,
         "utilization": critical["utilization"] if critical else None,
-        "critical_check": (
-            critical_name + " — reprovação por esbeltez da alma"
-            if critical and critical.get("slender_web_rejected") else
-            critical_name if critical else "N/A"
-        ),
+        "critical_check": critical_name if critical else "N/A",
         "critical_combination": critical["combination"] if critical else "N/A",
         "critical_member": critical["member"] if critical else None,
         "position_m": critical["position_m"] if critical else None,

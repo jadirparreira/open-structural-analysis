@@ -199,7 +199,7 @@ class CalculationMemorialDialog(QDialog):
             ("Comprimento destravado à torção (Lt)", formatted(geometry.get("Lt_cm"), "cm")),
             ("Comprimento destravado à flexão (Lb)", formatted(geometry.get("Lb_cm"), "cm")),
         ]
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}:
             section_rows.insert(4, ("Raio de concordância adotado (r)", formatted(geometry.get("r_mm"), "mm")))
         if memory.get("profile_type") == "L Laminado":
             section_rows[:4] = [
@@ -377,7 +377,10 @@ class CalculationMemorialDialog(QDialog):
             r"\lambda_y": "Índice de esbeltez da barra no eixo Y",
             r"\lambda_z": "Índice de esbeltez da barra no eixo Z",
             r"\tau_{Rd}": "Tensão resistente de cálculo ao cisalhamento",
-            r"\tau_{Sd}": "Tensão resultante (envelope conservador dos máximos na mesa e na alma)",
+            r"\tau_{Sd}": (
+                "Tensão resultante" if memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+                else "Tensão resultante (envelope conservador dos máximos na mesa e na alma)"
+            ),
             r"\lambda_{0,y}": "Índice de esbeltez reduzido da mesa ao cisalhamento",
             r"\lambda_{0,z}": "Índice de esbeltez reduzido da alma ao cisalhamento",
             r"\chi_y": "Fator de redução por instabilidade da mesa ao cisalhamento",
@@ -514,7 +517,7 @@ class CalculationMemorialDialog(QDialog):
             return "".join(rendered)
 
         slenderness_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}:
             slenderness_status = slenderness_summary.get("status")
             slenderness_content = (
                 '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
@@ -1411,6 +1414,29 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(slenderness_lines)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Não verificado: '
                 f'{escape(str(flexion_verification.get("detail", "limite de aplicação excedido")))}.</p>'
+            )
+        elif (
+            memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+            and flexion_verification.get("status") == "not_checked"
+            and (flexion_verification.get("parameters") or {}).get("slender_web_not_verified")
+        ):
+            p = flexion_verification.get("parameters", {})
+            slenderness_lines = (
+                *equation_triplet(
+                    r"\lambda_{FLA}", r"\dfrac{d_i}{t_w}",
+                    rf"\dfrac{{{decimal(p.get('di_cm'))}}}{{{decimal(p.get('tw_cm'))}}}",
+                    decimal(p.get("lambda_fla")),
+                ),
+                *equation_triplet(
+                    r"\lambda_{r,FLA}", r"5,70\sqrt{\dfrac{E}{f_y}}",
+                    rf"5,70\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
+                    decimal(p.get("lambda_r_fla")),
+                ),
+            )
+            flexion_y_content += (
+                f'{spaced_equations(slenderness_lines)}'
+                f'<p style="margin:0 0 3px;color:#57606a">Não verificado: '
+                f'{escape(str(flexion_verification.get("detail", "fora do escopo normativo")))}.</p>'
             )
         elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_y_content += (
@@ -2346,7 +2372,7 @@ class CalculationMemorialDialog(QDialog):
         scope_notice = ""
         torsion_content = ""
         biaxial_shear_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}:
             if not torsion_summary.get("available"):
                 torsion_message = (
                     "Execute a análise e a verificação do modelo para identificar "
@@ -2403,6 +2429,14 @@ class CalculationMemorialDialog(QDialog):
                     "Combinação governante: "
                     f"{escape(str(biaxial_shear_summary.get('critical_combination', '—')))}"
                 )
+                shear_flange_width = (
+                    r"b_f" if memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+                    else r"b_f/2"
+                )
+                shear_flange_width_value = (
+                    p.get("bf_cm") if memory.get("profile_type") in {"U Laminado", "U Inclinado Laminado"}
+                    else p.get("bf_cm") / 2.0
+                )
                 biaxial_shear_equations = spaced_equations((
                     rf"\tau_{{y,Sd}} = \dfrac{{V_{{y,Sd}}Q_{{z,mesa}}}}{{I_z t_f}} = "
                     rf"\dfrac{{{decimal(biaxial_shear_summary.get('applied_shear_y_kn'))}"
@@ -2419,11 +2453,11 @@ class CalculationMemorialDialog(QDialog):
                     rf"+{decimal(biaxial_shear_summary.get('tau_z_kn_cm2'))}^2}} = "
                     rf"{decimal(biaxial_shear_summary.get('tau_sd_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
                     rf"\tau_{{e,y}} = \dfrac{{1,2\pi^2E}}{{12(1-\nu^2)}}"
-                    rf"\left(\dfrac{{t_f}}{{b_f/2}}\right)^2 = "
+                    rf"\left(\dfrac{{t_f}}{{{shear_flange_width}}}\right)^2 = "
                     rf"\dfrac{{1,2\pi^2\cdot {decimal(p.get('E_kn_cm2'))}}}"
                     rf"{{12(1-{decimal(p.get('poisson'))}^2)}}"
                     rf"\left(\dfrac{{{decimal(p.get('tf_cm'))}}}"
-                    rf"{{{decimal(p.get('bf_cm') / 2.0)}}}\right)^2 = "
+                    rf"{{{decimal(shear_flange_width_value)}}}\right)^2 = "
                     rf"{decimal(p.get('tau_e_y_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
                     rf"\tau_{{e,z}} = \dfrac{{5,34\pi^2E}}{{12(1-\nu^2)}}"
                     rf"\left(\dfrac{{t_w}}{{h}}\right)^2 = "

@@ -95,6 +95,7 @@ from osa.verification.w_rolled import (
     verify_w_slenderness,
     verify_w_tension,
 )
+from osa.verification.u_rolled import verify_u_slenderness
 
 _ROUTINES = {
     "W Laminado": (
@@ -181,7 +182,7 @@ def _w_biaxial_shear_summary(element, checks, results) -> dict[str, object]:
 
 
 def _w_torsion_summary(element, model, results) -> dict[str, object]:
-    """Find the largest meaningful W-member torque for the memorial notice."""
+    """Find the largest meaningful torque for the memorial notice."""
     witness = None
     available = bool(results)
     for result in results or ():
@@ -275,23 +276,26 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             tension, compression, flexion_y, flexion_z, shear_y, shear_z,
             oblique_bending, flexotension, flexocompression,
         )
+        profile_type = model.bars[element.member_names[0]].section
+        is_w_profile = profile_type in {"W Laminado", "HP Laminado"}
+        is_u_profile = profile_type in {"U Laminado", "U Inclinado Laminado"}
         w_slenderness_summary = (
-            verify_w_slenderness(element, model, model.analysis_results)
-            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
+            verify_w_slenderness(element, model, model.analysis_results) if is_w_profile else
+            verify_u_slenderness(element, model, model.analysis_results) if is_u_profile else None
+        )
+        w_torsion_summary = (
+            _w_torsion_summary(element, model, model.analysis_results)
+            if is_w_profile or is_u_profile else None
         )
         w_biaxial_shear_check = None
-        if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"}:
+        if is_w_profile or is_u_profile:
             w_biaxial_shear_check = verify_w_biaxial_shear(
                 element, model, model.analysis_results,
             )
             checks = (*checks, w_biaxial_shear_check)
-        w_torsion_summary = (
-            _w_torsion_summary(element, model, model.analysis_results)
-            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
-        )
         w_biaxial_shear_summary = (
             _w_biaxial_shear_summary(element, checks, model.analysis_results)
-            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
+            if is_w_profile or is_u_profile else None
         )
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]
