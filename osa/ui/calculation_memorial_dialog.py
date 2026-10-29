@@ -517,7 +517,7 @@ class CalculationMemorialDialog(QDialog):
             return "".join(rendered)
 
         slenderness_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             slenderness_status = slenderness_summary.get("status")
             slenderness_content = (
                 '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
@@ -2372,7 +2372,7 @@ class CalculationMemorialDialog(QDialog):
         scope_notice = ""
         torsion_content = ""
         biaxial_shear_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado"}:
             if not torsion_summary.get("available"):
                 torsion_message = (
                     "Execute a análise e a verificação do modelo para identificar "

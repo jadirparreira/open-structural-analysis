@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.i_rolled import (
+    verify_i_biaxial_shear,
     verify_i_compression,
     verify_i_flexion_y,
     verify_i_flexion_z,
@@ -14,6 +15,7 @@ from osa.verification.i_rolled import (
     verify_i_oblique_bending,
     verify_i_shear_y,
     verify_i_shear_z,
+    verify_i_slenderness,
     verify_i_tension,
 )
 from osa.verification.l_rolled import (
@@ -80,9 +82,11 @@ from osa.verification.u_rolled import (
     verify_u_oblique_bending,
     verify_u_shear_y,
     verify_u_shear_z,
+    verify_u_slenderness,
     verify_u_tension,
 )
 from osa.verification.w_rolled import (
+    verify_w_biaxial_shear,
     verify_w_compression,
     verify_w_flexion_y,
     verify_w_flexion_z,
@@ -91,11 +95,9 @@ from osa.verification.w_rolled import (
     verify_w_oblique_bending,
     verify_w_shear_y,
     verify_w_shear_z,
-    verify_w_biaxial_shear,
     verify_w_slenderness,
     verify_w_tension,
 )
-from osa.verification.u_rolled import verify_u_slenderness
 
 _ROUTINES = {
     "W Laminado": (
@@ -279,13 +281,15 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         profile_type = model.bars[element.member_names[0]].section
         is_w_profile = profile_type in {"W Laminado", "HP Laminado"}
         is_u_profile = profile_type in {"U Laminado", "U Inclinado Laminado"}
+        is_i_profile = profile_type == "I Laminado"
         w_slenderness_summary = (
             verify_w_slenderness(element, model, model.analysis_results) if is_w_profile else
-            verify_u_slenderness(element, model, model.analysis_results) if is_u_profile else None
+            verify_u_slenderness(element, model, model.analysis_results) if is_u_profile else
+            verify_i_slenderness(element, model, model.analysis_results) if is_i_profile else None
         )
         w_torsion_summary = (
             _w_torsion_summary(element, model, model.analysis_results)
-            if is_w_profile or is_u_profile else None
+            if is_w_profile or is_u_profile or is_i_profile else None
         )
         w_biaxial_shear_check = None
         if is_w_profile or is_u_profile:
@@ -293,9 +297,14 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
                 element, model, model.analysis_results,
             )
             checks = (*checks, w_biaxial_shear_check)
+        elif is_i_profile:
+            w_biaxial_shear_check = verify_i_biaxial_shear(
+                element, model, model.analysis_results,
+            )
+            checks = (*checks, w_biaxial_shear_check)
         w_biaxial_shear_summary = (
             _w_biaxial_shear_summary(element, checks, model.analysis_results)
-            if is_w_profile or is_u_profile else None
+            if is_w_profile or is_u_profile or is_i_profile else None
         )
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]
