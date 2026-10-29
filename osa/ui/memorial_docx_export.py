@@ -22,6 +22,7 @@ _OMML_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 class _Node:
     tag: str
     children: list[_Node | str] = field(default_factory=list)
+    attributes: dict[str, str] = field(default_factory=dict)
 
 
 class _MemorialParser(HTMLParser):
@@ -35,7 +36,7 @@ class _MemorialParser(HTMLParser):
         self._stack = [self.root]
 
     def handle_starttag(self, tag: str, attrs) -> None:
-        node = _Node(tag.lower())
+        node = _Node(tag.lower(), attributes=dict(attrs))
         self._stack[-1].children.append(node)
         if tag.lower() not in self._VOID_TAGS:
             self._stack.append(node)
@@ -170,7 +171,9 @@ def _export_node(document, node: _Node, equations: dict[str, str]) -> None:
     elif node.tag == "p":
         paragraph = document.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        _append_inline(paragraph, node.children, equations)
+        style = node.attributes.get("style", "")
+        bold = bool(re.search(r"(?:^|;)\s*font-weight\s*:\s*(?:bold|[6-9]00)\b", style, re.IGNORECASE))
+        _append_inline(paragraph, node.children, equations, bold=bold)
     elif node.tag == "table":
         rows = _table_rows(node)
         table_rows = []

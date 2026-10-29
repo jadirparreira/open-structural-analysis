@@ -42,6 +42,19 @@ def test_docx_export_preserves_content_and_inserts_editable_omml(tmp_path):
         assert archive.testzip() is None
 
 
+def test_docx_export_preserves_bold_verification_titles(tmp_path):
+    title = "Tração axial — ABNT NBR 8800:2024, 5.2"
+    destination = export_calculation_memorial_docx(
+        f'<p style="margin:18px 0 12px;color:#57606a;font-weight:700">{title}</p>',
+        {},
+        tmp_path / "memorial-titulos.docx",
+    )
+
+    paragraph = Document(destination).paragraphs[0]
+    assert paragraph.text == title
+    assert paragraph.runs and all(run.bold for run in paragraph.runs)
+
+
 def test_export_button_saves_docx_to_user_selected_path(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     destination = tmp_path / "memorial-gerado.docx"
