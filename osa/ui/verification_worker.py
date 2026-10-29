@@ -104,6 +104,13 @@ _ROUTINES = {
         verify_w_oblique_bending, verify_w_flexotension,
         verify_w_flexocompression,
     ),
+    "HP Laminado": (
+        verify_w_tension, verify_w_compression,
+        verify_w_flexion_y, verify_w_flexion_z,
+        verify_w_shear_y, verify_w_shear_z,
+        verify_w_oblique_bending, verify_w_flexotension,
+        verify_w_flexocompression,
+    ),
     "I Laminado": (
         verify_i_tension, verify_i_compression,
         verify_i_flexion_y, verify_i_flexion_z,
@@ -270,21 +277,21 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         )
         w_slenderness_summary = (
             verify_w_slenderness(element, model, model.analysis_results)
-            if model.bars[element.member_names[0]].section == "W Laminado" else None
+            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
         )
         w_biaxial_shear_check = None
-        if model.bars[element.member_names[0]].section == "W Laminado":
+        if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"}:
             w_biaxial_shear_check = verify_w_biaxial_shear(
                 element, model, model.analysis_results,
             )
             checks = (*checks, w_biaxial_shear_check)
         w_torsion_summary = (
             _w_torsion_summary(element, model, model.analysis_results)
-            if model.bars[element.member_names[0]].section == "W Laminado" else None
+            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
         )
         w_biaxial_shear_summary = (
             _w_biaxial_shear_summary(element, checks, model.analysis_results)
-            if model.bars[element.member_names[0]].section == "W Laminado" else None
+            if model.bars[element.member_names[0]].section in {"W Laminado", "HP Laminado"} else None
         )
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]

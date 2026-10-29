@@ -4872,7 +4872,7 @@ class StructureScene(QWidget):
             result = getattr(self._model, "verification_results", {}).get(element.key)
             is_w_profile = bool(element.member_names) and all(
                 member_name in self._model.bars
-                and self._model.bars[member_name].section == "W Laminado"
+                and self._model.bars[member_name].section in {"W Laminado", "HP Laminado"}
                 for member_name in element.member_names
             )
             if not result:

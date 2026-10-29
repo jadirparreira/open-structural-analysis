@@ -368,7 +368,7 @@ class PropertyPanel(QFrame):
             return
         element_result = self._verification_result_for(names)
         is_w_member = bool(names) and all(
-            self.window.model.bars[name].section == "W Laminado" for name in names
+            self.window.model.bars[name].section in {"W Laminado", "HP Laminado"} for name in names
         )
         if element_result is None and not is_w_member:
             return
@@ -382,7 +382,7 @@ class PropertyPanel(QFrame):
             return False
         sections = {member.section for member in members}
         return len(sections) == 1 and sections.pop() in {
-            "W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
+            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
             "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada",
             "Barra Circular",
         }
@@ -584,7 +584,7 @@ class PropertyPanel(QFrame):
             implemented = self._has_verification_routine(names)
             element_result = self._verification_result_for(names) if implemented else None
             is_w_member = bool(names) and all(
-                self.window.model.bars[name].section == "W Laminado" for name in names
+                self.window.model.bars[name].section in {"W Laminado", "HP Laminado"} for name in names
             )
             memory_button = self._verification_memory_button
             if not implemented:

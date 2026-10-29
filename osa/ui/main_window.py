@@ -63,6 +63,7 @@ from .section_panel import (
     TLaminadoSectionPanel,
     ULaminadoSectionPanel,
     WLaminadoSectionPanel,
+    HPLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
 from .verification_worker import VerificationWorker
@@ -321,6 +322,7 @@ class MainWindow(QMainWindow):
         self.split_member_dialog = SplitMemberDialog(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
+            "HP Laminado": HPLaminadoSectionPanel(self),
             "I Laminado": ILaminadoSectionPanel(self),
             "U Laminado": ULaminadoSectionPanel(self),
             "L Laminado": LLaminadoSectionPanel(self),

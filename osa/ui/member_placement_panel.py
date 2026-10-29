@@ -17,6 +17,7 @@ from .section_panel import (
     TLaminadoSectionPanel,
     ULaminadoSectionPanel,
     WLaminadoSectionPanel,
+    HPLaminadoSectionPanel,
 )
 
 
@@ -94,6 +95,13 @@ class MemberPlacementEditor:
         self.close_section_panel()
         self.close_displacement_panel()
 
+    def isVisible(self) -> bool:
+        """Report whether any widget owned by this editor is currently shown."""
+        return any(
+            widget.isVisible()
+            for widget in (self.properties, self.section_panel, self.displacement_panel)
+        )
+
     def reposition(self) -> None:
         for panel in (self.properties, self.section_panel, self.displacement_panel):
             if panel.isVisible():
@@ -127,6 +135,7 @@ class MemberPlacementEditor:
         if family not in self.section_panels:
             factories = {
                 "W Laminado": WLaminadoSectionPanel,
+                "HP Laminado": HPLaminadoSectionPanel,
                 "I Laminado": ILaminadoSectionPanel,
                 "U Laminado": ULaminadoSectionPanel,
                 "L Laminado": LLaminadoSectionPanel,

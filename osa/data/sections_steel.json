@@ -6,822 +6,1224 @@
       "source": "Catálogo Gerdau",
       "profiles": [
         {
-          "name": "W 150 x 13.0",
+          "name": "W 150 × 13,0",
+          "commercial_name": "W 6 × 8.5",
           "d_mm": 148,
           "bf_mm": 100,
           "tw_mm": 4.3,
           "tf_mm": 4.9
         },
         {
-          "name": "W 150 x 18.0",
+          "name": "W 150 × 13,5",
+          "commercial_name": "W 6 × 9",
+          "d_mm": 150,
+          "bf_mm": 100,
+          "tw_mm": 4.3,
+          "tf_mm": 5.5
+        },
+        {
+          "name": "W 150 × 18,0",
+          "commercial_name": "W 6 × 12",
           "d_mm": 153,
           "bf_mm": 102,
           "tw_mm": 5.8,
           "tf_mm": 7.1
         },
         {
-          "name": "W 150 x 22.5 (H)",
+          "name": "W 150 × 22,5",
+          "commercial_name": "W 6 × 15",
           "d_mm": 152,
           "bf_mm": 152,
           "tw_mm": 5.8,
           "tf_mm": 6.6
         },
         {
-          "name": "W 150 x 24.0",
+          "name": "W 150 × 24,0",
+          "commercial_name": "W 6 × 16",
           "d_mm": 160,
           "bf_mm": 102,
           "tw_mm": 6.6,
           "tf_mm": 10.3
         },
         {
-          "name": "W 150 x 29.8 (H)",
+          "name": "W 150 × 29,8",
+          "commercial_name": "W 6 × 20",
           "d_mm": 157,
           "bf_mm": 153,
           "tw_mm": 6.6,
           "tf_mm": 9.3
         },
         {
-          "name": "W 150 x 37.1 (H)",
+          "name": "W 150 × 37,1",
+          "commercial_name": "W 6 × 25",
           "d_mm": 162,
           "bf_mm": 154,
           "tw_mm": 8.1,
           "tf_mm": 11.6
         },
         {
-          "name": "W 200 x 15.0",
+          "name": "W 200 × 15,0",
+          "commercial_name": "W 8 × 10",
           "d_mm": 200,
           "bf_mm": 100,
           "tw_mm": 4.3,
           "tf_mm": 5.2
         },
         {
-          "name": "W 200 x 19.3",
+          "name": "W 200 × 19,3",
+          "commercial_name": "W 8 × 13",
           "d_mm": 203,
           "bf_mm": 102,
           "tw_mm": 5.8,
           "tf_mm": 6.5
         },
         {
-          "name": "W 200 x 22.5",
+          "name": "W 200 × 22,5",
+          "commercial_name": "W 8 × 15",
           "d_mm": 206,
           "bf_mm": 102,
           "tw_mm": 6.2,
           "tf_mm": 8.0
         },
         {
-          "name": "W 200 x 26.6",
+          "name": "W 200 × 26,6",
+          "commercial_name": "W 8 × 18",
           "d_mm": 207,
           "bf_mm": 133,
           "tw_mm": 5.8,
           "tf_mm": 8.4
         },
         {
-          "name": "W 200 x 31.3",
+          "name": "W 200 × 31,3",
+          "commercial_name": "W 8 × 21",
           "d_mm": 210,
           "bf_mm": 134,
           "tw_mm": 6.4,
           "tf_mm": 10.2
         },
         {
-          "name": "W 200 x 35.9 (H)",
+          "name": "W 200 × 35,9",
+          "commercial_name": "W 8 × 24",
           "d_mm": 201,
           "bf_mm": 165,
           "tw_mm": 6.2,
           "tf_mm": 10.2
         },
         {
-          "name": "W 200 x 41.7 (H)",
+          "name": "W 200 × 41,7",
+          "commercial_name": "W 8 × 28",
           "d_mm": 205,
           "bf_mm": 166,
           "tw_mm": 7.2,
           "tf_mm": 11.8
         },
         {
-          "name": "W 200 x 46.1 (H)",
+          "name": "W 200 × 46,1",
+          "commercial_name": "W 8 × 31",
           "d_mm": 203,
           "bf_mm": 203,
           "tw_mm": 7.2,
           "tf_mm": 11.0
         },
         {
-          "name": "W 200 x 52.0 (H)",
+          "name": "W 200 × 52,0",
+          "commercial_name": "W 8 × 35",
           "d_mm": 206,
           "bf_mm": 204,
           "tw_mm": 7.9,
           "tf_mm": 12.6
         },
         {
-          "name": "HP 200 x 53.0 (H)",
-          "d_mm": 204,
-          "bf_mm": 207,
-          "tw_mm": 11.3,
-          "tf_mm": 11.3
-        },
-        {
-          "name": "W 200 x 59.0 (H)",
+          "name": "W 200 × 59,0",
+          "commercial_name": "W 8 × 40",
           "d_mm": 210,
           "bf_mm": 205,
           "tw_mm": 9.1,
           "tf_mm": 14.2
         },
         {
-          "name": "W 200 x 71.0 (H)",
+          "name": "W 200 × 71,0",
+          "commercial_name": "W 8 × 48",
           "d_mm": 216,
           "bf_mm": 206,
           "tw_mm": 10.2,
           "tf_mm": 17.4
         },
         {
-          "name": "W 200 x 86.0 (H)",
+          "name": "W 200 × 86,0",
+          "commercial_name": "W 8 × 58",
           "d_mm": 222,
           "bf_mm": 209,
           "tw_mm": 13.0,
           "tf_mm": 20.6
         },
         {
-          "name": "W 200 x 100.0 (H)",
+          "name": "W 200 × 100,0",
+          "commercial_name": "W 8 × 67",
           "d_mm": 229,
           "bf_mm": 210,
           "tw_mm": 14.5,
           "tf_mm": 23.7
         },
         {
-          "name": "W 250 x 17.9",
+          "name": "W 250 × 17,9",
+          "commercial_name": "W 10 × 12",
           "d_mm": 251,
           "bf_mm": 101,
           "tw_mm": 4.8,
           "tf_mm": 5.3
         },
         {
-          "name": "W 250 x 22.3",
+          "name": "W 250 × 22,3",
+          "commercial_name": "W 10 × 15",
           "d_mm": 254,
           "bf_mm": 102,
           "tw_mm": 5.8,
           "tf_mm": 6.9
         },
         {
-          "name": "W 250 x 25.3",
+          "name": "W 250 × 25,3",
+          "commercial_name": "W 10 × 17",
           "d_mm": 257,
           "bf_mm": 102,
           "tw_mm": 6.1,
           "tf_mm": 8.4
         },
         {
-          "name": "W 250 x 28.4",
+          "name": "W 250 × 28,4",
+          "commercial_name": "W 10 × 19",
           "d_mm": 260,
           "bf_mm": 102,
           "tw_mm": 6.4,
           "tf_mm": 10.0
         },
         {
-          "name": "W 250 x 32.7",
+          "name": "W 250 × 32,7",
+          "commercial_name": "W 10 × 22",
           "d_mm": 258,
           "bf_mm": 146,
           "tw_mm": 6.1,
           "tf_mm": 9.1
         },
         {
-          "name": "W 250 x 38.5",
+          "name": "W 250 × 38,5",
+          "commercial_name": "W 10 × 26",
           "d_mm": 262,
           "bf_mm": 147,
           "tw_mm": 6.6,
           "tf_mm": 11.2
         },
         {
-          "name": "W 250 x 44.8",
+          "name": "W 250 × 44,8",
+          "commercial_name": "W 10 × 30",
           "d_mm": 266,
           "bf_mm": 148,
           "tw_mm": 7.6,
           "tf_mm": 13.0
         },
         {
-          "name": "HP 250 x 62.0 (H)",
-          "d_mm": 246,
-          "bf_mm": 256,
-          "tw_mm": 10.5,
-          "tf_mm": 10.7
+          "name": "W 250 × 49,1",
+          "commercial_name": "W 10 × 33",
+          "d_mm": 247,
+          "bf_mm": 202,
+          "tw_mm": 7.4,
+          "tf_mm": 11.0
         },
         {
-          "name": "W 250 x 73.0 (H)",
+          "name": "W 250 × 58,0",
+          "commercial_name": "W 10 × 39",
+          "d_mm": 252,
+          "bf_mm": 203,
+          "tw_mm": 8.0,
+          "tf_mm": 13.5
+        },
+        {
+          "name": "W 250 × 67,0",
+          "commercial_name": "W 10 × 45",
+          "d_mm": 257,
+          "bf_mm": 204,
+          "tw_mm": 8.9,
+          "tf_mm": 15.7
+        },
+        {
+          "name": "W 250 × 73,0",
+          "commercial_name": "W 10 × 49",
           "d_mm": 253,
           "bf_mm": 254,
           "tw_mm": 8.6,
           "tf_mm": 14.2
         },
         {
-          "name": "W 250 x 80.0 (H)",
+          "name": "W 250 × 80,0",
+          "commercial_name": "W 10 × 54",
           "d_mm": 256,
           "bf_mm": 255,
           "tw_mm": 9.4,
           "tf_mm": 15.6
         },
         {
-          "name": "HP 250 x 85.0 (H)",
-          "d_mm": 254,
-          "bf_mm": 260,
-          "tw_mm": 14.4,
-          "tf_mm": 14.4
-        },
-        {
-          "name": "W 250 x 89.0 (H)",
+          "name": "W 250 × 89,0",
+          "commercial_name": "W 10 × 60",
           "d_mm": 260,
           "bf_mm": 256,
           "tw_mm": 10.7,
           "tf_mm": 17.3
         },
         {
-          "name": "W 250 x 101.0 (H)",
+          "name": "W 250 × 101,0",
+          "commercial_name": "W 10 × 68",
           "d_mm": 264,
           "bf_mm": 257,
           "tw_mm": 11.9,
           "tf_mm": 19.6
         },
         {
-          "name": "W 250 x 115.0 (H)",
+          "name": "W 250 × 115,0",
+          "commercial_name": "W 10 × 77",
           "d_mm": 269,
           "bf_mm": 259,
           "tw_mm": 13.5,
           "tf_mm": 22.1
         },
         {
-          "name": "W 250 x 131.0 (H)",
+          "name": "W 250 × 131,0",
+          "commercial_name": "W 10 × 88",
           "d_mm": 275,
           "bf_mm": 261,
           "tw_mm": 15.4,
           "tf_mm": 25.1
         },
         {
-          "name": "W 250 x 149.0 (H)",
+          "name": "W 250 × 149,0",
+          "commercial_name": "W 10 × 100",
           "d_mm": 282,
           "bf_mm": 263,
           "tw_mm": 17.3,
           "tf_mm": 28.4
         },
         {
-          "name": "W 250 x 167.0 (H)",
+          "name": "W 250 × 167,0",
+          "commercial_name": "W 10 × 112",
           "d_mm": 289,
           "bf_mm": 265,
           "tw_mm": 19.2,
           "tf_mm": 31.8
         },
         {
-          "name": "W 310 x 21.0",
+          "name": "W 310 × 21,0",
+          "commercial_name": "W 12 × 14",
           "d_mm": 303,
           "bf_mm": 101,
           "tw_mm": 5.1,
           "tf_mm": 5.7
         },
         {
-          "name": "W 310 x 23.8",
+          "name": "W 310 × 23,8",
+          "commercial_name": "W 12 × 16",
           "d_mm": 305,
           "bf_mm": 101,
           "tw_mm": 5.6,
           "tf_mm": 6.7
         },
         {
-          "name": "W 310 x 28.3",
+          "name": "W 310 × 28,3",
+          "commercial_name": "W 12 × 19",
           "d_mm": 309,
           "bf_mm": 102,
           "tw_mm": 6.0,
           "tf_mm": 8.9
         },
         {
-          "name": "W 310 x 32.7",
+          "name": "W 310 × 32,7",
+          "commercial_name": "W 12 × 22",
           "d_mm": 313,
           "bf_mm": 102,
           "tw_mm": 6.6,
           "tf_mm": 10.8
         },
         {
-          "name": "W 310 x 38.7",
+          "name": "W 310 × 38,7",
+          "commercial_name": "W 12 × 26",
           "d_mm": 310,
           "bf_mm": 165,
           "tw_mm": 5.8,
           "tf_mm": 9.7
         },
         {
-          "name": "W 310 x 44.5",
+          "name": "W 310 × 44,5",
+          "commercial_name": "W 12 × 30",
           "d_mm": 313,
           "bf_mm": 166,
           "tw_mm": 6.6,
           "tf_mm": 11.2
         },
         {
-          "name": "W 310 x 52.0",
+          "name": "W 310 × 52,0",
+          "commercial_name": "W 12 × 35",
           "d_mm": 317,
           "bf_mm": 167,
           "tw_mm": 7.6,
           "tf_mm": 13.2
         },
         {
-          "name": "W 310 x 60.0 (H)",
+          "name": "W 310 × 60,0",
+          "commercial_name": "W 12 × 40",
           "d_mm": 303,
           "bf_mm": 203,
           "tw_mm": 7.5,
           "tf_mm": 13.1
         },
         {
-          "name": "W 310 x 67.0 (H)",
+          "name": "W 310 × 67,0",
+          "commercial_name": "W 12 × 45",
           "d_mm": 306,
           "bf_mm": 204,
           "tw_mm": 8.5,
           "tf_mm": 14.6
         },
         {
-          "name": "W 310 x 74.0 (H)",
+          "name": "W 310 × 74,0",
+          "commercial_name": "W 12 × 50",
           "d_mm": 310,
           "bf_mm": 205,
           "tw_mm": 9.4,
           "tf_mm": 16.3
         },
         {
-          "name": "HP 310 x 79.0 (H)",
-          "d_mm": 303,
-          "bf_mm": 306,
-          "tw_mm": 11.0,
-          "tf_mm": 11.0
-        },
-        {
-          "name": "HP 310 x 93.0 (H)",
+          "name": "W 310 × 79,0",
+          "commercial_name": "W 12 × 53",
           "d_mm": 306,
-          "bf_mm": 308,
-          "tw_mm": 13.1,
-          "tf_mm": 13.1
+          "bf_mm": 254,
+          "tw_mm": 8.8,
+          "tf_mm": 14.6
         },
         {
-          "name": "W 310 x 97.0 (H)",
+          "name": "W 310 × 86,0",
+          "commercial_name": "W 12 × 58",
+          "d_mm": 310,
+          "bf_mm": 254,
+          "tw_mm": 9.1,
+          "tf_mm": 16.3
+        },
+        {
+          "name": "W 310 × 97,0",
+          "commercial_name": "W 12 × 65",
           "d_mm": 308,
           "bf_mm": 305,
           "tw_mm": 9.9,
           "tf_mm": 15.4
         },
         {
-          "name": "W 310 x 107.0 (H)",
+          "name": "W 310 × 107,0",
+          "commercial_name": "W 12 × 72",
           "d_mm": 311,
           "bf_mm": 306,
           "tw_mm": 10.9,
           "tf_mm": 17.0
         },
         {
-          "name": "HP 310 x 110.0 (H)",
-          "d_mm": 303,
-          "bf_mm": 310,
-          "tw_mm": 15.4,
-          "tf_mm": 15.4
-        },
-        {
-          "name": "W 310 x 117.0",
+          "name": "W 310 × 117,0",
+          "commercial_name": "W 12 × 79",
           "d_mm": 314,
           "bf_mm": 307,
           "tw_mm": 11.9,
           "tf_mm": 18.7
         },
         {
-          "name": "HP 310 x 125.0 (H)",
-          "d_mm": 311,
-          "bf_mm": 307,
-          "tw_mm": 17.4,
-          "tf_mm": 17.4
-        },
-        {
-          "name": "W 310 x 129.0 (H)",
+          "name": "W 310 × 129,0",
+          "commercial_name": "W 12 × 87",
           "d_mm": 318,
           "bf_mm": 308,
           "tw_mm": 13.1,
           "tf_mm": 20.6
         },
         {
-          "name": "HP 310 x 132 (H)",
-          "d_mm": 314,
-          "bf_mm": 308,
-          "tw_mm": 18.3,
-          "tf_mm": 18.3
-        },
-        {
-          "name": "W 310 x 143.0 (H)",
+          "name": "W 310 × 143,0",
+          "commercial_name": "W 12 × 96",
           "d_mm": 323,
           "bf_mm": 309,
           "tw_mm": 14.0,
           "tf_mm": 22.9
         },
         {
-          "name": "W 310 x 158.0 (H)",
+          "name": "W 310 × 158,0",
+          "commercial_name": "W 12 × 106",
           "d_mm": 327,
           "bf_mm": 310,
           "tw_mm": 15.5,
           "tf_mm": 25.1
         },
         {
-          "name": "W 310 x 179.0 (H)",
+          "name": "W 310 × 179,0",
+          "commercial_name": "W 12 × 120",
           "d_mm": 333,
           "bf_mm": 313,
           "tw_mm": 18.0,
           "tf_mm": 28.1
         },
         {
-          "name": "W 310 x 202.0 (H)",
+          "name": "W 310 × 202,0",
+          "commercial_name": "W 12 × 136",
           "d_mm": 341,
           "bf_mm": 315,
           "tw_mm": 20.1,
           "tf_mm": 31.8
         },
         {
-          "name": "W 360 x 32.9",
+          "name": "W 310 × 226,0",
+          "commercial_name": "W 12 × 152",
+          "d_mm": 348,
+          "bf_mm": 317,
+          "tw_mm": 22.1,
+          "tf_mm": 35.6
+        },
+        {
+          "name": "W 310 × 253,0",
+          "commercial_name": "W 12 × 170",
+          "d_mm": 356,
+          "bf_mm": 319,
+          "tw_mm": 24.4,
+          "tf_mm": 39.6
+        },
+        {
+          "name": "W 310 × 283,0",
+          "commercial_name": "W 12 × 190",
+          "d_mm": 365,
+          "bf_mm": 322,
+          "tw_mm": 26.9,
+          "tf_mm": 44.1
+        },
+        {
+          "name": "W 310 × 313,0",
+          "commercial_name": "W 12 × 210",
+          "d_mm": 374,
+          "bf_mm": 325,
+          "tw_mm": 30.0,
+          "tf_mm": 48.3
+        },
+        {
+          "name": "W 310 × 342,0",
+          "commercial_name": "W 12 × 230",
+          "d_mm": 382,
+          "bf_mm": 328,
+          "tw_mm": 32.6,
+          "tf_mm": 52.6
+        },
+        {
+          "name": "W 310 × 375,0",
+          "commercial_name": "W 12 × 252",
+          "d_mm": 391,
+          "bf_mm": 330,
+          "tw_mm": 35.4,
+          "tf_mm": 57.2
+        },
+        {
+          "name": "W 310 × 415,0",
+          "commercial_name": "W 12 × 279",
+          "d_mm": 403,
+          "bf_mm": 334,
+          "tw_mm": 38.9,
+          "tf_mm": 62.7
+        },
+        {
+          "name": "W 310 × 454,0",
+          "commercial_name": "W 12 × 305",
+          "d_mm": 415,
+          "bf_mm": 336,
+          "tw_mm": 41.3,
+          "tf_mm": 68.7
+        },
+        {
+          "name": "W 360 × 32,9",
+          "commercial_name": "W 14 × 22",
           "d_mm": 349,
           "bf_mm": 127,
           "tw_mm": 5.8,
           "tf_mm": 8.5
         },
         {
-          "name": "W 360 x 39.0",
+          "name": "W 360 × 39,0",
+          "commercial_name": "W 14 × 26",
           "d_mm": 353,
           "bf_mm": 128,
           "tw_mm": 6.5,
           "tf_mm": 10.7
         },
         {
-          "name": "W 360 x 44.6",
+          "name": "W 360 × 44,0",
+          "commercial_name": "W 14 × 30",
           "d_mm": 352,
           "bf_mm": 171,
           "tw_mm": 6.9,
           "tf_mm": 9.8
         },
         {
-          "name": "W 360 x 51.0",
+          "name": "W 360 × 51,0",
+          "commercial_name": "W 14 × 34",
           "d_mm": 355,
           "bf_mm": 171,
           "tw_mm": 7.2,
           "tf_mm": 11.6
         },
         {
-          "name": "W 360 x 58",
+          "name": "W 360 × 57,8",
+          "commercial_name": "W 14 × 38",
           "d_mm": 358,
           "bf_mm": 172,
           "tw_mm": 7.9,
           "tf_mm": 13.1
         },
         {
-          "name": "W 360 x 64.0",
+          "name": "W 360 × 64,0",
+          "commercial_name": "W 14 × 43",
           "d_mm": 347,
           "bf_mm": 203,
           "tw_mm": 7.7,
           "tf_mm": 13.5
         },
         {
-          "name": "W 360 x 72.0",
+          "name": "W 360 × 72,0",
+          "commercial_name": "W 14 × 48",
           "d_mm": 350,
           "bf_mm": 204,
           "tw_mm": 8.6,
           "tf_mm": 15.1
         },
         {
-          "name": "W 360 x 79.0",
+          "name": "W 360 × 79,0",
+          "commercial_name": "W 14 × 53",
           "d_mm": 354,
           "bf_mm": 205,
           "tw_mm": 9.4,
           "tf_mm": 16.8
         },
         {
-          "name": "W 360 x 91.0 (H)",
+          "name": "W 360 × 91,0",
+          "commercial_name": "W 14 × 61",
           "d_mm": 353,
           "bf_mm": 254,
           "tw_mm": 9.5,
           "tf_mm": 16.4
         },
         {
-          "name": "W 360 x 101.0 (H)",
+          "name": "W 360 × 101,0",
+          "commercial_name": "W 14 × 68",
           "d_mm": 357,
           "bf_mm": 255,
           "tw_mm": 10.5,
           "tf_mm": 18.3
         },
         {
-          "name": "W 360 x 110.0 (H)",
+          "name": "W 360 × 110,0",
+          "commercial_name": "W 14 × 74",
           "d_mm": 360,
           "bf_mm": 256,
           "tw_mm": 11.4,
           "tf_mm": 19.9
         },
         {
-          "name": "W 360 x 122.0 (H)",
+          "name": "W 360 × 122,0",
+          "commercial_name": "W 14 × 82",
           "d_mm": 363,
           "bf_mm": 257,
           "tw_mm": 13.0,
           "tf_mm": 21.7
         },
         {
-          "name": "W 410 x 38.8",
+          "name": "W 410 × 38,8",
+          "commercial_name": "W 16 × 26",
           "d_mm": 399,
           "bf_mm": 140,
           "tw_mm": 6.4,
           "tf_mm": 8.8
         },
         {
-          "name": "W 410 x 46.1",
+          "name": "W 410 × 46,1",
+          "commercial_name": "W 16 × 31",
           "d_mm": 403,
           "bf_mm": 140,
           "tw_mm": 7.0,
           "tf_mm": 11.2
         },
         {
-          "name": "W 410 x 53.0",
+          "name": "W 410 × 53,0",
+          "commercial_name": "W 16 × 36",
           "d_mm": 403,
           "bf_mm": 177,
           "tw_mm": 7.5,
           "tf_mm": 10.9
         },
         {
-          "name": "W 410 x 60.0",
+          "name": "W 410 × 60,0",
+          "commercial_name": "W 16 × 40",
           "d_mm": 407,
           "bf_mm": 178,
           "tw_mm": 7.7,
           "tf_mm": 12.8
         },
         {
-          "name": "W 410 x 67.0",
+          "name": "W 410 × 67,0",
+          "commercial_name": "W 16 × 45",
           "d_mm": 410,
           "bf_mm": 179,
           "tw_mm": 8.8,
           "tf_mm": 14.4
         },
         {
-          "name": "W 410 x 75.0",
+          "name": "W 410 × 75,0",
+          "commercial_name": "W 16 × 50",
           "d_mm": 413,
           "bf_mm": 180,
           "tw_mm": 9.7,
           "tf_mm": 16.0
         },
         {
-          "name": "W 410 x 85.0",
+          "name": "W 410 × 85,0",
+          "commercial_name": "W 16 × 57",
           "d_mm": 417,
           "bf_mm": 181,
           "tw_mm": 10.9,
           "tf_mm": 18.2
         },
         {
-          "name": "W 460 x 52.0",
+          "name": "W 410 × 100,0",
+          "commercial_name": "W 16 × 67",
+          "d_mm": 415,
+          "bf_mm": 260,
+          "tw_mm": 10.0,
+          "tf_mm": 16.9
+        },
+        {
+          "name": "W 410 × 114,0",
+          "commercial_name": "W 16 × 77",
+          "d_mm": 420,
+          "bf_mm": 261,
+          "tw_mm": 11.6,
+          "tf_mm": 19.3
+        },
+        {
+          "name": "W 410 × 132,0",
+          "commercial_name": "W 16 × 89",
+          "d_mm": 425,
+          "bf_mm": 263,
+          "tw_mm": 13.3,
+          "tf_mm": 22.2
+        },
+        {
+          "name": "W 410 × 149,0",
+          "commercial_name": "W 16 × 100",
+          "d_mm": 431,
+          "bf_mm": 265,
+          "tw_mm": 14.9,
+          "tf_mm": 25.0
+        },
+        {
+          "name": "W 460 × 52,0",
+          "commercial_name": "W 18 × 35",
           "d_mm": 450,
           "bf_mm": 152,
           "tw_mm": 7.6,
           "tf_mm": 10.8
         },
         {
-          "name": "W 460 x 60.0",
+          "name": "W 460 × 60,0",
+          "commercial_name": "W 18 × 40",
           "d_mm": 455,
           "bf_mm": 153,
           "tw_mm": 8.0,
           "tf_mm": 13.3
         },
         {
-          "name": "W 460 x 68.0",
+          "name": "W 460 × 68,0",
+          "commercial_name": "W 18 × 46",
           "d_mm": 459,
           "bf_mm": 154,
           "tw_mm": 9.1,
           "tf_mm": 15.4
         },
         {
-          "name": "W 460 x 74.0",
+          "name": "W 460 × 74,0",
+          "commercial_name": "W 18 × 50",
           "d_mm": 457,
           "bf_mm": 190,
           "tw_mm": 9.0,
           "tf_mm": 14.5
         },
         {
-          "name": "W 460 x 82.0",
+          "name": "W 460 × 82,0",
+          "commercial_name": "W 18 × 55",
           "d_mm": 460,
           "bf_mm": 191,
           "tw_mm": 9.9,
           "tf_mm": 16.0
         },
         {
-          "name": "W 460 x 89.0",
+          "name": "W 460 × 89,0",
+          "commercial_name": "W 18 × 60",
           "d_mm": 463,
           "bf_mm": 192,
           "tw_mm": 10.5,
           "tf_mm": 17.7
         },
         {
-          "name": "W 460 x 97.0",
+          "name": "W 460 × 97,0",
+          "commercial_name": "W 18 × 65",
           "d_mm": 466,
           "bf_mm": 193,
           "tw_mm": 11.4,
           "tf_mm": 19.0
         },
         {
-          "name": "W 460 x 106.0",
+          "name": "W 460 × 106,0",
+          "commercial_name": "W 18 × 71",
           "d_mm": 469,
           "bf_mm": 194,
           "tw_mm": 12.6,
           "tf_mm": 20.6
         },
         {
-          "name": "W 530 x 66.0",
+          "name": "W 460 × 113,0",
+          "commercial_name": "W 18 × 76",
+          "d_mm": 463,
+          "bf_mm": 280,
+          "tw_mm": 10.8,
+          "tf_mm": 17.3
+        },
+        {
+          "name": "W 460 × 128,0",
+          "commercial_name": "W 18 × 86",
+          "d_mm": 467,
+          "bf_mm": 282,
+          "tw_mm": 12.2,
+          "tf_mm": 19.6
+        },
+        {
+          "name": "W 460 × 144,0",
+          "commercial_name": "W 18 × 97",
+          "d_mm": 472,
+          "bf_mm": 283,
+          "tw_mm": 13.6,
+          "tf_mm": 22.1
+        },
+        {
+          "name": "W 460 × 158,0",
+          "commercial_name": "W 18 × 106",
+          "d_mm": 476,
+          "bf_mm": 284,
+          "tw_mm": 15.0,
+          "tf_mm": 23.9
+        },
+        {
+          "name": "W 460 × 177,0",
+          "commercial_name": "W 18 × 119",
+          "d_mm": 482,
+          "bf_mm": 286,
+          "tw_mm": 16.6,
+          "tf_mm": 26.9
+        },
+        {
+          "name": "W 460 × 193,0",
+          "commercial_name": "W 18 × 130",
+          "d_mm": 489,
+          "bf_mm": 283,
+          "tw_mm": 17.0,
+          "tf_mm": 30.5
+        },
+        {
+          "name": "W 460 × 213,0",
+          "commercial_name": "W 18 × 143",
+          "d_mm": 495,
+          "bf_mm": 285,
+          "tw_mm": 18.5,
+          "tf_mm": 33.5
+        },
+        {
+          "name": "W 460 × 235,0",
+          "commercial_name": "W 18 × 158",
+          "d_mm": 501,
+          "bf_mm": 287,
+          "tw_mm": 20.6,
+          "tf_mm": 36.6
+        },
+        {
+          "name": "W 460 × 260,0",
+          "commercial_name": "W 18 × 175",
+          "d_mm": 509,
+          "bf_mm": 289,
+          "tw_mm": 22.6,
+          "tf_mm": 40.4
+        },
+        {
+          "name": "W 530 × 66,0",
+          "commercial_name": "W 21 × 44",
           "d_mm": 525,
           "bf_mm": 165,
           "tw_mm": 8.9,
           "tf_mm": 11.4
         },
         {
-          "name": "W 530 x 72.0",
+          "name": "W 530 × 72,0",
+          "commercial_name": "W 21 × 48",
           "d_mm": 524,
           "bf_mm": 207,
           "tw_mm": 9.0,
           "tf_mm": 10.9
         },
         {
-          "name": "W 530 x 74.0",
+          "name": "W 530 × 74,0",
+          "commercial_name": "W 21 × 50",
           "d_mm": 529,
           "bf_mm": 166,
           "tw_mm": 9.7,
           "tf_mm": 13.6
         },
         {
-          "name": "W 530 x 82.0",
+          "name": "W 530 × 82,0",
+          "commercial_name": "W 21 × 55",
           "d_mm": 528,
           "bf_mm": 209,
           "tw_mm": 9.5,
           "tf_mm": 13.3
         },
         {
-          "name": "W 530 x 85.0",
+          "name": "W 530 × 85,0",
+          "commercial_name": "W 21 × 57",
           "d_mm": 535,
           "bf_mm": 166,
           "tw_mm": 10.3,
           "tf_mm": 16.5
         },
         {
-          "name": "W 530 x 92.0",
+          "name": "W 530 × 92,0",
+          "commercial_name": "W 21 × 62",
           "d_mm": 533,
           "bf_mm": 209,
           "tw_mm": 10.2,
           "tf_mm": 15.6
         },
         {
-          "name": "W 530 x 101.0",
+          "name": "W 530 × 101,0",
+          "commercial_name": "W 21 × 68",
           "d_mm": 537,
           "bf_mm": 210,
           "tw_mm": 10.9,
           "tf_mm": 17.4
         },
         {
-          "name": "W 530 x 109.0",
+          "name": "W 530 × 109,0",
+          "commercial_name": "W 21 × 73",
           "d_mm": 539,
           "bf_mm": 211,
           "tw_mm": 11.6,
           "tf_mm": 18.8
         },
         {
-          "name": "W 530 x 123.0 (H)",
+          "name": "W 530 × 123,0",
+          "commercial_name": "W 21 × 83",
           "d_mm": 544,
           "bf_mm": 212,
           "tw_mm": 13.1,
           "tf_mm": 21.2
         },
         {
-          "name": "W 530 x 138.0 (H)",
+          "name": "W 530 × 138,0",
+          "commercial_name": "W 21 × 93",
           "d_mm": 549,
           "bf_mm": 214,
           "tw_mm": 14.7,
           "tf_mm": 23.8
         },
         {
-          "name": "W 610 x 82.0",
+          "name": "W 530 × 150,0",
+          "commercial_name": "W 21 × 101",
+          "d_mm": 543,
+          "bf_mm": 312,
+          "tw_mm": 12.2,
+          "tf_mm": 20.3
+        },
+        {
+          "name": "W 530 × 165,0",
+          "commercial_name": "W 21 × 111",
+          "d_mm": 546,
+          "bf_mm": 313,
+          "tw_mm": 14.0,
+          "tf_mm": 22.2
+        },
+        {
+          "name": "W 530 × 182,0",
+          "commercial_name": "W 21 × 122",
+          "d_mm": 551,
+          "bf_mm": 315,
+          "tw_mm": 15.2,
+          "tf_mm": 24.4
+        },
+        {
+          "name": "W 530 × 196,0",
+          "commercial_name": "W 21 × 132",
+          "d_mm": 554,
+          "bf_mm": 316,
+          "tw_mm": 16.5,
+          "tf_mm": 26.3
+        },
+        {
+          "name": "W 530 × 219,0",
+          "commercial_name": "W 21 × 147",
+          "d_mm": 560,
+          "bf_mm": 318,
+          "tw_mm": 18.3,
+          "tf_mm": 29.2
+        },
+        {
+          "name": "W 530 × 248,0",
+          "commercial_name": "W 21 × 166",
+          "d_mm": 571,
+          "bf_mm": 315,
+          "tw_mm": 19.0,
+          "tf_mm": 34.5
+        },
+        {
+          "name": "W 530 × 272,0",
+          "commercial_name": "W 21 × 182",
+          "d_mm": 577,
+          "bf_mm": 317,
+          "tw_mm": 21.1,
+          "tf_mm": 37.6
+        },
+        {
+          "name": "W 530 × 300,0",
+          "commercial_name": "W 21 × 201",
+          "d_mm": 585,
+          "bf_mm": 319,
+          "tw_mm": 23.1,
+          "tf_mm": 41.4
+        },
+        {
+          "name": "W 610 × 82,0",
+          "commercial_name": "W 24 × 55",
           "d_mm": 599,
           "bf_mm": 178,
           "tw_mm": 10.0,
           "tf_mm": 12.8
         },
         {
-          "name": "W 610 x 92.0",
+          "name": "W 610 × 92,0",
+          "commercial_name": "W 24 × 62",
           "d_mm": 603,
           "bf_mm": 179,
           "tw_mm": 10.9,
           "tf_mm": 15.0
         },
         {
-          "name": "W 610 x 101.0",
+          "name": "W 610 × 101,0",
+          "commercial_name": "W 24 × 68",
           "d_mm": 603,
           "bf_mm": 228,
           "tw_mm": 10.5,
           "tf_mm": 14.9
         },
         {
-          "name": "W 610 x 113.0",
+          "name": "W 610 × 113,0",
+          "commercial_name": "W 24 × 76",
           "d_mm": 608,
           "bf_mm": 228,
           "tw_mm": 11.2,
           "tf_mm": 17.3
         },
         {
-          "name": "W 610 x 125.0",
+          "name": "W 610 × 125,0",
+          "commercial_name": "W 24 × 84",
           "d_mm": 612,
           "bf_mm": 229,
           "tw_mm": 11.9,
           "tf_mm": 19.6
         },
         {
-          "name": "W 610 x 140.0",
+          "name": "W 610 × 140,0",
+          "commercial_name": "W 24 × 94",
           "d_mm": 617,
           "bf_mm": 230,
           "tw_mm": 13.1,
           "tf_mm": 22.2
         },
         {
-          "name": "W 610 x 153.0",
+          "name": "W 610 × 153,0",
+          "commercial_name": "W 24 × 103",
           "d_mm": 623,
           "bf_mm": 229,
           "tw_mm": 14.0,
           "tf_mm": 24.9
         },
         {
-          "name": "W 610 x 155.0",
+          "name": "W 610 × 155,0",
+          "commercial_name": "W 24 × 104",
           "d_mm": 611,
           "bf_mm": 324,
           "tw_mm": 12.7,
           "tf_mm": 19.0
         },
         {
-          "name": "W 610 x 174.0",
+          "name": "W 610 × 174,0",
+          "commercial_name": "W 24 × 117",
           "d_mm": 616,
           "bf_mm": 325,
           "tw_mm": 14.0,
           "tf_mm": 21.6
+        }
+      ]
+    },
+    {
+      "name": "HP Laminado",
+      "source": "Tabela A.5 — Bitolas padronizadas para perfil HP",
+      "profiles": [
+        {
+          "name": "HP 200 × 53,0",
+          "commercial_name": "HP 8 × 36",
+          "d_mm": 204,
+          "bf_mm": 207,
+          "tw_mm": 11.3,
+          "tf_mm": 11.3
         },
         {
-          "name": "W 610 x 195.0 (H)",
-          "d_mm": 622,
-          "bf_mm": 327,
+          "name": "HP 250 × 62,0",
+          "commercial_name": "HP 10 × 42",
+          "d_mm": 246,
+          "bf_mm": 256,
+          "tw_mm": 10.5,
+          "tf_mm": 10.7
+        },
+        {
+          "name": "HP 250 × 85,0",
+          "commercial_name": "HP 10 × 57",
+          "d_mm": 254,
+          "bf_mm": 260,
+          "tw_mm": 14.4,
+          "tf_mm": 14.4
+        },
+        {
+          "name": "HP 310 × 79,0",
+          "commercial_name": "HP 12 × 53",
+          "d_mm": 299,
+          "bf_mm": 306,
+          "tw_mm": 11.0,
+          "tf_mm": 11.0
+        },
+        {
+          "name": "HP 310 × 93,0",
+          "commercial_name": "HP 12 × 63",
+          "d_mm": 303,
+          "bf_mm": 308,
+          "tw_mm": 13.1,
+          "tf_mm": 13.1
+        },
+        {
+          "name": "HP 310 × 110,0",
+          "commercial_name": "HP 12 × 74",
+          "d_mm": 308,
+          "bf_mm": 310,
           "tw_mm": 15.4,
-          "tf_mm": 24.4
+          "tf_mm": 15.5
         },
         {
-          "name": "W 610 x 217.0",
-          "d_mm": 628,
-          "bf_mm": 328,
-          "tw_mm": 16.5,
-          "tf_mm": 27.7
+          "name": "HP 310 × 125,0",
+          "commercial_name": "HP 12 × 84",
+          "d_mm": 312,
+          "bf_mm": 312,
+          "tw_mm": 17.4,
+          "tf_mm": 17.4
+        },
+        {
+          "name": "HP 310 × 132,0",
+          "commercial_name": "HP 12 × 89",
+          "d_mm": 314,
+          "bf_mm": 313,
+          "tw_mm": 18.3,
+          "tf_mm": 18.3
         }
       ]
     },
     {
       "name": "I Laminado",
-      "source": "Série inicial parametrizada a partir das dimensões catalogadas dos perfis W",
+      "source": "Tabela A.3 — Bitolas padronizadas para o perfil I",
       "profiles": [
         {
-          "name": "I 76 x 8.5",
+          "name": "I 76,20 × 8,48",
           "d_mm": 76.2,
           "bf_mm": 59.18,
           "tw_mm": 4.32,
-          "tf_mm": 6.6
+          "tf_mm": 6.6,
+          "commercial_name": "I 3\" × 1ª alma"
         },
         {
-          "name": "I 76 x 9.7",
+          "name": "I 76,20 × 9,68",
           "d_mm": 76.2,
           "bf_mm": 61.24,
           "tw_mm": 6.38,
-          "tf_mm": 6.6
+          "tf_mm": 6.6,
+          "commercial_name": "I 3\" × 2ª alma"
         },
         {
-          "name": "I 102 x 11.5",
+          "name": "I 101,60 × 11,46",
           "d_mm": 101.6,
           "bf_mm": 67.6,
           "tw_mm": 4.9,
-          "tf_mm": 7.44
+          "tf_mm": 7.44,
+          "commercial_name": "I 4\" × 1ª alma"
         },
         {
-          "name": "I 102 x 12.7",
+          "name": "I 101,60 × 12,65",
           "d_mm": 101.6,
           "bf_mm": 69.2,
           "tw_mm": 6.43,
-          "tf_mm": 7.44
+          "tf_mm": 7.44,
+          "commercial_name": "I 4\" × 2ª alma"
         },
         {
-          "name": "I 127 x 14.9",
+          "name": "I 101,60 × 14,14",
+          "d_mm": 101.6,
+          "bf_mm": 71.02,
+          "tw_mm": 8.28,
+          "tf_mm": 7.44,
+          "commercial_name": "I 4\" × 3ª alma"
+        },
+        {
+          "name": "I 127,00 × 14,88",
           "d_mm": 127.0,
           "bf_mm": 76.3,
           "tw_mm": 5.44,
-          "tf_mm": 8.28
+          "tf_mm": 8.28,
+          "commercial_name": "I 5\" × 1ª alma"
         },
         {
-          "name": "I 127 x 18.2",
+          "name": "I 127,00 × 18,24",
           "d_mm": 127.0,
           "bf_mm": 79.7,
           "tw_mm": 8.81,
-          "tf_mm": 8.28
+          "tf_mm": 8.28,
+          "commercial_name": "I 5\" × 2ª alma"
         },
         {
-          "name": "I 152 x 18.6",
+          "name": "I 152,40 × 18,60",
           "d_mm": 152.4,
           "bf_mm": 84.63,
           "tw_mm": 5.89,
-          "tf_mm": 9.12
+          "tf_mm": 9.12,
+          "commercial_name": "I 6\" × 1ª alma"
         },
         {
-          "name": "I 152 x 22.0",
+          "name": "I 152,40 × 22,00",
           "d_mm": 152.4,
           "bf_mm": 87.5,
           "tw_mm": 8.71,
-          "tf_mm": 9.12
+          "tf_mm": 9.12,
+          "commercial_name": "I 6\" × 2ª alma"
+        },
+        {
+          "name": "I 152,40 × 25,67",
+          "d_mm": 152.4,
+          "bf_mm": 90.55,
+          "tw_mm": 11.81,
+          "tf_mm": 9.12,
+          "commercial_name": "I 6\" × 3ª alma"
         }
       ]
     },
@@ -829,88 +1231,100 @@
       "name": "U Laminado",
       "profiles": [
         {
-          "name": "U 76 x 6.1",
+          "name": "U 76,20 × 6,10",
           "d_mm": 76.2,
           "bf_mm": 35.81,
           "tw_mm": 4.32,
-          "tf_mm": 6.93
+          "tf_mm": 6.93,
+          "commercial_name": "U 3 × 1ª alma"
         },
         {
-          "name": "U 76 x 7.4",
+          "name": "U 76,20 × 7,44",
           "d_mm": 76.2,
-          "bf_mm": 35.05,
+          "bf_mm": 38.05,
           "tw_mm": 6.55,
-          "tf_mm": 6.93
+          "tf_mm": 6.93,
+          "commercial_name": "U 3 × 2ª alma"
         },
         {
-          "name": "U 102 x 8.0",
+          "name": "U 101,60 × 8,04",
           "d_mm": 101.6,
           "bf_mm": 40.23,
-          "tw_mm": 4.67,
-          "tf_mm": 7.52
+          "tw_mm": 4.57,
+          "tf_mm": 7.52,
+          "commercial_name": "U 4 × 1ª alma"
         },
         {
-          "name": "U 102 x 9.3",
+          "name": "U 101,60 × 9,30",
           "d_mm": 101.6,
           "bf_mm": 41.83,
           "tw_mm": 6.27,
-          "tf_mm": 7.52
+          "tf_mm": 7.52,
+          "commercial_name": "U 4 × 2ª alma"
         },
         {
-          "name": "U 152 x 12.2",
+          "name": "U 101,60 × 10,79",
+          "d_mm": 101.6,
+          "bf_mm": 43.71,
+          "tw_mm": 8.2,
+          "tf_mm": 7.52,
+          "commercial_name": "U 4 × 3ª alma"
+        },
+        {
+          "name": "U 152,40 × 12,20",
           "d_mm": 152.4,
           "bf_mm": 48.77,
           "tw_mm": 5.08,
-          "tf_mm": 8.71
+          "tf_mm": 8.71,
+          "commercial_name": "U 6 × 1ª alma"
         },
         {
-          "name": "U 152 x 15.6",
+          "name": "U 152,40 × 15,62",
           "d_mm": 152.4,
           "bf_mm": 51.66,
           "tw_mm": 7.98,
-          "tf_mm": 8.71
+          "tf_mm": 8.71,
+          "commercial_name": "U 6 × 2ª alma"
         },
         {
-          "name": "U 203 x 17.1",
+          "name": "U 152,40 × 19,35",
+          "d_mm": 152.4,
+          "bf_mm": 54.79,
+          "tw_mm": 11.1,
+          "tf_mm": 8.71,
+          "commercial_name": "U 6 × 3ª alma"
+        },
+        {
+          "name": "U 203,20 × 17,10",
           "d_mm": 203.2,
           "bf_mm": 57.4,
           "tw_mm": 5.59,
-          "tf_mm": 9.5
+          "tf_mm": 9.5,
+          "commercial_name": "U 8 × 1ª alma"
         },
         {
-          "name": "U 203 x 20.5",
+          "name": "U 203,20 × 20,50",
           "d_mm": 203.2,
           "bf_mm": 59.51,
           "tw_mm": 7.7,
-          "tf_mm": 9.5
+          "tf_mm": 9.5,
+          "commercial_name": "U 8 × 2ª alma"
         },
         {
-          "name": "U 254 x 22.8",
+          "name": "U 254,00 × 22,77",
           "d_mm": 254.0,
           "bf_mm": 66.04,
           "tw_mm": 6.1,
-          "tf_mm": 11.1
+          "tf_mm": 11.1,
+          "commercial_name": "U 10 × 1ª alma"
         },
         {
-          "name": "U 254 x 30.8",
+          "name": "U 254,00 × 29,76",
           "d_mm": 254.0,
-          "bf_mm": 74.0,
-          "tw_mm": 7.2,
-          "tf_mm": 12.7
-        },
-        {
-          "name": "U 305 x 29.8",
-          "d_mm": 305.0,
           "bf_mm": 69.57,
           "tw_mm": 9.63,
-          "tf_mm": 11.1
-        },
-        {
-          "name": "U 305 x 37.0",
-          "d_mm": 305.0,
-          "bf_mm": 77.0,
-          "tw_mm": 9.8,
-          "tf_mm": 12.7
+          "tf_mm": 11.1,
+          "commercial_name": "U 10 × 2ª alma"
         }
       ],
       "source": "Catálogo de perfis U laminados com mesas inclinadas"
@@ -1243,70 +1657,80 @@
       "source": "Catálogo Gerdau",
       "profiles": [
         {
-          "name": "T 16 x 0.7",
+          "name": "T 15,88 × 3,18",
+          "commercial_name": "T 5/8 × 1/8",
           "d_mm": 15.88,
           "bf_mm": 15.88,
           "tw_mm": 3.18,
           "tf_mm": 3.18
         },
         {
-          "name": "T 19 x 0.9",
+          "name": "T 19,05 × 3,18",
+          "commercial_name": "T 3/4 × 1/8",
           "d_mm": 19.05,
           "bf_mm": 19.05,
           "tw_mm": 3.18,
           "tf_mm": 3.18
         },
         {
-          "name": "T 22 x 1.0",
+          "name": "T 22,22 × 3,18",
+          "commercial_name": "T 7/8 × 1/8",
           "d_mm": 22.22,
           "bf_mm": 22.22,
           "tw_mm": 3.18,
           "tf_mm": 3.18
         },
         {
-          "name": "T 25 x 1.2",
+          "name": "T 25,40 × 3,18",
+          "commercial_name": "T 1 × 1/8",
           "d_mm": 25.4,
           "bf_mm": 25.4,
           "tw_mm": 3.18,
           "tf_mm": 3.18
         },
         {
-          "name": "T 32 x 1.5",
+          "name": "T 31,75 × 3,18",
+          "commercial_name": "T 1.1/4 × 1/8",
           "d_mm": 31.75,
           "bf_mm": 31.75,
           "tw_mm": 3.18,
           "tf_mm": 3.18
         },
         {
-          "name": "T 38 x 1.8",
-          "d_mm": 38.1,
-          "bf_mm": 38.1,
-          "tw_mm": 3.18,
-          "tf_mm": 3.18
-        },
-        {
-          "name": "T 32 x 2.2",
+          "name": "T 31,75 × 4,76",
+          "commercial_name": "T 1.1/4 × 3/16",
           "d_mm": 31.75,
           "bf_mm": 31.75,
           "tw_mm": 4.76,
           "tf_mm": 4.76
         },
         {
-          "name": "T 38 x 2.6",
+          "name": "T 38,10 × 3,18",
+          "commercial_name": "T 1.1/2 × 1/8",
+          "d_mm": 38.1,
+          "bf_mm": 38.1,
+          "tw_mm": 3.18,
+          "tf_mm": 3.18
+        },
+        {
+          "name": "T 38,10 × 4,76",
+          "commercial_name": "T 1.1/2 × 3/16",
           "d_mm": 38.1,
           "bf_mm": 38.1,
           "tw_mm": 4.76,
           "tf_mm": 4.76
         },
         {
-          "name": "T 51 x 3.6",
+          "name": "T 50,80 × 4,76",
+          "commercial_name": "T 2 × 3/16",
           "d_mm": 50.8,
           "bf_mm": 50.8,
           "tw_mm": 4.76,
           "tf_mm": 4.76
         },
         {
-          "name": "T 51 x 4.7",
+          "name": "T 50,80 × 6,35",
+          "commercial_name": "T 2 × 1/4",
           "d_mm": 50.8,
           "bf_mm": 50.8,
           "tw_mm": 6.35,

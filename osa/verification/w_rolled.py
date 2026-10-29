@@ -39,8 +39,8 @@ def verify_w_tension(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -127,8 +127,8 @@ def verify_w_slenderness(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -210,8 +210,8 @@ def verify_w_flexion_y(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -441,8 +441,8 @@ def verify_w_flexion_z(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -561,8 +561,8 @@ def verify_w_shear_y(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -672,8 +672,8 @@ def verify_w_shear_z(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -795,8 +795,8 @@ def verify_w_biaxial_shear(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
@@ -962,8 +962,8 @@ def _verify_w_combined_actions(element, model, results, mode: str,
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
         return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
     if not results or any(
@@ -1181,8 +1181,8 @@ def verify_w_compression(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section != "W Laminado" for member in members):
-        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(member.section not in {"W Laminado", "HP Laminado"} for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W e HP laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:

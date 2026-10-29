@@ -38,3 +38,6 @@ class CatalogLoader:
 
     def w_profiles(self) -> tuple[dict, ...]:
         return self.profiles("Aço", "W Laminado")
+
+    def hp_profiles(self) -> tuple[dict, ...]:
+        return self.profiles("Aço", "HP Laminado")

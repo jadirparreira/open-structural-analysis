@@ -977,7 +977,7 @@ def i_contour_points(
 
 def contour_points(family: str, geometry: dict[str, float], arc_steps: int = 12) -> tuple[Point, ...] | None:
     """Return a scaled reference contour for a supported laminated family."""
-    if family == "W Laminado":
+    if family in {"W Laminado", "HP Laminado"}:
         return w_contour_points(
             float(geometry["d"]),
             float(geometry["bf"]),

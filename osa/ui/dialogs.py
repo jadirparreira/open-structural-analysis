@@ -926,7 +926,7 @@ class SettingsDialog(QDialog):
                 section_row.addWidget(section_material, 1)
                 page_layout.addLayout(section_row)
                 section_catalog = {
-                    "Aço": ["W Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Circular", "Barra Quadrada", "Barra Retangular"],
+                    "Aço": ["W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Circular", "Barra Quadrada", "Barra Retangular"],
                     "Concreto": ["Retangular", "Circular", "Tipo L", "Tipo T", "Tipo I", "Tipo U", "Tipo +", "Retangular Vazado", "Circular Vazado"],
                     "Madeira": ["Circular", "Quadrada", "Retangular"],
                 }

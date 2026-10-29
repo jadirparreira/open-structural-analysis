@@ -333,7 +333,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
     )
     profile_type = member.section or ""
     geometry = (
-        _w_properties(member) if profile_type == "W Laminado" else
+        _w_properties(member) if profile_type in {"W Laminado", "HP Laminado"} else
         _i_properties(member) if profile_type == "I Laminado" else
         _safe_l_properties(member) if profile_type == "L Laminado" else
         _t_properties(member) if profile_type == "T Laminado" else
@@ -404,20 +404,20 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "members": group_members,
         "profile_type": member.section or "",
         "section": member.profile or "",
-        **({"verification_summary": selected_result} if profile_type == "W Laminado" else {}),
+        **({"verification_summary": selected_result} if profile_type in {"W Laminado", "HP Laminado"} else {}),
         **({
             "w_restraint_notes": tuple(
                 tuple(compression_parameters.get("restraint_issues", ()))
                 + tuple(compression_parameters.get("restraint_notes", ()))
             )
-        } if profile_type == "W Laminado" else {}),
+        } if profile_type in {"W Laminado", "HP Laminado"} else {}),
         "material": member.material or "",
         "geometric_parameters": {
             "b_mm": value("b_mm"), "t_mm": value("t_mm"),
             "h_mm": value("h_mm"),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
-            **({"r_mm": value("r")} if profile_type == "W Laminado" else {}),
+            **({"r_mm": value("r")} if profile_type in {"W Laminado", "HP Laminado"} else {}),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),
             "ry_cm": value("ry"), "Zy_cm3": value("Zy"),
             "Iz_cm4": value("Iz"), "Wz_cm3": value("Wz"),

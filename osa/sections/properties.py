@@ -592,6 +592,7 @@ def calculate_section_properties(
         raise ValueError("A densidade do material deve ser maior que zero.")
     calculators = {
         "W Laminado": _w,
+        "HP Laminado": _w,
         "U Laminado": _u,
         "U Inclinado Laminado": _u,
         "I Laminado": _i,

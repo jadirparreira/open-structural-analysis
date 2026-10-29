@@ -98,6 +98,10 @@ def _catalog_profiles_for(family_name: str) -> tuple[dict, ...]:
         (),
     )
 
+_catalog_hp_profiles = _catalog_profiles_for("HP Laminado")
+GERDAU_HP_PROFILES = [item["name"] for item in _catalog_hp_profiles]
+GERDAU_HP_CATALOG = {item["name"]: item for item in _catalog_hp_profiles}
+
 _catalog_u_profiles = _catalog_profiles_for("U Laminado")
 GERDAU_U_PROFILES = [item["name"] for item in _catalog_u_profiles]
 GERDAU_U_CATALOG = {item["name"]: item for item in _catalog_u_profiles}
@@ -111,17 +115,24 @@ GERDAU_L_DATA = {item["name"]: item for item in _catalog_l_profiles}
 
 
 def profile_identity_markup(family_name: str, profile_name: str | None) -> str:
-    """Return rich text with the inch designation before the metric L identity."""
+    """Return a metric profile identity with an optional secondary designation."""
     if not profile_name:
         return "Indefinido"
-    if family_name == "L Laminado":
-        profile_data = GERDAU_L_DATA.get(profile_name, {})
-        inch_name = profile_data.get("inch_name")
-        if inch_name:
-            return (
-                f'<span style="color:#57606a;font-size:11pt">{escape(profile_name)}</span>'
-                f'&nbsp;&nbsp;<span style="color:#8c959f;font-size:9pt">{escape(inch_name)}</span>'
-            )
+    profile_catalog = {
+        "I Laminado": GERDAU_I_CATALOG,
+        "W Laminado": GERDAU_W_CATALOG,
+        "HP Laminado": GERDAU_HP_CATALOG,
+        "L Laminado": GERDAU_L_DATA,
+        "U Laminado": GERDAU_U_CATALOG,
+        "T Laminado": GERDAU_T_DATA,
+    }.get(family_name, {})
+    profile_data = profile_catalog.get(profile_name, {})
+    secondary_name = profile_data.get("inch_name") or profile_data.get("commercial_name")
+    if secondary_name:
+        return (
+            f'<span style="color:#57606a;font-size:11pt">{escape(profile_name)}</span>'
+            f'&nbsp;&nbsp;<span style="color:#8c959f;font-size:9pt">{escape(secondary_name)}</span>'
+        )
     return profile_name
 
 _catalog_t_profiles = _catalog_profiles_for("T Laminado")
@@ -130,6 +141,7 @@ GERDAU_T_DATA = {item["name"]: item for item in _catalog_t_profiles}
 
 SECTION_PROFILE_OPTIONS = {
     "W Laminado": GERDAU_W_PROFILES,
+    "HP Laminado": GERDAU_HP_PROFILES,
     "I Laminado": GERDAU_I_PROFILES,
     "U Laminado": GERDAU_U_PROFILES,
     "L Laminado": GERDAU_L_PROFILES,
@@ -137,6 +149,7 @@ SECTION_PROFILE_OPTIONS = {
 }
 SECTION_PROFILE_DATA = {
     "W Laminado": GERDAU_W_CATALOG,
+    "HP Laminado": GERDAU_HP_CATALOG,
     "I Laminado": GERDAU_I_CATALOG,
     "U Laminado": GERDAU_U_CATALOG,
     "L Laminado": GERDAU_L_DATA,

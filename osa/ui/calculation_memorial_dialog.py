@@ -199,7 +199,7 @@ class CalculationMemorialDialog(QDialog):
             ("Comprimento destravado à torção (Lt)", formatted(geometry.get("Lt_cm"), "cm")),
             ("Comprimento destravado à flexão (Lb)", formatted(geometry.get("Lb_cm"), "cm")),
         ]
-        if memory.get("profile_type") == "W Laminado":
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
             section_rows.insert(4, ("Raio de concordância adotado (r)", formatted(geometry.get("r_mm"), "mm")))
         if memory.get("profile_type") == "L Laminado":
             section_rows[:4] = [
@@ -514,7 +514,7 @@ class CalculationMemorialDialog(QDialog):
             return "".join(rendered)
 
         slenderness_content = ""
-        if memory.get("profile_type") == "W Laminado":
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
             slenderness_status = slenderness_summary.get("status")
             slenderness_content = (
                 '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
@@ -648,7 +648,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             axial_tension_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de tração axial atende somente a perfis W, I e U Laminados."
@@ -1047,7 +1047,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             axial_compression_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de compressão axial atende somente a perfis W, I e U Laminados.</p>"
@@ -1391,7 +1391,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
         elif (
-            memory.get("profile_type") == "W Laminado"
+            memory.get("profile_type") in {"W Laminado", "HP Laminado"}
             and flexion_verification.get("status") == "not_checked"
             and (flexion_verification.get("parameters") or {}).get("slender_web_rejected")
         ):
@@ -1418,7 +1418,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">Não verificado: '
                 f'{escape(str(flexion_verification.get("detail", "limite de aplicação excedido")))}.</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de flexão em Y atende somente a perfis W, I e U Laminados.</p>"
@@ -1767,7 +1767,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de flexão em Z atende somente a perfis W, I e U Laminados.</p>"
@@ -1960,7 +1960,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_y)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             shear_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de cortante em Y atende somente a perfis W, I e U Laminados.</p>"
@@ -2161,7 +2161,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             shear_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de cortante em Z atende somente a perfis W, I e U Laminados.</p>"
@@ -2352,7 +2352,7 @@ class CalculationMemorialDialog(QDialog):
         scope_notice = ""
         torsion_content = ""
         biaxial_shear_content = ""
-        if memory.get("profile_type") == "W Laminado":
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado"}:
             if not torsion_summary.get("available"):
                 torsion_message = (
                     "Execute a análise e a verificação do modelo para identificar "

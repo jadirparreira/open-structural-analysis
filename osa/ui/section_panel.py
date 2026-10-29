@@ -290,17 +290,32 @@ class SectionPanel(QFrame):
         self.profile.setPlaceholderText("Indefinido")
         profile_options = SECTION_PROFILE_OPTIONS.get(section, [])
         self.profile.addItems(profile_options)
-        if section == "L Laminado":
-            inch_label_role = Qt.ItemDataRole.UserRole + 1
+        if section in {"I Laminado", "L Laminado", "U Laminado", "W Laminado", "HP Laminado", "T Laminado"}:
+            secondary_label_role = Qt.ItemDataRole.UserRole + 1
             for index, profile_name in enumerate(profile_options):
-                profile_data = GERDAU_L_DATA.get(profile_name, {})
-                if profile_data.get("inch_name"):
-                    self.profile.setItemData(index, profile_data["inch_name"], inch_label_role)
+                profile_data = SECTION_PROFILE_DATA.get(section, {}).get(profile_name, {})
+                secondary_name = profile_data.get("inch_name") or profile_data.get("commercial_name")
+                if secondary_name:
+                    self.profile.setItemData(index, secondary_name, secondary_label_role)
         # Keep the popup compact: eight rows are visible, with the remainder
         # available through the native popup scrollbar.
         profile = self.window.section_profiles.get(member_name, "")
         profiles = [item.profile for item in members]
         mixed_profile = len(set(profiles)) > 1
+        if section == "T Laminado" and not mixed_profile and profile not in profile_options and member is not None:
+            legacy_geometry = member.geometry_dict()
+            for catalog_name, profile_data in SECTION_PROFILE_DATA.get(section, {}).items():
+                if all(
+                    abs(float(legacy_geometry.get(key, 0.0)) - float(profile_data[data_key])) < 1e-6
+                    for key, data_key in (("d", "d_mm"), ("bf", "bf_mm"), ("tw", "tw_mm"), ("tf", "tf_mm"))
+                ):
+                    profile = catalog_name
+                    geometry = {key: float(profile_data[data_key]) for key, data_key, _unit in self._geometry_specs}
+                    self.window.section_profiles[member_name] = profile
+                    self.window.section_geometry[member_name] = geometry
+                    self.window.model_service.assign_profile(member_name, profile, geometry)
+                    self.window.refresh_member_geometry(member_name)
+                    break
         self.profile.setPlaceholderText("Variado" if mixed_profile else "Indefinido")
         if not mixed_profile and profile in profile_options:
             self.profile.setCurrentText(profile)
@@ -413,34 +428,37 @@ class SectionPanel(QFrame):
         self.resize(self.width(), self.sizeHint().height())
 
     def _rotation_changed(self) -> None:
-        members = [self.window.model.bars[name] for name in self._member_names if name in self.window.model.bars]
+        member_names = [name for name in self._member_names if name in self.window.model.bars]
         value = self.rotation_input.text().strip()
-        if not members:
+        if not member_names:
             return
         if not value:
             self.configure_for(self._member_name, self._section_family)
             return
         try:
             rotation = float(value.replace(",", "."))
-            for member in members:
-                self.window.model_service.update_member_rotation(member.name, rotation)
+            for name in member_names:
+                self.window.model_service.update_member_rotation(name, rotation)
         except ValueError:
             self.configure_for(self._member_name, self._section_family)
             return
+        members = [self.window.model.bars[name] for name in member_names]
         for member in members:
             self.window.refresh_member_rotation(member.name)
         self.rotation_input.setText(self._format_rotation(members[0].rotation))
         self.rotation_input.setPlaceholderText("")
 
     def _rotate_15_requested(self, _checked: bool = False) -> None:
-        members = [self.window.model.bars[name] for name in self._member_names if name in self.window.model.bars]
-        if not members:
+        member_names = [name for name in self._member_names if name in self.window.model.bars]
+        if not member_names:
             return
         try:
-            for member in members:
-                self.window.model_service.update_member_rotation(member.name, member.rotation + 15)
+            for name in member_names:
+                current_rotation = self.window.model.bars[name].rotation
+                self.window.model_service.update_member_rotation(name, current_rotation + 15)
         except ValueError:
             return
+        members = [self.window.model.bars[name] for name in member_names]
         for member in members:
             self.window.refresh_member_rotation(member.name)
         rotations = {member.rotation for member in members}
@@ -840,6 +858,8 @@ class SectionPanel(QFrame):
         definitions = {
             "W Laminado": (("d", "d_mm", "mm"), ("bf", "bf_mm", "mm"),
                            ("tw", "tw_mm", "mm"), ("tf", "tf_mm", "mm")),
+            "HP Laminado": (("d", "d_mm", "mm"), ("bf", "bf_mm", "mm"),
+                            ("tw", "tw_mm", "mm"), ("tf", "tf_mm", "mm")),
             "U Laminado": (("d", "d_mm", "mm"), ("bf", "bf_mm", "mm"),
                            ("tw", "tw_mm", "mm"), ("tf", "tf_mm", "mm")),
             "I Laminado": (("d", "d_mm", "mm"), ("bf", "bf_mm", "mm"),
@@ -1165,7 +1185,7 @@ class SectionPanel(QFrame):
                 f"H {xweb - radius:.2f} Q {xweb:.2f},{bottom_y:.2f} {xweb:.2f},{bottom_y - radius:.2f} "
                 f"V {yweb + radius:.2f} Q {xweb:.2f},{yweb:.2f} {xweb - radius:.2f},{yweb:.2f} H {x0:.2f} Z"
             )
-        if family == "W Laminado" and geometry and {"d", "bf", "tw", "tf"} <= geometry.keys():
+        if family in {"W Laminado", "HP Laminado"} and geometry and {"d", "bf", "tw", "tf"} <= geometry.keys():
             radius = float(geometry.get("r", geometry.get("r_mm", 10.0)))
             profile_scale = min(
                 (canvas_w - 34.0) / bf,
@@ -1360,6 +1380,10 @@ class SectionPanel(QFrame):
             )
         if self._section_mirrored:
             path = mirror_svg_path(path, canvas_w / 2.0)
+        preview_rotation = (
+            f' transform="rotate(180 {canvas_w / 2.0:g} {canvas_h / 2.0:g})"'
+            if family == "T Laminado" else ""
+        )
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_w:g}" height="{canvas_h:g}" '
                f'viewBox="0 0 {canvas_w:g} {canvas_h:g}">'
                '<defs>'
@@ -1387,7 +1411,7 @@ class SectionPanel(QFrame):
                '</defs>'
                f'<rect x="0.75" y="0.75" '
                f'width="{canvas_w - 1.5:g}" height="{canvas_h - 1.5:g}" rx="6" fill="#fff" stroke="#d0d7de" stroke-width="1"/>'
-               f'<path d="{path}" fill="url(#{self._hatch_pattern_id(family)})" fill-rule="evenodd" stroke="#24292f" stroke-width="1.2" stroke-linejoin="round"/>'
+               f'<path d="{path}"{preview_rotation} fill="url(#{self._hatch_pattern_id(family)})" fill-rule="evenodd" stroke="#24292f" stroke-width="1.2" stroke-linejoin="round"/>'
                f'{invalid_icon}</svg>')
         pixmap = QPixmap(int(canvas_w), int(canvas_h))
         pixmap.fill(Qt.GlobalColor.transparent)
@@ -1433,6 +1457,11 @@ class WSectionPanel(SectionPanel):
 
 class WLaminadoSectionPanel(WSectionPanel):
     """Explicit W Laminado panel type kept separate for family-specific UI."""
+
+
+class HPLaminadoSectionPanel(WSectionPanel):
+    """Panel dedicated to HP rolled profiles."""
+    FAMILY = "HP Laminado"
 
 
 class USectionPanel(SectionPanel):

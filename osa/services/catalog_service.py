@@ -12,3 +12,9 @@ class CatalogService:
 
     def w_profile(self, name: str) -> dict | None:
         return next((profile for profile in self.loader.w_profiles() if profile["name"] == name), None)
+
+    def hp_profile_names(self) -> list[str]:
+        return [profile["name"] for profile in self.loader.hp_profiles()]
+
+    def hp_profile(self, name: str) -> dict | None:
+        return next((profile for profile in self.loader.hp_profiles() if profile["name"] == name), None)
