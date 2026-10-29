@@ -639,6 +639,12 @@ class VerificationTopPalette(QFrame):
         self.verify_button.installEventFilter(self)
         self.verify_button.setStyleSheet(self.group_button.styleSheet())
         layout.addWidget(self.verify_button)
+        utilization_tooltip = (
+            "Taxa de utilização; * indica valor parcial com aviso no memorial de cálculo"
+        )
+        self.utilization_button.setToolTip(utilization_tooltip)
+        self.utilization_button.setProperty("paletteTooltip", utilization_tooltip)
+        self.utilization_button.setAccessibleName(utilization_tooltip)
         self.hide()
 
     def _identifier_button(self, icon_name: str, label: str, kind: str) -> QToolButton:

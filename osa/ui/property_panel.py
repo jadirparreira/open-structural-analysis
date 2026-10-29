@@ -367,7 +367,10 @@ class PropertyPanel(QFrame):
         if not self._has_verification_routine(names):
             return
         element_result = self._verification_result_for(names)
-        if element_result is None or element_result.get("status") not in {"checked", "not_applicable"}:
+        is_w_member = bool(names) and all(
+            self.window.model.bars[name].section == "W Laminado" for name in names
+        )
+        if element_result is None and not is_w_member:
             return
         memory = calculation_memory(self.window.model, names)
         dialog = CalculationMemorialDialog(memory, self.window)
@@ -580,6 +583,9 @@ class PropertyPanel(QFrame):
             self.name.setVisible(True)
             implemented = self._has_verification_routine(names)
             element_result = self._verification_result_for(names) if implemented else None
+            is_w_member = bool(names) and all(
+                self.window.model.bars[name].section == "W Laminado" for name in names
+            )
             memory_button = self._verification_memory_button
             if not implemented:
                 status_text = "Não Implementado"
@@ -592,8 +598,26 @@ class PropertyPanel(QFrame):
                 for value in self._verification_result_values.values():
                     value.setToolTip(detail)
                 if memory_button is not None:
-                    memory_button.setEnabled(False)
-                    memory_button.setToolTip("Memorial indisponível: elemento não verificado")
+                    memory_button.setEnabled(element_result is not None or is_w_member)
+                    memory_button.setToolTip(
+                        "Abrir memorial e resultados disponíveis; confira os avisos"
+                        if element_result is not None else
+                        "Abrir memorial de cálculo; execute as verificações para preencher os resultados"
+                        if is_w_member else
+                        "Memorial indisponível: elemento não verificado"
+                    )
+                utilization = (element_result or {}).get("utilization")
+                if utilization is not None:
+                    status_text = None
+                    self._verification_result_values["utilization"].setText(
+                        f"{float(utilization):.2%}{'' if is_w_member else '*'}".replace(".", ",")
+                    )
+                    self._verification_result_values["critical_check"].setText(
+                        str(element_result.get("critical_check", "N/D")).split(" — ", 1)[0]
+                    )
+                    self._verification_result_values["critical_combination"].setText(
+                        str(element_result.get("critical_combination", "N/D"))
+                    )
             elif element_result.get("status") == "not_applicable":
                 status_text = "N/A"
                 if memory_button is not None:

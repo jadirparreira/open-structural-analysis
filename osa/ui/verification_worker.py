@@ -5,17 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal, Slot
 
 from osa.verification.elements import VerificationElement, verification_elements
-from osa.verification.w_rolled import (
-    verify_w_compression,
-    verify_w_flexion_y,
-    verify_w_flexion_z,
-    verify_w_flexocompression,
-    verify_w_flexotension,
-    verify_w_oblique_bending,
-    verify_w_shear_y,
-    verify_w_shear_z,
-    verify_w_tension,
-)
 from osa.verification.i_rolled import (
     verify_i_compression,
     verify_i_flexion_y,
@@ -26,17 +15,6 @@ from osa.verification.i_rolled import (
     verify_i_shear_y,
     verify_i_shear_z,
     verify_i_tension,
-)
-from osa.verification.u_rolled import (
-    verify_u_compression,
-    verify_u_flexion_y,
-    verify_u_flexion_z,
-    verify_u_flexocompression,
-    verify_u_flexotension,
-    verify_u_oblique_bending,
-    verify_u_shear_y,
-    verify_u_shear_z,
-    verify_u_tension,
 )
 from osa.verification.l_rolled import (
     verify_l_compression,
@@ -49,17 +27,6 @@ from osa.verification.l_rolled import (
     verify_l_shear_z,
     verify_l_tension,
 )
-from osa.verification.t_rolled import (
-    verify_t_compression,
-    verify_t_flexion_y,
-    verify_t_flexion_z,
-    verify_t_flexocompression,
-    verify_t_flexotension,
-    verify_t_oblique_bending,
-    verify_t_shear_y,
-    verify_t_shear_z,
-    verify_t_tension,
-)
 from osa.verification.rectangular_bar import (
     verify_rectangular_bar_compression,
     verify_rectangular_bar_flexion_y,
@@ -70,17 +37,6 @@ from osa.verification.rectangular_bar import (
     verify_rectangular_bar_shear_y,
     verify_rectangular_bar_shear_z,
     verify_rectangular_bar_tension,
-)
-from osa.verification.square_bar import (
-    verify_square_bar_compression,
-    verify_square_bar_flexion_y,
-    verify_square_bar_flexion_z,
-    verify_square_bar_flexocompression,
-    verify_square_bar_flexotension,
-    verify_square_bar_oblique,
-    verify_square_bar_shear_y,
-    verify_square_bar_shear_z,
-    verify_square_bar_tension,
 )
 from osa.verification.round_bar import (
     verify_round_bar_compression,
@@ -93,7 +49,52 @@ from osa.verification.round_bar import (
     verify_round_bar_shear_z,
     verify_round_bar_tension,
 )
-
+from osa.verification.square_bar import (
+    verify_square_bar_compression,
+    verify_square_bar_flexion_y,
+    verify_square_bar_flexion_z,
+    verify_square_bar_flexocompression,
+    verify_square_bar_flexotension,
+    verify_square_bar_oblique,
+    verify_square_bar_shear_y,
+    verify_square_bar_shear_z,
+    verify_square_bar_tension,
+)
+from osa.verification.t_rolled import (
+    verify_t_compression,
+    verify_t_flexion_y,
+    verify_t_flexion_z,
+    verify_t_flexocompression,
+    verify_t_flexotension,
+    verify_t_oblique_bending,
+    verify_t_shear_y,
+    verify_t_shear_z,
+    verify_t_tension,
+)
+from osa.verification.u_rolled import (
+    verify_u_compression,
+    verify_u_flexion_y,
+    verify_u_flexion_z,
+    verify_u_flexocompression,
+    verify_u_flexotension,
+    verify_u_oblique_bending,
+    verify_u_shear_y,
+    verify_u_shear_z,
+    verify_u_tension,
+)
+from osa.verification.w_rolled import (
+    verify_w_compression,
+    verify_w_flexion_y,
+    verify_w_flexion_z,
+    verify_w_flexocompression,
+    verify_w_flexotension,
+    verify_w_oblique_bending,
+    verify_w_shear_y,
+    verify_w_shear_z,
+    verify_w_biaxial_shear,
+    verify_w_slenderness,
+    verify_w_tension,
+)
 
 _ROUTINES = {
     "W Laminado": (
@@ -162,6 +163,59 @@ _ROUTINES = {
 }
 
 
+def _w_biaxial_shear_summary(element, checks, results) -> dict[str, object]:
+    """Expose the calculated W biaxial-shear check to the memorial renderer."""
+    check = checks[-1] if checks else {}
+    return {
+        "available": bool(results),
+        "has_simultaneous_shear": check.get("status") == "checked",
+        **check,
+    }
+
+
+def _w_torsion_summary(element, model, results) -> dict[str, object]:
+    """Find the largest meaningful W-member torque for the memorial notice."""
+    witness = None
+    available = bool(results)
+    for result in results or ():
+        for member_name in element.member_names:
+            member_result = result.member_results.get(member_name, {})
+            member = model.bars.get(member_name)
+            geometry = member.geometry_dict() if member is not None else {}
+            depth_m = max(
+                float(geometry.get("d", geometry.get("d_mm", 0.0))),
+                float(geometry.get("bf", geometry.get("bf_mm", 0.0))),
+            ) / 1000.0
+            for sample in member_result.get("samples", ()):
+                torque = abs(float(sample.get("torque", 0.0)))
+                reference_moment = max(
+                    abs(float(sample.get("moment_y", 0.0))),
+                    abs(float(sample.get("moment_z", 0.0))),
+                    max(
+                        abs(float(sample.get("shear_y", 0.0))),
+                        abs(float(sample.get("shear_z", 0.0))),
+                    ) * depth_m,
+                )
+                # Suppress numerical residuals while retaining meaningful torque.
+                tolerance = max(0.005, 0.0001 * reference_moment)
+                if torque >= tolerance and (witness is None or torque > witness[0]):
+                    witness = (
+                        torque, member_name, result.load_reference,
+                        float(sample.get("x", 0.0)),
+                    )
+    if witness is None:
+        return {"available": available, "has_torsion": False}
+    torque, member_name, combination, position_m = witness
+    return {
+        "available": True,
+        "has_torsion": True,
+        "torque_kn_m": torque,
+        "member": member_name,
+        "combination": combination,
+        "position_m": position_m,
+    }
+
+
 def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
     """Run checks against a private model snapshot and return UI-ready results."""
     results = {}
@@ -214,6 +268,24 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             tension, compression, flexion_y, flexion_z, shear_y, shear_z,
             oblique_bending, flexotension, flexocompression,
         )
+        w_slenderness_summary = (
+            verify_w_slenderness(element, model, model.analysis_results)
+            if model.bars[element.member_names[0]].section == "W Laminado" else None
+        )
+        w_biaxial_shear_check = None
+        if model.bars[element.member_names[0]].section == "W Laminado":
+            w_biaxial_shear_check = verify_w_biaxial_shear(
+                element, model, model.analysis_results,
+            )
+            checks = (*checks, w_biaxial_shear_check)
+        w_torsion_summary = (
+            _w_torsion_summary(element, model, model.analysis_results)
+            if model.bars[element.member_names[0]].section == "W Laminado" else None
+        )
+        w_biaxial_shear_summary = (
+            _w_biaxial_shear_summary(element, checks, model.analysis_results)
+            if model.bars[element.member_names[0]].section == "W Laminado" else None
+        )
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]
         controlling = max(
@@ -230,9 +302,17 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             summary["detail"] = "; ".join(item.get("detail", "") for item in unverified)
         else:
             summary = dict(controlling or tension)
+        if w_torsion_summary is not None:
+            summary["torsion_summary"] = w_torsion_summary
+        if w_biaxial_shear_summary is not None:
+            summary["biaxial_shear_summary"] = w_biaxial_shear_summary
+        if w_slenderness_summary is not None:
+            summary["slenderness_summary"] = w_slenderness_summary
         summary["checks"] = {
             "axial_tension": tension,
             "axial_compression": compression,
+            **({"slenderness": w_slenderness_summary}
+               if w_slenderness_summary is not None else {}),
             "flexion_y": flexion_y,
             "flexion_z": flexion_z,
             "shear_y": shear_y,
@@ -240,6 +320,8 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             "flexao_obliqua": oblique_bending,
             "flexotracao": flexotension,
             "flexocompressao": flexocompression,
+            **({"biaxial_shear": w_biaxial_shear_check}
+               if w_biaxial_shear_check is not None else {}),
         }
         results[element.key] = summary
 
@@ -248,7 +330,9 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         for item in results.values()
     )
     rejected = sum(
-        item.get("status") == "checked" and item.get("utilization", 0.0) > 1.0
+        item.get("has_rejected_check") or (
+            item.get("status") == "checked" and item.get("utilization", 0.0) > 1.0
+        )
         for item in results.values()
     )
     return {

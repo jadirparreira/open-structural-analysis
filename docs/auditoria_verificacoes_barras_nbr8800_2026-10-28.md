@@ -1,8 +1,8 @@
 # Auditoria das verificações de barras frente à ABNT NBR 8800:2024
 
-**Data:** 28/10/2026  
-**Norma de referência:** ABNT NBR 8800:2024, terceira edição de 02/10/2024, versão corrigida em 25/02/2025, conforme PDF fornecido no ambiente.  
-**Escopo:** rotinas de verificação de barras, despacho e resumo das verificações, estimativa de comprimentos destravados, cobertura automatizada e hipóteses de entrada.  
+**Data:** 28/10/2026
+**Norma de referência:** ABNT NBR 8800:2024, terceira edição de 02/10/2024, versão corrigida em 25/02/2025, conforme PDF fornecido no ambiente.
+**Escopo:** rotinas de verificação de barras, despacho e resumo das verificações, estimativa de comprimentos destravados, cobertura automatizada e hipóteses de entrada.
 **Restrição da atividade:** não foram alterados arquivos de código ou testes. Este relatório é o único artefato novo da auditoria.
 
 ## Resumo executivo
@@ -34,8 +34,8 @@ Os três itens foram examinados pelo Agente A e revistos independentemente pelo 
 
 ### A-01 — Torção solicitante não entra na verificação nem no status do elemento
 
-**Classificação:** inconsistência de verificação normativa, com risco alto de falso resultado aprovado.  
-**Parecer dos agentes:** A e B concordam; não houve divergência material.  
+**Classificação:** inconsistência de verificação normativa, com risco alto de falso resultado aprovado.
+**Parecer dos agentes:** A e B concordam; não houve divergência material.
 **Confiança:** alta.
 
 **Comportamento observado.** O mapeador grava `torque` nos resultados dos membros e nas amostras ([result_mapper.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/analysis/pynite/result_mapper.py:42)). O despachante executa nove famílias de verificações, mas nenhuma inclui torção ([verification_worker.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/ui/verification_worker.py:177), [verification_worker.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/ui/verification_worker.py:198)). O resumo do elemento é formado com base apenas nos resultados desses nove checks e pode contar como aprovado um elemento cujo torsor foi ignorado ([verification_worker.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/ui/verification_worker.py:202)).
@@ -50,8 +50,8 @@ Há também um teste que injeta `torque=0.25` e exige que o memorial não mencio
 
 ### A-02 — Comprimentos destravados podem ser reduzidos sem comprovar a efetividade do travamento
 
-**Classificação:** limitação do estimador de contenções com risco de superestimar resistência; a confirmação depende do arranjo estrutural representado.  
-**Parecer dos agentes:** A e B concordam quanto ao risco. C confirma a aplicação separada das cláusulas para barras comprimidas e vigas e qualifica `Lb = Ly` como premissa condicional, não como regra geral da norma.  
+**Classificação:** limitação do estimador de contenções com risco de superestimar resistência; a confirmação depende do arranjo estrutural representado.
+**Parecer dos agentes:** A e B concordam quanto ao risco. C confirma a aplicação separada das cláusulas para barras comprimidas e vigas e qualifica `Lb = Ly` como premissa condicional, não como regra geral da norma.
 **Confiança:** alta para o critério normativo; média-alta para a conclusão sem um caso de projeto específico.
 
 **Comportamento observado.** A rotina aceita uma barra conectada como contenção direcional quando sua orientação atende ao limiar geométrico ([restraints.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/restraints.py:279)). A estratégia de contenção cruzada também aplica um critério de área relativa, mas declara que essa comparação não comprova rigidez, resistência, ligação nem ancoragem ([restraints.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/restraints.py:440)). O próprio código registra que a heurística não verifica esses requisitos nem a contenção da mesa comprimida ([restraints.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/restraints.py:317)).
@@ -68,8 +68,8 @@ O estimador copia o intervalo de `Ly` para `Lb` e deriva `Lt` pelo menor entre `
 
 ### A-03 — Tração presume (A_n=A_e=A_g) e (C_t=1) sem dados para confirmar a hipótese
 
-**Classificação final do Agente C:** limitação de escopo com premissa condicional; os valores não configuram, por si só, não conformidade normativa direta.  
-**Pareceres:** A identificou a lacuna; B concordou parcialmente e pediu classificação condicional; C arbitrou e confirmou a qualificação.  
+**Classificação final do Agente C:** limitação de escopo com premissa condicional; os valores não configuram, por si só, não conformidade normativa direta.
+**Pareceres:** A identificou a lacuna; B concordou parcialmente e pediu classificação condicional; C arbitrou e confirmou a qualificação.
 **Confiança:** alta.
 
 **Comportamento observado.** As rotinas retangular e circular calculam a resistência à ruptura usando área bruta e reportam `An = Ae = Ag`, `Ct = 1` ([rectangular_bar.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/rectangular_bar.py:116), [round_bar.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/round_bar.py:105)). A rotina quadrada reutiliza a retangular ([square_bar.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/square_bar.py:22)). Não há dados de furos, roscas ou caminho de transmissão da força da ligação nos argumentos dessas rotinas.
@@ -101,3 +101,71 @@ O estimador copia o intervalo de `Ly` para `Lb` e deriva `Lt` pelo menor entre `
 - **Agente C:** arbitrou o tema de tração como premissa condicional, não como erro em todo uso; confirmou que os requisitos de contenção para barras comprimidas (4.12.2) e vigas (4.12.3) devem ser analisados separadamente.
 
 Este relatório identifica inconsistências e lacunas de escopo com base no código e na norma citada. Não é uma certificação de conformidade global nem uma avaliação de um modelo estrutural específico.
+
+## Adendo — investigação da rotina W Laminado
+
+**Data:** 28/10/2026
+**Escopo desta etapa:** somente W Laminado. Nenhum arquivo de código ou teste foi alterado.
+
+### Campanha comparativa
+
+- Executadas **2.000 solicitações determinísticas variadas**, com os 108 perfis W do catálogo percorridos; cada solicitação tinha cinco posições amostradas e combinações de esforço axial, momentos nos dois eixos, cortantes nos dois eixos e torsor. Foram variados também os materiais A36/A572 Gr. 50 e os parâmetros manuais `Ly`, `Lz`, `Lt`, `Lb`, `Cb` e `Ct`. Os casos foram injetados como resultados amostrados para exercitar as rotinas; o solver estrutural não foi reexecutado.
+- Foram comparadas independentemente as resistências e taxas de utilização que a rotina W calcula com as equações aplicáveis da NBR 8800:2024, versão corrigida em 25/02/2025: tração (5.2.2), compressão (5.3.2–5.3.4), flexão (5.4.2 e Anexo D), cortante (5.4.3.1 e 5.4.3.5) e interação (5.5.1.2). A referência de contenções usou os comprimentos fornecidos ao caso; a validade da heurística que os estima permanece no achado A-02.
+- Nos casos de catálogo, foram calculadas 992 verificações de tração, 984 de compressão, 1.500 de flexão em cada eixo, 1.250 de cortante em cada eixo, 992 de flexotração, 734 de flexocompressão e 250 de flexão oblíqua. As demais ocorrências eram não aplicáveis ao tipo de esforço daquele caso.
+- As resistências e interações numéricas coincidiram com a referência independente dentro da tolerância numérica, **exceto** pelas divergências listadas abaixo. O campo memorial `Mr_fla_kn_cm` ficou ausente nos 1.500 casos em que a memória da flexão Y foi examinada.
+- Uma exploração suplementar com geometrias artificiais de alma muito esbelta encontrou extensões da fórmula FLA além da faixa de aplicabilidade e casos sem resistência positiva. Essas geometrias não pertencem aos 108 perfis do catálogo e foram tratadas como evidência de limite de escopo, não como falhas nos 2.000 casos catalogados.
+
+### Achados W registrados
+
+#### W-01 — `M_{r,FLA}` aparece como traço na memória
+
+**Classificação:** falha de apresentação; há também divergência numérica condicional em uma faixa não acionada pelos perfis catalogados.
+**Evidência:** a memória lê `Mr_fla_kn_cm`, mas essa chave não é devolvida pela rotina W ([calculation_memorial_dialog.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/ui/calculation_memorial_dialog.py:1258), [w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:327)). A Tabela D.1, p. 144, define `Mr = fy W` para FLA de seções I/H duplamente simétricas. Na interpolação entre `λp` e `λr`, a rotina reutiliza `mr_kn_cm = 0,70 Wy fy`, calculado para FLM/FLT ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:252)).
+
+**Efeito observado:** os perfis W catalogados ficaram abaixo de `λp,FLA` nos casos analisados, portanto essa diferença não alterou a resistência calculada nesses 2.000 casos. Para uma geometria que alcance o intervalo `λp,FLA < λ ≤ λr,FLA`, o valor de referência para FLA seria diferente e a capacidade pode ser subestimada. O traço da memória foi reproduzido em todos os casos aplicáveis.
+
+#### W-02 — `M_{z,Rd}` aparece como traço quando `M_{z,Sd}=0`
+
+**Classificação:** representação enganosa de parcela não solicitada.
+**Evidência:** a interação lê a resistência Z dos parâmetros da verificação de flexão Z ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:725)). Quando não existe momento Z significativo, a verificação Z retorna não aplicável sem parâmetros; a interação mantém `Mz_Rd_kn_cm=None`, e o memorial formata `0/—` ([calculation_memorial_dialog.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/ui/calculation_memorial_dialog.py:2181)).
+
+**Efeito observado:** quando a solicitação Z está abaixo do limiar de aplicabilidade, a rotina de interação atribui parcela zero e não precisa da resistência Z para calcular a taxa. O traço, nesse caso, não causou diferença na taxa calculada; deve ser distinguido de uma resistência calculada que faltou no memorial.
+
+#### W-03 — largura livre da alma usa profundidade sem descontar raios
+
+**Classificação:** divergência geométrica com efeito conservador observado na compressão.
+**Evidência:** a NBR define a largura `b` de alma laminada como a distância livre entre mesas menos os dois raios de concordância (5.1.2.2.3-a, p. 43); o Anexo D.3, p. 147, dá a mesma definição para `h`. A rotina usa `d − 2tf` para a largura de alma na área efetiva em compressão ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:897)) e também calcula `λFLA` com `di = d − 2tf` ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:252)). Em contraste, o cortante Z já desconta os raios ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:620)).
+
+**Efeito observado:** nos 108 perfis do catálogo, os dados não incluem raio; a geometria usada adota o padrão interno de 10 mm. Com esse raio adotado, 27 das 984 verificações de compressão tinham elementos locais esbeltos e diferiram da referência baseada na largura plana: `Aef` e `Nc,Rd` calculados pela rotina ficaram até **1,96 % abaixo** da referência; a taxa correspondente ficou até **2,00 % acima**. O efeito observado foi conservador. Para `λFLA`, o parâmetro exibido ficou até 16,9 % acima da referência de largura livre nos casos comparáveis, mas não mudou a capacidade dos perfis catalogados porque todos permaneceram no ramo `λ ≤ λp,FLA`.
+
+**Dependência de dados:** como o catálogo não fornece raio de concordância, a comparação usa o raio padrão de 10 mm da geometria do programa. As dimensões reais de cada perfil devem ser confirmadas antes de quantificar o efeito por perfil.
+
+#### W-04 — FLA extrapolada além da faixa da Tabela D.1
+
+**Classificação:** limite de aplicabilidade tratado como resultado verificado para geometrias não catalogadas.
+**Evidência:** quando `λFLA > λr,FLA`, o código continua a interpolação e a limita entre zero e `Mp` ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:255)). A NBR define vigas de alma não esbelta para `λ ≤ λr` (D.1.2, p. 137); a fórmula de D.2.2 não se aplica à FLA para `λ > λr`, remetendo ao Anexo E. O Anexo E.1.2, p. 148, descreve vigas I/H soldadas, não perfis W laminados.
+
+**Efeito observado:** na exploração suplementar de 50 geometrias artificiais, 27 casos chegaram a essa faixa e a rotina ainda retornou uma capacidade pela extrapolação. A cobertura normativa para W laminado com alma nessa faixa não foi estabelecida nesta auditoria. Não tratar esses resultados como comparados à fórmula de D.2.2.
+
+#### W-05 — limites de escopo das solicitações combinadas
+
+- **Torção:** aplica-se ao W o achado A-01. O campo de torsor foi variado na campanha, mas a rotina não o usa; 5.5.1.1 restringe a interação axial-flexão ali apresentada a casos sem torção, e 5.5.2.3 trata tensões sob torção combinada.
+- **Cortantes simultâneos em Y e Z:** os dois cortantes são verificados separadamente por 5.4.3.1 e 5.4.3.5. A rotina não calcula a verificação combinada por tensões de cisalhamento que 5.5.1.3 permite tratar conforme 5.5.2.3-b/d. As solicitações simultâneas foram geradas, mas a comparação numérica ficou limitada às duas verificações individuais; portanto, esse estado combinado permanece sem conclusão.
+- **Esbeltez global `L/r > 200`:** a rotina calcula e guarda `slenderness_limit=200`, mas não emite advertência quando ultrapassado ([w_rolled.py](/home/jadirparreira/Programação/Open%20Structural%20Analisys/osa/verification/w_rolled.py:1091)). A NBR 5.3.7.1–5.3.7.2, p. 52, trata 200 como recomendação e pede limites definidos pelo responsável técnico se não atendida; isto fica registrado como lacuna de comunicação, não como violação de um limite obrigatório da resistência.
+
+**Situação:** achados anotados para autorização posterior de correção. Nenhuma alteração foi feita nas rotinas ou nos testes.
+
+### Implementação autorizada — 28/10/2026
+
+O usuário autorizou a correção dos achados da rotina W e da memória. Foram alterados somente os caminhos condicionais de W Laminado em `w_rolled.py`, `verification_worker.py`, `memorial_data.py` e `calculation_memorial_dialog.py`, e acrescentado `test_w_rolled_verification.py`. A hierarquia tipográfica, espaçamentos e apresentação das equações existentes foram preservados; os limites foram acrescentados como aviso compacto no padrão visual atual.
+
+- A largura livre da alma passou a descontar os dois raios tanto na compressão quanto em FLA; o raio é exposto na memória. Quando não existe `r` explícito na geometria, a rotina mantém o padrão de 10 mm e informa esse pressuposto. O JSON atual não contém os raios; o folder oficial Gerdau localizado apresenta `d'` para uma lista de bitolas, mas não confirmei correspondência e cobertura para todas as 108 seções do JSON. Não importei uma tabela parcial como se cobrisse o catálogo inteiro; os raios reais continuam pendentes de validação.
+- A FLA agora calcula e entrega `Mr_fla_kn_cm = Wy·fy` e usa esse valor na interpolação do Anexo D.2.3. Para `λFLA > λr,FLA`, retorna `not_checked` com a razão e o motivo, sem extrapolar a expressão; a memória mostra a faixa e a causa.
+- A resistência à flexão em Z é calculada mesmo quando `Mz,Sd=0`, disponibilizando `Mz,Rd` para a interação e evitando `0/—`.
+- Demanda não nula de torsor ou cortantes simultâneos em Y/Z agora marca o resumo do elemento como incompleto (`not_checked`) e aparece no aviso da memória. A rotina continua sem calcular essas interações; o aviso impede interpretar a verificação parcial como aprovação global.
+- `L/r > 200` gera nota segundo o caráter de recomendação da NBR 8800:2024, 5.3.7. As premissas de tração `An=Ag` e `Ct=1` também ficam explícitas na memória.
+- A memória informa que `Ly`, `Lz`, `Lt` e `Lb` são estimados a partir do modelo, apresenta as notas/ocorrências retornadas pela rotina de contenções e orienta conferir esses valores com os travamentos construtivos efetivos.
+
+**Verificação após a implementação:** 12 testes focados passaram (`test_w_rolled_verification.py` e `test_memorial_docx_export.py`); `ruff` passou nos dois arquivos de rotina W/renderer e no novo módulo de testes; compilação Python e `git diff --check` passaram. A coleta de `test_verification_restraints.py` continua impedida por importar `AnalyticalRestraints`, nome não presente no módulo atual; não houve alteração nessa cobertura compartilhada. Os testes novos exercitam as correções centrais, mas não substituem uma nova campanha aleatória de 2.000 casos pós-correção.
+
+**Lacunas remanescentes:** a rotina ainda não calcula a torção nem as combinações de tensões normativas correspondentes; agora sinaliza o limite. Também não calcula a interação de cortantes Y/Z. O modelo continua sem geometria de furos e detalhes de ligação, portanto a resistência à tração continua condicional a `An=Ag` e `Ct=1`. A exatidão por perfil W depende de validar e cadastrar os raios reais para toda a lista atual. A fonte técnica consultada foi o [folder oficial de perfis estruturais Gerdau](https://gsn.gerdau.com/sites/gsn_gerdau/files/downloadable_files/Folder%20Perfis%20Estruturais%20Gerdau%20-%20Segmento%20Industrial.pdf), que identifica `R` como raio de concordância e tabula `d'` para as bitolas nele listadas.

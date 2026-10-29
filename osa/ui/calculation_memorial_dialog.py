@@ -167,6 +167,11 @@ class CalculationMemorialDialog(QDialog):
 
         geometry = memory.get("geometric_parameters", {})
         material = memory.get("material_parameters", {})
+        verification_summary = memory.get("verification_summary") or {}
+        scope_warnings = verification_summary.get("scope_warnings", ())
+        torsion_summary = verification_summary.get("torsion_summary") or {}
+        biaxial_shear_summary = verification_summary.get("biaxial_shear_summary") or {}
+        slenderness_summary = verification_summary.get("slenderness_summary") or {}
         axial_tension = memory.get("axial_tension", {})
         axial_compression = memory.get("axial_compression", {})
         flexion_y = memory.get("flexion_y", {})
@@ -194,6 +199,8 @@ class CalculationMemorialDialog(QDialog):
             ("Comprimento destravado à torção (Lt)", formatted(geometry.get("Lt_cm"), "cm")),
             ("Comprimento destravado à flexão (Lb)", formatted(geometry.get("Lb_cm"), "cm")),
         ]
+        if memory.get("profile_type") == "W Laminado":
+            section_rows.insert(4, ("Raio de concordância adotado (r)", formatted(geometry.get("r_mm"), "mm")))
         if memory.get("profile_type") == "L Laminado":
             section_rows[:4] = [
                 ("Aba (b)", formatted(geometry.get("b_mm"), "mm")),
@@ -362,6 +369,20 @@ class CalculationMemorialDialog(QDialog):
             r"\eta_z": "Taxa de utilização à flexão em Z",
             r"\eta_{v,Y}": "Taxa de utilização à força cortante em Y",
             r"\eta_{v,Z}": "Taxa de utilização à força cortante em Z",
+            r"\eta_{V_y,V_z}": "Taxa de utilização dos cortantes simultâneos em Y e Z",
+            r"\tau_{y,Sd}": "Tensão solicitante de cisalhamento na mesa",
+            r"\tau_{z,Sd}": "Tensão solicitante de cisalhamento na alma",
+            r"\tau_{e,y}": "Tensão crítica elástica de cisalhamento na mesa",
+            r"\tau_{e,z}": "Tensão crítica elástica de cisalhamento na alma sem enrijecedores",
+            r"\lambda_y": "Índice de esbeltez da barra no eixo Y",
+            r"\lambda_z": "Índice de esbeltez da barra no eixo Z",
+            r"\tau_{Rd}": "Tensão resistente de cálculo ao cisalhamento",
+            r"\tau_{Sd}": "Tensão resultante (envelope conservador dos máximos na mesa e na alma)",
+            r"\lambda_{0,y}": "Índice de esbeltez reduzido da mesa ao cisalhamento",
+            r"\lambda_{0,z}": "Índice de esbeltez reduzido da alma ao cisalhamento",
+            r"\chi_y": "Fator de redução por instabilidade da mesa ao cisalhamento",
+            r"\chi_z": "Fator de redução por instabilidade da alma ao cisalhamento",
+            r"\chi_V": "Fator de redução governante ao cisalhamento",
             r"\eta_{ob}": "Taxa de utilização à flexão oblíqua",
             r"\eta_{int}": "Taxa de utilização da interação entre força axial e flexão",
             r"\lambda_0": "Índice de esbeltez reduzido",
@@ -398,6 +419,16 @@ class CalculationMemorialDialog(QDialog):
         }
 
         def equation_reference(variable: str) -> str:
+            if variable in {r"\tau_{y,Sd}", r"\tau_{z,Sd}", r"\tau_{Sd}",
+                            r"\tau_{Rd}", r"\eta_{V_y,V_z}"}:
+                return "5.5.1.3; 5.5.2.3(b), (d)"
+            if variable in {r"\tau_{e,y}", r"\tau_{e,z}"}:
+                return "5.4.3.1.1 e 5.4.3.5"
+            if variable in {r"\lambda_y", r"\lambda_z"}:
+                return "5.2.8.1 e 5.3.7.1"
+            if variable in {r"\lambda_{0,y}", r"\lambda_{0,z}",
+                            r"\chi_y", r"\chi_z", r"\chi_V"}:
+                return "5.3.3.1–.2; 5.5.2.3(d)"
             if variable == r"A_e":
                 return "5.2.3"
             if variable in {r"N_{t,Rd1}", r"N_{t,Rd2}", r"N_{t,Rd}"}:
@@ -481,6 +512,64 @@ class CalculationMemorialDialog(QDialog):
                     f'{equation((latex_line,), fallback, indent_continuations=False)}</p>'
                 )
             return "".join(rendered)
+
+        slenderness_content = ""
+        if memory.get("profile_type") == "W Laminado":
+            slenderness_status = slenderness_summary.get("status")
+            slenderness_content = (
+                '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
+                'Limite de esbeltez — ABNT NBR 8800:2024, 5.2.8.1 e 5.3.7.1–5.3.7.2</p>'
+            )
+            if slenderness_status == "checked":
+                p = slenderness_summary.get("parameters") or {}
+                lambda_y = p.get("lambda_y")
+                lambda_z = p.get("lambda_z")
+                lambda_t_max = p.get("lambda_tension_max")
+                slenderness_lines = (
+                    *equation_triplet(
+                        r"\lambda_y", r"\dfrac{L_y}{r_y}",
+                        rf"\dfrac{{{decimal(p.get('Ly_cm'))}}}{{{decimal(p.get('ry_cm'))}}}",
+                        decimal(lambda_y),
+                    ),
+                    *equation_triplet(
+                        r"\lambda_z", r"\dfrac{L_z}{r_z}",
+                        rf"\dfrac{{{decimal(p.get('Lz_cm'))}}}{{{decimal(p.get('rz_cm'))}}}",
+                        decimal(lambda_z),
+                    ),
+                )
+                slenderness_content += spaced_equations(slenderness_lines, spacing_px=7)
+
+                def recommendation(label: str, applicable: bool, value: float,
+                                   limit: float) -> str:
+                    if not applicable:
+                        status = "não aplicável: nenhuma solicitação axial correspondente foi identificada"
+                    elif value <= limit:
+                        status = "dentro do limite recomendado"
+                    else:
+                        status = "acima do limite recomendado"
+                    return (
+                        '<p style="margin:0 0 3px;color:#57606a">'
+                        f'{escape(label)}: λ = {decimal(value)}; limite recomendado = '
+                        f'{decimal(limit)} — {escape(status)}.</p>'
+                    )
+
+                slenderness_content += recommendation(
+                    "Tração (maior entre λy e λz)", bool(slenderness_summary.get("has_tension")),
+                    lambda_t_max, p.get("tension_limit"),
+                )
+                slenderness_content += recommendation(
+                    "Compressão em Y", bool(slenderness_summary.get("has_compression")),
+                    lambda_y, p.get("compression_limit"),
+                )
+                slenderness_content += recommendation(
+                    "Compressão em Z", bool(slenderness_summary.get("has_compression")),
+                    lambda_z, p.get("compression_limit"),
+                )
+            else:
+                slenderness_content += (
+                    '<p style="margin:5px 0;color:#57606a">Não foi possível determinar os índices: '
+                    f'{escape(str(slenderness_summary.get("detail", "dados indisponíveis")))}.</p>'
+                )
 
         axial_tension_content = (
             '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">Tração axial — ABNT NBR 8800:2024, 5.2</p>'
@@ -1150,12 +1239,12 @@ class CalculationMemorialDialog(QDialog):
                 fla_mn_formula, fla_mn_sub = r"M_p", decimal(p.get("Mp_kn_cm"))
             else:
                 fla_mn_formula = (
-                    r"M_p-(M_p-M_r)\cdot"
+                    r"M_p-(M_p-M_{r,FLA})\cdot"
                     r"\dfrac{\lambda_{FLA}-\lambda_{p,FLA}}{\lambda_{r,FLA}-\lambda_{p,FLA}}"
                 )
                 fla_mn_sub = (
                     rf"{decimal(p.get('Mp_kn_cm'))}-({decimal(p.get('Mp_kn_cm'))}"
-                    rf"-{decimal(p.get('Mr_kn_cm'))})\cdot"
+                    rf"-{decimal(p.get('Mr_fla_kn_cm'))})\cdot"
                     rf"\dfrac{{{decimal(p.get('lambda_fla'))}-{decimal(p.get('lambda_p_fla'))}}}"
                     rf"{{{decimal(p.get('lambda_r_fla'))}-{decimal(p.get('lambda_p_fla'))}}}"
                 )
@@ -1302,7 +1391,8 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
         elif (
-            flexion_verification.get("status") == "checked"
+            memory.get("profile_type") == "W Laminado"
+            and flexion_verification.get("status") == "not_checked"
             and (flexion_verification.get("parameters") or {}).get("slender_web_rejected")
         ):
             p = flexion_verification.get("parameters", {})
@@ -1320,11 +1410,13 @@ class CalculationMemorialDialog(QDialog):
                 *equation_triplet(
                     r"\eta_{FLA}", r"\dfrac{\lambda_{FLA}}{\lambda_{r,FLA}}\leq 1,0",
                     rf"\dfrac{{{decimal(p.get('lambda_fla'))}}}{{{decimal(p.get('lambda_r_fla'))}}}",
-                    rf"{decimal(p.get('slenderness_ratio'), 2)}\quad\mathbf{{REPROVADO}}",
+                    decimal(p.get("lambda_fla") / p.get("lambda_r_fla"), 2),
                 ),
             )
             flexion_y_content += (
                 f'{spaced_equations(slenderness_lines)}'
+                f'<p style="margin:0 0 3px;color:#57606a">Não verificado: '
+                f'{escape(str(flexion_verification.get("detail", "limite de aplicação excedido")))}.</p>'
             )
         elif memory.get("profile_type") not in {"W Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_y_content += (
@@ -2257,6 +2349,160 @@ class CalculationMemorialDialog(QDialog):
         flexocompressao_content = combined_interaction_content(
             "flexocompressao", "Flexocompressão", "axial",
         )
+        scope_notice = ""
+        torsion_content = ""
+        biaxial_shear_content = ""
+        if memory.get("profile_type") == "W Laminado":
+            if not torsion_summary.get("available"):
+                torsion_message = (
+                    "Execute a análise e a verificação do modelo para identificar "
+                    "as solicitações de torção."
+                )
+            elif torsion_summary.get("has_torsion"):
+                torsion_message = (
+                    "Foi detectado uma torção de "
+                    f"{formatted(torsion_summary.get('torque_kn_m'), 'kN·m')} "
+                    f"na barra {torsion_summary.get('member', '—')}, combinação "
+                    f"{torsion_summary.get('combination', '—')}, "
+                    f"x = {formatted(torsion_summary.get('position_m'), 'm')}. "
+                    "Solicitação não verificada."
+                )
+            else:
+                torsion_message = (
+                    "Nenhuma combinação analisada apresentou solicitação de torção "
+                    "acima da tolerância numérica adotada."
+                )
+            torsion_content = (
+                '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
+                'Torção — ABNT NBR 8800:2024, 5.5.2.3</p>'
+                f'<p style="margin:5px 0;color:#57606a">{escape(torsion_message)}</p>'
+            )
+            biaxial_check_status = biaxial_shear_summary.get("status")
+            if not biaxial_shear_summary.get("available"):
+                biaxial_shear_message = (
+                    "Execute a análise e a verificação do modelo para identificar "
+                    "os cortantes simultâneos."
+                )
+            elif biaxial_check_status == "checked":
+                p = biaxial_shear_summary.get("parameters") or {}
+                utilization = biaxial_shear_summary.get("utilization")
+                result_status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
+                lambda0_y = float(p.get("lambda0_y"))
+                lambda0_z = float(p.get("lambda0_z"))
+                chi_formula_y = (
+                    r"0,658^{\lambda_{0,y}^2}" if lambda0_y <= 1.5
+                    else r"\dfrac{0,877}{\lambda_{0,y}^2}"
+                )
+                chi_formula_z = (
+                    r"0,658^{\lambda_{0,z}^2}" if lambda0_z <= 1.5
+                    else r"\dfrac{0,877}{\lambda_{0,z}^2}"
+                )
+                chi_substituted_y = (
+                    rf"0,658^{{{decimal(lambda0_y)}^2}}" if lambda0_y <= 1.5
+                    else rf"\dfrac{{0,877}}{{{decimal(lambda0_y)}^2}}"
+                )
+                chi_substituted_z = (
+                    rf"0,658^{{{decimal(lambda0_z)}^2}}" if lambda0_z <= 1.5
+                    else rf"\dfrac{{0,877}}{{{decimal(lambda0_z)}^2}}"
+                )
+                biaxial_shear_message = (
+                    "Combinação governante: "
+                    f"{escape(str(biaxial_shear_summary.get('critical_combination', '—')))}"
+                )
+                biaxial_shear_equations = spaced_equations((
+                    rf"\tau_{{y,Sd}} = \dfrac{{V_{{y,Sd}}Q_{{z,mesa}}}}{{I_z t_f}} = "
+                    rf"\dfrac{{{decimal(biaxial_shear_summary.get('applied_shear_y_kn'))}"
+                    rf"\cdot {decimal(p.get('Q_flange_cm3'))}}}"
+                    rf"{{{decimal(p.get('Iz_cm4'))}\cdot {decimal(p.get('tf_cm'))}}} = "
+                    rf"{decimal(biaxial_shear_summary.get('tau_y_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\tau_{{z,Sd}} = \dfrac{{V_{{z,Sd}}Q_{{y,alma}}}}{{I_y t_w}} = "
+                    rf"\dfrac{{{decimal(biaxial_shear_summary.get('applied_shear_z_kn'))}"
+                    rf"\cdot {decimal(p.get('Q_web_cm3'))}}}"
+                    rf"{{{decimal(p.get('Iy_cm4'))}\cdot {decimal(p.get('tw_cm'))}}} = "
+                    rf"{decimal(biaxial_shear_summary.get('tau_z_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\tau_{{Sd}} = \sqrt{{\tau_{{y,Sd}}^2 + \tau_{{z,Sd}}^2}} = "
+                    rf"\sqrt{{{decimal(biaxial_shear_summary.get('tau_y_kn_cm2'))}^2"
+                    rf"+{decimal(biaxial_shear_summary.get('tau_z_kn_cm2'))}^2}} = "
+                    rf"{decimal(biaxial_shear_summary.get('tau_sd_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\tau_{{e,y}} = \dfrac{{1,2\pi^2E}}{{12(1-\nu^2)}}"
+                    rf"\left(\dfrac{{t_f}}{{b_f/2}}\right)^2 = "
+                    rf"\dfrac{{1,2\pi^2\cdot {decimal(p.get('E_kn_cm2'))}}}"
+                    rf"{{12(1-{decimal(p.get('poisson'))}^2)}}"
+                    rf"\left(\dfrac{{{decimal(p.get('tf_cm'))}}}"
+                    rf"{{{decimal(p.get('bf_cm') / 2.0)}}}\right)^2 = "
+                    rf"{decimal(p.get('tau_e_y_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\tau_{{e,z}} = \dfrac{{5,34\pi^2E}}{{12(1-\nu^2)}}"
+                    rf"\left(\dfrac{{t_w}}{{h}}\right)^2 = "
+                    rf"\dfrac{{5,34\pi^2\cdot {decimal(p.get('E_kn_cm2'))}}}"
+                    rf"{{12(1-{decimal(p.get('poisson'))}^2)}}"
+                    rf"\left(\dfrac{{{decimal(p.get('tw_cm'))}}}"
+                    rf"{{{decimal(p.get('h_cm'))}}}\right)^2 = "
+                    rf"{decimal(p.get('tau_e_z_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\lambda_{{0,y}} = \sqrt{{\dfrac{{0,60f_y}}{{\tau_{{e,y}}}}}} = "
+                    rf"\sqrt{{\dfrac{{0,60\cdot {decimal(p.get('fy_kn_cm2'))}}}"
+                    rf"{{{decimal(p.get('tau_e_y_kn_cm2'))}}}}} = "
+                    rf"{decimal(lambda0_y)}",
+                    rf"\lambda_{{0,z}} = \sqrt{{\dfrac{{0,60f_y}}{{\tau_{{e,z}}}}}} = "
+                    rf"\sqrt{{\dfrac{{0,60\cdot {decimal(p.get('fy_kn_cm2'))}}}"
+                    rf"{{{decimal(p.get('tau_e_z_kn_cm2'))}}}}} = "
+                    rf"{decimal(lambda0_z)}",
+                    rf"\chi_y = {chi_formula_y} = {chi_substituted_y} = "
+                    rf"{decimal(p.get('chi_y'))}",
+                    rf"\chi_z = {chi_formula_z} = {chi_substituted_z} = "
+                    rf"{decimal(p.get('chi_z'))}",
+                    rf"\chi_V = \min(\chi_y,\chi_z) = "
+                    rf"\min({decimal(p.get('chi_y'))},{decimal(p.get('chi_z'))}) = "
+                    rf"{decimal(p.get('chi'))}",
+                    rf"\tau_{{Rd}} = \dfrac{{0,60\chi f_y}}{{\gamma_{{a1}}}} = "
+                    rf"\dfrac{{0,60\cdot {decimal(p.get('chi'))}"
+                    rf"\cdot {decimal(p.get('fy_kn_cm2'))}}}"
+                    rf"{{{decimal(p.get('gamma_a1'))}}} = "
+                    rf"{decimal(p.get('tau_rd_kn_cm2'))}\,\mathrm{{kN/cm^2}}",
+                    rf"\eta_{{V_y,V_z}} = \dfrac{{\tau_{{Sd}}}}{{\tau_{{Rd}}}} = "
+                    rf"\dfrac{{{decimal(biaxial_shear_summary.get('tau_sd_kn_cm2'))}}}"
+                    rf"{{{decimal(p.get('tau_rd_kn_cm2'))}}} = "
+                    rf"{decimal(utilization * 100.0, 2)}\,\%\quad\mathbf{{{result_status}}}",
+                ), spacing_px=7)
+            elif biaxial_check_status == "not_checked":
+                biaxial_shear_message = (
+                    "Não foi possível concluir a verificação: "
+                    f"{biaxial_shear_summary.get('detail', 'dados indisponíveis')}."
+                )
+                biaxial_shear_equations = ""
+            else:
+                biaxial_shear_message = (
+                    "Nenhuma combinação analisada apresentou solicitação simultânea "
+                    "significativa de cortantes em Y e Z."
+                )
+                biaxial_shear_equations = ""
+            biaxial_shear_content = (
+                '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
+                'Cortantes simultâneos em Y e Z — ABNT NBR 8800:2024, '
+                '5.5.1.3 e 5.5.2.3(b), (d)</p>'
+                + (
+                    biaxial_shear_equations
+                    + f'<p style="margin:0 0 3px;color:#57606a">'
+                    f'{escape(biaxial_shear_message)}</p>'
+                    if biaxial_check_status == "checked"
+                    else
+                    f'<p style="margin:5px 0;color:#57606a">'
+                    f'{escape(biaxial_shear_message)}</p>'
+                )
+            )
+            notes: list[str] = []
+            notes.extend(
+                str(item) for item in scope_warnings
+                if not str(item).startswith("cortantes Y e Z simultâneos fora do escopo")
+            )
+            if notes:
+                scope_notice = (
+                    '<div style="margin:10px 0 16px;padding:9px 12px;border-left:3px solid #bf8700;'
+                    'background:#fff8c5;color:#6e5100">'
+                    '<b>Premissas e limites de verificação do perfil W</b>'
+                    '<ul style="margin:5px 0 0;padding-left:20px">'
+                    + "".join(f"<li>{escape(note)}</li>" for note in dict.fromkeys(notes))
+                    + "</ul></div>"
+                )
         members = ", ".join(memory.get("members", ())) or "—"
         element_rows = [
             ("Nome", memory.get("element_name", "—")),
@@ -2268,15 +2514,18 @@ class CalculationMemorialDialog(QDialog):
         return (
             '<div style="font-family:sans-serif;font-size:13px;color:#24292f">'
             '<h2 style="margin:14px 0 12px;font-size:18px">Memória de cálculo de elemento estrutural</h2>'
-            '<h3 style="margin:18px 0 8px;font-size:15px">1. Dados do elemento</h3>'
+            + scope_notice
+            + '<h3 style="margin:18px 0 8px;font-size:15px">1. Dados do elemento</h3>'
             '<table cellspacing="0" cellpadding="0">' + "".join(row(*item) for item in element_rows) + "</table>"
             '<h3 style="margin:22px 0 8px;font-size:15px">2. Parâmetros geométricos</h3>'
             '<table cellspacing="0" cellpadding="0">' + "".join(row(*item) for item in section_rows) + "</table>"
             + '<h3 style="margin:22px 0 8px;font-size:15px">3. Parâmetros materiais</h3>'
             '<table cellspacing="0" cellpadding="0">' + "".join(row(*item) for item in material_rows) + "</table>"
             '<h3 style="margin:22px 0 8px;font-size:15px">4. Verificações</h3>'
+            + slenderness_content
             + axial_tension_content
             + axial_compression_content
+            + torsion_content
             + flexion_y_content
             + flexion_z_content
             + shear_y_content
@@ -2284,6 +2533,7 @@ class CalculationMemorialDialog(QDialog):
             + flexao_obliqua_content
             + flexotracao_content
             + flexocompressao_content
+            + biaxial_shear_content
             + "</div>"
         )
 

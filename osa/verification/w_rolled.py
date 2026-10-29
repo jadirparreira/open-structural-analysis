@@ -122,6 +122,77 @@ def verify_w_tension(element, model, results) -> dict:
     }
 
 
+def verify_w_slenderness(element, model, results) -> dict:
+    """Report NBR recommended member slenderness limits for W sections."""
+    members = [model.bars[name] for name in element.member_names if name in model.bars]
+    if not members or len(members) != len(element.member_names):
+        return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
+    if any(member.section != "W Laminado" for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(not member.section_geometry for member in members):
+        return {"status": "not_checked", "detail": "geometria da seção incompleta"}
+    if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
+        return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
+
+    try:
+        member = members[0]
+        geometry = member.geometry_dict()
+
+        def dim(name: str) -> float:
+            value = geometry.get(name, geometry.get(f"{name}_mm"))
+            if value is None:
+                raise ValueError(f"dimensão '{name}' ausente na seção")
+            return float(value)
+
+        d, bf, tw, tf = (dim(key) for key in ("d", "bf", "tw", "tf"))
+        radius = float(geometry.get("r", geometry.get("r_mm", 10.0)))
+        area_mm2, _, _, iy_mm4, iz_mm4, _ = polygon_properties(
+            w_contour_points(d, bf, tw, tf, radius),
+        )
+        area_cm2 = area_mm2 / 100.0
+        iy_cm4 = float(geometry.get("Iy_cm4", 0.0)) or iy_mm4 / 1e4
+        iz_cm4 = float(geometry.get("Iz_cm4", 0.0)) or iz_mm4 / 1e4
+        if min(area_cm2, iy_cm4, iz_cm4) <= 0.0:
+            raise ValueError("propriedades geométricas inválidas para a esbeltez")
+        lengths = restraint_lengths(
+            model, element, results or (), {"Iy": iz_cm4, "tw": tw / 10.0},
+        )
+        ly_cm = lengths.lengths_m["Ly"] * 100.0
+        lz_cm = lengths.lengths_m["Lz"] * 100.0
+        ry_cm = sqrt(iy_cm4 / area_cm2)
+        rz_cm = sqrt(iz_cm4 / area_cm2)
+        if min(ly_cm, lz_cm, ry_cm, rz_cm) <= 0.0:
+            raise ValueError("comprimentos destravados ou raios de giração inválidos")
+        lambda_y = ly_cm / ry_cm
+        lambda_z = lz_cm / rz_cm
+        has_tension = any(
+            float(sample.get("axial", 0.0)) <= -MIN_SIGNIFICANT_TENSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+        has_compression = any(
+            float(sample.get("axial", 0.0)) >= MIN_SIGNIFICANT_COMPRESSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, ArithmeticError) as error:
+        return {"status": "not_checked", "detail": str(error) or "geometria inválida"}
+
+    return {
+        "status": "checked",
+        "has_tension": has_tension,
+        "has_compression": has_compression,
+        "parameters": {
+            "Ly_cm": ly_cm, "Lz_cm": lz_cm,
+            "ry_cm": ry_cm, "rz_cm": rz_cm,
+            "lambda_y": lambda_y, "lambda_z": lambda_z,
+            "lambda_tension_max": max(lambda_y, lambda_z),
+            "tension_limit": 300.0,
+            "compression_limit": 200.0,
+        },
+    }
+
+
 def _compression_local_width(width_mm: float, thickness_mm: float, limit: float,
                              chi: float, c1: float, c2: float, fy_kn_cm2: float) -> float:
     slenderness = width_mm / thickness_mm
@@ -181,7 +252,8 @@ def verify_w_flexion_y(element, model, results) -> dict:
         it_cm4 = geometry["It"]
         cw_cm6 = geometry["Cw"]
         bf_mm, tf_mm, tw_mm, di_mm = (geometry[key] for key in ("bf", "tf", "tw", "d"))
-        di_mm -= 2.0 * tf_mm
+        radius_mm = geometry["r"]
+        di_mm -= 2.0 * tf_mm + 2.0 * radius_mm
         bf_cm, tf_cm, tw_cm, di_cm = (value / 10.0 for value in (bf_mm, tf_mm, tw_mm, di_mm))
 
         # Material values are stored in kN/m²; convert to kN/cm² for moments in kN·cm.
@@ -193,6 +265,7 @@ def verify_w_flexion_y(element, model, results) -> dict:
         cb = calculation_property(model, element, "Cb", CB_INITIAL)
         mp_kn_cm = zy_cm3 * fy_kn_cm2
         mr_kn_cm = 0.70 * wy_cm3 * fy_kn_cm2
+        mr_fla_kn_cm = wy_cm3 * fy_kn_cm2
 
         lengths = restraint_lengths(
             model, element, results, {"Iy": geometry["Iz"], "tw": tw_cm}, cb=cb,
@@ -254,13 +327,32 @@ def verify_w_flexion_y(element, model, results) -> dict:
         lambda_r_fla = 5.70 * sqrt(elastic_kn_cm2 / fy_kn_cm2)
         if lambda_fla <= lambda_p_fla:
             mn_fla_kn_cm = mp_kn_cm
+        elif lambda_fla <= lambda_r_fla:
+            mn_fla_kn_cm = mp_kn_cm - (mp_kn_cm - mr_fla_kn_cm) * (
+                (lambda_fla - lambda_p_fla) / (lambda_r_fla - lambda_p_fla)
+            )
         else:
-            # Keep the extended interpolation defined in the supplied routine.
-            mn_fla_kn_cm = max(0.0, min(
-                mp_kn_cm,
-                mp_kn_cm - (mp_kn_cm - mr_kn_cm)
-                * ((lambda_fla - lambda_p_fla) / (lambda_r_fla - lambda_p_fla)),
-            ))
+            parameters = {
+                **restraint_parameters,
+                "E_kn_cm2": elastic_kn_cm2, "fy_kn_cm2": fy_kn_cm2,
+                "Wy_cm3": wy_cm3, "Zy_cm3": zy_cm3,
+                "di_cm": di_cm, "tw_cm": tw_cm, "r_mm": radius_mm,
+                "Mp_kn_cm": mp_kn_cm, "Mr_kn_cm": mr_kn_cm,
+                "Mr_fla_kn_cm": mr_fla_kn_cm,
+                "lambda_fla": lambda_fla,
+                "lambda_p_fla": lambda_p_fla,
+                "lambda_r_fla": lambda_r_fla,
+                "slender_web_rejected": True,
+            }
+            return {
+                "status": "not_checked",
+                "detail": (
+                    "alma esbelta: λFLA > λr,FLA; D.2.3 não se aplica e "
+                    "esta rotina não implementa o método aplicável a esta seção"
+                ),
+                "critical_check": "Flexão Y — FLA fora do escopo implementado",
+                "parameters": parameters,
+            }
         mrd_fla_kn_cm = mn_fla_kn_cm / gamma_a1
 
         mrd_limit_kn_cm = 1.50 * wy_cm3 * fy_kn_cm2 / gamma_a1
@@ -313,7 +405,7 @@ def verify_w_flexion_y(element, model, results) -> dict:
         "gamma_a1": gamma_a1, "Iy_cm4": iy_cm4, "Wy_cm3": wy_cm3,
         "Zy_cm3": zy_cm3, "rz_cm": rz_cm, "It_cm4": it_cm4,
         "Cw_cm6": cw_cm6, "bf_cm": bf_cm, "tf_cm": tf_cm,
-        "tw_cm": tw_cm, "di_cm": di_cm,
+        "tw_cm": tw_cm, "di_cm": di_cm, "r_mm": radius_mm,
         "Cb": cb, "Mp_kn_cm": mp_kn_cm, "Mr_kn_cm": mr_kn_cm,
         "beta1": beta1,
         "lambda_flt": lambda_flt, "lambda_p_flt": lambda_p_flt,
@@ -326,6 +418,7 @@ def verify_w_flexion_y(element, model, results) -> dict:
         "Mrd_flm_nominal_kn_cm": mrd_flm_kn_cm, "Mrd_flm_kn_cm": capacities["FLM"],
         "lambda_fla": lambda_fla, "lambda_p_fla": lambda_p_fla,
         "lambda_r_fla": lambda_r_fla,
+        "Mr_fla_kn_cm": mr_fla_kn_cm,
         "Mn_fla_kn_cm": mn_fla_kn_cm,
         "Mrd_fla_nominal_kn_cm": mrd_fla_kn_cm, "Mrd_fla_kn_cm": capacities["FLA"],
         "Mrd_limit_kn_cm": mrd_limit_kn_cm, "Mrd_kn_cm": my_rd_kn_cm,
@@ -359,14 +452,6 @@ def verify_w_flexion_z(element, model, results) -> dict:
         for result in results for member_name in element.member_names
     ):
         return {"status": "not_checked", "detail": "resultados de análise indisponíveis"}
-
-    has_bending = any(
-        abs(float(sample.get("moment_z", 0.0))) >= MIN_SIGNIFICANT_BENDING_KN_M
-        for result in results for member_name in element.member_names
-        for sample in result.member_results[member_name].get("samples", ())
-    )
-    if not has_bending:
-        return {"status": "not_applicable", "detail": "nenhuma combinação apresentou momento fletor em Z"}
 
     material_values = model.materials.get(members[0].material, ())
     if len(material_values) < 6:
@@ -697,6 +782,178 @@ def verify_w_shear_z(element, model, results) -> dict:
     }
 
 
+def verify_w_biaxial_shear(element, model, results) -> dict:
+    """Check simultaneous transverse shear in W sections per NBR 8800:2024.
+
+    Elastic shear stresses are recovered with the thin-plate Q/(I t) method:
+    the flange contribution is taken at the flange root and the web contribution
+    at the web neutral axis. Their resultant is a conservative envelope because
+    these individual maxima need not occur at the same point. The instability
+    reduction factors are calculated from elastic plate-buckling stresses and
+    NBR 8800:2024, 5.3.3 for the web and flange.
+    """
+    members = [model.bars[name] for name in element.member_names if name in model.bars]
+    if not members or len(members) != len(element.member_names):
+        return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
+    if any(member.section != "W Laminado" for member in members):
+        return {"status": "not_checked", "detail": "a rotina atende apenas perfis W laminados"}
+    if any(not member.section_geometry for member in members):
+        return {"status": "not_checked", "detail": "geometria da seção incompleta"}
+    if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
+        return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
+    if not results or any(
+        member_name not in result.member_results
+        for result in results for member_name in element.member_names
+    ):
+        return {"status": "not_checked", "detail": "resultados de análise indisponíveis"}
+
+    material_values = model.materials.get(members[0].material, ())
+    if len(material_values) < 6:
+        return {"status": "not_checked", "detail": "propriedades do material não definidas"}
+    elastic_kn_m2, poisson, fy_kn_m2 = (
+        float(material_values[index]) for index in (0, 2, 4)
+    )
+    if min(elastic_kn_m2, fy_kn_m2) <= 0.0 or not -1.0 < poisson < 0.5:
+        return {"status": "not_checked", "detail": "propriedades do material inválidas"}
+
+    try:
+        from osa.memorial_data import _w_properties
+
+        geometry = _w_properties(members[0])
+        bf_cm, tf_cm = geometry["bf"] / 10.0, geometry["tf"] / 10.0
+        tw_cm = geometry["tw"] / 10.0
+        d_cm = geometry["d"] / 10.0
+        radius_cm = geometry["r"] / 10.0
+        web_height_cm = d_cm - 2.0 * tf_cm - 2.0 * radius_cm
+        iy_cm4, iz_cm4 = geometry["Iy"], geometry["Iz"]
+        elastic_kn_cm2 = elastic_kn_m2 / 10_000.0
+        fy_kn_cm2 = fy_kn_m2 / 10_000.0
+        gamma_a1 = GAMMA_A1
+        if min(bf_cm, tf_cm, tw_cm, web_height_cm, iy_cm4, iz_cm4, fy_kn_cm2) <= 0.0:
+            raise ValueError("propriedades geométricas inválidas para cortantes simultâneos")
+
+        # Elastic Q/(I t) stresses for the idealized flange/web plates.
+        # At the flange root, Q is the first moment of half a flange. Include
+        # the full upper fillet area in this branch for a conservative estimate.
+        fillet_area_cm2 = (1.0 - pi / 4.0) * radius_cm**2
+        q_flange_cm3 = (
+            (bf_cm / 2.0 * tf_cm) * ((d_cm - tf_cm) / 2.0)
+            + fillet_area_cm2 * (d_cm / 2.0 - tf_cm - radius_cm / 3.0)
+        )
+        # At the web neutral axis, Q includes the complete upper half-section.
+        # Integrate the actual sampled W contour above its centroidal axis so
+        # the flange/web fillets are included in the web first moment.
+        points = w_contour_points(
+            geometry["d"], geometry["bf"], geometry["tw"], geometry["tf"], geometry["r"],
+        )
+        upper = []
+        previous = points[-1]
+        previous_inside = previous[1] >= 0.0
+        for current in points:
+            current_inside = current[1] >= 0.0
+            if current_inside != previous_inside:
+                fraction = -previous[1] / (current[1] - previous[1])
+                upper.append((
+                    previous[0] + fraction * (current[0] - previous[0]),
+                    0.0,
+                ))
+            if current_inside:
+                upper.append(current)
+            previous, previous_inside = current, current_inside
+        upper_area_mm2, _, upper_centroid_z_mm, *_ = polygon_properties(tuple(upper))
+        q_web_cm3 = upper_area_mm2 * upper_centroid_z_mm / 1000.0
+        tau_y_per_kn = q_flange_cm3 / (iz_cm4 * tf_cm)
+        tau_z_per_kn = q_web_cm3 / (iy_cm4 * tw_cm)
+
+        poisson_factor = 12.0 * (1.0 - poisson**2)
+        tau_e_y_kn_cm2 = (
+            1.2 * pi**2 * elastic_kn_cm2 / poisson_factor
+            * (tf_cm / (bf_cm / 2.0))**2
+        )
+        tau_e_z_kn_cm2 = (
+            5.34 * pi**2 * elastic_kn_cm2 / poisson_factor
+            * (tw_cm / web_height_cm)**2
+        )
+        lambda0_y = sqrt(0.60 * fy_kn_cm2 / tau_e_y_kn_cm2)
+        lambda0_z = sqrt(0.60 * fy_kn_cm2 / tau_e_z_kn_cm2)
+        chi_y = 0.658 ** (lambda0_y**2) if lambda0_y <= 1.5 else 0.877 / lambda0_y**2
+        chi_z = 0.658 ** (lambda0_z**2) if lambda0_z <= 1.5 else 0.877 / lambda0_z**2
+        chi = min(chi_y, chi_z)
+        tau_rd_kn_cm2 = 0.60 * chi * fy_kn_cm2 / gamma_a1
+        if min(tau_y_per_kn, tau_z_per_kn, tau_rd_kn_cm2) <= 0.0:
+            raise ValueError("tensão resistente de cálculo não positiva")
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, ArithmeticError) as error:
+        return {"status": "not_checked", "detail": str(error) or "geometria inválida"}
+
+    combinations = []
+    critical = None
+    for result in results:
+        combination_critical = None
+        for member_name in element.member_names:
+            for sample in result.member_results[member_name].get("samples", ()):
+                vy_kn = abs(float(sample.get("shear_y", 0.0)))
+                vz_kn = abs(float(sample.get("shear_z", 0.0)))
+                if min(vy_kn, vz_kn) < MIN_SIGNIFICANT_SHEAR_KN:
+                    continue
+                tau_y = vy_kn * tau_y_per_kn
+                tau_z = vz_kn * tau_z_per_kn
+                tau_sd = sqrt(tau_y**2 + tau_z**2)
+                utilization = tau_sd / tau_rd_kn_cm2
+                item = {
+                    "combination": result.load_reference,
+                    "member": member_name,
+                    "position_m": float(sample.get("x", 0.0)),
+                    "shear_y_kn": vy_kn, "shear_z_kn": vz_kn,
+                    "tau_y_kn_cm2": tau_y, "tau_z_kn_cm2": tau_z,
+                    "tau_sd_kn_cm2": tau_sd,
+                    "utilization": utilization,
+                    "status": "APROVADO" if utilization <= 1.0 else "REPROVADO",
+                }
+                if combination_critical is None or utilization > combination_critical["utilization"]:
+                    combination_critical = item
+        if combination_critical is None:
+            combinations.append({
+                "combination": result.load_reference,
+                "member": None, "utilization": 0.0, "status": "N/A",
+            })
+        else:
+            combinations.append(combination_critical)
+            if critical is None or combination_critical["utilization"] > critical["utilization"]:
+                critical = combination_critical
+
+    parameters = {
+        "bf_cm": bf_cm, "tf_cm": tf_cm, "tw_cm": tw_cm,
+        "d_cm": d_cm, "h_cm": web_height_cm,
+        "Iy_cm4": iy_cm4, "Iz_cm4": iz_cm4,
+        "Q_flange_cm3": q_flange_cm3, "Q_web_cm3": q_web_cm3,
+        "tau_y_per_kn": tau_y_per_kn, "tau_z_per_kn": tau_z_per_kn,
+        "fy_kn_cm2": fy_kn_cm2, "gamma_a1": gamma_a1,
+        "E_kn_cm2": elastic_kn_cm2, "poisson": poisson,
+        "tau_e_y_kn_cm2": tau_e_y_kn_cm2,
+        "tau_e_z_kn_cm2": tau_e_z_kn_cm2,
+        "lambda0_y": lambda0_y, "lambda0_z": lambda0_z,
+        "chi_y": chi_y, "chi_z": chi_z, "chi": chi,
+        "tau_rd_kn_cm2": tau_rd_kn_cm2,
+        "stress_method": "Q/(I t), máximos de mesa e alma combinados conservadoramente",
+        "criterion": "NBR 8800:2024, 5.5.1.3 e 5.5.2.3(b), (d)",
+    }
+    return {
+        "status": "checked" if critical else "not_applicable",
+        "detail": "" if critical else "nenhuma combinação apresentou cortantes simultâneos significativos",
+        "utilization": critical["utilization"] if critical else None,
+        "critical_check": "Cortantes simultâneos em Y e Z" if critical else "N/A",
+        "critical_combination": critical["combination"] if critical else "N/A",
+        "critical_member": critical["member"] if critical else None,
+        "position_m": critical["position_m"] if critical else None,
+        "applied_shear_y_kn": critical["shear_y_kn"] if critical else None,
+        "applied_shear_z_kn": critical["shear_z_kn"] if critical else None,
+        "tau_y_kn_cm2": critical["tau_y_kn_cm2"] if critical else None,
+        "tau_z_kn_cm2": critical["tau_z_kn_cm2"] if critical else None,
+        "tau_sd_kn_cm2": critical["tau_sd_kn_cm2"] if critical else None,
+        "parameters": parameters, "combinations": combinations,
+    }
+
+
 def _verify_w_combined_actions(element, model, results, mode: str,
                                axial_check: dict | None,
                                flexion_y_check: dict | None,
@@ -819,15 +1076,12 @@ def _verify_w_combined_actions(element, model, results, mode: str,
                 critical = combination_critical
 
     if mode == "flexao_obliqua":
-        label = "Flexão oblíqua"
         detail = "nenhuma combinação apresentou flexão simultânea nos dois eixos sem esforço axial"
         critical_name = "Flexão oblíqua"
     elif mode == "flexotension":
-        label = "Flexotração"
         detail = "nenhuma combinação apresentou tração axial simultânea com momento fletor"
         critical_name = "Flexotração"
     else:
-        label = "Flexocompressão"
         detail = "nenhuma combinação apresentou compressão axial simultânea com momento fletor"
         critical_name = "Flexocompressão"
 
@@ -887,11 +1141,12 @@ def verify_w_flexocompression(element, model, results, compression_check: dict |
 def _compression_effective_area(geometry: dict[str, float], elastic_kn_cm2: float,
                                 fy_kn_cm2: float, chi: float) -> dict[str, float]:
     d, bf, tw, tf = (float(geometry[key]) for key in ("d", "bf", "tw", "tf"))
+    radius = float(geometry.get("r", 10.0))
     # Table 4: W rolled flange outstands are AL (group 4), and the web is AA (group 2).
     # Table 4, group 4: for a rolled W flange, b runs from the web axis to
     # the flange edge, so each outstand has width bf/2.
     flange_width = bf / 2.0
-    web_width = d - 2.0 * tf
+    web_width = d - 2.0 * tf - 2.0 * radius
     flange_limit = 0.56 * sqrt(elastic_kn_cm2 / fy_kn_cm2)
     web_limit = 1.49 * sqrt(elastic_kn_cm2 / fy_kn_cm2)
     flange_sigma_el = (1.49 * flange_limit / (flange_width / tf)) ** 2 * fy_kn_cm2
@@ -1017,7 +1272,8 @@ def verify_w_compression(element, model, results) -> dict:
         lambda0 = sqrt(ag_cm2 * fy_kn_cm2 / ne_kn)
         chi = (0.658 ** (lambda0**2)) if lambda0 <= 1.5 else 0.877 / lambda0**2
         effective = _compression_effective_area(
-            {"d": d, "bf": bf, "tw": tw, "tf": tf, "Ag_cm2": ag_cm2},
+            {"d": d, "bf": bf, "tw": tw, "tf": tf,
+             "r": float(geom.get("r", geom.get("r_mm", 10.0))), "Ag_cm2": ag_cm2},
             material_elastic_kn_cm2, fy_kn_cm2, chi,
         )
         ncrd_kn = chi * effective["Aef_cm2"] * fy_kn_cm2 / GAMMA_A1
@@ -1061,6 +1317,7 @@ def verify_w_compression(element, model, results) -> dict:
         **restraint_parameters,
         "Ag_cm2": ag_cm2, "Aef_cm2": effective["Aef_cm2"],
         "tf_mm": tf, "tw_mm": tw,
+        "r_mm": float(geom.get("r", geom.get("r_mm", 10.0))),
         "fy_kn_m2": fy_kn_m2, "fy_kn_cm2": fy_kn_cm2,
         "E_kn_m2": elastic_kn_m2, "G_kn_m2": shear_kn_m2,
         "E_kn_cm2": material_elastic_kn_cm2, "G_kn_cm2": material_shear_kn_cm2,

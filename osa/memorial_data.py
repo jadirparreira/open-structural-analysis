@@ -57,7 +57,7 @@ def _w_properties(member) -> dict[str, float]:
     torsion = (2 * bf_cm * tf_cm**3 + (d_cm - 2 * tf_cm) * tw_cm**3) / 3.0
     warping = iz * (d_cm - tf_cm) ** 2 / 4.0
     return {
-        "d": d, "bf": bf, "tw": tw, "tf": tf,
+        "d": d, "bf": bf, "tw": tw, "tf": tf, "r": radius,
         "area": area, "Iy": iy, "Iz": iz,
         "Wy": iy / (d_cm / 2.0), "Wz": iz / (bf_cm / 2.0),
         "ry": sqrt(iy / area), "rz": sqrt(iz / area),
@@ -349,6 +349,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         if set(element.member_names) == set(group_members)
     ), None)
     checks = (selected_result or {}).get("checks", {})
+    compression_parameters = (checks.get("axial_compression") or {}).get("parameters") or {}
     results = getattr(model, "analysis_results", ())
     compression_parameters = (
         (checks.get("axial_compression") or {}).get("parameters") or {}
@@ -403,12 +404,20 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "members": group_members,
         "profile_type": member.section or "",
         "section": member.profile or "",
+        **({"verification_summary": selected_result} if profile_type == "W Laminado" else {}),
+        **({
+            "w_restraint_notes": tuple(
+                tuple(compression_parameters.get("restraint_issues", ()))
+                + tuple(compression_parameters.get("restraint_notes", ()))
+            )
+        } if profile_type == "W Laminado" else {}),
         "material": member.material or "",
         "geometric_parameters": {
             "b_mm": value("b_mm"), "t_mm": value("t_mm"),
             "h_mm": value("h_mm"),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
+            **({"r_mm": value("r")} if profile_type == "W Laminado" else {}),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),
             "ry_cm": value("ry"), "Zy_cm3": value("Zy"),
             "Iz_cm4": value("Iz"), "Wz_cm3": value("Wz"),
