@@ -28,6 +28,8 @@ class TitleBar(QFrame):
         self.save_model_action.triggered.connect(window.save_model)
         self.save_model_as_action = file_menu.addAction("Salvar como…")
         self.save_model_as_action.triggered.connect(window.save_model_as)
+        self.export_model_action = file_menu.addAction("Exportar Modelo…")
+        self.export_model_action.triggered.connect(window.export_model_dxf)
         file_menu.addSeparator()
         settings_action = file_menu.addAction("Configurações")
         settings_action.triggered.connect(window.open_program_settings)
@@ -86,6 +88,7 @@ class TitleBar(QFrame):
         self.save_model_action.setEnabled(enabled)
         self.import_reference_action.setEnabled(enabled)
         self.save_model_as_action.setEnabled(enabled)
+        self.export_model_action.setEnabled(enabled)
         self.close_project_action.setEnabled(enabled)
 
     def set_maximized(self, maximized: bool) -> None:

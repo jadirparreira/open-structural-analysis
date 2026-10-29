@@ -27,6 +27,7 @@ from .dialogs import (
     ActionDialog,
     ActionGroupDialog,
     CombinationsDialog,
+    DetailingExportSuccessDialog,
     DetailingViewsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
@@ -3450,6 +3451,36 @@ class MainWindow(QMainWindow):
         if selected_path.suffix.casefold() != ".osa":
             selected_path = selected_path.with_suffix(".osa")
         self._save_model_to(selected_path)
+
+    def export_model_dxf(self) -> None:
+        """Exporta o modelo unifilar para DXF, sem a geometria dos sólidos."""
+        if not self.model.bars:
+            QMessageBox.information(self, "Modelo sem barras", "O modelo não possui barras para exportar.")
+            return
+        suggested_name = f"{self.current_path.stem}.dxf" if self.current_path else "modelo.dxf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar modelo para DXF",
+            suggested_name,
+            "Desenho DXF (*.dxf)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.casefold() != ".dxf":
+            path = path.with_suffix(".dxf")
+        try:
+            from osa.exporters.model_dxf import export_model_to_dxf
+
+            export_model_to_dxf(path, self.model)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Falha ao exportar modelo",
+                f"Não foi possível salvar o modelo em DXF:\n{error}",
+            )
+            return
+        DetailingExportSuccessDialog(self, "Modelo exportado com sucesso").exec()
 
     def _save_model_to(self, path: str | Path) -> None:
         try:

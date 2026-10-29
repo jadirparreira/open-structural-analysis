@@ -678,7 +678,7 @@ class ErrorDialog(QDialog):
 class DetailingExportSuccessDialog(QDialog):
     """Compact confirmation for a successfully exported detailing view."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, message="Arquivo DXF exportado com sucesso"):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setFixedWidth(360)
@@ -692,9 +692,9 @@ class DetailingExportSuccessDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 14)
         layout.setSpacing(16)
-        message = QLabel("Arquivo DXF exportado com sucesso")
-        message.setWordWrap(False)
-        layout.addWidget(message)
+        message_label = QLabel(message)
+        message_label.setWordWrap(False)
+        layout.addWidget(message_label)
         footer = QHBoxLayout()
         footer.addStretch()
         close_button = QPushButton("Fechar")
