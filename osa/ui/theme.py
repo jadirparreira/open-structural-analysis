@@ -21,6 +21,8 @@ QFrame#propertyPanel QDoubleSpinBox, QFrame#propertyPanel QComboBox {
 }
 QLineEdit#identityDisplay, QLineEdit#propertyValue { min-height: 30px; padding: 2px 9px; border: 1px solid #d0d7de;
     border-radius: 6px; background: #ffffff; color: #57606a; }
+QLabel#identityDisplay { min-height: 30px; padding: 2px 9px; border: 1px solid #d0d7de;
+    border-radius: 6px; background: #ffffff; color: #57606a; }
 QFrame#propertyPanel QComboBox::drop-down { width: 0px; border: 0; }
 QFrame#propertyPanel QComboBox::down-arrow { image: none; }
 QToolButton#menuButton { border: 0; border-radius: 6px; padding: 5px 10px; color: #24292f; }

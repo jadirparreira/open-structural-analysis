@@ -322,7 +322,7 @@ class PropertyPanel(QFrame):
         self._section_label: QLabel | None = None
         self._section_combo: QComboBox | None = None
         self._section_container: QWidget | None = None
-        self._section_profile_display: QLineEdit | None = None
+        self._section_profile_display: QLabel | None = None
         self._section_settings_button: QToolButton | None = None
         self._context_widgets: list[QWidget] = []
         self._member_action_reference = "global"
@@ -826,17 +826,17 @@ class PropertyPanel(QFrame):
             section_row.addWidget(settings_button)
             self.layout.addWidget(section_label)
             self.layout.addWidget(section_container)
-            section_profile_display = QLineEdit()
-            section_profile_display.setReadOnly(True)
+            section_profile_display = QLabel()
+            section_profile_display.setTextFormat(Qt.TextFormat.RichText)
+            section_profile_display.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             section_profile_display.setObjectName("identityDisplay")
             profiles = [
                 self.window.section_profiles.get(member_name)
                 or self.window.model.bars[member_name].profile
                 for member_name in names
             ]
-            section_profile_display.setText(
-                (profiles[0] or "Indefinido") if self._all_equal(profiles) else "Variado"
-            )
+            profile_name = (profiles[0] or "Indefinido") if self._all_equal(profiles) else "Variado"
+            section_profile_display.setText(profile_identity_markup(bar.section, profile_name))
             self.layout.addWidget(section_profile_display)
             release_labels = (
                 "Dxa", "Dxb", "Dya", "Dyb", "Dza", "Dzb",

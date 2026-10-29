@@ -75,7 +75,6 @@ class SectionPanel(QFrame):
         self.mirror_toggle.setToolTip("Espelhar seção em torno do eixo Z")
         self.mirror_toggle.setAccessibleName("Espelhar seção em torno do eixo Z")
         self.mirror_toggle.toggled.connect(self._section_mirrored_changed)
-        profile_row.addWidget(self.mirror_toggle)
         self.mechanical_toggle = QToolButton()
         self.mechanical_toggle.setCheckable(True)
         self.mechanical_toggle.setChecked(False)
@@ -90,7 +89,6 @@ class SectionPanel(QFrame):
         self.mechanical_toggle.setToolTip("Propriedades mecânicas")
         self.mechanical_toggle.setAccessibleName("Propriedades mecânicas")
         self.mechanical_toggle.toggled.connect(self._toggle_mechanical_properties)
-        profile_row.addWidget(self.mechanical_toggle)
         layout.addLayout(profile_row)
         rotation_row = QHBoxLayout()
         rotation_row.setSpacing(6)
@@ -99,15 +97,15 @@ class SectionPanel(QFrame):
         self.rotation_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.rotation_title.setToolTip("Rotação da barra")
         rotation_row.addWidget(self.rotation_title)
-        rotation_box = QFrame()
-        rotation_box.setObjectName("unitValueBox")
-        rotation_box.setStyleSheet(
+        self.rotation_box = QFrame()
+        self.rotation_box.setObjectName("unitValueBox")
+        self.rotation_box.setStyleSheet(
             "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; } "
             "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; padding: 2px 9px; } "
             "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
         )
-        rotation_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        rotation_box_layout = QHBoxLayout(rotation_box)
+        self.rotation_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        rotation_box_layout = QHBoxLayout(self.rotation_box)
         rotation_box_layout.setContentsMargins(0, 0, 0, 0)
         rotation_box_layout.setSpacing(0)
         self.rotation_input = QLineEdit()
@@ -120,19 +118,22 @@ class SectionPanel(QFrame):
         self.rotation_input.editingFinished.connect(self._rotation_changed)
         rotation_box_layout.addWidget(self.rotation_input, 1)
         rotation_box_layout.addWidget(QLabel("°"))
-        rotation_row.addWidget(rotation_box, 1)
-        self.rotate_45_button = QToolButton()
-        self.rotate_45_button.setFixedSize(34, 34)
-        self.rotate_45_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rotate-cw.svg")))
-        self.rotate_45_button.setIconSize(QSize(18, 18))
-        self.rotate_45_button.setToolTip("Rotacionar 45 graus")
-        self.rotate_45_button.setAccessibleName("Rotacionar 45 graus")
-        self.rotate_45_button.setStyleSheet(
+        rotation_row.addWidget(self.rotation_box)
+        rotation_row.addStretch(1)
+        self.rotate_15_button = QToolButton()
+        self.rotate_15_button.setFixedSize(34, 34)
+        self.rotate_15_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rotate-cw.svg")))
+        self.rotate_15_button.setIconSize(QSize(18, 18))
+        self.rotate_15_button.setToolTip("Rotacionar 15 graus")
+        self.rotate_15_button.setAccessibleName("Rotacionar 15 graus")
+        self.rotate_15_button.setStyleSheet(
             "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
             "QToolButton:hover { background: #eaeef2; }"
         )
-        self.rotate_45_button.clicked.connect(self._rotate_45_requested)
-        rotation_row.addWidget(self.rotate_45_button)
+        self.rotate_15_button.clicked.connect(self._rotate_15_requested)
+        rotation_row.addWidget(self.rotate_15_button)
+        rotation_row.addWidget(self.mirror_toggle)
+        rotation_row.addWidget(self.mechanical_toggle)
         layout.addLayout(rotation_row)
         self.profile.currentTextChanged.connect(self._profile_changed)
         self.geometry = QGridLayout(); self.geometry.setSpacing(6); layout.addLayout(self.geometry)
@@ -266,7 +267,7 @@ class SectionPanel(QFrame):
         members = [self.window.model.bars[name] for name in self._member_names]
         rotations = [item.rotation for item in members]
         self.rotation_input.setEnabled(bool(members))
-        self.rotate_45_button.setEnabled(bool(members))
+        self.rotate_15_button.setEnabled(bool(members))
         self.rotation_input.setPlaceholderText("Variado" if len(set(rotations)) > 1 else "")
         self.rotation_input.setText(
             self._format_rotation(rotations[0]) if rotations and len(set(rotations)) == 1 else ""
@@ -289,6 +290,12 @@ class SectionPanel(QFrame):
         self.profile.setPlaceholderText("Indefinido")
         profile_options = SECTION_PROFILE_OPTIONS.get(section, [])
         self.profile.addItems(profile_options)
+        if section == "L Laminado":
+            inch_label_role = Qt.ItemDataRole.UserRole + 1
+            for index, profile_name in enumerate(profile_options):
+                profile_data = GERDAU_L_DATA.get(profile_name, {})
+                if profile_data.get("inch_name"):
+                    self.profile.setItemData(index, profile_data["inch_name"], inch_label_role)
         # Keep the popup compact: eight rows are visible, with the remainder
         # available through the native popup scrollbar.
         profile = self.window.section_profiles.get(member_name, "")
@@ -331,7 +338,7 @@ class SectionPanel(QFrame):
             profile = generated_profile
             display = getattr(self.window.properties, "_section_profile_display", None)
             if display is not None:
-                display.setText(profile)
+                display.setText(profile_identity_markup(self._section_family, profile))
         if is_manual:
             self.profile.setPlaceholderText("Variado" if mixed_profile else (profile or "Indefinido"))
         has_profile = is_manual or bool(profile and profile in profile_options and not mixed_profile)
@@ -425,13 +432,13 @@ class SectionPanel(QFrame):
         self.rotation_input.setText(self._format_rotation(members[0].rotation))
         self.rotation_input.setPlaceholderText("")
 
-    def _rotate_45_requested(self, _checked: bool = False) -> None:
+    def _rotate_15_requested(self, _checked: bool = False) -> None:
         members = [self.window.model.bars[name] for name in self._member_names if name in self.window.model.bars]
         if not members:
             return
         try:
             for member in members:
-                self.window.model_service.update_member_rotation(member.name, member.rotation + 45)
+                self.window.model_service.update_member_rotation(member.name, member.rotation + 15)
         except ValueError:
             return
         for member in members:
@@ -481,7 +488,7 @@ class SectionPanel(QFrame):
             return
         display = getattr(self.window.properties, "_section_profile_display", None)
         if display is not None:
-            display.setText(value)
+            display.setText(profile_identity_markup(self._section_family, value))
         # A profile change initializes that member's dimensions only; it never
         # reuses or mutates another member's geometry values.
         values = self._default_geometry(value)
@@ -574,7 +581,7 @@ class SectionPanel(QFrame):
         self.window.model_service.assign_profile(self._member_name, profile, values)
         display = getattr(self.window.properties, "_section_profile_display", None)
         if display is not None:
-            display.setText(profile)
+            display.setText(profile_identity_markup(self._section_family, profile))
         self._populate_calculated_values(properties, True)
         self._update_preview(values)
         self.window.refresh_member_geometry(self._member_name)
@@ -653,7 +660,8 @@ class SectionPanel(QFrame):
             self.mechanical_toggle.setChecked(True)
         display = getattr(self.window.properties, "_section_profile_display", None)
         if display is not None:
-            display.setText(profiles[0] if len(set(profiles)) == 1 else "Variado")
+            profile_name = profiles[0] if len(set(profiles)) == 1 else "Variado"
+            display.setText(profile_identity_markup(self._section_family, profile_name))
 
     def _normalize_manual_values(self, values: dict[str, float], material_type: str | None) -> None:
         bar_families = {"Barra Circular", "Barra Quadrada", "Barra Retangular"}
@@ -704,7 +712,8 @@ class SectionPanel(QFrame):
             combo.blockSignals(False)
         display = getattr(self.window.properties, "_section_profile_display", None)
         if display is not None and profiles:
-            display.setText(profiles[0] if len(set(profiles)) == 1 else "Variado")
+            profile_name = profiles[0] if len(set(profiles)) == 1 else "Variado"
+            display.setText(profile_identity_markup(self._section_family, profile_name))
         button = getattr(self.window.properties, "_section_settings_button", None)
         self.window.show_section_panel(family, button)
 
@@ -876,6 +885,13 @@ class SectionPanel(QFrame):
             default=0,
         )
         self.rotation_title.setFixedWidth(label_column_width)
+        self.layout().activate()
+        self.geometry.activate()
+        first_geometry_box = self.geometry.itemAtPosition(0, 1)
+        if first_geometry_box is not None and first_geometry_box.widget() is not None:
+            width = first_geometry_box.widget().width()
+            if width > 0:
+                self.rotation_box.setFixedWidth(width)
 
     def _calculate_properties(self, geometry: dict[str, float]):
         member = self.window.model.bars.get(self._member_name)

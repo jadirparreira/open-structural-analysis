@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QPainter,
     QPalette,
     QPixmap,
+    QTextDocument,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -59,6 +61,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -103,6 +108,21 @@ GERDAU_I_CATALOG = {item["name"]: item for item in _catalog_i_profiles}
 _catalog_l_profiles = _catalog_profiles_for("L Laminado")
 GERDAU_L_PROFILES = [item["name"] for item in _catalog_l_profiles]
 GERDAU_L_DATA = {item["name"]: item for item in _catalog_l_profiles}
+
+
+def profile_identity_markup(family_name: str, profile_name: str | None) -> str:
+    """Return rich text with the inch designation before the metric L identity."""
+    if not profile_name:
+        return "Indefinido"
+    if family_name == "L Laminado":
+        profile_data = GERDAU_L_DATA.get(profile_name, {})
+        inch_name = profile_data.get("inch_name")
+        if inch_name:
+            return (
+                f'<span style="color:#57606a;font-size:11pt">{escape(profile_name)}</span>'
+                f'&nbsp;&nbsp;<span style="color:#8c959f;font-size:9pt">{escape(inch_name)}</span>'
+            )
+    return profile_name
 
 _catalog_t_profiles = _catalog_profiles_for("T Laminado")
 GERDAU_T_PROFILES = [item["name"] for item in _catalog_t_profiles]
