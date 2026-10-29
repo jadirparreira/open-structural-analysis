@@ -524,7 +524,6 @@ class CalculationMemorialDialog(QDialog):
                 p = slenderness_summary.get("parameters") or {}
                 lambda_y = p.get("lambda_y")
                 lambda_z = p.get("lambda_z")
-                lambda_t_max = p.get("lambda_tension_max")
                 slenderness_lines = (
                     *equation_triplet(
                         r"\lambda_y", r"\dfrac{L_y}{r_y}",
@@ -539,31 +538,26 @@ class CalculationMemorialDialog(QDialog):
                 )
                 slenderness_content += spaced_equations(slenderness_lines, spacing_px=7)
 
-                def recommendation(label: str, applicable: bool, value: float,
-                                   limit: float) -> str:
-                    if not applicable:
-                        status = "não aplicável: nenhuma solicitação axial correspondente foi identificada"
-                    elif value <= limit:
+                def recommendation(label: str, value: float, limit: float) -> str:
+                    if value <= limit:
                         status = "dentro do limite recomendado"
                     else:
                         status = "acima do limite recomendado"
                     return (
-                        '<p style="margin:0 0 3px;color:#57606a">'
-                        f'{escape(label)}: λ = {decimal(value)}; limite recomendado = '
+                        '<p align="center" style="margin:0 0 3px;color:#57606a;text-align:center">'
+                        f'{escape(label)} = {decimal(value)}; limite recomendado = '
                         f'{decimal(limit)} — {escape(status)}.</p>'
                     )
 
-                slenderness_content += recommendation(
-                    "Tração (maior entre λy e λz)", bool(slenderness_summary.get("has_tension")),
-                    lambda_t_max, p.get("tension_limit"),
-                )
-                slenderness_content += recommendation(
-                    "Compressão em Y", bool(slenderness_summary.get("has_compression")),
-                    lambda_y, p.get("compression_limit"),
-                )
-                slenderness_content += recommendation(
-                    "Compressão em Z", bool(slenderness_summary.get("has_compression")),
-                    lambda_z, p.get("compression_limit"),
+                slenderness_content += (
+                    '<p style="margin:7px 0 3px;color:#57606a">'
+                    'Esbeltez na tração</p>'
+                    + recommendation("λy", lambda_y, p.get("tension_limit"))
+                    + recommendation("λz", lambda_z, p.get("tension_limit"))
+                    + '<p style="margin:7px 0 3px;color:#57606a">'
+                    'Esbeltez na compressão</p>'
+                    + recommendation("λy", lambda_y, p.get("compression_limit"))
+                    + recommendation("λz", lambda_z, p.get("compression_limit"))
                 )
             else:
                 slenderness_content += (
