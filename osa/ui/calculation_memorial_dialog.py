@@ -518,7 +518,7 @@ class CalculationMemorialDialog(QDialog):
             return "".join(rendered)
 
         slenderness_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado"}:
+        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado"}:
             slenderness_status = slenderness_summary.get("status")
             slenderness_content = (
                 '<p style="margin:18px 0 12px;color:#57606a;font-weight:700">'
@@ -669,7 +669,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             axial_tension_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de tração axial atende somente a perfis W, I e U Laminados."
@@ -751,19 +751,19 @@ class CalculationMemorialDialog(QDialog):
                                   decimal(p.get("lambda0"))),
                 *equation_triplet(r"\chi", r"0,658^{\lambda_0^2}\;\mathrm{ou}\;\dfrac{0,877}{\lambda_0^2}",
                                   decimal(p.get("chi")), decimal(p.get("chi"))),
-                *equation_triplet(r"\lambda_{AL,f}", r"\dfrac{(b_f-t_w)/2}{t_f}",
-                                  rf"\dfrac{{({decimal(p.get('bf_mm'))}-{decimal(p.get('tw_mm'))})/2}}{{{decimal(p.get('tf_mm'))}}}",
+                *equation_triplet(r"\lambda_{AL,f}", r"\dfrac{b_f}{2t_f}",
+                                  rf"\dfrac{{{decimal(p.get('bf_mm'))}}}{{2\cdot {decimal(p.get('tf_mm'))}}}",
                                   decimal(p.get("flange_slenderness"))),
                 *equation_triplet(r"\lambda_{lim,AL,f}", r"0,56\sqrt{\dfrac{E}{f_y}}",
                                   rf"0,56\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
                                   decimal(p.get("flange_limit"))),
-                *equation_triplet(r"\lambda_{AL,w}", r"\dfrac{d-t_f}{t_w}",
+                *equation_triplet(r"\lambda_{AL,w}", r"\dfrac{d}{t_w}",
                                   rf"\dfrac{{{decimal(p.get('web_width_mm'))}}}{{{decimal(p.get('tw_mm'))}}}",
                                   decimal(p.get("web_slenderness"))),
                 *equation_triplet(r"\lambda_{lim,AL,w}", r"0,75\sqrt{\dfrac{E}{f_y}}",
                                   rf"0,75\sqrt{{\dfrac{{{decimal(p.get('E_kn_cm2'))}}}{{{decimal(p.get('fy_kn_cm2'))}}}}}",
                                   decimal(p.get("web_limit"))),
-                *equation_triplet(r"A_{ef}", r"A_g-2(b_f/2-b_{ef,f})t_f-(d-t_f-b_{ef,w})t_w",
+                *equation_triplet(r"A_{ef}", r"A_g-2(b_f/2-b_{ef,f})t_f-(d-b_{ef,w})t_w",
                                   decimal(p.get("Aef_cm2")), decimal(p.get("Aef_cm2")), r"cm^2"),
                 *equation_triplet(r"N_{c,Rd}", r"\dfrac{\chi A_{ef}f_y}{\gamma_{a1}}",
                                   rf"\dfrac{{{decimal(p.get('chi'))}\cdot {decimal(p.get('Aef_cm2'))}\cdot {decimal(p.get('fy_kn_cm2'))}}}{{{decimal(p.get('gamma_a1'))}}}",
@@ -1058,7 +1058,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">'
                 f'Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             axial_compression_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de compressão axial atende somente a perfis W, I e U Laminados.</p>"
@@ -1212,7 +1212,7 @@ class CalculationMemorialDialog(QDialog):
                                   decimal(p.get("lambda_r_flm"))),
                 *equation_triplet(r"M_r", r"(f_y-\sigma_r)W_{xc}\leq f_yW_{xt}",
                                   decimal(p.get("Mr_flm_kn_cm")), decimal(p.get("Mr_flm_kn_cm")), r"kN\cdot cm"),
-                *equation_triplet(r"M_{cr,FLM}", r"\dfrac{0,69EW_{xc}}{\lambda_{FLM}^2}",
+                *equation_triplet(r"M_{cr,FLM}", r"\dfrac{0,70EW_{xc}}{\lambda_{FLM}^2}",
                                   decimal(p.get("Mcr_flm_kn_cm")), decimal(p.get("Mcr_flm_kn_cm")), r"kN\cdot cm"),
                 *equation_triplet(r"M_{Rd,FLM}", r"\dfrac{M_{n,FLM}}{\gamma_{a1}}",
                                   decimal(p.get("Mrd_flm_kn_cm")), decimal(p.get("Mrd_flm_kn_cm")), r"kN\cdot cm"),
@@ -1227,16 +1227,19 @@ class CalculationMemorialDialog(QDialog):
                 *equation_triplet(r"M_{cr,FLT,-}", r"\dfrac{1,95E}{L_b}\sqrt{I_zI_t}(-B+\sqrt{1+B^2})",
                                   decimal(p.get("Mcr_flt_compression_kn_cm")),
                                   decimal(p.get("Mcr_flt_compression_kn_cm")), r"kN\cdot cm"),
+                *equation_triplet(r"M_{lim}", r"1,50W_yf_y/\gamma_{a1}",
+                                  rf"1,50\cdot {decimal(p.get('Wy_cm3'))}\cdot {decimal(p.get('fy_kn_cm2'))}/{decimal(p.get('gamma_a1'))}",
+                                  decimal(p.get("MRd_limit_kn_cm")), r"kN\cdot cm"),
                 *equation_triplet(
                     r"M_{y,Rd}",
-                    (r"\min(M_{Rd,FLM};M_{Rd,FLT,+})"
+                    (r"\min(M_{Rd,FLM};M_{Rd,FLT,+};M_{lim})"
                      if p.get("bending_sign") == "web_end_tension" else
-                     r"\min(M_{Rd,FLA};M_{Rd,FLT,-})"),
+                     r"\min(M_{Rd,FLA};M_{Rd,FLT,-};M_{lim})"),
                     (rf"\min({decimal(p.get('Mrd_flm_kn_cm'))};"
-                     rf"{decimal(p.get('Mrd_flt_tension_kn_cm'))})"
+                     rf"{decimal(p.get('Mrd_flt_tension_kn_cm'))};{decimal(p.get('MRd_limit_kn_cm'))})"
                      if p.get("bending_sign") == "web_end_tension" else
                      rf"\min({decimal(p.get('Mrd_fla_kn_cm'))};"
-                     rf"{decimal(p.get('Mrd_flt_compression_kn_cm'))})"),
+                     rf"{decimal(p.get('Mrd_flt_compression_kn_cm'))};{decimal(p.get('MRd_limit_kn_cm'))})"),
                     decimal(p.get("MRd_kn_cm")), r"kN\cdot cm"),
             ))
             utilization = flexion_verification.get("utilization")
@@ -1485,7 +1488,7 @@ class CalculationMemorialDialog(QDialog):
                 f'<p style="margin:0 0 3px;color:#57606a">Não verificado: '
                 f'{escape(str(flexion_verification.get("detail", "fora do escopo normativo")))}.</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de flexão em Y atende somente a perfis W, I e U Laminados.</p>"
@@ -1517,7 +1520,7 @@ class CalculationMemorialDialog(QDialog):
                if memory.get("profile_type") == "Barra Circular" else
                "Flexão em Z — ABNT NBR 8800:2024, 5.4 e Anexo D, D.2.5 e Tabela D.1</p>" if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada"}
                else "Flexão em Z — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
-               else "Flexão em Z</p>" if memory.get("profile_type") == "T Laminado"
+               else "Flexão em Z — hipótese para seção T</p>" if memory.get("profile_type") == "T Laminado"
                else f"Flexão em Z — ABNT NBR 8800:2024, 5.4.2.1 e 5.4.2.2; {flexion_z_basis}</p>")
         )
         if flexion_z_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -1855,7 +1858,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             flexion_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de flexão em Z atende somente a perfis W, I e U Laminados.</p>"
@@ -1920,9 +1923,17 @@ class CalculationMemorialDialog(QDialog):
                 rf"{decimal(utilization * 100.0, 2)}\,\%\quad\mathbf{{{status}}}"))
         elif shear_y_verification.get("status") == "checked" and memory.get("profile_type") == "T Laminado":
             p = shear_y_verification.get("parameters", {})
+            if p["lambda"] <= p["lambda_p"]:
+                vn_formula, vn_values = r"V_{p\ell}", decimal(p["Vp_kn"])
+            elif p["lambda"] <= p["lambda_r"]:
+                vn_formula = r"(\lambda_p/\lambda)V_{p\ell}"
+                vn_values = rf"({decimal(p['lambda_p'])}/{decimal(p['lambda'])})\cdot {decimal(p['Vp_kn'])}"
+            else:
+                vn_formula = r"1,24(\lambda_p/\lambda)^2V_{p\ell}"
+                vn_values = rf"1,24({decimal(p['lambda_p'])}/{decimal(p['lambda'])})^2\cdot {decimal(p['Vp_kn'])}"
             shear_y_content += spaced_equations((
-                *equation_triplet(r"\lambda", r"\dfrac{d-t_f}{t_w}",
-                                  rf"\dfrac{{{decimal(p.get('d_mm'))}-{decimal(p.get('tf_mm'))}}}"
+                *equation_triplet(r"\lambda", r"\dfrac{d}{t_w}",
+                                  rf"\dfrac{{{decimal(p.get('d_mm'))}}}"
                                   rf"{{{decimal(p.get('tw_mm'))}}}",
                                   decimal(p.get("lambda"))),
                 *equation_triplet(r"k_v", r"1,2", decimal(p.get("kv")), decimal(p.get("kv"))),
@@ -1930,11 +1941,12 @@ class CalculationMemorialDialog(QDialog):
                                   decimal(p.get("lambda_p")), decimal(p.get("lambda_p"))),
                 *equation_triplet(r"\lambda_r", r"1,37\sqrt{\dfrac{k_v E}{f_y}}",
                                   decimal(p.get("lambda_r")), decimal(p.get("lambda_r"))),
-                *equation_triplet(r"A_w", r"2d t_w", decimal(p.get("Aw_cm2")),
+                *equation_triplet(r"A_w", r"d t_w", decimal(p.get("Aw_cm2")),
                                   decimal(p.get("Aw_cm2")), r"cm^2"),
                 *equation_triplet(r"V_{p\ell}", r"0,60 A_w f_y",
                                   rf"0,60\cdot {decimal(p.get('Aw_cm2'))}\cdot {decimal(p.get('fy_kn_cm2'))}",
                                   decimal(p.get("Vp_kn")), r"kN"),
+                *equation_triplet(r"V_n", vn_formula, vn_values, decimal(p["Vn_kn"]), r"kN"),
                 *equation_triplet(r"V_{y,Rd}", r"\dfrac{V_n}{\gamma_{a1}}",
                                   rf"\dfrac{{{decimal(p.get('Vn_kn'))}}}{{{decimal(p.get('gamma_a1'))}}}",
                                   decimal(p.get("VRd_kn")), r"kN"),
@@ -2040,7 +2052,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_y)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             shear_y_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de cortante em Y atende somente a perfis W, I e U Laminados.</p>"
@@ -2066,7 +2078,7 @@ class CalculationMemorialDialog(QDialog):
             '<p style="margin:22px 0 12px;color:#57606a;font-weight:700">'
             + ("Cortante em Z — ABNT NBR 8800:2024, 5.5.2.3-b</p>" if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"} else
                "Cortante em Z — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado" else
-               "Cortante em Z</p>" if memory.get("profile_type") == "T Laminado"
+               "Cortante em Z — hipótese para seção T</p>" if memory.get("profile_type") == "T Laminado"
                else "Cortante em Z — ABNT NBR 8800:2024, 5.4.3.1.1–1.2</p>")
         )
         if shear_z_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -2234,7 +2246,7 @@ class CalculationMemorialDialog(QDialog):
                 f'{spaced_equations(utilization_line_z)}'
                 f'<p style="margin:0 0 3px;color:#57606a">Combinação governante: {combination_name}</p>'
             )
-        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
+        elif memory.get("profile_type") not in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada", "Barra Circular"}:
             shear_z_content += (
                 '<p style="margin:5px 0;color:#57606a">'
                 "A rotina atual de cortante em Z atende somente a perfis W, I e U Laminados.</p>"
@@ -2260,6 +2272,8 @@ class CalculationMemorialDialog(QDialog):
             interaction_basis = (
                 " — critério da ABNT NBR 8800:2024, 5.5.1.2"
                 if memory.get("profile_type") == "L Laminado"
+                else " — hipótese com base na ABNT NBR 8800:2024, 5.5.1.2"
+                if memory.get("profile_type") == "T Laminado"
                 else " — ABNT NBR 8800:2024, 5.5.1.2"
             )
             content = (
@@ -2271,33 +2285,6 @@ class CalculationMemorialDialog(QDialog):
                 combination_name = escape(str(verification.get("critical_combination", "—")))
                 status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
                 p = verification.get("parameters", {})
-                if memory.get("profile_type") == "T Laminado":
-                    my_sd = verification.get("applied_my_kn_cm") or 0.0
-                    mz_sd = verification.get("applied_mz_kn_cm") or 0.0
-                    if mz_sd >= 0.1:
-                        content += spaced_equations(equation_triplet(
-                            r"\eta_{int}", r"\infty", decimal(mz_sd),
-                            r"\infty\quad\mathbf{REPROVADO}"))
-                    elif mode == "oblique":
-                        my_rd = p.get("My_Rd_kn_cm", 0.0)
-                        content += spaced_equations(equation_triplet(
-                            r"\eta_{ob}", r"\dfrac{|M_{y,Sd}|}{M_{y,Rd}}",
-                            rf"\dfrac{{{decimal(my_sd)}}}{{{decimal(my_rd)}}}",
-                            rf"{decimal(utilization * 100.0, 2)}\,\%\quad\mathbf{{{status}}}"))
-                    else:
-                        n_sd = verification.get("applied_kn") or 0.0
-                        n_rd = p.get("Nt_Rd_kn" if mode == "tension" else "Nc_Rd_kn", 0.0)
-                        ratio_n = n_sd / n_rd if n_rd else float("inf")
-                        if ratio_n >= 0.2:
-                            formula = r"\dfrac{N_{Sd}}{N_{Rd}}+\dfrac{8}{9}\dfrac{|M_{y,Sd}|}{M_{y,Rd}}"
-                            substituted = rf"\dfrac{{{decimal(n_sd)}}}{{{decimal(n_rd)}}}+\dfrac{{8}}{{9}}\dfrac{{{decimal(my_sd)}}}{{{decimal(p.get('My_Rd_kn_cm'))}}}"
-                        else:
-                            formula = r"\dfrac{N_{Sd}}{2N_{Rd}}+\dfrac{|M_{y,Sd}|}{M_{y,Rd}}"
-                            substituted = rf"\dfrac{{{decimal(n_sd)}}}{{2\cdot {decimal(n_rd)}}}+\dfrac{{{decimal(my_sd)}}}{{{decimal(p.get('My_Rd_kn_cm'))}}}"
-                        content += spaced_equations(equation_triplet(
-                            r"\eta_{int}", formula, substituted,
-                            rf"{decimal(utilization * 100.0, 2)}\,\%\quad\mathbf{{{status}}}"))
-                    return content
                 if memory.get("profile_type") == "Barra Circular":
                     my_sd = verification.get("applied_my_kn_cm") or 0.0
                     mz_sd = verification.get("applied_mz_kn_cm") or 0.0

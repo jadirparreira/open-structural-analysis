@@ -157,6 +157,29 @@ def _result(name: str, results, members, field: str, capacity: float,
     }
 
 
+def verify_t_slenderness(element, model, results):
+    """Report the recommended tensile and compressive slenderness limits."""
+    try:
+        members = _members(element, model)
+        p = _section(members[0])
+        lengths = restraint_lengths(model, element, results or (),
+                                   {"Iy": p["Iz_cm4"], "tw": p["tw_mm"] / 10.0})
+        ly, lz = (lengths.lengths_m[name] * 100.0 for name in ("Ly", "Lz"))
+        ry, rz = p["ry_cm"], p["rz_cm"]
+        if min(ly, lz, ry, rz) <= 0.0:
+            raise ValueError("comprimentos destravados ou raios de giração inválidos")
+        samples = [sample for result in results or () for member in members
+                   for sample in result.member_results.get(member.name, {}).get("samples", ())]
+        return {"status": "checked",
+                "has_tension": any(float(v.get("axial", 0.0)) <= -MIN_TENSION_KN for v in samples),
+                "has_compression": any(float(v.get("axial", 0.0)) >= MIN_COMPRESSION_KN for v in samples),
+                "parameters": {"Ly_cm": ly, "Lz_cm": lz, "ry_cm": ry, "rz_cm": rz,
+                               "lambda_y": ly / ry, "lambda_z": lz / rz,
+                               "tension_limit": 300.0, "compression_limit": 200.0}}
+    except (KeyError, TypeError, ValueError, ArithmeticError) as error:
+        return {"status": "not_checked", "detail": str(error)}
+
+
 def verify_t_tension(element, model, results):
     try:
         members, p, _, _, fy, fu = _base(element, model, results)
@@ -221,17 +244,18 @@ def verify_t_compression(element, model, results):
         nez = pi**2 * e * iz / lz**2
         net = g * it / r0**2
         h = 1.0 - x0**2 / r0**2
-        radical = max(0.0, 1.0 - 4.0 * nez * net * h / (nez + net)**2)
-        ne_flexotorsion = (nez + net) / (2.0 * h) * (1.0 - sqrt(radical))
+        ne_sum = nez + net
+        radical = max(0.0, ne_sum**2 - 4.0 * nez * net * h)
+        ne_flexotorsion = 2.0 * nez * net / (ne_sum + sqrt(radical))
         ne = min(ney, ne_flexotorsion)
         lambda0 = sqrt(area * fy / ne)
         chi = 0.658**(lambda0**2) if lambda0 <= 1.5 else 0.877 / lambda0**2
 
-        b_flange = (p["bf_mm"] - p["tw_mm"]) / 2.0
+        b_flange = p["bf_mm"] / 2.0
         lambda_flange_limit = 0.56 * sqrt(e / fy)
         lambda_web_limit = 0.75 * sqrt(e / fy)
         flange_eff = _effective_width(b_flange, p["tf_mm"], lambda_flange_limit, chi, fy)
-        web_width = p["d_mm"] - p["tf_mm"]
+        web_width = p["d_mm"]
         web_eff = _effective_width(web_width, p["tw_mm"], lambda_web_limit, chi, fy)
         effective_area = area - (
             2.0 * (b_flange - flange_eff) * p["tf_mm"]
@@ -270,6 +294,7 @@ def verify_t_compression(element, model, results):
             "parameters": {
                 **lengths.memory(), "Ly_cm": ly, "Lz_cm": lz, "Lt_cm": lt,
                 "Ag_cm2": area, "Aef_cm2": effective_area,
+                "d_mm": p["d_mm"], "bf_mm": p["bf_mm"], "tw_mm": p["tw_mm"], "tf_mm": p["tf_mm"],
                 "Iy_cm4": iy, "Iz_cm4": iz, "It_cm4": it, "Cw_cm6": 0.0,
                 "x0_cm": x0, "r0_cm": r0, "E_kn_cm2": e, "G_kn_cm2": g,
                 "fy_kn_cm2": fy, "H_flexotorsion": h,
@@ -311,7 +336,7 @@ def verify_t_flexion_y(element, model, results):
         lb = lengths.lengths_m["Lb"] * 100.0
         if lb <= 0.0:
             raise ValueError("comprimento destravado à flexão inválido")
-        d, tw, bf, tf = p["d_mm"] / 10.0, p["tw_mm"] / 10.0, p["bf_mm"] / 10.0, p["tf_mm"] / 10.0
+        d = p["d_mm"] / 10.0
         iy, iz, j = p["Iy_cm4"], p["Iz_cm4"], p["It_cm4"]
         wy, zy = p["Wy_cm3"], p["Zy_cm3"]
         mpl = zy * fy
@@ -331,10 +356,10 @@ def verify_t_flexion_y(element, model, results):
         lam_flm = p["bf_mm"] / (2.0 * p["tf_mm"])
         lp_flm = 0.38 * sqrt(e / fy)
         lr_flm = 0.83 * sqrt(e / max(fy - sigma_r, EPS))
-        wxc = wy
-        wxt = wy
+        wxc = iy / (p["zc_mm"] / 10.0)
+        wxt = iy / ((p["d_mm"] - p["zc_mm"]) / 10.0)
         mr_flm = min((fy - sigma_r) * wxc, fy * wxt)
-        mcr_flm = 0.69 * e * wxc / lam_flm**2
+        mcr_flm = 0.70 * e * wxc / lam_flm**2
         m_flm = _local_buckling_capacity(lam_flm, lp_flm, lr_flm, mpl, mr_flm, mcr_flm)
 
         # Lateral-torsional buckling, treating both signs of bending. The smaller
@@ -357,8 +382,9 @@ def verify_t_flexion_y(element, model, results):
             lam_flt, lp_flt, lr_flt, mpl, mr_flt, mcr_tension,
         )
         m_flt_compression = min(mcr_compression / GAMMA_A1, fy * wy / GAMMA_A1)
-        cap_compression = min(m_fla, m_flt_compression)
-        cap_tension = min(m_flm, m_flt_tension)
+        flexural_limit = 1.50 * wy * fy / GAMMA_A1
+        cap_compression = min(m_fla, m_flt_compression, flexural_limit)
+        cap_tension = min(m_flm, m_flt_tension, flexural_limit)
         combinations, critical = [], None
         for load_result in results:
             governing = None
@@ -402,7 +428,9 @@ def verify_t_flexion_y(element, model, results):
             "bf_mm": p["bf_mm"], "tw_mm": p["tw_mm"], "tf_mm": p["tf_mm"],
             "E_kn_cm2": e, "fy_kn_cm2": fy, "gamma_a1": GAMMA_A1,
             "Ag_cm2": p["Ag_cm2"], "Iy_cm4": iy, "Iz_cm4": iz,
-            "It_cm4": j, "Wy_cm3": wy, "Zy_cm3": zy,
+            "It_cm4": j, "Wy_cm3": wy, "Wxc_cm3": wxc, "Wxt_cm3": wxt,
+            "Zy_cm3": zy, "rz_cm": p["rz_cm"],
+            "MRd_limit_kn_cm": flexural_limit,
             "Mn_kn_cm": cap * GAMMA_A1, "MRd_kn_cm": cap,
             "Mpl_kn_cm": mpl, "sigma_r_kn_cm2": sigma_r,
             "lambda_fla": lam_fla, "lambda_p_fla": lp_fla,
@@ -449,6 +477,8 @@ def verify_t_flexion_z(element, model, results):
         out = _result("Flexão Z", results, members, "moment_z", cap, 100.0,
                       threshold=MIN_BENDING_KN_M * 100.0)
         out["applied_kn_cm"] = out.pop("applied_kn", None)
+        if out["status"] == "not_applicable":
+            out["detail"] = "nenhuma combinação apresentou flexão em Z"
         out["parameters"] = {
             "Ag_cm2": p["Ag_cm2"], "bf_mm": p["bf_mm"], "tf_mm": p["tf_mm"],
             "lambda_flm": lam, "lambda_p_flm": lp, "lambda_r_flm": lr,
@@ -471,7 +501,7 @@ def _shear(element, model, results, axis):
             for _, _, sample in _samples(results, members)
         ), default=0.0)
         if demand < MIN_SHEAR_KN:
-            return {"status": "not_applicable", "detail": f"nenhuma solicitação em {axis.upper()}",
+            return {"status": "not_applicable", "detail": f"nenhuma combinação apresentou cortante em {axis.upper()}",
                     "parameters": {"VRd_kn": 0.0}}
         if axis == "z":
             # Flange shear plate model used by the supplied T-section reference.
@@ -479,9 +509,12 @@ def _shear(element, model, results, axis):
             kv = 5.0
             aw = (p["bf_mm"] - p["tw_mm"]) * p["tf_mm"] / 100.0
         else:
-            lam = (p["d_mm"] - p["tf_mm"]) / p["tw_mm"]
+            lam = p["d_mm"] / p["tw_mm"]
             kv = 1.2
-            aw = 2.0 * p["d_mm"] * p["tw_mm"] / 100.0
+            aw = p["d_mm"] * p["tw_mm"] / 100.0
+            if lam > 260.0:
+                return {"status": "not_checked", "detail": "d/tw excede 260, limite da NBR 8800:2024, 5.4.3.3",
+                        "parameters": {"lambda": lam, "kv": kv, "Aw_cm2": aw}}
         lp = 1.10 * sqrt(kv * e / fy)
         lr = 1.37 * sqrt(kv * e / fy)
         vpl = 0.60 * aw * fy
@@ -492,17 +525,15 @@ def _shear(element, model, results, axis):
         else:
             vn = 1.24 * (lp / lam)**2 * vpl
         cap = vn / GAMMA_A1
-        scope_fail = axis == "y" and lam > 260.0
-        effective_cap = cap if not scope_fail else min(cap, demand / (1.0 + 1e-9))
-        out = _result(f"Cortante {axis.upper()}", results, members, field, effective_cap,
+        out = _result(f"Cortante {axis.upper()}", results, members, field, cap,
                       threshold=MIN_SHEAR_KN)
         out["parameters"] = {
-            "d_mm": p["d_mm"], "tw_mm": p["tw_mm"], "lambda": lam,
+            "d_mm": p["d_mm"], "bf_mm": p["bf_mm"], "tw_mm": p["tw_mm"], "tf_mm": p["tf_mm"], "lambda": lam,
             "kv": kv, "lambda_p": lp, "lambda_r": lr,
             "Aw_cm2": aw, "Vp_kn": vpl, "Vn_kn": vn,
-            "VRd_kn": effective_cap, "VRd_calculated_kn": cap,
+            "VRd_kn": cap, "VRd_calculated_kn": cap,
             "gamma_a1": GAMMA_A1, "fy_kn_cm2": fy, "E_kn_cm2": e,
-            "scope_rejected": scope_fail,
+            "scope_rejected": False,
         }
         return out
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
@@ -557,13 +588,17 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
             for member in members:
                 for sample in result.member_results[member.name].get("samples", ()):
                     n_raw = float(sample.get("axial", 0.0))
-                    n = max(0.0, -n_raw) if mode == "tension" else max(0.0, n_raw)
-                    my = abs(float(sample.get("moment_y", 0.0))) * 100.0
+                    n = (0.0 if mode == "oblique" else
+                         max(0.0, -n_raw) if mode == "tension" else max(0.0, n_raw))
+                    signed_my = float(sample.get("moment_y", 0.0))
+                    my = abs(signed_my) * 100.0
                     mz = abs(float(sample.get("moment_z", 0.0))) * 100.0
+                    my_capacity = float((flex_y.get("parameters") or {}).get(
+                        "MRd_tension_kn_cm" if signed_my >= 0.0 else "MRd_compression_kn_cm", myr))
                     if n < MIN_TENSION_KN and my < MIN_BENDING_KN_M * 100.0 and mz < MIN_BENDING_KN_M * 100.0:
                         continue
                     ratio_n = n / max(axial_capacity, EPS) if mode != "oblique" else 0.0
-                    ratio_my = my / max(myr, EPS)
+                    ratio_my = my / max(my_capacity, EPS)
                     ratio_mz = mz / max(mzr, EPS)
                     if mode == "oblique":
                         candidate_utilization = ratio_my + ratio_mz
@@ -572,21 +607,22 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
                     else:
                         candidate_utilization = ratio_n / 2.0 + ratio_my + ratio_mz
                     if governing is None or candidate_utilization > governing[4]:
-                        governing = (n, my, mz, member.name, candidate_utilization)
+                        governing = (n, my, mz, member.name, candidate_utilization, my_capacity)
             if governing is None:
                 combinations.append({"combination": result.load_reference, "member": None,
                                      "utilization": 0.0, "status": "N/A"})
                 continue
-            n, my, mz, owner, interaction = governing
+            n, my, mz, owner, interaction, my_capacity = governing
             ratio_n = n / max(axial_capacity, EPS) if mode != "oblique" else 0.0
-            ratio_my = my / max(myr, EPS)
+            ratio_my = my / max(my_capacity, EPS)
             ratio_mz = mz / max(mzr, EPS)
             item = {"combination": result.load_reference, "member": owner,
                     "applied_kn": n, "applied_my_kn_cm": my,
                     "applied_mz_kn_cm": mz, "utilization": interaction,
                     "axial_ratio": ratio_n, "moment_y_ratio": ratio_my,
                     "moment_z_ratio": ratio_mz,
-                    "interaction_case": "NBR 8800:2024, 5.5.1.2",
+                    "interaction_case": "Nsd/Nrd >= 0,2" if ratio_n >= 0.2 else "Nsd/Nrd < 0,2",
+                    "My_Rd_kn_cm": my_capacity,
                     "status": "APROVADO" if interaction <= 1.0 else "REPROVADO"}
             combinations.append(item)
             if critical is None or item["utilization"] > critical["utilization"]:
@@ -602,8 +638,8 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
             "applied_kn": critical["applied_kn"] if critical else None,
             "applied_my_kn_cm": critical["applied_my_kn_cm"] if critical else None,
             "applied_mz_kn_cm": critical["applied_mz_kn_cm"] if critical else None,
-            "parameters": {"Nt_Rd_kn": nt, "Nc_Rd_kn": nc,
-                           "My_Rd_kn_cm": myr, "Mz_Rd_kn_cm": mzr},
+            "parameters": {"Nt_Rd_kn": nt, "Nc_Rd_kn": nc, "N_Rd_kn": axial_capacity,
+                           "My_Rd_kn_cm": critical["My_Rd_kn_cm"] if critical else myr, "Mz_Rd_kn_cm": mzr},
             "combinations": combinations,
         }
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:

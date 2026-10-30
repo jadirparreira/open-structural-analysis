@@ -404,7 +404,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "profile_type": member.section or "",
         "section": member.profile or "",
         **({"verification_summary": selected_result} if profile_type in {
-            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado",
+            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado",
         } else {}),
         **({
             "w_restraint_notes": tuple(

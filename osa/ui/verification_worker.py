@@ -71,6 +71,7 @@ from osa.verification.t_rolled import (
     verify_t_oblique_bending,
     verify_t_shear_y,
     verify_t_shear_z,
+    verify_t_slenderness,
     verify_t_tension,
 )
 from osa.verification.u_rolled import (
@@ -265,11 +266,13 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         is_u_profile = profile_type == "U Laminado"
         is_i_profile = profile_type == "I Laminado"
         is_l_profile = profile_type == "L Laminado"
+        is_t_profile = profile_type == "T Laminado"
         w_slenderness_summary = (
             verify_w_slenderness(element, model, model.analysis_results) if is_w_profile else
             verify_u_slenderness(element, model, model.analysis_results) if is_u_profile else
             verify_i_slenderness(element, model, model.analysis_results) if is_i_profile else
-            verify_l_slenderness(element, model, model.analysis_results) if is_l_profile else None
+            verify_l_slenderness(element, model, model.analysis_results) if is_l_profile else
+            verify_t_slenderness(element, model, model.analysis_results) if is_t_profile else None
         )
         w_torsion_summary = (
             _w_torsion_summary(element, model, model.analysis_results)
