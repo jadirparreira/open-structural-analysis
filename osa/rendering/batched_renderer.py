@@ -21,6 +21,7 @@ from osa.sections import section_shape
 
 from .grid_renderer import GridRenderer
 from .local_axes_renderer import LocalAxesRenderer
+from .release_symbols import release_symbol_polylines
 from .solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from .support_renderer import build_support_mesh
 
@@ -1242,21 +1243,18 @@ class BatchedMemberRenderer:
     ) -> None:
         if len(releases) != 12 or not any(releases):
             return
-        local_x, local_y, local_z = basis
-        offset = LocalAxesRenderer.end_indicator_offset(float(np.linalg.norm(end - start)), radius)
-        for endpoint, inward, has_release in (
-            (start, local_x, any(releases[index] for index in (0, 2, 4, 6, 8, 10))),
-            (end, -local_x, any(releases[index] for index in (1, 3, 5, 7, 9, 11))),
+        local_x = basis[0]
+        longitudinal_offset = LocalAxesRenderer.end_indicator_offset(
+            float(np.linalg.norm(end - start)), radius,
+        )
+        for endpoint, inward, end_index in (
+            (start, local_x, 0),
+            (end, -local_x, 1),
         ):
-            if not has_release:
-                continue
-            center = endpoint + inward * offset
-            circle_radius = radius * 1.05
-            angles = np.linspace(0.0, 2.0 * pi, 32)
-            destination.append(np.asarray([
-                center + local_y * cos(angle) * circle_radius + local_z * sin(angle) * circle_radius
-                for angle in angles
-            ]))
+            destination.extend(release_symbol_polylines(
+                endpoint, inward, releases, radius, basis, end=end_index,
+                longitudinal_offset=longitudinal_offset,
+            ))
 
 
 class BatchedNodeRenderer:

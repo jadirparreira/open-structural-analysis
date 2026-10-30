@@ -2,6 +2,7 @@ import numpy as np
 import pyvista as pv
 
 from .local_axes_renderer import LocalAxesRenderer
+from .release_symbols import release_symbol_polylines
 
 
 class ReleaseRenderer:
@@ -15,24 +16,22 @@ class ReleaseRenderer:
         basis = LocalAxesRenderer.basis(start, end, rotation)
         if basis is None:
             return []
-        x_axis, y_axis, z_axis = basis
+        x_axis, _y_axis, _z_axis = basis
         start_point = np.array((start.x, start.y, start.z), dtype=float)
         end_point = np.array((end.x, end.y, end.z), dtype=float)
-        offset = LocalAxesRenderer.end_indicator_offset(float(np.linalg.norm(end_point - start_point)), radius)
+        longitudinal_offset = LocalAxesRenderer.end_indicator_offset(
+            float(np.linalg.norm(end_point - start_point)), radius,
+        )
         actors: list[object] = []
-        for endpoint, inward, has_release in (
-            (start_point, x_axis, any(releases[index] for index in (0, 2, 4, 6, 8, 10))),
-            (end_point, -x_axis, any(releases[index] for index in (1, 3, 5, 7, 9, 11))),
+        for endpoint, inward, end_index in (
+            (start_point, x_axis, 0),
+            (end_point, -x_axis, 1),
         ):
-            if not has_release:
-                continue
-            center = endpoint + inward * offset
-            points = []
-            circle_radius = radius * 1.05
-            for angle in np.linspace(0.0, 2.0 * np.pi, 32):
-                points.append(center + y_axis * np.cos(angle) * circle_radius
-                             + z_axis * np.sin(angle) * circle_radius)
-            actors.append(self._polyline(plotter, points, self._release_color))
+            for points in release_symbol_polylines(
+                endpoint, inward, releases, radius, basis, end=end_index,
+                longitudinal_offset=longitudinal_offset,
+            ):
+                actors.append(self._polyline(plotter, points, self._release_color))
         return actors
 
     @staticmethod
