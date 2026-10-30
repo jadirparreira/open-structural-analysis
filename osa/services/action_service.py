@@ -175,6 +175,22 @@ class ActionService:
             for action in self.model.actions.values()
         )
 
+    def update_selfweight_member(self, target: str, value: float) -> bool:
+        """Update a bar's selfweight anywhere it has already been applied."""
+        components = (float(value), float(value))
+        changed = False
+        for name, action in tuple(self.model.actions.items()):
+            if (
+                action.target == target
+                and action.kind == "member_distributed_force_selfweight_Z"
+                and action.components != components
+            ):
+                self.model.actions[name] = replace(action, components=components)
+                changed = True
+        if changed:
+            self.model._touch()
+        return changed
+
     def selfweight_load_cases(self) -> set[str]:
         """Retorna as ações que estão restritas ao peso próprio."""
         return {

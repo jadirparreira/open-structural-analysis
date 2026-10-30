@@ -3897,6 +3897,21 @@ class MainWindow(QMainWindow):
         self.scene.update_member_rotation(member_name)
 
     def refresh_member_geometry(self, member_name: str) -> None:
+        has_selfweight = any(
+            action.target == member_name
+            and action.kind == "member_distributed_force_selfweight_Z"
+            for action in self.model.actions.values()
+        )
+        if has_selfweight:
+            try:
+                weight = self.model_service.member_selfweight(member_name)
+            except ValueError:
+                pass
+            else:
+                if self.action_service.update_selfweight_member(member_name, weight):
+                    self.refresh_action_palette()
+                    self.refresh_scene()
+                    return
         self.scene.update_member_geometry(member_name)
 
     def refresh_member_color(self, member_name: str) -> None:

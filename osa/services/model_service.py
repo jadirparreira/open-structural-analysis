@@ -326,7 +326,6 @@ class ModelService:
 
     def member_selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
         """Retorna pesos lineares em kN/m, opcionalmente filtrados por material."""
-        properties_service = SectionPropertyService()
         weights: list[tuple[str, float]] = []
         missing: list[str] = []
         material_key = material.casefold() if material is not None else None
@@ -335,25 +334,31 @@ class ModelService:
             if material_key is None or member.material.casefold() == material_key
         )
         for member in members:
-            if not member.section or not member.section_geometry:
-                missing.append(member.name)
-                continue
             try:
-                properties = properties_service.calculate(
-                    member.section,
-                    member.geometry_dict(),
-                    member.material_values[3] / 9.80665e-3,
-                    mirror_z=member.section_mirrored,
-                )
-            except (KeyError, TypeError, ValueError):
+                weights.append((member.name, self.member_selfweight(member.name)))
+            except ValueError:
                 missing.append(member.name)
-                continue
-            # kg/m * 10 N/kg / 1000 = kg/m / 100 kN/m.
-            weights.append((member.name, -properties.mass_kg_m / 100.0))
         if missing:
             names = ", ".join(missing)
             raise ValueError(f"Não foi possível obter o peso linear das barras: {names}.")
         return tuple(weights)
+
+    def member_selfweight(self, name: str) -> float:
+        """Calcula o peso linear atualizado de uma barra em kN/m."""
+        member = self.model.bars[name]
+        if not member.section or not member.section_geometry:
+            raise ValueError(f"A barra '{name}' não possui uma seção calculável.")
+        try:
+            properties = SectionPropertyService().calculate(
+                member.section,
+                member.geometry_dict(),
+                member.material_values[3] / 9.80665e-3,
+                mirror_z=member.section_mirrored,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"Não foi possível calcular o peso linear da barra '{name}'.") from error
+        # kg/m * 10 N/kg / 1000 = kg/m / 100 kN/m.
+        return -properties.mass_kg_m / 100.0
 
     def remove_node(self, name: str) -> None:
         self.model.remove_node(name)
