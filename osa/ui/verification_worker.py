@@ -126,13 +126,6 @@ _ROUTINES = {
         verify_u_oblique_bending, verify_u_flexotension,
         verify_u_flexocompression,
     ),
-    "U Inclinado Laminado": (
-        verify_u_tension, verify_u_compression,
-        verify_u_flexion_y, verify_u_flexion_z,
-        verify_u_shear_y, verify_u_shear_z,
-        verify_u_oblique_bending, verify_u_flexotension,
-        verify_u_flexocompression,
-    ),
     "L Laminado": (
         verify_l_tension, verify_l_compression,
         verify_l_flexion_y, verify_l_flexion_z,
@@ -268,7 +261,7 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         )
         profile_type = model.bars[element.member_names[0]].section
         is_w_profile = profile_type in {"W Laminado", "HP Laminado"}
-        is_u_profile = profile_type in {"U Laminado", "U Inclinado Laminado"}
+        is_u_profile = profile_type == "U Laminado"
         is_i_profile = profile_type == "I Laminado"
         w_slenderness_summary = (
             verify_w_slenderness(element, model, model.analysis_results) if is_w_profile else

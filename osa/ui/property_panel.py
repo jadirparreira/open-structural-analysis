@@ -382,7 +382,7 @@ class PropertyPanel(QFrame):
             return False
         sections = {member.section for member in members}
         return len(sections) == 1 and sections.pop() in {
-            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
+            "W Laminado", "HP Laminado", "I Laminado", "U Laminado",
             "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada",
             "Barra Circular",
         }

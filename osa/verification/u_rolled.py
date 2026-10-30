@@ -41,7 +41,7 @@ def verify_u_tension(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -133,7 +133,7 @@ def verify_u_slenderness(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -197,7 +197,7 @@ def verify_u_flexion_y(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -429,7 +429,7 @@ def verify_u_flexion_z(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -539,7 +539,13 @@ def verify_u_flexion_z(element, model, results) -> dict:
 
         # NBR 8800:2024, 5.4.2.2 limits MRd to 1.50 W fy / gamma_a1.
         mrd_limit_kn_cm = 1.50 * wz_cm3 * fy_kn_cm2 / gamma_a1
-        mz_rd_kn_cm = min(mrd_flm_z_kn_cm, mrd_fla_z_kn_cm, mrd_limit_kn_cm)
+        # Under the adopted section orientation, negative Mz compresses the
+        # web (FLA) and positive Mz compresses the free flange edges (FLM).
+        mrd_z_negative_kn_cm = min(mrd_fla_z_kn_cm, mrd_limit_kn_cm)
+        mrd_z_positive_kn_cm = min(mrd_flm_z_kn_cm, mrd_limit_kn_cm)
+        # Keep the lower capacity in the legacy scalar consumed by combined
+        # action checks; those checks are intentionally unchanged in this task.
+        mz_rd_kn_cm = min(mrd_z_negative_kn_cm, mrd_z_positive_kn_cm)
         if mz_rd_kn_cm <= 0.0:
             raise ValueError("momento resistente de cálculo não positivo")
     except (KeyError, TypeError, ValueError, ZeroDivisionError, ArithmeticError) as error:
@@ -548,23 +554,37 @@ def verify_u_flexion_z(element, model, results) -> dict:
     combinations = []
     critical = None
     for result in results:
-        demand = None
+        demands = []
         for member_name in element.member_names:
             for sample in result.member_results[member_name].get("samples", ()):
-                moment_kn_cm = abs(float(sample.get("moment_z", 0.0))) * 100.0
-                if demand is None or moment_kn_cm > demand[0]:
-                    demand = (moment_kn_cm, member_name, sample.get("x"))
-        if demand is None or demand[0] < MIN_SIGNIFICANT_BENDING_KN_M * 100.0:
+                signed_moment_kn_cm = float(sample.get("moment_z", 0.0)) * 100.0
+                moment_kn_cm = abs(signed_moment_kn_cm)
+                if moment_kn_cm < MIN_SIGNIFICANT_BENDING_KN_M * 100.0:
+                    continue
+                negative_moment = signed_moment_kn_cm < 0.0
+                resistance_kn_cm = (
+                    mrd_z_negative_kn_cm if negative_moment else mrd_z_positive_kn_cm
+                )
+                utilization = moment_kn_cm / resistance_kn_cm
+                demands.append((
+                    utilization, moment_kn_cm, member_name, sample.get("x"),
+                    signed_moment_kn_cm, resistance_kn_cm,
+                    "FLA" if negative_moment else "FLM",
+                ))
+        if not demands:
             combinations.append({
                 "combination": result.load_reference, "member": None,
                 "applied_kn_cm": 0.0, "utilization": 0.0, "status": "N/A",
             })
             continue
-        applied_kn_cm, member_name, position_m = demand
-        utilization = applied_kn_cm / mz_rd_kn_cm
+        demand = max(demands, key=lambda item: item[0])
+        utilization, applied_kn_cm, member_name, position_m, signed_moment_kn_cm, resistance_kn_cm, governing = demand
         item = {
             "combination": result.load_reference, "member": member_name,
             "position_m": position_m, "applied_kn_cm": applied_kn_cm,
+            "signed_moment_kn_cm": signed_moment_kn_cm,
+            "resistance_kn_cm": resistance_kn_cm,
+            "governing": governing,
             "utilization": utilization,
             "status": "APROVADO" if utilization <= 1.0 else "REPROVADO",
         }
@@ -600,17 +620,25 @@ def verify_u_flexion_z(element, model, results) -> dict:
             "Mn_fla_z_kn_cm": mn_fla_z_kn_cm,
             "Mrd_fla_z_kn_cm": mrd_fla_z_kn_cm,
         "Mrd_limit_kn_cm": mrd_limit_kn_cm,
+        "Mrd_z_negative_kn_cm": mrd_z_negative_kn_cm,
+        "Mrd_z_positive_kn_cm": mrd_z_positive_kn_cm,
         "Mrd_z_kn_cm": mz_rd_kn_cm,
-        "governing": "FLM-Z" if mrd_flm_z_kn_cm <= mrd_limit_kn_cm else "Limite 5.4.2.2",
+        "governing_negative": "FLA-Z" if mrd_fla_z_kn_cm <= mrd_limit_kn_cm else "Limite 5.4.2.2",
+        "governing_positive": "FLM-Z" if mrd_flm_z_kn_cm <= mrd_limit_kn_cm else "Limite 5.4.2.2",
     }
     return {
         "status": "checked" if critical else "not_applicable",
         "detail": "" if critical else "nenhuma combinação apresentou momento fletor em Z",
         "utilization": critical["utilization"] if critical else None,
-        "critical_check": "Flexão Z — FLM/FLA" if critical else "N/A",
+        "critical_check": (
+            f"Flexão Z — {critical['governing']} (Mz {'negativo' if critical['signed_moment_kn_cm'] < 0.0 else 'positivo'})"
+            if critical else "N/A"
+        ),
         "critical_combination": critical["combination"] if critical else "N/A",
         "critical_member": critical["member"] if critical else None,
         "applied_kn_cm": critical["applied_kn_cm"] if critical else None,
+        "signed_moment_kn_cm": critical["signed_moment_kn_cm"] if critical else None,
+        "resistance_kn_cm": critical["resistance_kn_cm"] if critical else None,
         "parameters": parameters, "combinations": combinations,
     }
 
@@ -620,7 +648,7 @@ def verify_u_shear_y(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -731,7 +759,7 @@ def verify_u_shear_z(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}
@@ -849,7 +877,7 @@ def _verify_u_combined_actions(element, model, results, mode: str,
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if len({(member.profile, member.section_geometry, member.material) for member in members}) != 1:
         return {"status": "not_checked", "detail": "grupo com seções ou materiais diferentes"}
@@ -1093,7 +1121,7 @@ def verify_u_compression(element, model, results) -> dict:
     members = [model.bars[name] for name in element.member_names if name in model.bars]
     if not members or len(members) != len(element.member_names):
         return {"status": "not_checked", "detail": "barra não encontrada no modelo"}
-    if any(member.section not in {"U Laminado", "U Inclinado Laminado"} for member in members):
+    if any(member.section != "U Laminado" for member in members):
         return {"status": "not_checked", "detail": "a rotina atende apenas perfis U laminados"}
     if any(not member.section_geometry for member in members):
         return {"status": "not_checked", "detail": "geometria da seção incompleta"}

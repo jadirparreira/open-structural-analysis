@@ -7,8 +7,7 @@ from osa.ui.calculation_memorial_dialog import CalculationMemorialDialog
 from osa.ui.verification_worker import verify_model
 
 
-@pytest.mark.parametrize("family", ("U Laminado", "U Inclinado Laminado"))
-def test_catalog_u_profile_without_optional_radii_is_verified(family):
+def test_catalog_u_profile_without_optional_radii_is_verified():
     model = StructuralModel()
     model.add_node("A", 0.0, 0.0, 0.0)
     model.add_node("B", 0.0, 0.0, 3.0)
@@ -16,7 +15,7 @@ def test_catalog_u_profile_without_optional_radii_is_verified(family):
     model.update_node_supports("B", (True,) * 6)
     model.add_bar("U1", "A", "B")
     model.update_bar_material("U1", "ASTM A36", model.materials["ASTM A36"])
-    model.update_bar_section("U1", family)
+    model.update_bar_section("U1", "U Laminado")
     model.update_member_profile(
         "U1", "U 76 x 6.1", {"d": 76.2, "bf": 35.81, "tw": 4.32, "tf": 6.93},
     )

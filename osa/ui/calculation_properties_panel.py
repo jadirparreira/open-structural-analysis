@@ -53,12 +53,12 @@ class CalculationPropertiesPanel(QFrame):
         ("Cb", "C<sub>b</sub>", "", 3, 1.0, 1.0e12),
     )
     _CB_SECTIONS: ClassVar[frozenset[str]] = frozenset({
-        "I Laminado", "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado",
+        "I Laminado", "W Laminado", "HP Laminado", "U Laminado",
         "Barra Retangular", "Barra Quadrada",
     })
     _LB_SECTIONS: ClassVar[frozenset[str]] = _CB_SECTIONS | {"T Laminado"}
     _LT_SECTIONS: ClassVar[frozenset[str]] = frozenset(
-        {"I Laminado", "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado"}
+        {"I Laminado", "W Laminado", "HP Laminado", "U Laminado"}
     )
 
     def __init__(self, window) -> None:

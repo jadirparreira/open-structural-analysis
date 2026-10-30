@@ -162,7 +162,7 @@ def _w(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperti
 def _u(
     parameters: Mapping[str, float],
     density_kg_m3: float,
-    family: str = "U Inclinado Laminado",
+    family: str = "U Laminado",
 ) -> SectionProperties:
     d = _positive(parameters, "d")
     bf = _positive(parameters, "bf")
@@ -594,7 +594,6 @@ def calculate_section_properties(
         "W Laminado": _w,
         "HP Laminado": _w,
         "U Laminado": _u,
-        "U Inclinado Laminado": _u,
         "I Laminado": _i,
         "L Laminado": _l,
         "T Laminado": _t,

@@ -1200,7 +1200,7 @@ class SectionPanel(QFrame):
                 cx=canvas_w / 2.0,
                 cy=y0 + total_h / 2.0,
             )
-        elif family in {"U Laminado", "U Inclinado Laminado"} and geometry and {"d", "bf", "tw", "tf"} <= geometry.keys():
+        elif family == "U Laminado" and geometry and {"d", "bf", "tw", "tf"} <= geometry.keys():
             radius = geometry.get("r", geometry.get("r_mm"))
             tip_radius = geometry.get("r1", geometry.get("r1_mm"))
             flange_angle = float(geometry.get("flange_angle_deg", 2.0))

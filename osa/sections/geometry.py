@@ -244,7 +244,7 @@ def _circle(diameter: float, steps: int = 32) -> Loop:
 
 
 def _raw_loops(family: str, geometry: dict[str, float], arc_steps: int) -> tuple[Loop, ...] | None:
-    if family in {"W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado", "L Laminado", "I Laminado"}:
+    if family in {"W Laminado", "HP Laminado", "U Laminado", "L Laminado", "I Laminado"}:
         points = contour_points(family, geometry, arc_steps=arc_steps)
         return (points,) if points else None
     if family == "T Laminado":

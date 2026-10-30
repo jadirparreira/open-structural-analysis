@@ -278,8 +278,7 @@ def _u_properties(member) -> dict[str, float]:
     radius = float(geometry.get("r", geometry.get("r_mm", 0.0))) or max(2.0, 1.5 * tf)
     tip_radius = float(geometry.get("r1", geometry.get("r1_mm", 0.0))) or None
     flange_angle = float(geometry.get("flange_angle_deg", geometry.get("angle", 2.0)))
-    # The section-properties model represents U flanges as parallel to the
-    # web; the rolled root radius is included in the contour used here.
+    # The contour includes the rolled U's flange inclination and root radius.
     points = u_contour_points(d, bf, tw, tf, radius, tip_radius, flange_angle)
     area_mm2, cy_mm, cz_mm, iy_mm4, iz_mm4, _ = polygon_properties(points)
     area = area_mm2 / 100.0
@@ -340,7 +339,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         _safe_rectangular_bar_properties(member) if profile_type == "Barra Retangular" else
         _safe_square_bar_properties(member) if profile_type == "Barra Quadrada" else
         _safe_round_bar_properties(member) if profile_type == "Barra Circular" else
-        _u_properties(member) if profile_type in {"U Laminado", "U Inclinado Laminado"} else {}
+        _u_properties(member) if profile_type == "U Laminado" else {}
     )
     group_members = tuple(group.get("members", ())) if group else tuple(member_names)
     selected_result = next((
@@ -405,7 +404,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "profile_type": member.section or "",
         "section": member.profile or "",
         **({"verification_summary": selected_result} if profile_type in {
-            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "U Inclinado Laminado",
+            "W Laminado", "HP Laminado", "I Laminado", "U Laminado",
         } else {}),
         **({
             "w_restraint_notes": tuple(
@@ -420,7 +419,7 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
             **({"r_mm": value("r")} if profile_type in {
-                "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado",
+                "W Laminado", "HP Laminado", "U Laminado",
             } else {}),
             "Iy_cm4": value("Iy"), "Wy_cm3": value("Wy"),
             "ry_cm": value("ry"), "Zy_cm3": value("Zy"),
