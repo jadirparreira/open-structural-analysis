@@ -43,6 +43,7 @@ _UTILIZATION_COLOR_BANDS = (
     "#35BD61", "#68BF3D", "#9FC32A", "#D0C52A", "#F2D426",
 )
 _UTILIZATION_LIMIT_COLOR = "#FF1717"
+_VERIFICATION_UNAVAILABLE_COLOR = "#D3D3D3"
 
 
 class SnapMarker(QWidget):
@@ -5398,9 +5399,16 @@ class StructureScene(QWidget):
         results = getattr(self._model, "verification_results", {})
         for element in verification_elements(self._model):
             result = results.get(element.key)
-            if not result or result.get("status") != "checked":
+            if not result:
+                # Elements shown as N/D have no utilization band; keep them
+                # visually distinct from both checked and failed members.
+                color = _VERIFICATION_UNAVAILABLE_COLOR
+            elif result.get("status") != "checked":
                 continue
-            color = self._utilization_band_color(result.get("utilization"))
+            elif result.get("utilization") is None:
+                color = _VERIFICATION_UNAVAILABLE_COLOR
+            else:
+                color = self._utilization_band_color(result.get("utilization"))
             if color is None:
                 continue
             for member_name in element.member_names:
