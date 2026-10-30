@@ -1821,7 +1821,13 @@ class MainWindow(QMainWindow):
 
         weights: list[tuple[str, float]] = []
         try:
-            for material in dialog.selected_materials:
+            selected_types = set(dialog.selected_material_types)
+            materials = dict.fromkeys(
+                member.material
+                for member in self.model.bars.values()
+                if self.model.material_types.get(member.material, "Aço") in selected_types
+            )
+            for material in materials:
                 weights.extend(self.model_service.member_selfweights(material))
         except ValueError as error:
             self.show_error(str(error))
@@ -1829,16 +1835,16 @@ class MainWindow(QMainWindow):
 
         if not weights:
             self.show_error(
-                "Não há barras associadas aos materiais selecionados "
+                "Não há barras associadas aos tipos de material selecionados "
                 "para aplicar o peso próprio."
             )
             return
 
         self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
-        materials = ", ".join(dialog.selected_materials)
+        material_types = ", ".join(dialog.selected_material_types)
         self.history.append(
             "> <b>Adicionar peso próprio</b> "
-            f"<span style='color:#57606a'>(Materiais: {escape(materials)})</span>"
+            f"<span style='color:#57606a'>(Tipos de material: {escape(material_types)})</span>"
         )
         self.refresh_action_palette()
         self.refresh_scene()

@@ -215,14 +215,14 @@ class MemberSnapSplitDialog(QDialog):
 
 
 class SelfweightDialog(QDialog):
-    """Seleciona os materiais considerados no lançamento do peso próprio."""
+    """Seleciona os tipos de material considerados no peso próprio."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.window = parent
-        self.selected_materials: tuple[str, ...] = ()
+        self.selected_material_types: tuple[str, ...] = ()
         self._material_checkboxes: dict[str, QCheckBox] = {}
-        materials = tuple(parent.model.materials) if parent is not None else ()
+        material_types = ("Aço", "Concreto", "Madeira")
 
         self.setWindowTitle("Aplicar peso próprio")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -264,23 +264,18 @@ class SelfweightDialog(QDialog):
         content = QVBoxLayout()
         content.setContentsMargins(16, 14, 16, 16)
         content.setSpacing(8)
-        hint = QLabel("Selecione os materiais que receberão o peso próprio:")
+        hint = QLabel("Selecione os tipos de material que receberão o peso próprio:")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         content.addWidget(hint)
 
-        for material in materials:
-            checkbox = QCheckBox(material)
-            checkbox.setAccessibleName(f"Material {material}")
+        for material_type in material_types:
+            checkbox = QCheckBox(material_type)
+            checkbox.setAccessibleName(f"Tipo de material {material_type}")
             checkbox.setChecked(True)
             checkbox.toggled.connect(self._update_apply_state)
-            self._material_checkboxes[material] = checkbox
+            self._material_checkboxes[material_type] = checkbox
             content.addWidget(checkbox)
-
-        if not materials:
-            empty = QLabel("Não há materiais cadastrados.")
-            empty.setObjectName("hint")
-            content.addWidget(empty)
 
         content.addStretch(1)
         footer = QHBoxLayout()
@@ -299,18 +294,18 @@ class SelfweightDialog(QDialog):
         outer.addLayout(content, 1)
         self._update_apply_state()
 
-    def _selected_material_names(self) -> tuple[str, ...]:
+    def _selected_material_types(self) -> tuple[str, ...]:
         return tuple(
-            material for material, checkbox in self._material_checkboxes.items()
+            material_type for material_type, checkbox in self._material_checkboxes.items()
             if checkbox.isChecked()
         )
 
     def _update_apply_state(self, _checked: bool = False) -> None:
-        self.apply_button.setEnabled(bool(self._selected_material_names()))
+        self.apply_button.setEnabled(bool(self._selected_material_types()))
 
     def _apply(self) -> None:
-        self.selected_materials = self._selected_material_names()
-        if self.selected_materials:
+        self.selected_material_types = self._selected_material_types()
+        if self.selected_material_types:
             self.accept()
 
 
