@@ -192,7 +192,7 @@ def _moment_gradient_factor(samples, field: str) -> float:
         return 1.0
     ma, mb, mc = (value_at(part) for part in (0.25, 0.50, 0.75))
     factor = 12.5 * mmax / (2.5 * mmax + 3.0 * ma + 4.0 * mb + 3.0 * mc)
-    return min(2.5, max(1.0, factor))
+    return max(1.0, factor)
 
 
 def _flexion(element, model, results, axis: str, family="Barra Retangular"):

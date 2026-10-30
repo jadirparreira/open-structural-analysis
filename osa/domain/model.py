@@ -1148,14 +1148,15 @@ class StructuralModel:
         limits = {
             "Ly": (0.0, math.inf), "Lz": (0.0, math.inf),
             "Lt": (0.0, math.inf), "Lb": (0.0, math.inf),
-            "Ct": (0.0, 1.0), "Cb": (1.0, 2.5),
+            "Ct": (0.0, 1.0), "Cb": (1.0, math.inf),
         }
         if property_name not in limits:
             raise ValueError("Propriedade de cálculo desconhecida.")
         minimum, maximum = limits[property_name]
-        if value <= minimum or value > maximum:
-            if property_name == "Cb":
-                raise ValueError("Cb deve estar entre 1,0 e 2,5.")
+        if property_name == "Cb":
+            if value < minimum:
+                raise ValueError("Cb deve ser maior ou igual a 1,0.")
+        elif value <= minimum or value > maximum:
             if property_name == "Ct":
                 raise ValueError("Ct deve ser maior que zero e no máximo 1,0.")
             raise ValueError(f"{property_name} deve ser maior que zero.")

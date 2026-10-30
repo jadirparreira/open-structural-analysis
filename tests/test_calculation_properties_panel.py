@@ -118,14 +118,14 @@ def test_invalid_cb_edit_is_rejected_without_raising_from_qt_signal():
     spin = panel._inputs["Cb"]
     # Simulate an invalid value reaching the commit path despite the widget's
     # normal range validator.
-    spin.setRange(0.1, 2.5)
+    spin.setRange(0.1, 10.0)
     spin.setValue(0.5)
 
     spin.editingFinished.emit()
 
     assert spin.value() == 1.0
     assert "Cb" not in dict(window.model.bars["B1"].calculation_property_overrides)
-    assert "Cb deve estar entre 1,0 e 2,5" in window.verification_panel.status.text()
+    assert "Cb deve ser maior ou igual a 1,0" in window.verification_panel.status.text()
     panel.close()
     window.close()
     del app

@@ -41,7 +41,7 @@ class CalculationPropertiesPanel(QFrame):
             "Fator de modificação da resistência à flambagem lateral com torção (FLT) "
             "para diagrama de momento não uniforme ao longo de Lb (NBR 8800:2024, "
             "5.4.2.3 a 5.4.2.5). O cálculo automático do OSA usa o diagrama de momentos. "
-            "Faixa aceita pelo campo: 1,0 a 2,5."
+            "Informe um valor justificado pelas condições do elemento e pela norma."
         ),
     }
     _FIELDS: ClassVar[tuple[tuple[str, str, str, int, float, float], ...]] = (
@@ -50,7 +50,7 @@ class CalculationPropertiesPanel(QFrame):
         ("Lt", "L<sub>t</sub>", "m", 3, 0.001, 100_000.0),
         ("Lb", "L<sub>b</sub>", "m", 3, 0.001, 100_000.0),
         ("Ct", "C<sub>t</sub>", "", 3, 0.001, 1.0),
-        ("Cb", "C<sub>b</sub>", "", 3, 1.0, 2.5),
+        ("Cb", "C<sub>b</sub>", "", 3, 1.0, 1.0e12),
     )
     _CB_SECTIONS: ClassVar[frozenset[str]] = frozenset({
         "I Laminado", "W Laminado", "HP Laminado", "U Laminado", "U Inclinado Laminado",
