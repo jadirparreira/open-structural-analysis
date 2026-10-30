@@ -160,7 +160,7 @@ def test_significant_torsion_is_informational_and_does_not_count_as_unverified()
     assert "Solicitação não verificada" in memorial
 
 
-def test_u_simultaneous_shear_envelope_above_one_is_rejected():
+def test_u_simultaneous_shear_is_not_a_separate_check():
     model = StructuralModel()
     model.add_node("A", 0.0, 0.0, 0.0)
     model.add_node("B", 0.0, 0.0, 3.0)
@@ -185,24 +185,17 @@ def test_u_simultaneous_shear_envelope_above_one_is_rejected():
 
     verification = verify_model(model)
     element = verification["results"]["bar:U1"]
-    biaxial_shear = element["checks"]["biaxial_shear"]
-
-    assert biaxial_shear["status"] == "checked"
-    assert biaxial_shear["utilization"] > 1.0
-    assert biaxial_shear["detail"].endswith("reprovada")
-    assert biaxial_shear["combinations"][0]["status"] == "REPROVADO"
-    assert verification["summary"]["rejected"] == 1
-    assert verification["summary"]["unverified"] == 0
+    assert "shear_y" in element["checks"]
+    assert "shear_z" in element["checks"]
+    assert "biaxial_shear" not in element["checks"]
+    assert "biaxial_shear_summary" not in element
 
     model.verification_results = verification["results"]
     equation_objects = {}
     memorial = CalculationMemorialDialog._render(
         calculation_memory(model, ("U1",)), equation_objects,
     )
-    assert "REPROVADO" in memorial or any(
-        "REPROVADO" in str(equation) for equation in equation_objects.values()
-    )
-    assert "inconclusiva" not in memorial
+    assert "cortantes simultâneos" not in memorial.lower()
 
 
 def test_u_member_slenderness_is_reported_but_does_not_decide_approval():

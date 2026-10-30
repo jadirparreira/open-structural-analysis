@@ -100,8 +100,9 @@ def test_two_thousand_distinct_solicitations_across_the_u_profile_catalog():
         assert {
             "axial_tension", "axial_compression", "slenderness", "flexion_y",
             "flexion_z", "shear_y", "shear_z", "flexao_obliqua",
-            "flexotracao", "flexocompressao", "biaxial_shear",
+            "flexotracao", "flexocompressao",
         }.issubset(element["checks"])
+        assert "biaxial_shear" not in element["checks"]
         if element.get("torsion_summary", {}).get("has_torsion"):
             torsion_cases += 1
             assert "torsion" not in element["checks"]
@@ -126,7 +127,7 @@ def test_two_thousand_distinct_solicitations_across_the_u_profile_catalog():
     assert "Esbeltez na tra" in memorial
     assert "Esbeltez na compress" in memorial
     assert "Torção" in memorial
-    assert "Cortantes simultâneos" in memorial
+    assert "Cortantes simultâneos" not in memorial
     assert "Premissa da seção líquida" not in memorial
     assert "Estimativa conservadora:" not in memorial
     assert "não co-localizados" not in memorial

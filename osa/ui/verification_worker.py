@@ -6,7 +6,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.i_rolled import (
-    verify_i_biaxial_shear,
     verify_i_compression,
     verify_i_flexion_y,
     verify_i_flexion_z,
@@ -86,7 +85,6 @@ from osa.verification.u_rolled import (
     verify_u_tension,
 )
 from osa.verification.w_rolled import (
-    verify_w_biaxial_shear,
     verify_w_compression,
     verify_w_flexion_y,
     verify_w_flexion_z,
@@ -171,16 +169,6 @@ _ROUTINES = {
         verify_round_bar_flexocompression,
     ),
 }
-
-
-def _w_biaxial_shear_summary(element, checks, results) -> dict[str, object]:
-    """Expose the calculated W biaxial-shear check to the memorial renderer."""
-    check = checks[-1] if checks else {}
-    return {
-        "available": bool(results),
-        "has_simultaneous_shear": check.get("status") == "checked",
-        **check,
-    }
 
 
 def _w_torsion_summary(element, model, results) -> dict[str, object]:
@@ -291,21 +279,6 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             _w_torsion_summary(element, model, model.analysis_results)
             if is_w_profile or is_u_profile or is_i_profile else None
         )
-        w_biaxial_shear_check = None
-        if is_w_profile or is_u_profile:
-            w_biaxial_shear_check = verify_w_biaxial_shear(
-                element, model, model.analysis_results,
-            )
-            checks = (*checks, w_biaxial_shear_check)
-        elif is_i_profile:
-            w_biaxial_shear_check = verify_i_biaxial_shear(
-                element, model, model.analysis_results,
-            )
-            checks = (*checks, w_biaxial_shear_check)
-        w_biaxial_shear_summary = (
-            _w_biaxial_shear_summary(element, checks, model.analysis_results)
-            if is_w_profile or is_u_profile or is_i_profile else None
-        )
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]
         controlling = max(
@@ -324,8 +297,6 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             summary = dict(controlling or tension)
         if w_torsion_summary is not None:
             summary["torsion_summary"] = w_torsion_summary
-        if w_biaxial_shear_summary is not None:
-            summary["biaxial_shear_summary"] = w_biaxial_shear_summary
         if w_slenderness_summary is not None:
             summary["slenderness_summary"] = w_slenderness_summary
         summary["checks"] = {
@@ -340,8 +311,6 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             "flexao_obliqua": oblique_bending,
             "flexotracao": flexotension,
             "flexocompressao": flexocompression,
-            **({"biaxial_shear": w_biaxial_shear_check}
-               if w_biaxial_shear_check is not None else {}),
         }
         results[element.key] = summary
 
