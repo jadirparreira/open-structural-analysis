@@ -146,6 +146,18 @@ def test_calculation_properties_panel_disables_cb_when_section_routine_does_not_
     del app
 
 
+def test_l_panel_disables_lb_and_cb_when_flexion_model_does_not_use_them():
+    app = QApplication.instance() or QApplication([])
+    window = _PanelContext(_model("L Laminado"))
+    panel = CalculationPropertiesPanel(window)
+    panel.configure_for(("B1",))
+    assert not panel._inputs["Lb"].isEnabled()
+    assert not panel._inputs["Cb"].isEnabled()
+    panel.close()
+    window.close()
+    del app
+
+
 def test_calculation_properties_panel_sizes_to_show_its_fields():
     app = QApplication.instance() or QApplication([])
     window = _PanelContext(_model())

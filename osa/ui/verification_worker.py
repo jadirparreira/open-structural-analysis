@@ -26,6 +26,7 @@ from osa.verification.l_rolled import (
     verify_l_oblique_bending,
     verify_l_shear_y,
     verify_l_shear_z,
+    verify_l_slenderness,
     verify_l_tension,
 )
 from osa.verification.rectangular_bar import (
@@ -263,10 +264,12 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
         is_w_profile = profile_type in {"W Laminado", "HP Laminado"}
         is_u_profile = profile_type == "U Laminado"
         is_i_profile = profile_type == "I Laminado"
+        is_l_profile = profile_type == "L Laminado"
         w_slenderness_summary = (
             verify_w_slenderness(element, model, model.analysis_results) if is_w_profile else
             verify_u_slenderness(element, model, model.analysis_results) if is_u_profile else
-            verify_i_slenderness(element, model, model.analysis_results) if is_i_profile else None
+            verify_i_slenderness(element, model, model.analysis_results) if is_i_profile else
+            verify_l_slenderness(element, model, model.analysis_results) if is_l_profile else None
         )
         w_torsion_summary = (
             _w_torsion_summary(element, model, model.analysis_results)

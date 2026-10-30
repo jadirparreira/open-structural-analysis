@@ -173,6 +173,9 @@ class CalculationPropertiesPanel(QFrame):
             )
             spin = self._inputs[name]
             reset = self._reset_buttons[name]
+            self._labels[name].setToolTip(self._TOOLTIPS[name])
+            spin.setToolTip(self._TOOLTIPS[name])
+            spin.parentWidget().setToolTip(self._TOOLTIPS[name])
             applicable = (
                 name != "Cb" or sections <= self._CB_SECTIONS
             ) and (

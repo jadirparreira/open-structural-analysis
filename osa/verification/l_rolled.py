@@ -11,6 +11,8 @@ from osa.verification.restraints import restraint_lengths
 GAMMA_A1 = 1.10
 GAMMA_A2 = 1.35
 EPS = 1e-9
+MIN_SIGNIFICANT_TENSION_KN = 0.001
+MIN_SIGNIFICANT_COMPRESSION_KN = 0.001
 
 
 def _section(member) -> dict[str, float]:
@@ -32,8 +34,8 @@ def _section(member) -> dict[str, float]:
     radius = sqrt(((iy - iz) / 2.0) ** 2 + iyz**2)
     i_major, i_minor = mean + radius, mean - radius
     # Elastic moduli about the member local axes use the actual extreme fibers.
-    wy = iy / max(cz, b - cz)
-    wz = iz / max(cy, b - cy)
+    wy = iy / max(abs(z - cz) for _, z in points)
+    wz = iz / max(abs(y - cy) for y, _ in points)
     zy = _plastic_modulus(points, 1, cz)
     zz = _plastic_modulus(points, 0, cy)
     # Thin-wall Saint-Venant torsion for the two legs, in mm^4.
@@ -47,6 +49,7 @@ def _section(member) -> dict[str, float]:
     return {
         "b_mm": b, "t_mm": t, "Ag_cm2": area / 100.0,
         "cy_mm": cy, "cz_mm": cz, "Iy_cm4": iy / 1e4, "Iz_cm4": iz / 1e4,
+        "Iyz_cm4": iyz / 1e4,
         "Imajor_cm4": i_major / 1e4, "Iminor_cm4": i_minor / 1e4,
         "Wy_cm3": wy / 1e3, "Wz_cm3": wz / 1e3,
         "Zy_cm3": zy / 1e3, "Zz_cm3": zz / 1e3,
@@ -82,11 +85,12 @@ def _plastic_modulus(points, axis: int, centroid: float) -> float:
     # Binary search integrates the polygon area and its first moment robustly.
     coords = [point[axis] for point in points]
     low, high = min(coords), max(coords)
+    section_min = low
     total = polygon_properties(points)[0]
 
     def area_below(cut: float) -> float:
         # Vertical/horizontal strips are integrated at contour breakpoints.
-        breaks = sorted({low, cut, *(value for value in coords if low < value < cut)})
+        breaks = sorted({section_min, cut, *(value for value in coords if section_min < value < cut)})
         area = 0.0
         for a, b in zip(breaks, breaks[1:]):
             if b <= a:
@@ -159,6 +163,66 @@ def _base(element, model, results):
     return members, geom, e, g, fy, fu
 
 
+def verify_l_slenderness(element, model, results) -> dict:
+    """Report the recommended global slenderness limits for rolled L bars.
+
+    NBR 8800:2024, 5.2.8.1 and 5.3.7.1 give service recommendations of 300
+    in tension and 200 in compression. These recommendations do not alter the
+    resistance-check approval status.
+    """
+    try:
+        members = _members(element, model)
+        props = _section(members[0])
+        area_cm2 = props["Ag_cm2"]
+        iy_cm4, iz_cm4 = props["Iy_cm4"], props["Iz_cm4"]
+        if min(area_cm2, iy_cm4, iz_cm4) <= 0.0:
+            raise ValueError("propriedades geométricas inválidas para a esbeltez")
+        lengths = restraint_lengths(
+            model, element, results or (), {"Iy": iz_cm4, "tw": props["t_mm"] / 10.0},
+        )
+        ly_cm = lengths.lengths_m["Ly"] * 100.0
+        lz_cm = lengths.lengths_m["Lz"] * 100.0
+        ry_cm = sqrt(iy_cm4 / area_cm2)
+        rz_cm = sqrt(iz_cm4 / area_cm2)
+        rminor_cm = props["rminor_cm"]
+        if min(ly_cm, lz_cm, ry_cm, rz_cm, rminor_cm) <= 0.0:
+            raise ValueError("comprimentos destravados ou raios de giração inválidos")
+        lambda_y, lambda_z = ly_cm / ry_cm, lz_cm / rz_cm
+        # The L's minimum-radius principal axis is inclined to local Y/Z. The
+        # restraint model provides only those two lengths, so use the larger
+        # one as a conservative estimate for that inclined direction.
+        inclined_length_cm = max(ly_cm, lz_cm)
+        lambda_minor = inclined_length_cm / rminor_cm
+        has_tension = any(
+            float(sample.get("axial", 0.0)) <= -MIN_SIGNIFICANT_TENSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+        has_compression = any(
+            float(sample.get("axial", 0.0)) >= MIN_SIGNIFICANT_COMPRESSION_KN
+            for result in results or () for name in element.member_names
+            for sample in result.member_results.get(name, {}).get("samples", ())
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, ArithmeticError) as error:
+        return {"status": "not_checked", "detail": str(error) or "geometria inválida"}
+
+    return {
+        "status": "checked", "has_tension": has_tension,
+        "has_compression": has_compression,
+        "parameters": {
+            "Ly_cm": ly_cm, "Lz_cm": lz_cm,
+            "ry_cm": ry_cm, "rz_cm": rz_cm,
+            "inclined_length_cm": inclined_length_cm,
+            "rminor_cm": rminor_cm, "lambda_minor": lambda_minor,
+            "inclined_length_assumption": "max(Ly, Lz)",
+            "lambda_y": lambda_y, "lambda_z": lambda_z,
+            "lambda_tension_max": max(lambda_y, lambda_z, lambda_minor),
+            "lambda_compression_max": max(lambda_y, lambda_z, lambda_minor),
+            "tension_limit": 300.0, "compression_limit": 200.0,
+        },
+    }
+
+
 def _finish(check_name, capacity, results, members, field, demand_scale=1.0):
     critical = None
     combinations = []
@@ -187,7 +251,7 @@ def _finish(check_name, capacity, results, members, field, demand_scale=1.0):
         "critical_combination": critical["combination"] if critical else "N/A",
         "critical_member": critical["member"] if critical else None,
         "applied_kn": critical["applied"] if critical else None,
-        "applied_kn_cm": critical["applied"] * 100 if critical and field.startswith("moment") else None,
+        "applied_kn_cm": critical["applied"] if critical and field.startswith("moment") else None,
         "parameters": {}, "combinations": combinations,
     }
 
@@ -240,15 +304,25 @@ def verify_l_compression(element, model, results):
         if min(ly, lz, lt) <= 0: raise ValueError("comprimentos destravados inválidos")
         it = p["It_cm4"]
         area = p["Ag_cm2"]
-        # 5.3.5.2 applies to a single-symmetry section. Lengths use local member
-        # axes, and the coupled flexural-torsional mode follows the symmetry axis.
-        # The equal-angle symmetry axis is the major principal axis.
-        ne_y = pi**2 * e * p["Imajor_cm4"] / min(ly, lz)**2
-        ne_z = pi**2 * e * p["Iminor_cm4"] / min(ly, lz)**2
+        # 5.3.5.2: use the restraint length associated with each flexural
+        # buckling axis and the torsional restraint length for the torsional
+        # mode. For an equal-leg angle, the shear-center offset lies on the
+        # symmetry (major principal) axis; its magnitude is |y0| in the
+        # principal-axis coordinates used by the standard.
+        ne_y = pi**2 * e * p["Imajor_cm4"] / ly**2
+        ne_z = pi**2 * e * p["Iminor_cm4"] / lz**2
         r0sq = p["r0_cm"]**2
-        ne_t = g * it / r0sq
-        # Equal-angle axis coupling; y0=0 on the symmetry axis (5.3.5.2).
-        ne_ft = (ne_y + ne_t) / 2 * (1 - sqrt(max(0.0, 1 - 4 * ne_y * ne_t / (ne_y + ne_t)**2)))
+        cw = p["Cw_cm6"]
+        ne_t = (pi**2 * e * cw / lt**2 + g * it) / r0sq
+        h_flexotorsion = 1.0 - (p["x0_cm"]**2 / r0sq)
+        if h_flexotorsion <= 0.0:
+            raise ValueError("parâmetro H inválido para flambagem flexo-torcional")
+        ne_sum = ne_y + ne_t
+        # Algebraically identical to 5.3.5.2, without cancellation when the
+        # two component loads have very different orders of magnitude.
+        ne_ft = 2.0 * ne_y * ne_t / (
+            ne_sum + sqrt(max(0.0, ne_sum**2 - 4.0 * ne_y * ne_t * h_flexotorsion))
+        )
         ne = min(ne_z, ne_ft)
         lam = sqrt(area * fy / ne)
         chi = 0.658**lam**2 if lam <= 1.5 else 0.877 / lam**2
@@ -291,10 +365,13 @@ def verify_l_compression(element, model, results):
                     "parameters": {"Ag_cm2": area, "Aef_cm2": aef, "fy_kn_cm2": fy,
                                    "E_kn_cm2": e, "G_kn_cm2": g, "gamma_a1": GAMMA_A1,
                                    "Iy_cm4": p["Imajor_cm4"], "Iz_cm4": p["Iminor_cm4"], "It_cm4": it,
-                                   "Cw_cm6": 0.0, "r0_cm": p["r0_cm"],
+                                   "Iy_geometric_cm4": p["Iy_cm4"], "Iz_geometric_cm4": p["Iz_cm4"],
+                                   "Cw_cm6": cw, "y0_cm": p["x0_cm"], "r0_cm": p["r0_cm"],
                                    "Ney_kn": ne_y, "Nez_kn": ne_z, "Net_kn": ne_t,
+                                   "H_flexotorsion": h_flexotorsion,
                                    "Ne_flexotorsao_kn": ne_ft, "Ne_kn": ne,
-                                   "lambda0": lam, "chi": chi, "Nc_Rd_kn": cap,
+                                   "Npl_kn": area * fy, "lambda0": lam, "chi": chi, "Nc_Rd_kn": cap,
+                                   "compression_version": "principal_axes_v1",
                                    "b_mm": p["b_mm"], "t_mm": p["t_mm"],
                                    "leg_slenderness": p["b_mm"] / p["t_mm"],
                                    "leg_limit": limit, "leg_reduced_limit": limit / sqrt(chi),
@@ -302,7 +379,6 @@ def verify_l_compression(element, model, results):
                                    "leg_effective_widths_mm": effective_widths,
                                    "leg_sigma_el_kn_cm2": ((1.49 * limit / (p["b_mm"] / p["t_mm"]))**2 * fy),
                                    "Ly_cm": ly, "Lz_cm": lz, "Lt_cm": lt,
-                                   "fy_kn_cm2": fy, "E_kn_cm2": e, "G_kn_cm2": g,
                                    "restraint_issues": list(lengths.issues),
                                    "compression_method": "NBR 8800:2024, 5.3.5.2 (seção monossimétrica)"}})
         return out
@@ -311,24 +387,33 @@ def verify_l_compression(element, model, results):
 
 
 def _flexion(element, model, results, axis: int):
+    """Reproduce the compact-section calculation shown in the MCalc example."""
     try:
-        members, p, _, _, fy, _ = _base(element, model, results)
+        members, p, e, _, fy, _ = _base(element, model, results)
         key = "y" if axis == 1 else "z"
+        b, t = p["b_mm"] / 10.0, p["t_mm"] / 10.0
         w, z = p[f"W{key}_cm3"], p[f"Z{key}_cm3"]
-        # Yielding and local plate buckling estimate; the 8800 does not list a
-        # single angle among the standard beam cases in 5.4.1.1.
-        slender = p["b_mm"] / p["t_mm"]
-        limit = 0.56 * sqrt(20000.0 / fy)
-        reduction = min(1.0, limit / slender) if slender > 0 else 1.0
-        cap = min(z * fy, w * fy * reduction) / GAMMA_A1
+        slender = b / t
+        lp, lr = 1.12 * sqrt(e / fy), 1.40 * sqrt(e / fy)
+        mpl = z * fy
+        mcr = 0.69 * e * w / slender**2
+        parameters = {
+            "Ag_cm2": p["Ag_cm2"], "Wy_cm3": p["Wy_cm3"], "Wz_cm3": p["Wz_cm3"],
+            "Zy_cm3": p["Zy_cm3"], "Zz_cm3": p["Zz_cm3"],
+            "b_cm": b, "t_cm": t, "W_cm3": w, "Z_cm3": z,
+            "E_kn_cm2": e, "fy_kn_cm2": fy, "gamma_a1": GAMMA_A1,
+            "sigma_r_kn_cm2": 0.30 * fy, "lambda_leg": slender,
+            "lambda_p": lp, "lambda_r": lr, "Mpl_kn_cm": mpl,
+            "Mcr_kn_cm": mcr, "criterion": "MCalc: exemplo fornecido; hipótese para cantoneira simples",
+            "method_version": "mcalc_compact_v1",
+        }
+        if slender > lp:
+            return {"status": "not_checked", "parameters": parameters,
+                    "detail": "Regime não plástico: equações ainda não disponíveis."}
+        parameters.update({"Mn_kn_cm": mpl, "MRd_kn_cm": mpl / GAMMA_A1})
         field = "moment_y" if axis == 1 else "moment_z"
-        out = _finish(f"Flexão {key.upper()}", cap, results, members, field, 100.0)
-        out["parameters"] = {"Ag_cm2": p["Ag_cm2"], "Wy_cm3": p["Wy_cm3"], "Wz_cm3": p["Wz_cm3"],
-                             "Zy_cm3": p["Zy_cm3"],
-                             "Zz_cm3": p["Zz_cm3"],
-                             "fy_kn_cm2": fy, "gamma_a1": GAMMA_A1,
-                             "lambda_leg": slender, "lambda_limit": limit,
-                             "Mn_kn_cm": cap * GAMMA_A1, "MRd_kn_cm": cap}
+        out = _finish(f"Flexão {key.upper()}", mpl / GAMMA_A1, results, members, field, 100.0)
+        out["parameters"] = parameters
         return out
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
         return {"status": "not_checked", "detail": str(error)}
@@ -339,24 +424,25 @@ def verify_l_flexion_z(element, model, results): return _flexion(element, model,
 
 
 def _shear(element, model, results, axis: int):
+    """Reproduce the plastic shear branch shown in the MCalc example."""
     try:
         members, p, e, _, fy, _ = _base(element, model, results)
-        # Reference memory's leg panel: Aw = b*t, kv=5, local plate shear curve.
-        b, t = p["b_mm"], p["t_mm"]
-        lam = b / t
-        lp, lr = 1.10 * sqrt(5 * e / fy), 1.37 * sqrt(5 * e / fy)
-        vp = 0.60 * (b * t / 100.0) * fy
-        if lam <= lp: vn = vp
-        elif lam <= lr: vn = lp / lam * vp
-        else: vn = min(1.24 * (lp / lam) ** 2 * vp, vp)
-        cap = vn / GAMMA_A1
+        b, t = p["b_mm"] / 10.0, p["t_mm"] / 10.0
+        kv, lam = 5.0, b / t
+        lp, lr = 1.10 * sqrt(kv * e / fy), 1.37 * sqrt(kv * e / fy)
+        vp = 0.60 * b * t * fy
+        parameters = {"Aw_cm2": b * t, "lambda": lam, "lambda_p": lp,
+                      "lambda_r": lr, "kv": kv, "b_cm": b, "t_cm": t,
+                      "fy_kn_cm2": fy, "E_kn_cm2": e, "Vp_kn": vp,
+                      "gamma_a1": GAMMA_A1, "method_version": "mcalc_plastic_v1",
+                      "criterion": "MCalc: exemplo fornecido; hipótese para cantoneira simples"}
+        if lam > lp:
+            return {"status": "not_checked", "parameters": parameters,
+                    "detail": "Regime não plástico: equações ainda não disponíveis."}
+        parameters.update({"Vn_kn": vp, "VRd_kn": vp / GAMMA_A1})
         field = "shear_y" if axis == 1 else "shear_z"
-        out = _finish(f"Cortante {('Y' if axis == 1 else 'Z')}", cap, results, members, field)
-        out["parameters"] = {"Aw_cm2": b * t / 100.0, "lambda": lam,
-                             "lambda_p": lp, "lambda_r": lr, "kv": 5.0,
-                             "fy_kn_cm2": fy,
-                             "Vp_kn": vp, "Vn_kn": vn, "VRd_kn": cap,
-                             "gamma_a1": GAMMA_A1}
+        out = _finish(f"Cortante {('Y' if axis == 1 else 'Z')}", vp / GAMMA_A1, results, members, field)
+        out["parameters"] = parameters
         return out
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
         return {"status": "not_checked", "detail": str(error)}
@@ -372,32 +458,44 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
         members, _, _, _, _, _ = _base(element, model, results)
         nt = float((tension.get("parameters") or {}).get("Nt_Rd_kn", 0.0))
         nc = float((compression.get("parameters") or {}).get("Nc_Rd_kn", 0.0))
+        if any(check.get("status") == "not_checked" for check in (flex_y, flex_z)):
+            return {"status": "not_checked", "detail": "Resistência à flexão indisponível para a interação."}
         myr = float((flex_y.get("parameters") or {}).get("MRd_kn_cm", 0.0))
         mzr = float((flex_z.get("parameters") or {}).get("MRd_kn_cm", 0.0))
         critical, combos = None, []
         for result in results:
-            demand = (0.0, 0.0, 0.0, None)
+            governing = None
             for member in members:
                 for sample in result.member_results[member.name].get("samples", ()):
                     n = float(sample.get("axial", 0.0))
                     n = (max(0.0, -n) if tension_case else max(0.0, n)) if include_axial else 0.0
                     my, mz = abs(float(sample.get("moment_y", 0.0))) * 100, abs(float(sample.get("moment_z", 0.0))) * 100
-                    candidate = (n / max(nt if tension_case else nc, EPS) + my / max(myr, EPS)
-                                 + mz / max(mzr, EPS))
-                    current = (demand[0] / max(nt if tension_case else nc, EPS)
-                               + demand[1] / max(myr, EPS) + demand[2] / max(mzr, EPS))
-                    if candidate > current:
-                        demand = (n, my, mz, member.name)
-            n, my, mz, owner = demand
-            if n <= EPS and my <= EPS and mz <= EPS:
+                    if n <= EPS and my <= EPS and mz <= EPS:
+                        continue
+                    ratio_n = n / max(nt if tension_case else nc, EPS)
+                    flex = my / max(myr, EPS) + mz / max(mzr, EPS)
+                    # NBR 8800:2024, 5.5.1.2: the 8/9 factor multiplies
+                    # the moment terms when N/N_Rd >= 0.2; below 0.2, the
+                    # axial term is divided by 2. The standard's 5.4.1.1
+                    # scope does not list a single L section, so this
+                    # interaction is applied to L by analogy and must be
+                    # identified as such in the engineering basis.
+                    if ratio_n >= 0.2:
+                        util = ratio_n + (8.0 / 9.0) * flex
+                        interaction_case = "Nsd/Nrd >= 0,2"
+                    else:
+                        util = ratio_n / 2.0 + flex
+                        interaction_case = "Nsd/Nrd < 0,2"
+                    if governing is None or util > governing[4]:
+                        governing = (n, my, mz, member.name, util, interaction_case)
+            if governing is None:
                 combos.append({"combination": result.load_reference, "member": None, "utilization": 0.0,
                                "status": "N/A"}); continue
+            n, my, mz, owner, util, interaction_case = governing
             ratio_n = n / max(nt if tension_case else nc, EPS)
-            flex = my / max(myr, EPS) + mz / max(mzr, EPS)
-            util = ratio_n + flex if ratio_n < 0.2 else ratio_n + 8.0 / 9.0 * flex
             item = {"combination": result.load_reference, "member": owner, "applied_kn": n,
                     "applied_my_kn_cm": my, "applied_mz_kn_cm": mz,
-                    "utilization": util, "interaction_case": "Nsd/Nrd < 0,2" if ratio_n < .2 else "Nsd/Nrd >= 0,2",
+                    "utilization": util, "interaction_case": interaction_case,
                     "status": "APROVADO" if util <= 1 else "REPROVADO"}
             combos.append(item)
             if critical is None or util > critical["utilization"]: critical = item
@@ -410,7 +508,9 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
                 "applied_kn": critical["applied_kn"] if critical else None,
                 "applied_my_kn_cm": critical["applied_my_kn_cm"] if critical else None,
                 "applied_mz_kn_cm": critical["applied_mz_kn_cm"] if critical else None,
-                "parameters": {"Nt_Rd_kn": nt, "Nc_Rd_kn": nc, "My_Rd_kn_cm": myr,
+                "parameters": {"Nt_Rd_kn": nt, "Nc_Rd_kn": nc,
+                               "N_Rd_kn": nt if tension_case else nc,
+                               "My_Rd_kn_cm": myr,
                                "Mz_Rd_kn_cm": mzr}, "combinations": combos}
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
         return {"status": "not_checked", "detail": str(error)}
