@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict, replace
 from itertools import product
 from math import floor, isfinite
+import copy
 from typing import Any
 
 from osa.domain import (
@@ -105,6 +106,8 @@ class ProjectSerializer:
             ],
             "active_scene_view": model.active_scene_view,
         }
+        if model.import_metadata:
+            data["import_metadata"] = copy.deepcopy(model.import_metadata)
         if thumbnail:
             data["thumbnail"] = {"format": "png", "data": thumbnail}
         return data
@@ -408,4 +411,6 @@ class ProjectSerializer:
         model.active_scene_view = candidate.active_scene_view
         model.calculation_properties_revision += 1
         model.view_revision += 1
+        metadata = data.get("import_metadata", {})
+        model.import_metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
         model.revision += 1

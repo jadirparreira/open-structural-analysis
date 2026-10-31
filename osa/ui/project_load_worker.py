@@ -11,6 +11,7 @@ from osa.model import StructuralModel
 from osa.persistence import ProjectRepository
 from osa.rendering.batched_renderer import PreparedSceneGeometry, prepare_scene_geometry
 from osa.services.model_service import ModelService
+from osa.transcriptions import ImportOptions
 
 
 class ProjectLoadWorker(QObject):
@@ -29,6 +30,7 @@ class ProjectLoadWorker(QObject):
         solid_positioning_enabled: bool = False,
         reference_plane: str = "XY",
         preferred_plane_level: float = 0.0,
+        import_options: ImportOptions | None = None,
     ) -> None:
         super().__init__()
         self.path = Path(path)
@@ -37,6 +39,8 @@ class ProjectLoadWorker(QObject):
         self.solid_positioning_enabled = solid_positioning_enabled
         self.reference_plane = reference_plane
         self.preferred_plane_level = preferred_plane_level
+        self.import_options = import_options
+        self.report: dict | None = None
 
     @Slot()
     def run(self) -> None:
@@ -51,8 +55,9 @@ class ProjectLoadWorker(QObject):
                 if perf_counter() - last_yield >= 0.004:
                     sleep(0.001)
                     last_yield = perf_counter()
-            ProjectRepository().load(
-                model, self.path, progress=self.progress.emit, yield_control=yield_control,
+            self.report = ProjectRepository().load(
+                model, self.path, import_options=self.import_options,
+                progress=self.progress.emit, yield_control=yield_control,
             )
             if self.normalize_member_directions:
                 ModelService(model).normalize_member_directions()

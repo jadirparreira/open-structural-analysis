@@ -1,5 +1,8 @@
 from osa.domain import StructuralModel
 from osa.persistence import ProjectRepository
+from osa.transcriptions import ImportOptions
+from osa.transcriptions.plates import require_no_pending_plates
+from datetime import datetime, timezone
 
 
 class ProjectService:
@@ -13,5 +16,13 @@ class ProjectService:
     def load_thumbnail(self, path) -> str | None:
         return self.repository.load_thumbnail(path)
 
-    def load(self, path) -> None:
-        self.repository.load(self.model, path)
+    def load(self, path, *, import_options: ImportOptions | None = None) -> dict | None:
+        return self.repository.load(self.model, path, import_options=import_options)
+
+    def confirm_import_review(self) -> None:
+        """Registra a confirmação da revisão feita pelo usuário no editor."""
+        require_no_pending_plates(self.model.import_metadata)
+        if self.model.import_metadata.get("requires_review"):
+            self.model.import_metadata["requires_review"] = False
+            self.model.import_metadata["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+            self.model._touch()

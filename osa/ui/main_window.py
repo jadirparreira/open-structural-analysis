@@ -14,6 +14,8 @@ from osa.mcp import LocalMcpServer, McpApplication
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
+from osa.transcriptions import is_import_path
+from osa.transcriptions.plates import require_no_pending_plates
 
 from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
@@ -40,6 +42,7 @@ from .displacement_panel import DisplacementPanel
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
 from .loading_indicator import LoadingIndicator
+from .import_dialogs import EberickImportDialog, ImportReportDialog
 from .mcp_dispatcher import McpQtDispatcher
 from .member_placement_panel import MemberPlacementEditor
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
@@ -86,6 +89,8 @@ class MainWindow(QMainWindow):
 
     _initial_framing_commands = frozenset({"barrabieng", "galpao", "mezanino", "portico"})
     _project_file_filter = "Modelo OSA (*.osa)"
+    _open_file_filter = _project_file_filter
+    _import_file_filter = "Projeto PRJ (*.prj *.prj.zip)"
     _interface_commands = frozenset({
         "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
@@ -118,6 +123,8 @@ class MainWindow(QMainWindow):
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
         self._project_loading_path: Path | None = None
+        self._project_loading_importing = False
+        self._project_loading_report: dict | None = None
         self._project_scene_steps = None
         self._project_scene_revision: int | None = None
         self._project_scene_timer = QTimer(self)
@@ -129,6 +136,7 @@ class MainWindow(QMainWindow):
         self.section_geometry: dict[str, dict[str, float]] = {}
         self.section_profiles: dict[str, str] = {}
         self.current_path: Path | None = None
+        self._import_save_path: Path | None = None
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
@@ -376,6 +384,7 @@ class MainWindow(QMainWindow):
         self._mcp_enabled = False
         self.home.new_project_requested.connect(self.new_model)
         self.home.open_project_requested.connect(self.open_model)
+        self.home.import_project_requested.connect(self.import_model)
         self.home.recent_project_requested.connect(self._open_recent_project)
         self.home.manual_requested.connect(self.open_manual)
         self.show_home()
@@ -384,6 +393,16 @@ class MainWindow(QMainWindow):
         """Run PyNite in the background after the progress card is painted."""
         if self._analysis_thread is not None and self._analysis_thread.isRunning():
             return
+        try:
+            require_no_pending_plates(self.model.import_metadata)
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+        if self.model.import_metadata.get("requires_review"):
+            dialog = ImportReportDialog(self.model.import_metadata, self, review=True)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            self.project_service.confirm_import_review()
         orphaned_actions = self.model.remove_orphaned_actions()
         if orphaned_actions:
             self.history.append(
@@ -1354,6 +1373,7 @@ class MainWindow(QMainWindow):
         actions = (
             ("Novo modelo", QKeySequence.StandardKey.New, self.new_model),
             ("Abrir modelo", QKeySequence.StandardKey.Open, self.open_model),
+            ("Importar modelo", "Ctrl+I", self.import_model),
             ("Salvar modelo", QKeySequence.StandardKey.Save, self.save_model),
             ("Excluir elemento selecionado", "Delete", self.delete_selected),
             ("Cancelar lançamento", "Escape", self.cancel_member_placement),
@@ -3435,6 +3455,7 @@ class MainWindow(QMainWindow):
         self.clear_selection()
         self.current_path = None
         self.scene.set_model_name("Novo modelo")
+        self._import_save_path = None
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self.refresh_action_palette()
@@ -3449,7 +3470,10 @@ class MainWindow(QMainWindow):
 
     def save_model_as(self) -> None:
         """Escolhe um novo caminho e salva o modelo nesse arquivo."""
-        suggested_name = self.current_path.name if self.current_path else "modelo.osa"
+        suggested_name = (
+            str(self.current_path) if self.current_path else
+            str(self._import_save_path) if self._import_save_path else "modelo.osa"
+        )
         path, _ = QFileDialog.getSaveFileName(
             self, "Salvar modelo como", suggested_name, self._project_file_filter,
         )
@@ -3500,21 +3524,46 @@ class MainWindow(QMainWindow):
             self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
             self.home.refresh()
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self.show_error(f"Não foi possível salvar o arquivo: {error}")
 
     def open_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._project_file_filter)
+        path, _ = QFileDialog.getOpenFileName(self, "Abrir modelo", "", self._open_file_filter)
         if path:
             self._open_model_path(path)
 
     def _open_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if path.suffix.casefold() != ".osa":
+            self.show_error("Abrir modelo aceita arquivos .osa. Para projetos de outros softwares, use Importar modelo.")
+            return
+        self._load_model_path(path, importing=False)
+
+    def import_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Importar modelo", "", self._import_file_filter)
+        if path:
+            self._import_model_path(path)
+
+    def _import_model_path(self, path: str | Path) -> None:
+        path = Path(path)
+        if not is_import_path(path):
+            self.show_error("Selecione um projeto PRJ .prj/.prj.zip. Para arquivos .osa, use Abrir modelo.")
+            return
+        self._load_model_path(path, importing=True)
+
+    def _load_model_path(self, path: str | Path, *, importing: bool) -> None:
+        if not self._confirm_pending_changes():
+            return
         if self._project_load_thread is not None or self._project_loading_path is not None:
             return
         path = Path(path)
-        if path.suffix.casefold() != ".osa":
-            self.show_error("Selecione um arquivo de modelo com extensão .osa.")
-            return
+        import_options = None
+        if importing:
+            dialog = EberickImportDialog(path, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            import_options = dialog.options()
+
         thread = QThread(self)
         worker = ProjectLoadWorker(
             path,
@@ -3523,6 +3572,7 @@ class MainWindow(QMainWindow):
             solid_positioning_enabled=self.palette.active_group == "Detalhamento",
             reference_plane=self.scene._reference_plane_mode,
             preferred_plane_level=self.scene._reference_plane_z,
+            import_options=import_options,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -3536,11 +3586,17 @@ class MainWindow(QMainWindow):
         self._project_load_thread = thread
         self._project_load_worker = worker
         self._project_loading_path = path
+        self._project_loading_importing = importing
+        self._project_loading_report = None
         self.centralWidget().setEnabled(False)
         self._project_loading_action_states = [(action, action.isEnabled()) for action in self.actions()]
         for action, _enabled in self._project_loading_action_states:
             action.setEnabled(False)
-        self._project_loading_description.setText("Preparando a abertura do modelo…")
+        operation = "importação" if importing else "abertura"
+        self._project_loading_overlay.setWindowTitle(
+            "Importando modelo" if importing else "Abrindo modelo"
+        )
+        self._project_loading_description.setText(f"Preparando a {operation} do modelo…")
         self._project_loading_overlay.adjustSize()
         self._project_loading_overlay.move(
             self.geometry().center() - self._project_loading_overlay.rect().center()
@@ -3557,6 +3613,8 @@ class MainWindow(QMainWindow):
         if path is None:
             self._project_loading_overlay.hide()
             return
+        importing = self._project_loading_importing
+        report = self._project_load_worker.report if self._project_load_worker is not None else None
         try:
             self.axes_panel.discard()
             self.reference_panel.hide()
@@ -3587,15 +3645,23 @@ class MainWindow(QMainWindow):
             self.scene.set_member_placement_mode(False)
             self.scene.set_selection_highlight(())
             self.clear_selection()
-            self.current_path = path
-            self.scene.set_model_name(path.stem)
-            self._saved_revision = self.model.revision
+            self.current_path = None if importing else path
+            if importing:
+                original_name = path.name[:-4] if path.name.casefold().endswith(".zip") else path.name
+                self._import_save_path = path.with_name(Path(original_name).stem + ".osa")
+                self.scene.set_model_name(Path(original_name).stem)
+            else:
+                self._import_save_path = None
+                self.scene.set_model_name(path.stem)
+                self.home.store.add(path)
+            self._saved_revision = self.model.revision - 1 if importing else self.model.revision
             self._saved_view_revision = self.model.view_revision
-            self.home.store.add(self.current_path)
+            self.home.refresh()
             self.refresh_action_palette()
             self.refresh_analysis_palette()
             self._project_loading_description.setText("Exibindo a estrutura e os identificadores…")
             self._project_scene_revision = self.model.revision
+            self._project_loading_report = report
             self._project_scene_steps = self.scene.render_model_steps(
                 self.model, preserve_camera=False, prepared_geometry=prepared_geometry,
             )
@@ -3612,9 +3678,20 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("O modelo foi alterado durante sua abertura.")
             next(self._project_scene_steps)
         except StopIteration:
+            report = self._project_loading_report
+            path = self._project_loading_path
             self.properties.update_delete_button_state()
             self.show_editor()
             self._finish_project_loading()
+            if report and path is not None:
+                counts = report["counts"]
+                self.history.append(
+                    "> <b>Importação PRJ</b> "
+                    f"{escape(path.name)} — {counts['nodes']} nós, "
+                    f"{counts['members']} barras, {counts['rigid_links']} ligações rígidas. "
+                    "Salvar cria um modelo .osa."
+                )
+                ImportReportDialog(report, self).exec()
         except Exception as error:  # noqa: BLE001 - recover the UI after a failed scene install
             self._project_load_failed(str(error))
 
@@ -3624,6 +3701,8 @@ class MainWindow(QMainWindow):
         self._project_scene_revision = None
         self._project_loading_overlay.hide()
         self._project_loading_path = None
+        self._project_loading_importing = False
+        self._project_loading_report = None
         self.centralWidget().setEnabled(True)
         for action, enabled in self._project_loading_action_states:
             action.setEnabled(enabled)
@@ -3635,8 +3714,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _project_load_failed(self, message: str) -> None:
+        operation = "importar" if self._project_loading_importing else "abrir"
         self._finish_project_loading()
-        self.show_error(f"Não foi possível abrir o modelo: {message}")
+        self.show_error(f"Não foi possível {operation} o modelo: {message}")
 
     @Slot()
     def _project_load_thread_finished(self) -> None:

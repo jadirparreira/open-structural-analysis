@@ -35,6 +35,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -336,6 +337,7 @@ class HomePage(QWidget):
 
     new_project_requested = Signal()
     open_project_requested = Signal()
+    import_project_requested = Signal()
     manual_requested = Signal()
     recent_project_requested = Signal(str)
 
@@ -393,12 +395,16 @@ class HomePage(QWidget):
         main_layout.addWidget(_brand_lockup(self.main_panel), 0, Qt.AlignmentFlag.AlignHCenter)
         main_layout.addSpacing(64)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(10)
+        actions.setVerticalSpacing(10)
         actions.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        actions.addWidget(self._action_button("Novo modelo", True, self.new_project_requested.emit))
-        actions.addWidget(self._action_button("Abrir modelo", False, self.open_project_requested.emit))
-        actions.addWidget(self._action_button("Ver manual", False, self.manual_requested.emit))
+        actions.addWidget(self._action_button("Novo modelo", True, self.new_project_requested.emit), 0, 0)
+        actions.addWidget(self._action_button("Abrir modelo", False, self.open_project_requested.emit), 0, 1)
+        self.import_model_button = self._action_button("Importar modelo", False, self.import_project_requested.emit)
+        self.import_model_button.setToolTip("Importar um projeto PRJ (.prj ou .prj.zip)")
+        actions.addWidget(self.import_model_button, 1, 0)
+        actions.addWidget(self._action_button("Ver manual", False, self.manual_requested.emit), 1, 1)
         main_layout.addLayout(actions)
         main_layout.addStretch(2)
 
