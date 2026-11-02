@@ -142,7 +142,7 @@ def test_geometry_units_offsets_and_materials(launch):
     a, b = (model.nodes[name] for name in (beam.start_node, beam.end_node))
     assert b.x - a.x == pytest.approx(4.7)
     assert beam.geometry_dict() == {"b": 200, "h": 500}
-    assert model.materials["Eberick C-25"] == pytest.approx(
+    assert model.materials["Eberick C-25"][:4] == pytest.approx(
         (23683059.75, 9867941.5625, 0.2, 24.516625)
     )
     assert all(not any(node.supports) for node in model.nodes.values())
@@ -426,18 +426,113 @@ def test_zero_first_floor_height_does_not_replace_footing_depth(launch):
 @pytest.mark.parametrize("depth", [0, -150, float("nan"), None])
 def test_invalid_footing_depth_is_refused(launch, depth):
     launch["columns"][0]["foundation_raw"]["settlement_depth_raw"] = depth
-    with pytest.raises(ProjectImportError, match="[Pp]rofundidade"):
+    with pytest.raises(ProjectImportError, match="[Aa]ltura"):
         EberickImporter().convert(launch, ImportOptions())
 
 
 def test_pile_cap_reference_is_not_interpreted_as_footing_settlement(launch):
     launch["columns"][0]["foundation_raw"]["kind"] = "pile_cap"
-    with pytest.raises(ProjectImportError, match="blocos"):
-        EberickImporter().convert(launch, ImportOptions())
+    result = EberickImporter().convert(launch, ImportOptions())
+    assert result.report["counts"]["excluded_lower_column_segments"] == 1
+    assert [item["column_name"] for item in result.report["support_candidates"]] == ["P2"]
     result = EberickImporter().convert(
         launch, ImportOptions(include_lower_columns=False)
     )
     assert result.report["support_candidates"] == []
+
+
+def test_foundation_column_uses_own_floor_and_bar_height(launch):
+    column = launch["columns"][2]
+    column["class_name"] = "ElPilarFundacao"
+    column["foundation_raw"] = {
+        "kind": "pile_cap", "bar_height_raw": 52,
+        "height_reference": "floor_to_foundation_bar_bottom",
+    }
+    launch["inventory"][-1]["count"] = 3
+    launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
+    result = EberickImporter().convert(launch, ImportOptions())
+    nodes = {node["name"]: node for node in result.project_data["nodes"]}
+    name = next(
+        name for name, source in result.report["member_sources"].items()
+        if source["object_id"] == column["object_id"] and source["foundation_bar"]
+    )
+    member = next(member for member in result.project_data["members"] if member["name"] == name)
+    assert nodes[member["start_node"]]["z"] == pytest.approx(2.48)
+    assert nodes[member["end_node"]]["z"] == pytest.approx(3.0)
+    support = next(s for s in result.report["support_candidates"] if s["source_object_id"] == column["object_id"])
+    assert support["bar_height_m"] == pytest.approx(0.52)
+    assert "settlement_depth_m" not in support
+
+
+def test_unreferenced_native_foundation_column_is_preserved(launch):
+    launch["columns"].append({
+        "object_id": 5, "class_name": "ElPilarFundacao", "name": "P3",
+        "floor_id": 1, "xy_raw": [1000, 0], "section_id": 102,
+        "rectangular_dimensions_candidate_raw": [20, 30], "referenced_by_beam": False,
+        "region_role": "base_cad",
+        "foundation_raw": {"kind": "pile_cap", "bar_height_raw": 52,
+                           "height_reference": "floor_to_foundation_bar_bottom"},
+    })
+    launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
+    result = EberickImporter().convert(launch, ImportOptions())
+    assert result.report["counts"]["foundation_columns_without_beams"] == 1
+    assert result.report["counts"]["isolated_foundation_columns"] == 1
+    assert result.report["isolated_foundation_columns"][0]["column_name"] == "P3"
+    assert any(s["column_name"] == "P3" and s["elevation_m"] == pytest.approx(-0.52)
+               for s in result.report["support_candidates"])
+    assert all(not any(node["supports"]) for node in result.project_data["nodes"])
+
+
+def test_foundation_summary_does_not_count_footing_configuration_as_footings(launch):
+    launch["inventory"].extend([
+        {"class_name": "CfgPavSapata", "count": 6},
+        {"class_name": "CfgObraSapata", "count": 1},
+        {"class_name": "TDadosSapataSemPilar", "count": 1},
+        {"class_name": "Sapata", "count": 2},
+    ])
+    result = EberickImporter().convert(launch, ImportOptions())
+    assert result.report["counts"]["excluded_elements"]["sapatas"] == 2
+
+
+def test_new_foundation_column_keeps_existing_bar_names_in_3219(launch):
+    launch["internal_version_code"] = 3219
+    before = EberickImporter().convert(launch, ImportOptions()).report["member_sources"]
+    launch["columns"].append({
+        "object_id": 5, "class_name": "ElPilarFundacao", "name": "P3",
+        "floor_id": 1, "xy_raw": [1000, 0], "section_id": 102,
+        "rectangular_dimensions_candidate_raw": [20, 30], "referenced_by_beam": False,
+        "region_role": "base_cad",
+        "foundation_raw": {"kind": "pile_cap", "bar_height_raw": 52,
+                           "height_reference": "floor_to_foundation_bar_bottom"},
+    })
+    launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
+    after = EberickImporter().convert(launch, ImportOptions()).report["member_sources"]
+    assert all(after[name]["object_id"] == source["object_id"] for name, source in before.items())
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OSA_EBERICK_BRUNO_PRJ"),
+    reason="Defina OSA_EBERICK_BRUNO_PRJ para conferir o perfil de bloco real.",
+)
+def test_bruno_foundation_bar_heights_and_mismatched_evidence():
+    raw, source = load_stream(os.environ["OSA_EBERICK_BRUNO_PRJ"])
+    reader = Reader(raw, source)
+    decoder = Decoder(reader)
+    pillars = [decoder.column(header) for header in reader.classes["ElPilarFundacao"]]
+    assert len(pillars) == 26
+    assert all(p["foundation_raw"]["bar_height_raw"] == 52 for p in pillars)
+    assert sum(p["foundation_raw"]["height_corroboration"] == "column_gravity" for p in pillars) == 22
+
+    first = reader.classes["ElPilarFundacao"][0]
+    height_field = next(
+        field for field in reader.fields
+        if field["object_id"] == first.serial_id and field["field"] == "foundation_bar_height"
+    )
+    modified = bytearray(raw)
+    struct.pack_into("<d", modified, height_field["offset"], 53)
+    changed = Reader(bytes(modified), source)
+    pillar = Decoder(changed).column(changed.classes["ElPilarFundacao"][0])
+    assert pillar["foundation_raw"]["kind"] == "unmapped_foundation_geometry"
 
 
 @pytest.mark.skipif(

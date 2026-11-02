@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from osa.transcriptions import ImportOptions
-from osa.transcriptions.plates import pending_plate_count
 
 from .theme import APP_STYLESHEET
 
@@ -228,10 +227,10 @@ class EberickImportDialog(QDialog):
         options_heading.setObjectName("propertySection")
         content.addWidget(options_heading)
         self.lower_columns = QCheckBox(
-            "Prolongar pilares até o assentamento das sapatas"
+            "Importar pilares de fundação até a base da barra ou o assentamento das sapatas"
         )
         self.lower_columns.setToolTip(
-            "Usa a profundidade individual lida do PRJ. Blocos e outros tipos ainda não foram mapeados."
+            "Trechos que dependem de uma fundação ainda não mapeada serão omitidos e contados no resumo."
         )
         self.lower_columns.setChecked(True)
         self.offsets = QCheckBox(
@@ -250,10 +249,9 @@ class EberickImportDialog(QDialog):
             checks.addWidget(widget)
         content.addLayout(checks)
         note = QLabel(
-            "O OSA receberá geometria e seções retangulares. Confira as unidades "
-            "e a referência do topo do baldrame. Lajes serão preservadas para a "
-            "futura integração com placas. Tipos de apoio, liberações e cargas "
-            "permanecem pendentes de calibração."
+            "Serão importadas somente vigas e pilares. Os demais elementos serão "
+            "listados no resumo sem entrar no modelo. Confira unidades, geometria "
+            "e seções; apoios, liberações e cargas não são transcritos."
         )
         note.setObjectName("importNote")
         note.setWordWrap(True)
@@ -416,19 +414,62 @@ class ImportReportDialog(QDialog):
             ("Barras", counts.get("members", 0)),
             ("Vigas", counts.get("beam_groups", counts.get("beams", 0))),
             ("Trechos de viga", counts.get("beam_segments", counts.get("beams", 0))),
+            (
+                "Trechos sem vínculo às vigas (não importados)",
+                counts.get("excluded_elements", {}).get("trechos_sem_vinculo", 0),
+            ),
+            (
+                "Posições nulas na lista de trechos",
+                counts.get("excluded_elements", {}).get("trechos_nulos", 0),
+            ),
             ("Trechos de pilar", counts.get("columns", 0)),
+            ("Pilares de fundação importados", counts.get("foundation_columns", 0)),
+            ("Pilares de fundação sem vigas associadas", counts.get("foundation_columns_without_beams", 0)),
+            ("Pilares de fundação isolados", counts.get("isolated_foundation_columns", 0)),
+            ("Pilares com rotação aplicada", counts.get("rotated_columns", 0)),
+            (
+                "Trechos de pilar sem continuidade (não importados)",
+                counts.get("excluded_column_segments", 0),
+            ),
+            (
+                "Prolongamentos inferiores de pilar (não importados)",
+                counts.get("excluded_lower_column_segments", 0),
+            ),
             ("Ligações rígidas", counts.get("rigid_links", 0)),
             ("Cargas transcritas", counts.get("applied_loads", 0)),
-            ("Bases de sapatas posicionadas", counts.get("support_candidates", 0)),
-            ("Lajes aguardando placas", counts.get("pending_plates", 0)),
+            ("Bases de pilares de fundação", counts.get("support_candidates", 0)),
         ]
+        excluded = counts.get("excluded_elements", {})
+        rows.extend(
+            [
+                ("Registros de sapata (não importados)", excluded.get("sapatas", 0)),
+                ("Blocos de fundação (não importados)", excluded.get("blocos", 0)),
+                ("Lajes (não importadas)", excluded.get("lajes", 0)),
+                ("Paredes (não importadas)", excluded.get("paredes", 0)),
+                ("Registros de escadas/rampas", excluded.get("escadas", 0)),
+                (
+                    "Pontos sem uso em vigas (não importados)",
+                    excluded.get("pontos_sem_referencia", 0),
+                ),
+                (
+                    "Pilares sem referência às vigas (não importados)",
+                    excluded.get("pilares_sem_referencia", 0),
+                ),
+                (
+                    "Pilares de fundação sem referência às vigas (não importados)",
+                    excluded.get("pilares_fundacao_sem_referencia", 0),
+                ),
+                (
+                    "Outros registros de elementos (não importados)",
+                    excluded.get("outros_elementos", 0),
+                ),
+            ]
+        )
         options = report.get("options", {})
         html = (
             "<p>"
             + (
-                "Geometria de barras importada; lajes aguardam elementos de placa."
-                if pending_plate_count(report)
-                else "O relatório acompanha o projeto ao salvar e reabrir o .osa."
+                "O modelo recebe somente vigas e pilares. Os demais registros são relacionados abaixo como não importados."
             )
             + "</p>"
         )
@@ -468,36 +509,97 @@ class ImportReportDialog(QDialog):
         html += "<p>O modelo é editável e pode ser salvo como .osa.</p>"
         sections = [("Resumo", "Resumo da importação", html)]
         supports = report.get("support_candidates", ())
-        html = "<p>Não há bases de sapata posicionadas nesta importação.</p>"
+        html = "<p>Não há bases de pilares de fundação posicionadas nesta importação.</p>"
         if supports:
-            html = "<p>Referência: topo do baldrame. Tipos de vínculo ainda não aplicados.</p>"
-            html += "<table cellpadding='4'><tr><th>Pilar</th><th>Profundidade (m)</th><th>Cota da base (m)</th></tr>"
+            html = "<p>Referência: nível do pavimento da fundação. Tipos de vínculo ainda não aplicados.</p>"
+            html += "<table cellpadding='4'><tr><th>Pilar</th><th>Altura da barra (m)</th><th>Cota da base (m)</th></tr>"
             for support in supports:
+                height = support.get("bar_height_m", support.get("settlement_depth_m"))
                 html += (
                     "<tr><td>"
                     + escape(str(support["column_name"]))
                     + "</td><td>"
-                    + escape(f"{support['settlement_depth_m']:.3f}")
+                    + escape(f"{height:.3f}")
                     + "</td><td>"
                     + escape(f"{support['elevation_m']:.3f}")
                     + "</td></tr>"
                 )
             html += "</table>"
-        sections.append(("Sapatas", "Assentamento das sapatas", html))
-        html = "<p>Não há lajes aguardando integração por elementos de placa neste relatório.</p>"
-        if pending_plate_count(report):
-            html = "<p>O processamento aguarda a implementação dos elementos de placa e o mapeamento completo dessas lajes.</p><ul>"
-            for plate in report["plate_transfer"]["records"]:
-                if plate.get("status") != "imported":
+        isolated = report.get("isolated_foundation_columns", ())
+        if isolated:
+            html += "<p>Pilares de fundação isolados:</p><ul>"
+            for item in isolated:
+                html += (
+                    "<li>" + escape(str(item["column_name"])) + " — "
+                    + escape(str(item["member_name"])) + "</li>"
+                )
+            html += "</ul>"
+        sections.append(("Fundações", "Bases dos pilares de fundação — Assentamento das sapatas", html))
+        plates = report.get("plate_transfer", {}).get("records", ())
+        legacy_pending = any(p.get("status") == "pending_plate_support" for p in plates)
+        html = (
+            "<p>Lajes aguardando integração por elementos de placa neste relatório anterior.</p>"
+            if legacy_pending
+            else "<p>As lajes ficam fora do modelo nesta etapa.</p>"
+        )
+        if plates:
+            html += "<ul>"
+            for plate in plates:
+                status = plate.get("status")
+                if status in ("excluded_by_import_scope", "pending_plate_support"):
                     html += (
                         "<li>"
                         + escape(str(plate["name"]))
                         + " — "
                         + escape(str(plate.get("floor_name") or "pavimento a conferir"))
-                        + ". Geometria de placa pendente.</li>"
+                        + (
+                            ". Geometria de placa pendente.</li>"
+                            if status == "pending_plate_support"
+                            else ". Não importada nesta etapa.</li>"
+                        )
                     )
             html += "</ul>"
-        sections.append(("Lajes", "Lajes preservadas para placas", html))
+        sections.append(("Lajes", "Lajes não importadas", html))
+        geometry = report.get("geometry_mapping", {})
+        if geometry.get("column_axes"):
+            unresolved = [
+                item for item in geometry["column_axes"]
+                if "insertion_fallback" in item.get("coordinate_sources", ())
+            ]
+            floor_names = {
+                floor["id"]: floor["name"]
+                for floor in report.get("floor_elevations_m", ())
+            }
+            html = (
+                "<p>As coordenadas dos eixos e os encontros que exigem "
+                "conferência estão relacionados abaixo.</p>"
+            )
+            if unresolved:
+                html += "<p>Pilares com alguma coordenada mantida na inserção por falta de evidência:</p><ul>"
+                for item in unresolved:
+                    axes = ", ".join(
+                        "XY"[i] for i, source in enumerate(item["coordinate_sources"])
+                        if source == "insertion_fallback"
+                    )
+                    floor = floor_names.get(item["floor_id"], item["floor_id"])
+                    html += (
+                        "<li>" + escape(str(item["name"])) + " — "
+                        + escape(str(floor)) + ": " + escape(axes) + "</li>"
+                    )
+                html += "</ul>"
+            unmatched = geometry.get("unmatched_beam_endpoints", ())
+            if unmatched:
+                html += "<p>Extremidades de vigas que não confirmam as faces esperadas:</p><ul>"
+                for item in unmatched:
+                    floor = floor_names.get(item["floor_id"], item["floor_id"])
+                    html += (
+                        "<li>" + escape(str(item["beam_name"])) + " — "
+                        + escape(str(item["column_name"])) + " — "
+                        + escape(str(floor)) + " (" + escape(str(item["axis"]).upper())
+                        + ")</li>"
+                    )
+                html += "</ul>"
+            sections.append(("Geometria", "Conferência da geometria", html))
         html = "<ul>"
         for warning in report.get("warnings", ()):
             # Compatibilidade com relatórios salvos pela primeira integração.

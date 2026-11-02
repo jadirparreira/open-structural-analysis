@@ -1,4 +1,7 @@
-"""Layouts observados: dados comuns 3028/3419; lançamento de referência 3419.
+"""Layouts observados: dados comuns 3028/3419 e lançamento 3419.
+
+O código 3219 tem reconhecimento estrutural parcial; a barra de fundação em
+bloco é reconhecida no perfil observado, sem importar a geometria do bloco.
 
 Não se atribui significado estrutural a um enum só porque seu valor é 0 ou 1.
 Os códigos de serialização são registrados; a compatibilidade é verificada
@@ -10,6 +13,7 @@ from __future__ import annotations
 
 import collections
 import math
+import struct
 import sys
 import uuid
 
@@ -185,7 +189,13 @@ class Decoder:
             r = self.r
             common = self.basic_cad(h, 2)
             q = common["common_offset"]
-            sizes = [size for size in (1, 9) if r.bytes(q + 38 + size + 16, 1) == b"]"]
+            # O PRJ Bruno usa cinco bytes de atributos nas linhas; os layouts
+            # já mapeados usam um ou nove.
+            sizes = [
+                size
+                for size in (1, 5, 9)
+                if r.bytes(q + 38 + size + 16, 1) == b"]"
+            ]
             r.require(len(sizes) == 1, "Formato da linha não reconhecido ou ambíguo")
             p = q + 38 + sizes[0]
             r.raw(h, "line_attributes_raw", q + 38, p)
@@ -275,7 +285,7 @@ class Decoder:
             q = common["common_offset"]
             sizes = [
                 size
-                for size in (1, 9)
+                for size in (1, 5, 9)
                 if (candidate := r.by_offset.get(q + 38 + size + 40)) is not None
                 and candidate.class_name == "TextoDoElemento"
             ]
@@ -362,6 +372,17 @@ class Decoder:
         if marker == 0:
             return p + 1
         if marker == 1:
+            # Alguns fluxos usam a forma de referência com ID zero como nulo.
+            if r.u32(p + 1) == 0:
+                r.field(
+                    owner,
+                    "processed_bar_null_reference_" + hex(p),
+                    p,
+                    value={"target_id": 0, "target_class": None},
+                    size=5,
+                    status="raw",
+                )
+                return p + 5
             _, end = r.ref(
                 owner, "processed_bar_reference_" + hex(p), p, "TBarraEstrutura"
             )
@@ -382,20 +403,33 @@ class Decoder:
         q = h.data_offset + 16
         for index in range(count):
             _, q = r.ref(h, f"processed_bar_{index}", q, "Barra")
-        q = self.structural_bar_pointer(h, q, depth + 1)
-        q = self.structural_bar_pointer(h, q, depth + 1)
-        r.raw(h, "processed_bar_tail_raw", q, q + 9)
-        end = r.close(q + 9)
-        self.cache[("structural_bar_end", h.serial_id)] = end
-        return end
+        # A árvore de barras processadas é evidência auxiliar e sua quantidade
+        # de ramos varia entre fluxos. O fechamento imediato ou a cauda de nove
+        # bytes delimita cada nível sem assumir um número fixo.
+        for _ in range(10000):
+            if r.bytes(q, 1) == b"]":
+                self.cache[("structural_bar_end", h.serial_id)] = q + 1
+                return q + 1
+            if r.bytes(q + 9, 1) == b"]":
+                r.raw(h, "processed_bar_tail_raw", q, q + 9)
+                end = r.close(q + 9)
+                self.cache[("structural_bar_end", h.serial_id)] = end
+                return end
+            q = self.structural_bar_pointer(h, q, depth + 1)
+        raise LayoutError("Árvore de barras excede a quantidade permitida")
 
     def point(self, h):
         def parse(h):
             r = self.r
             common = self.basic_cad(h, 2)
             q = common["common_offset"]
-            r.field(h, "point_flag_raw", q + 38, "B", status="raw")
-            _, p = r.ref(h, "processed_point_reference", q + 39, "No")
+            reference_at = q + 39
+            marker = r.bytes(reference_at, 1)[0]
+            target_id = r.u32(reference_at + 1)
+            target = r.by_id.get(target_id)
+            if marker != 1 or target is None or target.class_name != "No":
+                return self._point_with_console_group(h, common, q)
+            _, p = r.ref(h, "processed_point_reference", reference_at, "No")
             counts = r.field(h, "point_action_list_raw", p, "2I", status="raw")
             r.require(counts[1] <= 10000, "Lista de dados de ação de nó excessiva")
             p += 8
@@ -454,6 +488,55 @@ class Decoder:
 
         return self.cached("point", h, parse)
 
+    def _point_with_console_group(self, h, common, q):
+        """Lê pontos cuja variante não inclui a referência ao objeto ``No``.
+
+        O grupo embutido de consolos continua fornecendo um limite verificável;
+        os campos desconhecidos anteriores ficam preservados como bytes brutos.
+        """
+        r = self.r
+        group = r.after(h, "TConjuntoElemConsolo", 3000)
+        marker_at = group.offset - 1
+        r.require(
+            marker_at >= q + 38 and r.bytes(marker_at, 1) == b"\2",
+            "Grupo geométrico do nó intermediário não localizado",
+        )
+        r.raw(h, "point_fields_before_console_group_raw", q + 38, marker_at)
+        group = r.header_at(marker_at + 1, "TConjuntoElemConsolo")
+        values = r.field(
+            group,
+            "console_list_raw",
+            group.data_offset + 4,
+            "3I",
+            status="raw",
+        )
+        count = values[1]
+        r.require(
+            count <= values[2] and count <= 10000,
+            "Lista de dados de nó inválida",
+        )
+        p = group.data_offset + 16
+        for _ in range(count):
+            r.require(r.bytes(p, 1) == b"\2", "Dado de nó inline esperado")
+            item = r.header_at(p + 1, "TElementoConsolo")
+            child = r.header_at(item.data_offset + 95, "TElNoDoConsolo")
+            r.raw(item, "console_attributes_raw", item.data_offset, child.offset)
+            end = self.point_console(child)
+            r.field(item, "console_flag_raw", end, "I", status="raw")
+            p = r.close(end + 4)
+        r.require(r.bytes(p, 1) == b"\2", "Identificador do nó inline esperado")
+        p = self.point_console(r.header_at(p + 1, "TElNoDoConsolo"))
+        p = r.close(p)
+        r.raw(h, "point_tail_raw", p, p + 16)
+        end = r.close(p + 16)
+        return dict(
+            **r.identity(h),
+            **common,
+            name=f"No{h.occurrence}",
+            action_records_raw=[],
+            end=end,
+        )
+
     def point_console(self, h):
         r = self.r
         r.field(h, "serialization_codes_raw", h.data_offset, "2I", status="raw")
@@ -511,6 +594,16 @@ class Decoder:
                 r.require(len(ends) == 1, "Cauda do pilar não reconhecida ou ambígua")
                 r.raw(h, "column_fields_after_temperature_raw", temp["end"], ends[0])
                 end = r.close(ends[0])
+            elif r.version == 3219:
+                # O fechamento completo pode conter um bloco inline ou nulo;
+                # a altura da barra tem seu próprio perfil verificável.
+                start_fields = len(r.fields)
+                try:
+                    foundation = self.foundation_bar_3219(h, temp_h, temp["end"], endtext)
+                except (LayoutError, struct.error):
+                    del r.fields[start_fields:]
+                    foundation = {"kind": "unmapped_foundation_geometry"}
+                end = None
             else:
                 foundation = self.pad_footing(h, temp_h, temp["end"])
                 end = foundation["end"]
@@ -529,11 +622,52 @@ class Decoder:
 
         return self.cached("column", h, parse)
 
+    def foundation_bar_3219(self, h, temp_h, temp_end, after_text):
+        """Perfil de pilar sobre bloco observado no código 3219 do Bruno."""
+        r = self.r
+        q = temp_end + 25
+        r.require(r.u32(q) == 0 and r.u32(q + 4) == 0, "Perfil de bloco não reconhecido")
+        height = r.field(
+            h, "foundation_bar_height", q + 8, "d", status="inferred",
+            interpretation="Altura da barra de fundação; igual aos valores de TDadosGravPilar quando presentes.",
+            unit="source_length",
+        )
+        r.require(height >= sys.float_info.min, "Altura da barra de fundação inválida")
+        soil = r.after(temp_h, "TCamadaSolo", 1000)
+        r.require(soil.offset - temp_end in (193, 197), "Posição do solo incompatível com o bloco")
+        marker_at = r.close(soil.data_offset + 36)
+        marker = r.bytes(marker_at, 1)
+        gravity = None
+        if marker == b"\2":
+            gravity = r.header_at(marker_at + 1, "TDadosGravBloco")
+        elif marker == b"\1":
+            gravity, _ = r.ref(h, "foundation_block_reference", marker_at, "TDadosGravBloco")
+        else:
+            r.require(marker == b"\0", "Ponteiro dos dados de bloco não reconhecido")
+        pillars = r.between(after_text, temp_h.offset, "TDadosGravPilar")
+        r.require(len(pillars) <= 1, "Dados de pilar de fundação ambíguos")
+        if pillars:
+            values = r.unpack("2d", pillars[0].data_offset + 40)
+            r.require(
+                all(math.isclose(value, height, rel_tol=1e-9, abs_tol=1e-8) for value in values),
+                "Altura da barra diverge dos dados do pilar de fundação",
+            )
+        return {
+            "kind": "pile_cap",
+            "bar_height_raw": height,
+            "height_reference": "floor_to_foundation_bar_bottom",
+            "support_mapping": "pending",
+            "soil_object_id": soil.serial_id,
+            "gravity_object_id": gravity.serial_id if gravity else None,
+            "column_gravity_object_id": pillars[0].serial_id if pillars else None,
+            "height_corroboration": "column_gravity" if pillars else "shared_layout",
+        }
+
     def pad_footing(self, h, temp_h, temp_end):
         """Dois prefixos observados; o bloco opcional de sapata tem tamanho conferido.
 
-        O código 1 é o perfil de sapata observado nos registros com
-        TDadosGravSapata. Outros tipos exigem calibração própria.
+        O código 1 foi observado nos registros de sapata mapeados. Outros tipos
+        de fundação exigem calibração própria.
         """
         r = self.r
         candidates = []
@@ -615,16 +749,31 @@ class Decoder:
 
         return self.cached("footing_gravity", h, parse)
 
-    def element_pointer(self, owner, p, allowed):
+    def element_pointer(
+        self, owner, p, allowed, *, trailing_codes=0, trailing_allowed=()
+    ):
         r = self.r
         marker = r.bytes(p, 1)[0]
         if marker == 1:
             h, end = r.ref(owner, "element_reference_" + hex(p), p, allowed)
             return h, end
-        r.require(marker == 2, "Ponteiro de elemento não reconhecido")
+        r.require(
+            marker == 2,
+            f"Ponteiro de elemento não reconhecido em {p:#x} (marcador {marker})",
+        )
         h = r.header_at(p + 1)
         r.require(h.class_name in allowed, "Classe do ponteiro não permitida")
         value = self.anchor(h) if h.class_name != "Parede" else self.wall(h)
+        end = value.get("end")
+        if end is None and h.class_name == "ElPilarFundacao":
+            end = self.inline_foundation_anchor_end(
+                h, allowed, trailing_codes, trailing_allowed
+            )
+        r.require(
+            end is not None,
+            f"Fim do elemento inline {h.class_name} não reconhecido "
+            f"(ponteiro {p:#x}, objeto {h.offset:#x})",
+        )
         r.field(
             owner,
             "inline_element_" + hex(p),
@@ -632,7 +781,62 @@ class Decoder:
             value={"target_id": h.serial_id, "target_class": h.class_name},
             size=1,
         )
-        return h, value["end"]
+        return h, end
+
+    def inline_foundation_anchor_end(
+        self, h, allowed, trailing_codes=0, trailing_allowed=()
+    ):
+        """Delimita a fundação inline pelo ponteiro de apoio que vem em seguida.
+
+        No código 3219, o bloco contém objetos inline além dos dados de
+        fundação. O fechamento do objeto é seguido por nove bytes de cauda;
+        o contexto da viga valida o ponteiro seguinte, ou os quatro códigos
+        antes do ponteiro de parede no segundo apoio.
+        """
+        r = self.r
+        limit = min(len(r.data), h.offset + 200_000)
+        candidates = []
+        if trailing_codes:
+            config_ids = {item.serial_id for item in r.classes.get("ConfigAcoes", ())}
+            for pointer in range(h.offset, limit - 9):
+                if r.bytes(pointer, 1) != b"\1":
+                    continue
+                if r.u32(pointer + 1) not in config_ids:
+                    continue
+                count = r.u32(pointer + 5)
+                if count >= 1000 or r.bytes(pointer - 1, 1) != b"\0":
+                    continue
+                # A parede é nula nesta cauda: quatro códigos, um byte nulo
+                # para parede e, em seguida, o mapa escalar da viga.
+                candidates.append(pointer - 17)
+            r.require(
+                candidates,
+                "Cauda do apoio inline antes do mapa escalar não reconhecida",
+            )
+            return candidates[0]
+        for close in range(h.offset, limit - 10):
+            if r.bytes(close, 1) != b"]":
+                continue
+            end = close + 10
+            pointer = end
+            marker = r.bytes(pointer, 1)[0]
+            valid = marker == 0 and bool(trailing_allowed)
+            if marker == 1:
+                ident = r.u32(pointer + 1)
+                target = r.by_id.get(ident)
+                valid = target is not None and target.class_name in allowed
+            elif marker == 2:
+                target = r.by_offset.get(pointer + 1)
+                valid = target is not None and target.class_name in allowed
+            if valid:
+                candidates.append(end)
+        r.require(
+            candidates,
+            "Fechamento do pilar de fundação inline não reconhecido",
+        )
+        # O primeiro ponteiro válido pertence ao mesmo registro; candidatos
+        # posteriores já podem ser apoios de outras vigas do fluxo.
+        return candidates[0]
 
     def anchor(self, h):
         return self.point(h) if h.class_name == "ElementoNo" else self.column(h)
@@ -664,6 +868,7 @@ class Decoder:
             "Lista de trechos da viga inválida",
         )
         segments = []
+        null_slots = 0
         for index in range(lst[1]):
             marker = r.bytes(q, 1)
             if marker == b"\2":
@@ -671,6 +876,22 @@ class Decoder:
                 value = self.beam_segment(seg)
                 q = value["end"]
             elif marker == b"\1":
+                if r.u32(q + 1) == 0:
+                    r.require(
+                        index == lst[1] - 1,
+                        "Ponteiro nulo antes do fim da lista de trechos da viga",
+                    )
+                    r.field(
+                        h,
+                        f"segment_{index}_null_reference_raw",
+                        q,
+                        value={"target_id": 0},
+                        size=5,
+                        status="raw",
+                    )
+                    null_slots += 1
+                    q += 5
+                    break
                 seg, q = r.ref(h, f"segment_{index}", q, "ElementoTrecho")
                 value = self.beam_segment(seg)
             else:
@@ -681,6 +902,8 @@ class Decoder:
             name=name,
             segments=segments,
             segment_count=len(segments),
+            declared_segment_count=lst[1],
+            null_segment_slots=null_slots,
             launch_end=q,
             object_end_known=False,
         )
@@ -712,7 +935,9 @@ class Decoder:
         q += 4
         anchors = ("ElementoPilar", "ElPilarFundacao", "ElementoNo")
         a, q = self.element_pointer(seg, q, anchors)
-        c, q = self.element_pointer(seg, q, anchors)
+        c, q = self.element_pointer(
+            seg, q, anchors, trailing_codes=4, trailing_allowed=("Parede",)
+        )
         r.field(seg, "codes_before_wall_pointer_raw", q, "4I", status="raw")
         q += 16
         walls = []
@@ -726,23 +951,30 @@ class Decoder:
         scalars, q = self.scalar_map(seg, q, "beam_action_scalars")
         r.field(seg, "pre_offsets_double_raw", q, "d", status="raw")
         q += 8
-        offsets = r.field(
+        offset_values = r.field(
             seg,
-            "end_offsets_xy",
+            "end_offsets_xy_candidate_raw"
+            if r.version == 3219
+            else "end_offsets_xy",
             q,
             "4d",
-            status="inferred",
-            interpretation="Conferido por posição de extremidade menos ponto de inserção do pilar.",
+            status="raw" if r.version == 3219 else "inferred",
+            interpretation=(
+                "Bytes da variante 3219; não usados porque não coincidem com a geometria."
+                if r.version == 3219
+                else "Conferido por posição de extremidade menos ponto de inserção do pilar."
+            ),
         )
         q += 32
         sizes = [
             size
-            for size in (10, 29)
+            for size in (10, 29, 44)
             if (candidate := r.by_offset.get(q + size)) is not None
             and candidate.class_name == "TextoDoElemento"
         ]
         r.require(
-            len(sizes) == 1, "Campos do trecho após excentricidades não reconhecidos"
+            len(sizes) == 1,
+            f"Campos do trecho após excentricidades não reconhecidos em {q:#x}",
         )
         r.raw(seg, "after_offsets_raw", q, q + sizes[0])
         q += sizes[0]
@@ -789,15 +1021,32 @@ class Decoder:
         expected = [ln["xy_i_raw"][i] - ca["xy_raw"][i] for i in range(2)] + [
             ln["xy_j_raw"][i] - cc["xy_raw"][i] for i in range(2)
         ]
-        ok = all(math.isclose(x, y, abs_tol=1e-8) for x, y in zip(offsets, expected))
-        r.require(ok, "Excentricidades não conferem com a geometria e referências")
-        r.checks.append(
-            {
-                "check": "beam_end_offsets_match_coordinates",
-                "object_id": seg.serial_id,
-                "passed": True,
-            }
-        )
+        if r.version == 3219:
+            # Não há excentricidades nativas confirmadas neste layout. A
+            # diferença de coordenadas é calculada, não uma segunda leitura
+            # independente que possa validar a própria geometria.
+            offsets = expected
+            ok = None
+            r.checks.append(
+                {"check": "beam_end_offsets_derived_from_coordinates",
+                 "object_id": seg.serial_id, "status": "derived"}
+            )
+        else:
+            offsets = offset_values
+            ok = all(
+                math.isclose(x, y, abs_tol=1e-8)
+                for x, y in zip(offsets, expected)
+            )
+            r.require(
+                ok,
+                "Excentricidades não conferem com a geometria e referências "
+                f"(segmento {seg.serial_id}, apoios {a.serial_id}/{c.serial_id}, "
+                f"lidas {offsets}, esperadas {expected})",
+            )
+            r.checks.append(
+                {"check": "beam_end_offsets_match_coordinates",
+                 "object_id": seg.serial_id, "passed": True}
+            )
         return dict(
             **r.identity(seg),
             segment_id=seg.serial_id,
@@ -815,6 +1064,7 @@ class Decoder:
             rectangular_dimensions_candidate_raw=dims[4:6],
             end_offsets_xy_raw=offsets,
             offsets_geometry_check=ok,
+            offsets_source="derived_from_coordinates" if r.version == 3219 else "native",
             endpoint_records=[ei, ej],
             end_parameter_pair_raw=end_pair,
             post_section_codes_raw=section_codes,
@@ -938,6 +1188,8 @@ def extract(reader):
                     "offset_hex",
                     "name",
                     "segment_count",
+                    "declared_segment_count",
+                    "null_segment_slots",
                     "launch_end",
                     "object_end_known",
                 )

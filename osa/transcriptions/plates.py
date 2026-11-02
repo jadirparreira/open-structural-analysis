@@ -89,7 +89,7 @@ def prepare_plate_transfer(slabs, elevations, length):
 
 def pending_plate_count(report):
     return sum(
-        record.get("status") != "imported"
+        record.get("status") not in ("imported", "excluded_by_import_scope")
         for record in report.get("plate_transfer", {}).get("records", ())
     )
 

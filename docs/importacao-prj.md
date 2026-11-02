@@ -18,14 +18,14 @@ No exemplo `teste_conv`, as opções acima geram **28 nós, 16 barras (8 vigas e
 
 ## Escopo desta versão
 
-- Layouts de lançamento estudados nos arquivos de códigos internos **3419** (`teste_conv`) e **2281** (`Arara Azul`), com tentativa automática de leitura de outros códigos quando os registros têm estrutura compatível. O código interno identifica um formato de serialização, não uma versão do programa de origem.
+- Layouts de lançamento estudados nos arquivos de códigos internos **3419** (`teste_conv`), **2281** (`Arara Azul`) e **3219** (`Bruno`), com tentativa automática de leitura de outros códigos quando os registros têm estrutura compatível. O código interno identifica um formato de serialização, não uma versão do programa de origem.
 - Vigas com um ou vários trechos retos e seções retangulares reconhecidas; pilares com continuidade identificável entre pavimentos.
 - Nós intermediários `ElementoNo` usados como referências geométricas de extremidades de vigas, sem criação de pilares ou apoios nesses pontos.
 - Nomes, pavimentos, geometria, seções e propriedades candidatas de concreto das configurações de pavimento.
 - Deslocamentos de extremidade representados opcionalmente por ligações rígidas do OSA. A equivalência analítica dessa idealização ainda precisa ser verificada.
 - Representações CAD duplicadas são preservadas no relatório e excluídas da contagem física somente quando correspondem a pilares já identificados.
-- Sapatas: posição da base do pilar definida pela profundidade de assentamento individual; nenhum elemento de fundação dimensionado é criado.
-- Lajes: preservação das evidências e contrato para futura implementação com placas; nenhum elemento de placa é criado nesta etapa.
+- Pilares de fundação: a barra é importada quando sua altura é reconhecida, inclusive no pavimento em que a fundação nasce. A geometria da sapata ou do bloco não é criada.
+- Lajes: os registros são listados no resumo, sem criação de elementos de placa nesta etapa.
 
 **Apoios, molas, liberações, parâmetros 0/0,15, cargas, paredes e combinações ainda não são transcritos para ações/vínculos ativos do modelo de cálculo.** As evidências lidas ficam em `import_metadata.source_evidence` dentro do `.osa`. Os nós importados ficam livres e as barras sem liberações até a revisão no editor. O peso próprio é aplicado pelas ferramentas do próprio OSA, sem duplicação pelo importador.
 
@@ -37,7 +37,9 @@ O leitor reconhece os prefixos observados de 25 e 29 bytes após os dados de tem
 
 O nó `Base_P…` recebe a cota calculada e aparece como extremidade da barra do pilar. `import_metadata.support_candidates` registra nome do nó, pilar de origem, profundidade, cota e códigos brutos de apoio. Esses códigos não são convertidos em engastes, rótulas ou molas. A identificação gráfica de um vínculo ativo depende da próxima etapa de calibração; nesta entrega, o relatório lista as posições de apoio pendentes.
 
-Blocos de coroamento e outros tipos de fundação continuam fora desse cálculo de altura. Sua referência geométrica precisa ser confirmada antes da implementação. Se a profundidade não for reconhecida, o importador recusa o prolongamento em vez de usar a altura do pavimento; é possível desativar esse prolongamento para importar somente os pavimentos suportados.
+Para o perfil de bloco observado no PRJ Bruno (código 3219), o leitor recupera a altura da barra armazenada no `ElPilarFundacao`. Os 26 registros contêm `52 cm`; em 22 deles o valor também consta nos dados `TDadosGravPilar`, e os outros quatro têm o mesmo perfil com dados de dimensionamento ausentes. A base analítica fica em `z_pavimento - altura_da_barra`. Essa altura é a da barra de fundação do Eberick e não deve ser confundida com a distância ao topo físico do bloco: para blocos, a barra automática pode incluir um trecho adicional de embutimento, conforme a [documentação da AltoQi](https://suporte.altoqi.com.br/hc/pt-br/articles/115002375753). A geometria do bloco e os apoios não são importados.
+
+Quando o perfil ou a altura não são reconhecidos, o trecho é omitido e aparece no resumo. Não se usa a altura do pavimento como substituta. A leitura do perfil 3219 foi conferida no arquivo Bruno e deve ser reavaliada em outras variantes do formato.
 
 Arquivos `.osa` gerados pela versão anterior mantêm suas coordenadas. Reimporte o PRJ para aplicar a nova regra de assentamento.
 

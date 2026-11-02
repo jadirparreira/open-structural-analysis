@@ -238,6 +238,45 @@ def test_report_shows_footing_position_and_plate_pending_state(qt_app):
     options.close()
 
 
+def test_report_identifies_unresolved_column_axis_and_beam_endpoint(qt_app):
+    dialog = ImportReportDialog(
+        {
+            "floor_elevations_m": [{"id": 1, "name": "Inferior", "z": 0}],
+            "geometry_mapping": {
+                "column_axes": [
+                    {"name": "P17", "floor_id": 1,
+                     "coordinate_sources": ["beam_faces", "insertion_fallback"]}
+                ],
+                "unmatched_beam_endpoints": [
+                    {"beam_name": "VI-12_T1", "column_name": "P17",
+                     "floor_id": 1, "axis": "y"}
+                ],
+            },
+        }
+    )
+    text = dialog.report_sections["Geometria"].toPlainText()
+    assert "P17 — Inferior: Y" in text
+    assert "VI-12_T1 — P17 — Inferior (Y)" in text
+    dialog.close()
+
+
+def test_report_shows_block_foundation_bar_height(qt_app):
+    dialog = ImportReportDialog({
+        "counts": {"foundation_columns": 1},
+        "support_candidates": [{
+            "column_name": "P23", "foundation_kind": "pile_cap",
+            "bar_height_m": 0.52, "elevation_m": -0.52,
+        }],
+        "isolated_foundation_columns": [{"column_name": "P23", "member_name": "B428"}],
+    })
+    text = dialog.report_sections["Fundações"].toPlainText()
+    assert "P23" in text
+    assert "0.520" in text
+    assert "-0.520" in text
+    assert "P23 — B428" in text
+    dialog.close()
+
+
 def _luminance(color):
     def channel(value):
         value /= 255
