@@ -12,6 +12,8 @@ A opção **Abrir modelo** aceita somente `.osa`. Use **Importar modelo** para `
 6. Use **Salvar**. O primeiro salvamento pede um destino `.osa`; o PRJ de origem não é sobrescrito.
 7. Reabra o `.osa`. A geometria e o relatório de importação acompanham o modelo.
 
+Nós e barras recebem a numeração padrão do OSA (`N1`, `N2`… e `B1`, `B2`…). Os nomes de origem permanecem no relatório salvo em `node_sources` e `member_sources`.
+
 No exemplo `teste_conv`, as opções acima geram **28 nós, 16 barras (8 vigas e 8 trechos de pilar) e 16 ligações rígidas**, com cotas `−1,50`, `0,00` e `3,00 m`. O trecho inferior usa o valor individual `150` lido do perfil de sapata, convertido de cm para m. As seções candidatas são convertidas de cm para mm, e as propriedades de materiais para kN/m² e kN/m³. O arquivo também contém dois registros `L1`, um por pavimento, agora preservados como lajes pendentes da futura conexão com placas.
 
 ## Escopo desta versão

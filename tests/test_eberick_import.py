@@ -130,8 +130,15 @@ def test_geometry_units_offsets_and_materials(launch):
     model = StructuralModel()
     model.load_dict(result.project_data)
     assert (len(model.nodes), len(model.bars), len(model.rigid_bars)) == (10, 6, 4)
+    assert list(model.nodes) == [f"N{index}" for index in range(1, 11)]
+    assert list(model.bars) == [f"B{index}" for index in range(1, 7)]
     assert sorted({node.z for node in model.nodes.values()}) == [-1.5, 0, 3]
-    beam = model.bars["Superior_V1"]
+    beam_name = next(
+        name
+        for name, source in result.report["member_sources"].items()
+        if source["kind"] == "beam" and source["original_name"] == "V1"
+    )
+    beam = model.bars[beam_name]
     a, b = (model.nodes[name] for name in (beam.start_node, beam.end_node))
     assert b.x - a.x == pytest.approx(4.7)
     assert beam.geometry_dict() == {"b": 200, "h": 500}
@@ -387,9 +394,14 @@ def test_footing_nodes_use_each_settlement_depth_and_preserve_pending_supports(l
         launch, ImportOptions(first_floor_elevation_m=10)
     )
     nodes = {node["name"]: node for node in result.project_data["nodes"]}
-    assert nodes["Base_P1"]["z"] == pytest.approx(8.5)
-    assert nodes["Base_P2"]["z"] == pytest.approx(7.75)
-    assert nodes["Superior_P1"]["z"] == pytest.approx(13)
+    original_node_names = {
+        original: name
+        for name, source in result.report["node_sources"].items()
+        for original in source["original_names"]
+    }
+    assert nodes[original_node_names["Base_P1"]]["z"] == pytest.approx(8.5)
+    assert nodes[original_node_names["Base_P2"]]["z"] == pytest.approx(7.75)
+    assert nodes[original_node_names["Superior_P1"]]["z"] == pytest.approx(13)
     assert all(not any(node["supports"]) for node in nodes.values())
     assert [p["settlement_depth_m"] for p in result.report["support_candidates"]] == [
         1.5,
@@ -634,7 +646,8 @@ def test_real_prj_open_save_reopen(tmp_path):
     report = ProjectService(model).load(source)
     assert (len(model.nodes), len(model.bars), len(model.rigid_bars)) == (28, 16, 16)
     assert len(model.actions) == 0
-    assert model.nodes["Base_P1"].z == pytest.approx(-1.5)
+    base_node = report["support_candidates"][0]["node_name"]
+    assert model.nodes[base_node].z == pytest.approx(-1.5)
     assert pending_plate_count(report) == 2
     assert [
         (plate["name"], plate["floor_id"])

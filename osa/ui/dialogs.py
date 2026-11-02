@@ -625,7 +625,8 @@ class ErrorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Dados inválidos")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setFixedWidth(420)
+        self.setFixedWidth(500)
+        self.setMinimumHeight(240)
         self.setStyleSheet(
             "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
             "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"

@@ -240,8 +240,10 @@ class _LaunchBuilder:
         self.members: list[dict] = []
         self.rigid: list[dict] = []
         self.coordinates: dict[tuple[float, float, float], str] = {}
+        self.next_node_index = 1
+        self.next_member_index = 1
+        self.node_sources: dict[str, dict] = {}
         self.member_pairs: set[frozenset[str]] = set()
-        self.names: set[str] = set()
         self.materials: dict[str, dict] = {}
         self.member_sources: dict[str, dict] = {}
         self.anchor_nodes: dict[int, str] = {}
@@ -294,13 +296,13 @@ class _LaunchBuilder:
         xyz = tuple(self._number(value, "Coordenada") for value in xyz)
         key = tuple(round(value, 9) for value in xyz)
         if key in self.coordinates:
-            return self.coordinates[key]
-        name = preferred
-        index = 2
-        existing = {node["name"] for node in self.nodes}
-        while name in existing:
-            name = f"{preferred}_{index}"
-            index += 1
+            name = self.coordinates[key]
+            sources = self.node_sources[name]["original_names"]
+            if preferred not in sources:
+                sources.append(preferred)
+            return name
+        name = f"N{self.next_node_index}"
+        self.next_node_index += 1
         self.nodes.append(
             {
                 "name": name,
@@ -312,6 +314,7 @@ class _LaunchBuilder:
             }
         )
         self.coordinates[key] = name
+        self.node_sources[name] = {"original_names": [preferred]}
         return name
 
     @staticmethod
@@ -320,17 +323,22 @@ class _LaunchBuilder:
         return clean or str(floor["floor_id"])
 
     def _member(self, name, start, end, dimensions, floor, kind, record):
+        source_label = name
         pair = frozenset((start, end))
-        if start == end or pair in self.member_pairs or name in self.names:
-            raise ProjectImportError(f"Membro degenerado ou coincidente: {name}.")
+        if start == end or pair in self.member_pairs:
+            raise ProjectImportError(
+                f"Membro degenerado ou coincidente: {source_label}."
+            )
         if len(dimensions) != 2:
-            raise ProjectImportError(f"Seção de {name} não reconhecida.")
+            raise ProjectImportError(f"Seção de {source_label} não reconhecida.")
         b, h = (
             self._number(value, "Seção") * self.length * 1000 for value in dimensions
         )
         if not all(math.isfinite(value) and value > 0 for value in (b, h)):
-            raise ProjectImportError(f"Seção sem dimensões positivas: {name}.")
+            raise ProjectImportError(f"Seção sem dimensões positivas: {source_label}.")
         material, values = self._material(floor, kind)
+        name = f"B{self.next_member_index}"
+        self.next_member_index += 1
         self.members.append(
             {
                 "name": name,
@@ -348,11 +356,11 @@ class _LaunchBuilder:
             }
         )
         self.member_pairs.add(pair)
-        self.names.add(name)
         self.member_sources[name] = {
             "object_id": record["object_id"],
             "floor_id": floor["floor_id"],
             "original_name": record["name"],
+            "source_label": source_label,
             "kind": kind,
             "segment_id": record.get("segment_id"),
             "beam_object_id": record.get("beam_object_id"),
@@ -653,6 +661,7 @@ class _LaunchBuilder:
             ],
             "warnings": self.warnings,
             "member_sources": self.member_sources,
+            "node_sources": self.node_sources,
             "support_candidates": self.support_candidates,
             "plate_transfer": plate_transfer,
             "source_evidence": evidence,

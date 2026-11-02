@@ -4,8 +4,9 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -27,33 +28,49 @@ from osa.transcriptions.plates import pending_plate_count
 from .theme import APP_STYLESHEET
 
 _ICON = Path(__file__).resolve().parents[1] / "resources" / "icons" / "documentation-scroll.svg"
-_STYLE = """
-QDialog { background: #ffffff; color: #24292f; }
-QLabel, QCheckBox { color: #24292f; }
-QComboBox, QDoubleSpinBox, QLineEdit {
-    min-height: 28px; padding: 2px 6px; background: #ffffff; color: #24292f;
-    border: 1px solid #d0d7de; border-radius: 5px;
-    selection-background-color: #0969da; selection-color: #ffffff;
+_STYLE = APP_STYLESHEET + """
+QDialog#prjImportDialog {
+    background: #ffffff; color: #24292f;
+    border: 1px solid #d0d7de; border-radius: 0;
 }
-QComboBox:disabled, QDoubleSpinBox:disabled { background: #f6f8fa; color: #8c959f; }
+QComboBox:disabled, QDoubleSpinBox:disabled {
+    background: #f6f8fa; color: #8c959f;
+}
+QFrame#importSource {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+}
+QLabel#importSourceCaption { color: #57606a; font-size: 11px; }
+QLabel#importSourceName { color: #24292f; font-weight: 600; }
+QLabel#importNote {
+    color: #57606a; background: #f6f8fa;
+    border: 1px solid #d0d7de; border-radius: 6px; padding: 10px 12px;
+}
+QLabel#importFormLabel { color: #57606a; }
+QCheckBox { color: #57606a; spacing: 8px; min-height: 30px; }
+QCheckBox::indicator {
+    width: 18px; height: 18px; border: 1px solid #d0d7de;
+    border-radius: 5px; background: #ffffff;
+}
+QCheckBox::indicator:hover { border-color: #0969da; }
+QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }
+QPushButton#secondaryButton {
+    min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de;
+    border-radius: 7px; background: #f6f8fa; color: #24292f;
+}
+QPushButton#secondaryButton:hover { background: #eaeef2; }
+QPushButton#primaryButton {
+    min-height: 34px; padding: 4px 16px; border: 0;
+    border-radius: 7px; background: #0969da; color: #ffffff; font-weight: 700;
+}
+QPushButton#primaryButton:hover { background: #0550ae; }
 QComboBox QAbstractItemView {
     background: #ffffff; color: #24292f; border: 1px solid #d0d7de;
-    selection-background-color: #0969da; selection-color: #ffffff;
-    outline: 0;
+    selection-background-color: #0969da; selection-color: #ffffff; outline: 0;
 }
 QComboBox QAbstractItemView::item { min-height: 28px; padding: 3px 8px; }
 QComboBox QAbstractItemView::item:selected { background: #0969da; color: #ffffff; }
-QPushButton { min-height: 32px; padding: 4px 16px; border: 1px solid #d0d7de;
-              border-radius: 6px; background: #f6f8fa; color: #24292f; }
-QPushButton#primary { background: #0969da; color: white; border: none; }
-QPushButton:disabled { background: #eaeef2; color: #8c959f; }
-QTextBrowser {
-    border: 1px solid #d0d7de; background: #ffffff; color: #24292f; padding: 8px;
-    selection-background-color: #0969da; selection-color: #ffffff;
-}
-QScrollBar:vertical { background: #f6f8fa; width: 12px; margin: 0; }
-QScrollBar::handle:vertical { background: #afb8c1; min-height: 24px; border-radius: 5px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }
+QLabel#windowTitle { color: #24292f; font-weight: 600; }
 """
 _REPORT_STYLE = (
     APP_STYLESHEET
@@ -123,74 +140,93 @@ def _style_combo_popup(combo):
     )
 
 
-def _header(layout, title, subtitle):
-    row = QHBoxLayout()
-    if _ICON.exists():
-        image = QLabel()
-        image.setPixmap(
-            QPixmap(str(_ICON)).scaled(
-                42,
-                58,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-        row.addWidget(image)
-    texts = QVBoxLayout()
-    heading = QLabel(title)
-    heading.setStyleSheet("font-size: 17px; font-weight: 600;")
-    texts.addWidget(heading)
-    hint = QLabel(subtitle)
-    hint.setWordWrap(True)
-    hint.setStyleSheet("color: #57606a;")
-    texts.addWidget(hint)
-    row.addLayout(texts, 1)
-    layout.addLayout(row)
-
-
 class EberickImportDialog(QDialog):
     def __init__(self, source_path, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Importar projeto PRJ")
+        self.setWindowTitle("Importar modelo - PRJ (Beta)")
         self.setWindowIcon(QIcon(str(_ICON)))
-        self.setMinimumWidth(540)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.resize(680, 660)
+        self.setMinimumSize(640, 610)
+        self.setObjectName("prjImportDialog")
         _apply_dialog_theme(self)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(14)
-        _header(
-            layout,
-            "Importar projeto",
-            "Importação experimental do lançamento estrutural",
-        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(_ReportTitleBar(self))
+
+        content = QVBoxLayout()
+        content.setContentsMargins(24, 20, 24, 18)
+        content.setSpacing(10)
+        heading = QLabel("Configurar importação")
+        heading.setObjectName("dialogTitle")
+        content.addWidget(heading)
+        subtitle = QLabel("Confira o arquivo e ajuste as opções para importar o modelo.")
+        subtitle.setObjectName("hint")
+        subtitle.setWordWrap(True)
+        content.addWidget(subtitle)
+
+        source_panel = QFrame()
+        source_panel.setObjectName("importSource")
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(12, 8, 12, 8)
+        source_layout.setSpacing(2)
+        source_caption = QLabel("Arquivo de origem")
+        source_caption.setObjectName("importSourceCaption")
+        source_layout.addWidget(source_caption)
         source = QLabel(Path(source_path).name)
+        source.setObjectName("importSourceName")
         source.setTextFormat(Qt.TextFormat.PlainText)
         source.setWordWrap(True)
-        layout.addWidget(source)
+        source_layout.addWidget(source)
+        content.addWidget(source_panel)
+
         form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.length_unit = QComboBox()
         self.length_unit.addItems(["cm", "mm", "m"])
+        self.length_unit.setFixedWidth(150)
         _style_combo_popup(self.length_unit)
-        form.addRow("Comprimento no PRJ", self.length_unit)
+        length_label = QLabel("Comprimento no PRJ")
+        length_label.setObjectName("importFormLabel")
+        form.addRow(length_label, self.length_unit)
         self.force_unit = QComboBox()
         self.force_unit.addItems(["kgf", "tf", "kN", "N"])
+        self.force_unit.setFixedWidth(150)
         _style_combo_popup(self.force_unit)
-        form.addRow("Força no PRJ", self.force_unit)
+        force_label = QLabel("Força no PRJ")
+        force_label.setObjectName("importFormLabel")
+        form.addRow(force_label, self.force_unit)
         self.first_floor_z = QDoubleSpinBox()
         self.first_floor_z.setRange(-100000, 100000)
         self.first_floor_z.setDecimals(4)
         self.first_floor_z.setSuffix(" m")
-        form.addRow("Cota do topo do baldrame no OSA", self.first_floor_z)
+        self.first_floor_z.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.first_floor_z.setFixedWidth(150)
+        elevation_label = QLabel("Cota do topo do baldrame no OSA")
+        elevation_label.setObjectName("importFormLabel")
+        form.addRow(elevation_label, self.first_floor_z)
         self.poisson_ratio = QDoubleSpinBox()
         self.poisson_ratio.setRange(-0.99, 0.49)
         self.poisson_ratio.setDecimals(3)
         self.poisson_ratio.setSingleStep(0.01)
         self.poisson_ratio.setValue(0.2)
+        self.poisson_ratio.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.poisson_ratio.setToolTip(
             "Valor informado para o material; não é lido do PRJ."
         )
-        form.addRow("Coeficiente de Poisson adotado", self.poisson_ratio)
-        layout.addLayout(form)
+        self.poisson_ratio.setFixedWidth(150)
+        poisson_label = QLabel("Coeficiente de Poisson adotado")
+        poisson_label.setObjectName("importFormLabel")
+        form.addRow(poisson_label, self.poisson_ratio)
+        content.addLayout(form)
+
+        options_heading = QLabel("Opções do modelo")
+        options_heading.setObjectName("propertySection")
+        content.addWidget(options_heading)
         self.lower_columns = QCheckBox(
             "Prolongar pilares até o assentamento das sapatas"
         )
@@ -207,27 +243,33 @@ class EberickImportDialog(QDialog):
         )
         self.material_properties.setChecked(True)
         self.material_properties.toggled.connect(self.poisson_ratio.setEnabled)
+        checks = QVBoxLayout()
+        checks.setContentsMargins(0, 0, 0, 0)
+        checks.setSpacing(2)
         for widget in (self.lower_columns, self.offsets, self.material_properties):
-            layout.addWidget(widget)
+            checks.addWidget(widget)
+        content.addLayout(checks)
         note = QLabel(
             "O OSA receberá geometria e seções retangulares. Confira as unidades "
             "e a referência do topo do baldrame. Lajes serão preservadas para a "
             "futura integração com placas. Tipos de apoio, liberações e cargas "
             "permanecem pendentes de calibração."
         )
+        note.setObjectName("importNote")
         note.setWordWrap(True)
-        note.setStyleSheet("color: #805b10; background: #fff8df; padding: 10px;")
-        layout.addWidget(note)
+        content.addWidget(note)
         buttons = QHBoxLayout()
         buttons.addStretch()
         cancel = QPushButton("Cancelar")
+        cancel.setObjectName("secondaryButton")
         cancel.clicked.connect(self.reject)
         accept = QPushButton("Importar")
-        accept.setObjectName("primary")
+        accept.setObjectName("primaryButton")
         accept.clicked.connect(self.accept)
         buttons.addWidget(cancel)
         buttons.addWidget(accept)
-        layout.addLayout(buttons)
+        content.addLayout(buttons)
+        outer.addLayout(content)
 
     def options(self):
         return ImportOptions(
