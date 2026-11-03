@@ -42,7 +42,7 @@ from .displacement_panel import DisplacementPanel
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
 from .loading_indicator import LoadingIndicator
-from .import_dialogs import EberickImportDialog, ImportReportDialog
+from .import_dialogs import PrjImportDialog, ImportReportDialog
 from .mcp_dispatcher import McpQtDispatcher
 from .member_placement_panel import MemberPlacementEditor
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
@@ -3559,7 +3559,7 @@ class MainWindow(QMainWindow):
         path = Path(path)
         import_options = None
         if importing:
-            dialog = EberickImportDialog(path, self)
+            dialog = PrjImportDialog(path, self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             import_options = dialog.options()
@@ -3595,6 +3595,9 @@ class MainWindow(QMainWindow):
         operation = "importação" if importing else "abertura"
         self._project_loading_overlay.setWindowTitle(
             "Importando modelo" if importing else "Abrindo modelo"
+        )
+        self._project_loading_title.setText(
+            "Importando modelo..." if importing else "Abrindo modelo…"
         )
         self._project_loading_description.setText(f"Preparando a {operation} do modelo…")
         self._project_loading_overlay.adjustSize()
@@ -3741,6 +3744,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Abrindo modelo…", overlay)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
+        self._project_loading_title = title
         description = QLabel("Aguarde enquanto os dados são carregados.", overlay)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")

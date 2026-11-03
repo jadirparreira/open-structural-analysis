@@ -47,7 +47,7 @@ def test_future_plate_target_receives_normalized_geometry_with_opening(slabs):
     snapshot = copy.deepcopy(transfer)
     target = PlateTarget()
     result = connect_plates(transfer, target)
-    assert result == {"eberick:50": "Plate:L1"}
+    assert result == {"prj:50": "Plate:L1"}
     (plate,) = target.calls[0]
     assert plate.thickness_m == pytest.approx(0.12)
     assert plate.contour_m == ((0, 0, 9.9), (5, 0, 9.9), (5, 4, 9.9), (0, 4, 9.9))

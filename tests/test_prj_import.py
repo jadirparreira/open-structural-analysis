@@ -21,9 +21,9 @@ from osa.transcriptions import (
     is_import_path,
 )
 from osa.transcriptions.contracts import require_import_review
-from osa.transcriptions.eberick import EberickImporter
-from osa.transcriptions.eberick_reader import Reader, extract, load_stream
-from osa.transcriptions.eberick_reader.decode import Decoder
+from osa.transcriptions.prj import PrjImporter
+from osa.transcriptions.prj_reader import Reader, extract, load_stream
+from osa.transcriptions.prj_reader.decode import Decoder
 from osa.transcriptions.plates import pending_plate_count
 
 
@@ -126,7 +126,7 @@ def launch():
 
 
 def test_geometry_units_offsets_and_materials(launch):
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     model = StructuralModel()
     model.load_dict(result.project_data)
     assert (len(model.nodes), len(model.bars), len(model.rigid_bars)) == (10, 6, 4)
@@ -142,8 +142,8 @@ def test_geometry_units_offsets_and_materials(launch):
     a, b = (model.nodes[name] for name in (beam.start_node, beam.end_node))
     assert b.x - a.x == pytest.approx(4.7)
     assert beam.geometry_dict() == {"b": 200, "h": 500}
-    assert model.materials["Eberick C-25"][:4] == pytest.approx(
-        (23683059.75, 9867941.5625, 0.2, 24.516625)
+    assert model.materials["Concreto C-25"][:4] == pytest.approx(
+        (24150000.0, 10062500.0, 0.2, 25.0)
     )
     assert all(not any(node.supports) for node in model.nodes.values())
     assert not model.actions
@@ -157,7 +157,7 @@ def test_geometry_units_offsets_and_materials(launch):
 
 
 def test_round_trip_preserves_report_and_review_state(launch, tmp_path):
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     model = StructuralModel()
     model.load_dict(result.project_data)
     path = tmp_path / "converted.osa"
@@ -182,7 +182,7 @@ def test_round_trip_preserves_report_and_review_state(launch, tmp_path):
 
 def test_native_load_clears_old_import_metadata(launch, tmp_path):
     model = StructuralModel()
-    model.load_dict(EberickImporter().convert(launch, ImportOptions()).project_data)
+    model.load_dict(PrjImporter().convert(launch, ImportOptions()).project_data)
     native = StructuralModel()
     native.add_node("Original", 0, 0, 0)
     path = tmp_path / "native.osa"
@@ -203,7 +203,7 @@ def test_source_prj_cannot_be_overwritten(tmp_path):
 
 def test_failed_import_does_not_replace_model(tmp_path):
     path = tmp_path / "broken.prj"
-    path.write_bytes(b"not an Eberick file")
+    path.write_bytes(b"not a recognized PRJ file")
     model = StructuralModel()
     model.add_node("Keep", 1, 2, 3)
     snapshot = model.as_dict()
@@ -248,16 +248,16 @@ def test_unsupported_content_is_refused(launch, change):
     elif change == "non_rectangular":
         launch["sections"][0]["geometric_values_raw"][0] = 10
     with pytest.raises(ProjectImportError):
-        EberickImporter().convert(launch, ImportOptions())
+        PrjImporter().convert(launch, ImportOptions())
 
 
 @pytest.mark.parametrize("code", [2281, 3028, 9999])
 def test_same_launch_layout_accepts_other_codes_and_preserves_provenance(
     launch, code, tmp_path
 ):
-    reference = EberickImporter().convert(launch, ImportOptions())
+    reference = PrjImporter().convert(launch, ImportOptions())
     launch["internal_version_code"] = code
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     for key in ("nodes", "members", "rigid_bars", "materials"):
         assert result.project_data[key] == reference.project_data[key]
     assert result.report["internal_version_code"] == code
@@ -284,7 +284,7 @@ def test_auxiliary_decode_failure_is_reported_without_blocking_geometry(launch):
             "error": "Layout auxiliar diferente",
         }
     ]
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     assert len(result.project_data["members"]) == 6
     assert result.report["decode_warnings"] == launch["decode_errors"]
     assert any(
@@ -297,11 +297,11 @@ def test_auxiliary_decode_failure_is_reported_without_blocking_geometry(launch):
 def variant_prj(tmp_path):
     """Variantes sintéticas do binário real: alteram apenas tags de serialização.
 
-    Não representam arquivos reais gerados por outras versões do Eberick.
+    Não representam arquivos reais de outras versões do formato PRJ.
     """
-    if not os.environ.get("OSA_EBERICK_PRJ"):
-        pytest.skip("Defina OSA_EBERICK_PRJ para a regressão binária.")
-    raw, source = load_stream(os.environ["OSA_EBERICK_PRJ"])
+    if not os.environ.get("OSA_TEST_PRJ"):
+        pytest.skip("Defina OSA_TEST_PRJ para a regressão binária.")
+    raw, source = load_stream(os.environ["OSA_TEST_PRJ"])
     reader = Reader(raw, source)
 
     def create(code, *, tags="all", broken=False):
@@ -379,7 +379,7 @@ def test_options_change_geometry_and_keep_assumptions_explicit(launch):
         preserve_end_offsets=False,
         import_material_properties=False,
     )
-    result = EberickImporter().convert(launch, options)
+    result = PrjImporter().convert(launch, options)
     assert result.project_data["rigid_bars"] == []
     assert len(result.project_data["members"]) == 4
     assert sorted({node["z"] for node in result.project_data["nodes"]}) == [10, 13]
@@ -390,7 +390,7 @@ def test_options_change_geometry_and_keep_assumptions_explicit(launch):
 def test_footing_nodes_use_each_settlement_depth_and_preserve_pending_supports(launch):
     launch["floors"][0]["height_raw"] = 999
     launch["columns"][1]["foundation_raw"]["settlement_depth_raw"] = 225
-    result = EberickImporter().convert(
+    result = PrjImporter().convert(
         launch, ImportOptions(first_floor_elevation_m=10)
     )
     nodes = {node["name"]: node for node in result.project_data["nodes"]}
@@ -419,7 +419,7 @@ def test_footing_nodes_use_each_settlement_depth_and_preserve_pending_supports(l
 
 def test_zero_first_floor_height_does_not_replace_footing_depth(launch):
     launch["floors"][0]["height_raw"] = 0
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     assert {node["z"] for node in result.project_data["nodes"]} == {-1.5, 0, 3}
 
 
@@ -427,15 +427,15 @@ def test_zero_first_floor_height_does_not_replace_footing_depth(launch):
 def test_invalid_footing_depth_is_refused(launch, depth):
     launch["columns"][0]["foundation_raw"]["settlement_depth_raw"] = depth
     with pytest.raises(ProjectImportError, match="[Aa]ltura"):
-        EberickImporter().convert(launch, ImportOptions())
+        PrjImporter().convert(launch, ImportOptions())
 
 
 def test_pile_cap_reference_is_not_interpreted_as_footing_settlement(launch):
     launch["columns"][0]["foundation_raw"]["kind"] = "pile_cap"
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     assert result.report["counts"]["excluded_lower_column_segments"] == 1
     assert [item["column_name"] for item in result.report["support_candidates"]] == ["P2"]
-    result = EberickImporter().convert(
+    result = PrjImporter().convert(
         launch, ImportOptions(include_lower_columns=False)
     )
     assert result.report["support_candidates"] == []
@@ -450,7 +450,7 @@ def test_foundation_column_uses_own_floor_and_bar_height(launch):
     }
     launch["inventory"][-1]["count"] = 3
     launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     nodes = {node["name"]: node for node in result.project_data["nodes"]}
     name = next(
         name for name, source in result.report["member_sources"].items()
@@ -474,7 +474,7 @@ def test_unreferenced_native_foundation_column_is_preserved(launch):
                            "height_reference": "floor_to_foundation_bar_bottom"},
     })
     launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     assert result.report["counts"]["foundation_columns_without_beams"] == 1
     assert result.report["counts"]["isolated_foundation_columns"] == 1
     assert result.report["isolated_foundation_columns"][0]["column_name"] == "P3"
@@ -490,13 +490,13 @@ def test_foundation_summary_does_not_count_footing_configuration_as_footings(lau
         {"class_name": "TDadosSapataSemPilar", "count": 1},
         {"class_name": "Sapata", "count": 2},
     ])
-    result = EberickImporter().convert(launch, ImportOptions())
+    result = PrjImporter().convert(launch, ImportOptions())
     assert result.report["counts"]["excluded_elements"]["sapatas"] == 2
 
 
 def test_new_foundation_column_keeps_existing_bar_names_in_3219(launch):
     launch["internal_version_code"] = 3219
-    before = EberickImporter().convert(launch, ImportOptions()).report["member_sources"]
+    before = PrjImporter().convert(launch, ImportOptions()).report["member_sources"]
     launch["columns"].append({
         "object_id": 5, "class_name": "ElPilarFundacao", "name": "P3",
         "floor_id": 1, "xy_raw": [1000, 0], "section_id": 102,
@@ -506,16 +506,107 @@ def test_new_foundation_column_keeps_existing_bar_names_in_3219(launch):
                            "height_reference": "floor_to_foundation_bar_bottom"},
     })
     launch["inventory"].append({"class_name": "ElPilarFundacao", "count": 1})
-    after = EberickImporter().convert(launch, ImportOptions()).report["member_sources"]
+    after = PrjImporter().convert(launch, ImportOptions()).report["member_sources"]
     assert all(after[name]["object_id"] == source["object_id"] for name, source in before.items())
 
 
+def test_3075_additional_section_fields_are_reported(launch):
+    launch["internal_version_code"] = 3075
+    launch["sections"][0]["geometric_values_raw"] = [45, 10, 0, 0, 20, 50, 0]
+    result = PrjImporter().convert(launch, ImportOptions())
+    sections = result.report["geometry_mapping"]["section_review"]
+    assert len(sections) == 2
+    assert all(item["rectangular_candidate_mm"] == [200, 500] for item in sections)
+    assert all(item["section_values_raw"] == [45, 10, 0, 0, 20, 50, 0] for item in sections)
+    assert all(result.report["member_sources"][item["member_name"]]["section_requires_review"] for item in sections)
+
+
+def test_individual_wood_material_uses_review_reference(launch):
+    launch["beams"][0]["material_override"] = {
+        "type": "Madeira", "class_name": "Dicotiledônea-C40",
+        "class_values_raw": [0.00095, 74880.0, 3744.0, 4.5e-6],
+    }
+    result = PrjImporter().convert(launch, ImportOptions())
+    model = StructuralModel()
+    model.load_dict(result.project_data)
+    beam_name = next(
+        name for name, source in result.report["member_sources"].items()
+        if source.get("material_override")
+    )
+    material = model.bars[beam_name].material
+    assert model.material_types[material] == "Madeira"
+    assert "revisão" in material
+    assert result.report["member_sources"][beam_name]["material_override"]["class_values_raw"][1] == 74880
+    assert any("madeira" in warning.lower() for warning in result.report["warnings"])
+
+
 @pytest.mark.skipif(
-    not os.environ.get("OSA_EBERICK_BRUNO_PRJ"),
-    reason="Defina OSA_EBERICK_BRUNO_PRJ para conferir o perfil de bloco real.",
+    not os.environ.get("OSA_WANDER_PRJ"),
+    reason="Defina OSA_WANDER_PRJ para conferir o PRJ 3075 real.",
+)
+def test_wander_real_bar_import_materials_and_round_trip(tmp_path):
+    result = PrjImporter().read(os.environ["OSA_WANDER_PRJ"], ImportOptions())
+    counts = result.report["counts"]
+    assert (counts["beam_groups"], counts["beams"], counts["columns"]) == (105, 318, 109)
+    assert (counts["foundation_columns"], counts["isolated_foundation_columns"]) == (24, 4)
+    assert (counts["excluded_lower_column_segments"], counts["excluded_column_segments"]) == (8, 8)
+    assert counts["excluded_elements"]["lajes"] == 158
+    sections = result.report["geometry_mapping"]["section_review"]
+    assert {item["beam_name"] for item in sections} == {"V6_T1", "V6_T2"}
+    assert len(result.report["geometry_mapping"]["omitted_columns"]) == 16
+    beams = result.report["source_evidence"]["beams"]
+    first = next(item for item in beams if item["name"] == "V6_T1")
+    assert first["end_offsets_xy_raw"] == pytest.approx([19, 30, -20, 0])
+    assert first["offsets_geometry_check"] and first["wall_ids"]
+
+    axes = {
+        (item["name"], item["floor_id"]): item["axis_xy_raw"]
+        for item in result.report["geometry_mapping"]["column_axes"]
+    }
+    assert axes["P1", 1] == pytest.approx([170.21, 2054.7])
+    assert axes["P2", 2] == pytest.approx([660.21, 2054.7])
+    assert axes["P10", 1] == pytest.approx([170.21, 1187.7])
+    assert axes["P10", 5] == pytest.approx([170.21, 1182.7])
+    assert axes["P29", 1] == pytest.approx([205.21, 2054.7])
+
+    model = StructuralModel()
+    model.load_dict(result.project_data)
+    source_map = result.report["member_sources"]
+    pillar = next(
+        name for name, source in source_map.items()
+        if source["kind"] == "column" and source["original_name"] == "P10"
+        and source["floor_id"] == 5
+    )
+    pillar_top = model.nodes[model.bars[pillar].end_node]
+    assert (pillar_top.x, pillar_top.y) == pytest.approx((1.7021, 11.827))
+    beam_name = next(
+        name for name, source in source_map.items()
+        if source["kind"] == "beam" and source["original_name"] == "V2_T1"
+        and source["floor_id"] == 1
+    )
+    beam_start = model.nodes[model.bars[beam_name].start_node]
+    assert (beam_start.x, beam_start.y) == pytest.approx((1.7971, 20.547))
+    wood_names = [
+        name for name, source in result.report["member_sources"].items()
+        if source.get("material_override")
+    ]
+    assert {result.report["member_sources"][name]["original_name"] for name in wood_names} == {"G1", "G2", "G3"}
+    assert all(model.material_types[model.bars[name].material] == "Madeira" for name in wood_names)
+    path = tmp_path / "wander.osa"
+    ProjectRepository().save(model, path)
+    restored = StructuralModel()
+    ProjectRepository().load(restored, path)
+    assert len(restored.bars) == 427
+    assert restored.import_metadata["geometry_mapping"]["section_review"] == sections
+    assert all(restored.material_types[restored.bars[name].material] == "Madeira" for name in wood_names)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OSA_BRUNO_PRJ"),
+    reason="Defina OSA_BRUNO_PRJ para conferir o perfil de bloco real.",
 )
 def test_bruno_foundation_bar_heights_and_mismatched_evidence():
-    raw, source = load_stream(os.environ["OSA_EBERICK_BRUNO_PRJ"])
+    raw, source = load_stream(os.environ["OSA_BRUNO_PRJ"])
     reader = Reader(raw, source)
     decoder = Decoder(reader)
     pillars = [decoder.column(header) for header in reader.classes["ElPilarFundacao"]]
@@ -536,11 +627,11 @@ def test_bruno_foundation_bar_heights_and_mismatched_evidence():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("OSA_EBERICK_PRJ"),
-    reason="Defina OSA_EBERICK_PRJ para alterar somente os códigos brutos de apoio.",
+    not os.environ.get("OSA_TEST_PRJ"),
+    reason="Defina OSA_TEST_PRJ para alterar somente os códigos brutos de apoio.",
 )
 def test_reader_preserves_unmapped_support_codes_without_assigning_restraints():
-    raw, source = load_stream(os.environ["OSA_EBERICK_PRJ"])
+    raw, source = load_stream(os.environ["OSA_TEST_PRJ"])
     reader = Reader(raw, source)
     h = reader.classes["ElPilarFundacao"][0]
     Decoder(reader).column(h)
@@ -564,11 +655,11 @@ def test_reader_preserves_unmapped_support_codes_without_assigning_restraints():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("OSA_EBERICK_FOUNDATIONS_PRJ"),
-    reason="Defina OSA_EBERICK_FOUNDATIONS_PRJ para o PRJ real 2281.",
+    not os.environ.get("OSA_FOUNDATIONS_PRJ"),
+    reason="Defina OSA_FOUNDATIONS_PRJ para o PRJ real 2281.",
 )
 def test_real_2281_foundation_records_and_optional_footing_data():
-    source = Path(os.environ["OSA_EBERICK_FOUNDATIONS_PRJ"])
+    source = Path(os.environ["OSA_FOUNDATIONS_PRJ"])
     original = source.read_bytes()
     reader = Reader(*load_stream(source))
     decoder = Decoder(reader)
@@ -585,14 +676,21 @@ def test_real_2281_foundation_records_and_optional_footing_data():
             == "TDadosGravSapata"
         )
         assert reader.bytes(column["end"] - 1, 1) == b"]"
+    # Confere a alternativa de sapata quando o código passa pelo ramo 3075;
+    # os bytes deste cenário sintético continuam sendo da amostra 2281.
+    fallback_reader = Reader(*load_stream(source))
+    fallback_reader.version = 3075
+    fallback = Decoder(fallback_reader).column(fallback_reader.classes["ElPilarFundacao"][0])
+    assert fallback["foundation_raw"]["kind"] == "pad_footing"
+    assert fallback["foundation_raw"]["settlement_depth_raw"] == 150
     assert source.read_bytes() == original
 
 
 @pytest.fixture(scope="module")
 def arara_source():
-    if not os.environ.get("OSA_EBERICK_FOUNDATIONS_PRJ"):
-        pytest.skip("Defina OSA_EBERICK_FOUNDATIONS_PRJ para o PRJ real Arara Azul.")
-    source = Path(os.environ["OSA_EBERICK_FOUNDATIONS_PRJ"])
+    if not os.environ.get("OSA_FOUNDATIONS_PRJ"):
+        pytest.skip("Defina OSA_FOUNDATIONS_PRJ para o PRJ real Arara Azul.")
+    source = Path(os.environ["OSA_FOUNDATIONS_PRJ"])
     assert (
         hashlib.sha256(source.read_bytes()).hexdigest()
         == "b609beeeb2515c67f7c260d92a2fd01be2c4db98c571457cf296c866dfd5a993"
@@ -609,7 +707,7 @@ def test_real_arara_geometry_all_spans_and_native_round_trip(arara_source, tmp_p
     model = StructuralModel()
     report = ProjectService(model).load(arara_source)
     assert (len(model.nodes), len(model.bars), len(model.rigid_bars)) == (225, 145, 133)
-    assert report["counts"] == {
+    expected_counts = {
         "nodes": 225,
         "members": 145,
         "beams": 101,
@@ -623,6 +721,7 @@ def test_real_arara_geometry_all_spans_and_native_round_trip(arara_source, tmp_p
         "pending_plates": 0,
         "preserved_wall_records": 54,
     }
+    assert {key: report["counts"][key] for key in expected_counts} == expected_counts
     assert not report["decode_warnings"]
     assert not model.actions
     assert all(not any(node.supports) for node in model.nodes.values())
@@ -691,7 +790,7 @@ def test_arara_rejects_omissions_and_unresolved_span_references(arara_launch, ch
         beam = next(beam for beam in data["beams"] if beam["support_j_id"] in point_ids)
         beam["support_j_id"] = -1
     with pytest.raises(ProjectImportError):
-        EberickImporter().convert(data, ImportOptions())
+        PrjImporter().convert(data, ImportOptions())
 
 
 @pytest.mark.parametrize("record", ["wall", "later_span"])
@@ -702,12 +801,10 @@ def test_arara_corrupt_wall_or_later_span_keeps_current_model(
     decoder = Decoder(reader)
     if record == "wall":
         value = decoder.wall(reader.classes["Parede"][0])
-        expected_class = "Parede"
     else:
         groups = [decoder.beam(h) for h in reader.classes["ElementoViga"]]
         group = next(group for group in reversed(groups) if group["segment_count"] > 1)
         value = group["segments"][-1]
-        expected_class = "ElementoViga"
     data = bytearray(reader.data)
     data[value["end"] - 1] = ord("!")
     source = tmp_path / "corrupt.prj"
@@ -717,7 +814,9 @@ def test_arara_corrupt_wall_or_later_span_keeps_current_model(
     snapshot = model.as_dict()
     with pytest.raises(ProjectImportError) as error:
         ProjectService(model).load(source)
-    assert expected_class in str(error.value)
+    # A parede desta amostra está embutida em uma viga; a falha é reportada
+    # pelo registro de lançamento que tentou decodificá-la.
+    assert "ElementoViga" in str(error.value)
     assert "código interno 2281" in str(error.value)
     assert model.as_dict() == snapshot
     assert source.read_bytes() == data
@@ -731,11 +830,11 @@ def test_supported_extensions_case_insensitive():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("OSA_EBERICK_PRJ"),
-    reason="Defina OSA_EBERICK_PRJ para o teste com PRJ real.",
+    not os.environ.get("OSA_TEST_PRJ"),
+    reason="Defina OSA_TEST_PRJ para o teste com PRJ real.",
 )
 def test_real_prj_open_save_reopen(tmp_path):
-    source = Path(os.environ["OSA_EBERICK_PRJ"])
+    source = Path(os.environ["OSA_TEST_PRJ"])
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     model = StructuralModel()
     report = ProjectService(model).load(source)

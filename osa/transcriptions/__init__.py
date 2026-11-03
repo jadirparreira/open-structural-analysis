@@ -25,9 +25,9 @@ def register_importer(importer: ProjectImporter) -> None:
 
 def _registered_importers() -> tuple[ProjectImporter, ...]:
     # Importação tardia evita ciclos entre domínio e persistência.
-    from .eberick import EberickImporter
+    from .prj import PrjImporter
 
-    return (EberickImporter(), *_importers)
+    return (PrjImporter(), *_importers)
 
 
 def is_import_path(path: str | Path) -> bool:

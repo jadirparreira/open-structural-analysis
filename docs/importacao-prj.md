@@ -6,8 +6,8 @@ A opção **Abrir modelo** aceita somente `.osa`. Use **Importar modelo** para `
 
 1. Abra o OSA normalmente e use **Importar modelo** (`Ctrl+I`).
 2. Selecione o arquivo `teste_conv.prj` ou `teste_conv.prj.zip`.
-3. Confira as opções: comprimento `cm`, força `kgf`, cota do topo do baldrame `0 m`, Poisson adotado `0,2`.
-4. Para reproduzir o teste executado, mantenha ativados o prolongamento até o assentamento das sapatas, as ligações rígidas e a leitura das propriedades de concreto.
+3. Confira as opções de unidade: comprimento `cm` e força `kgf` por padrão. A conversão de `kgf`/`tf` para `kN` usa a aproximação `1 kgf = 0,01 kN` e `1 tf = 10 kN`. O topo do baldrame no OSA é fixado em `0 m` e o Poisson do concreto em `0,2`.
+4. O prolongamento dos pilares de fundação, as ligações rígidas e as propriedades de concreto do PRJ são aplicados automaticamente.
 5. Importe. O resumo informa o que foi transcrito e o que precisa ser revisto.
 6. Use **Salvar**. O primeiro salvamento pede um destino `.osa`; o PRJ de origem não é sobrescrito.
 7. Reabra o `.osa`. A geometria e o relatório de importação acompanham o modelo.
@@ -18,8 +18,12 @@ No exemplo `teste_conv`, as opções acima geram **28 nós, 16 barras (8 vigas e
 
 ## Escopo desta versão
 
-- Layouts de lançamento estudados nos arquivos de códigos internos **3419** (`teste_conv`), **2281** (`Arara Azul`) e **3219** (`Bruno`), com tentativa automática de leitura de outros códigos quando os registros têm estrutura compatível. O código interno identifica um formato de serialização, não uma versão do programa de origem.
+- Layouts de lançamento estudados nos arquivos de códigos internos **3419** (`teste_conv`), **2281** (`Arara Azul`), **3219** (`Bruno`), **3575** (`Casa Térrea`) e **3075** (`Wander`), com tentativa automática de leitura de outros códigos quando os registros têm estrutura compatível. O código interno identifica um formato de serialização, não uma versão do programa de origem.
 - Vigas com um ou vários trechos retos e seções retangulares reconhecidas; pilares com continuidade identificável entre pavimentos.
+- Nos layouts 3075, 3219 e 3575, os eixos dos pilares são estimados pelas faces das vigas e pela continuidade entre pavimentos. As extremidades originais das vigas e suas excentricidades são preservadas; coordenadas sem evidência suficiente mantêm a inserção e são indicadas no resumo.
+- No layout 3075, quando o trecho da viga tem campos adicionais de seção não mapeados, a seção retangular candidata é aplicada e o trecho é identificado no resumo para revisão.
+- Vigas de madeira identificadas no PRJ usam propriedades de referência de madeira do OSA, com os valores nativos brutos e a classe preservados para revisão.
+- Registros de pilar na região `base_cad` só entram como trecho estrutural intermediário quando nome, coordenadas e seção coincidem com o pilar de fundação do pavimento anterior e com um pilar ligado a vigas no pavimento seguinte.
 - Nós intermediários `ElementoNo` usados como referências geométricas de extremidades de vigas, sem criação de pilares ou apoios nesses pontos.
 - Nomes, pavimentos, geometria, seções e propriedades candidatas de concreto das configurações de pavimento.
 - Deslocamentos de extremidade representados opcionalmente por ligações rígidas do OSA. A equivalência analítica dessa idealização ainda precisa ser verificada.
@@ -37,7 +41,11 @@ O leitor reconhece os prefixos observados de 25 e 29 bytes após os dados de tem
 
 O nó `Base_P…` recebe a cota calculada e aparece como extremidade da barra do pilar. `import_metadata.support_candidates` registra nome do nó, pilar de origem, profundidade, cota e códigos brutos de apoio. Esses códigos não são convertidos em engastes, rótulas ou molas. A identificação gráfica de um vínculo ativo depende da próxima etapa de calibração; nesta entrega, o relatório lista as posições de apoio pendentes.
 
-Para o perfil de bloco observado no PRJ Bruno (código 3219), o leitor recupera a altura da barra armazenada no `ElPilarFundacao`. Os 26 registros contêm `52 cm`; em 22 deles o valor também consta nos dados `TDadosGravPilar`, e os outros quatro têm o mesmo perfil com dados de dimensionamento ausentes. A base analítica fica em `z_pavimento - altura_da_barra`. Essa altura é a da barra de fundação do Eberick e não deve ser confundida com a distância ao topo físico do bloco: para blocos, a barra automática pode incluir um trecho adicional de embutimento, conforme a [documentação da AltoQi](https://suporte.altoqi.com.br/hc/pt-br/articles/115002375753). A geometria do bloco e os apoios não são importados.
+Para o perfil de bloco observado no PRJ Bruno (código 3219), o leitor recupera a altura da barra armazenada no `ElPilarFundacao`. Os 26 registros contêm `52 cm`; em 22 deles o valor também consta nos dados `TDadosGravPilar`, e os outros quatro têm o mesmo perfil com dados de dimensionamento ausentes. A base analítica fica em `z_pavimento - altura_da_barra`. Essa altura representa o comprimento analítico do pilar de fundação e não deve ser confundida com a distância ao topo físico do bloco; em blocos, a barra pode incluir um trecho adicional de embutimento. A geometria do bloco e os apoios não são importados.
+
+Na amostra 3575 `Casa Térrea`, o fechamento dos dados de sapata possui um `QiUUID` adicional e 16 bytes opacos depois do trecho já conhecido. O leitor valida o UUID e o fechamento, e preserva os bytes sem atribuir significado estrutural.
+
+Na amostra 3075 `Wander`, os 24 pilares de fundação sobre bloco contêm alturas entre 62 e 218 cm, todas corroboradas pelos dados `TDadosGravPilar`. As referências a `BarraLaje` encontradas em listas de barras processadas são tratadas como evidência auxiliar, sem criar lajes no modelo.
 
 Quando o perfil ou a altura não são reconhecidos, o trecho é omitido e aparece no resumo. Não se usa a altura do pavimento como substituta. A leitura do perfil 3219 foi conferida no arquivo Bruno e deve ser reavaliada em outras variantes do formato.
 
@@ -97,9 +105,9 @@ Falhas em registros auxiliares de ações e combinações aparecem como aviso e 
 osa/transcriptions/
 ├── contracts.py              # opções, resultado, erro e contrato do importador
 ├── __init__.py               # registro e seleção dos formatos
-├── eberick.py                # tradução das evidências para o projeto OSA v2
+├── prj.py                # tradução das evidências para o projeto OSA v2
 ├── plates.py                 # contrato e ponto de conexão para as futuras placas
-└── eberick_reader/
+└── prj_reader/
     ├── core.py               # ZIP, bytes, tipos, referências e índices
     ├── decode.py             # layouts estudados do lançamento
     ├── slabs.py              # evidências e regiões binárias das lajes
@@ -115,16 +123,16 @@ Para adicionar outro formato, implemente `name`, `extensions` e `read(path, opti
 Com as dependências de desenvolvimento do OSA instaladas:
 
 ```bash
-python -m pytest tests/test_eberick_import.py tests/test_eberick_import_ui.py tests/test_plate_transfer.py tests/test_persistence.py tests/test_model.py tests/test_domain.py tests/test_pynite_adapter.py -q
+python -m pytest tests/test_prj_import.py tests/test_prj_import_ui.py tests/test_plate_transfer.py tests/test_persistence.py tests/test_model.py tests/test_domain.py tests/test_pynite_adapter.py -q
 ```
 
 Os testes sem arquivo usam evidências sintéticas. Para incluir a regressão com o **arquivo específico `teste_conv` desta investigação**, em Linux/macOS:
 
 ```bash
-OSA_EBERICK_PRJ=/caminho/teste_conv.prj.zip QT_QPA_PLATFORM=offscreen PYVISTA_OFF_SCREEN=false python -m pytest tests/test_eberick_import.py tests/test_eberick_import_ui.py -q
+OSA_TEST_PRJ=/caminho/teste_conv.prj.zip QT_QPA_PLATFORM=offscreen PYVISTA_OFF_SCREEN=false python -m pytest tests/test_prj_import.py tests/test_prj_import_ui.py -q
 ```
 
-Para incluir a importação geométrica completa do Arara Azul, inclusive pela janela real e com salvamento/reabertura, defina também `OSA_EBERICK_FOUNDATIONS_PRJ="/caminho/Arara Azul - Ampliação.prj"`. O nome dessa variável foi mantido por compatibilidade com a regressão inicial das sapatas.
+Para incluir a importação geométrica completa do Arara Azul, inclusive pela janela real e com salvamento/reabertura, defina também `OSA_FOUNDATIONS_PRJ="/caminho/Arara Azul - Ampliação.prj"`. O nome dessa variável foi mantido por compatibilidade com a regressão inicial das sapatas.
 
 Não definir `PYVISTA_OFF_SCREEN=true` no teste da janela: o OSA usa o interactor Qt/VTK. O backend Qt pode ser `offscreen` para a automação. A regressão verifica conteúdo e hash do exemplo; não é um teste parametrizado para qualquer projeto.
 

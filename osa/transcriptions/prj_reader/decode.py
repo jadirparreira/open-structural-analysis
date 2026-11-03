@@ -402,7 +402,9 @@ class Decoder:
         )
         q = h.data_offset + 16
         for index in range(count):
-            _, q = r.ref(h, f"processed_bar_{index}", q, "Barra")
+            # A lista de barras processadas pode referenciar barras de laje;
+            # esses objetos são apenas evidência e não criam placas no OSA.
+            _, q = r.ref(h, f"processed_bar_{index}", q, ("Barra", "BarraLaje"))
         # A árvore de barras processadas é evidência auxiliar e sua quantidade
         # de ramos varia entre fluxos. O fechamento imediato ou a cauda de nove
         # bytes delimita cada nível sem assumir um número fixo.
@@ -594,16 +596,22 @@ class Decoder:
                 r.require(len(ends) == 1, "Cauda do pilar não reconhecida ou ambígua")
                 r.raw(h, "column_fields_after_temperature_raw", temp["end"], ends[0])
                 end = r.close(ends[0])
-            elif r.version == 3219:
+            elif r.version in (3075, 3219):
                 # O fechamento completo pode conter um bloco inline ou nulo;
                 # a altura da barra tem seu próprio perfil verificável.
                 start_fields = len(r.fields)
+                end = None
                 try:
-                    foundation = self.foundation_bar_3219(h, temp_h, temp["end"], endtext)
+                    foundation = self.foundation_bar_block(h, temp_h, temp["end"], endtext)
                 except (LayoutError, struct.error):
                     del r.fields[start_fields:]
                     foundation = {"kind": "unmapped_foundation_geometry"}
-                end = None
+                    if r.version == 3075:
+                        try:
+                            foundation = self.pad_footing(h, temp_h, temp["end"])
+                            end = foundation["end"]
+                        except (LayoutError, struct.error):
+                            del r.fields[start_fields:]
             else:
                 foundation = self.pad_footing(h, temp_h, temp["end"])
                 end = foundation["end"]
@@ -622,8 +630,8 @@ class Decoder:
 
         return self.cached("column", h, parse)
 
-    def foundation_bar_3219(self, h, temp_h, temp_end, after_text):
-        """Perfil de pilar sobre bloco observado no código 3219 do Bruno."""
+    def foundation_bar_block(self, h, temp_h, temp_end, after_text):
+        """Perfil de pilar sobre bloco observado nos códigos 3075 e 3219."""
         r = self.r
         q = temp_end + 25
         r.require(r.u32(q) == 0 and r.u32(q + 4) == 0, "Perfil de bloco não reconhecido")
@@ -732,10 +740,31 @@ class Decoder:
         else:
             raise LayoutError("Ponteiro dos dados de sapata não reconhecido")
         r.raw(h, "foundation_after_soil_raw", p, p + 103)
+        end = p + 103
+        foundation_uuid = None
+        # No layout 3575 observado na Casa Térrea, o pilar de fundação traz
+        # um QiUUID adicional depois desse trecho e mais 16 bytes opacos antes
+        # do fechamento. Layouts anteriores fecham diretamente em p + 103.
+        if (candidate := r.by_offset.get(end)) is not None:
+            r.require(
+                candidate.class_name == "QiUUID",
+                "Extensão após os dados de sapata não reconhecida",
+            )
+            foundation_uuid = self.uuid(candidate)
+            r.raw(
+                h,
+                "foundation_after_uuid_raw",
+                foundation_uuid["end"],
+                foundation_uuid["end"] + 16,
+            )
+            end = foundation_uuid["end"] + 16
         foundation.update(
             soil_object_id=soil.serial_id,
             gravity_object_id=gravity.serial_id if gravity else None,
-            end=r.close(p + 103),
+            foundation_uuid_object_id=(
+                foundation_uuid["object_id"] if foundation_uuid else None
+            ),
+            end=r.close(end),
         )
         return foundation
 
@@ -767,7 +796,7 @@ class Decoder:
         end = value.get("end")
         if end is None and h.class_name == "ElPilarFundacao":
             end = self.inline_foundation_anchor_end(
-                h, allowed, trailing_codes, trailing_allowed
+                h, allowed, trailing_codes, trailing_allowed, owner=owner
             )
         r.require(
             end is not None,
@@ -784,7 +813,7 @@ class Decoder:
         return h, end
 
     def inline_foundation_anchor_end(
-        self, h, allowed, trailing_codes=0, trailing_allowed=()
+        self, h, allowed, trailing_codes=0, trailing_allowed=(), *, owner=None
     ):
         """Delimita a fundação inline pelo ponteiro de apoio que vem em seguida.
 
@@ -794,6 +823,8 @@ class Decoder:
         antes do ponteiro de parede no segundo apoio.
         """
         r = self.r
+        if r.version == 3075 and trailing_codes and owner is not None:
+            return self.foundation_tail_3075(owner, h)
         limit = min(len(r.data), h.offset + 200_000)
         candidates = []
         if trailing_codes:
@@ -838,6 +869,85 @@ class Decoder:
         # posteriores já podem ser apoios de outras vigas do fluxo.
         return candidates[0]
 
+    def foundation_tail_3075(self, owner, foundation):
+        """Delimita o segundo apoio usando a parede e as excentricidades nativas."""
+        r = self.r
+        limit = min(len(r.data), foundation.offset + 200_000)
+        following = [
+            item.offset for item in r.between(foundation.offset + 1, limit)
+            if item.class_name in ("ElementoTrecho", "ElementoViga")
+        ]
+        if following:
+            limit = min(limit, following[0])
+        fmt = r.after(owner, "FormatoElementoBarraReta", 200)
+        line = self.line(r.header_at(fmt.data_offset + 9, "EL_Linha"))
+        column = self.column(foundation)
+        expected = [
+            line["xy_j_raw"][axis] - column["xy_raw"][axis]
+            for axis in range(2)
+        ]
+
+        def closed_before(end):
+            return any(
+                end - size >= foundation.offset and r.bytes(end - size, 1) == b"]"
+                for size in (1, 10)
+            )
+
+        def matches(end, map_pos):
+            try:
+                if not closed_before(end) or r.bytes(map_pos, 1) != b"\1":
+                    return False
+                config = r.by_id.get(r.u32(map_pos + 1))
+                if config is None or config.class_name != "ConfigAcoes":
+                    return False
+                count = r.u32(map_pos + 5)
+                if count >= 1000:
+                    return False
+                q = map_pos + 9
+                for _ in range(count):
+                    key = r.header_at(q, "TIdCarregamento")
+                    q = r.close(key.data_offset + 12) + 8
+                offsets = r.unpack("4d", q + 8)
+                if not all(
+                    math.isfinite(value) and math.isclose(value, target, abs_tol=1e-8)
+                    for value, target in zip(offsets[2:], expected)
+                ):
+                    return False
+                return any(
+                    (text := r.by_offset.get(q + 40 + size)) is not None
+                    and text.class_name == "TextoDoElemento"
+                    for size in (10, 29, 44)
+                )
+            except (LayoutError, struct.error, OverflowError):
+                return False
+
+        candidates = []
+        pointer = r.data.find(b"\1", foundation.offset, limit)
+        while pointer >= 0 and pointer + 5 <= limit:
+            target = r.by_id.get(r.u32(pointer + 1))
+            if target is not None and target.class_name == "ConfigAcoes":
+                end = pointer - 17
+                if end >= foundation.offset and r.bytes(pointer - 1, 1) == b"\0":
+                    candidates.append((end, pointer))
+            elif target is not None and target.class_name == "Parede":
+                end = pointer - 16
+                if end >= foundation.offset:
+                    candidates.append((end, pointer + 5))
+            pointer = r.data.find(b"\1", pointer + 1, limit)
+        for wall in r.between(foundation.offset, limit, "Parede"):
+            end = wall.offset - 17
+            if end < foundation.offset or r.bytes(wall.offset - 1, 1) != b"\2":
+                continue
+            if not closed_before(end):
+                continue
+            try:
+                candidates.append((end, self.wall(wall)["end"]))
+            except (LayoutError, struct.error, OverflowError):
+                continue
+        valid = sorted({end for end, map_pos in candidates if matches(end, map_pos)})
+        r.require(len(valid) == 1, "Cauda de fundação 3075 não reconhecida ou ambígua")
+        return valid[0]
+
     def anchor(self, h):
         return self.point(h) if h.class_name == "ElementoNo" else self.column(h)
 
@@ -856,6 +966,71 @@ class Decoder:
         vals = r.field(h, "five_values_raw", p + 12, "5d", status="raw")
         end = r.close(p + 52)
         return dict(**r.identity(h), values_raw=vals, end=end)
+
+    def beam_material_data(self, owner, pointer):
+        """Lê a seleção de material retangular presente em alguns trechos 3075."""
+        r = self.r
+        r.require(r.bytes(pointer, 1) == b"\2", "Dados de material inline esperados")
+        material_data = r.header_at(pointer + 1, "TDadosMateriais")
+        r.field(material_data, "serialization_code_raw", material_data.data_offset, "I", status="raw")
+        q = material_data.data_offset + 4
+        entries = {}
+        for name in (
+            "TMaterialGenerico", "TClasseMaterialGenerico", "TFamiliaMaterial",
+            "TGrupoSecao", "TSecaoRetangular",
+        ):
+            marker = r.bytes(q, 1)
+            if marker == b"\1":
+                item, q = r.ref(material_data, "material_" + name, q, name)
+            elif marker == b"\2":
+                item = r.header_at(q + 1, name)
+                if name in ("TMaterialGenerico", "TClasseMaterialGenerico"):
+                    _, end_text = r.string(item.data_offset + 8)
+                    q = r.close(end_text + 32)
+                elif name in ("TFamiliaMaterial", "TGrupoSecao"):
+                    _, end_text = r.string(item.data_offset + 4)
+                    q = r.close(end_text + (4 if name == "TFamiliaMaterial" else 8))
+                else:
+                    # A seção inline contém um polígono com vértices. A sua
+                    # geometria já foi lida em TSecaoMista; os fechamentos da
+                    # seção, do material e do trecho delimitam a região opaca.
+                    limit = min(len(r.data), item.offset + 200_000)
+                    next_objects = [
+                        x.offset for x in r.between(item.offset + 1, limit)
+                        if x.class_name in ("ElementoTrecho", "ElementoViga", "Viga")
+                    ]
+                    if next_objects:
+                        limit = min(limit, next_objects[0])
+                    candidates = []
+                    pos = r.data.find(b"]]", item.data_offset, limit)
+                    while pos >= 0:
+                        tail = pos + 2
+                        if (
+                            r.bytes(tail, 8) == b"\0" * 8
+                            and r.u32(tail + 8) == 1
+                            and r.bytes(tail + 12, 1) == b"]"
+                        ):
+                            candidates.append(pos)
+                        pos = r.data.find(b"]]", pos + 1, limit)
+                    r.require(len(candidates) == 1, "Seção de material inline não reconhecida ou ambígua")
+                    r.raw(item, "inline_section_raw", item.data_offset, candidates[0])
+                    q = r.close(candidates[0])
+            else:
+                raise LayoutError(f"Ponteiro de {name} não reconhecido em {q:#x}")
+            entries[name] = item
+        end = r.close(q)
+        generic = entries["TMaterialGenerico"]
+        category = entries["TClasseMaterialGenerico"]
+        material_name, _ = r.text_field(generic, "material_name", generic.data_offset + 8)
+        class_name, values_at = r.text_field(category, "material_class_name", category.data_offset + 8)
+        values = r.field(category, "material_class_values_raw", values_at, "4d", status="raw")
+        return {
+            "type": material_name,
+            "class_name": class_name,
+            "class_values_raw": values,
+            "object_id": material_data.serial_id,
+            "section_object_id": entries["TSecaoRetangular"].serial_id,
+        }, end
 
     def beam(self, h):
         r = self.r
@@ -1011,7 +1186,14 @@ class Decoder:
         temp_h = r.header_at(q, "TDadosTemperatura")
         temp = self.temperature(temp_h)
         q = temp["end"]
-        sizes = [size for size in (9, 13) if r.bytes(q + size, 1) == b"]"]
+        material = None
+        if r.bytes(q, 1) == b"\2" and (child := r.by_offset.get(q + 1)) is not None and child.class_name == "TDadosMateriais":
+            material, q = self.beam_material_data(seg, q)
+            r.require(
+                r.bytes(q, 8) == b"\0" * 8 and r.u32(q + 8) == 1,
+                "Cauda do trecho com material individual não reconhecida",
+            )
+        sizes = [size for size in ((12,) if material else (9, 13)) if r.bytes(q + size, 1) == b"]"]
         r.require(len(sizes) == 1, "Fechamento do trecho não reconhecido ou ambíguo")
         r.raw(seg, "temperature_to_segment_end_raw", q, q + sizes[0])
         end = r.close(q + sizes[0])
@@ -1071,6 +1253,7 @@ class Decoder:
             wall_ids=walls,
             action_scalars=scalars,
             temperature_id=temp_h.serial_id,
+            material_override=material,
             end=end,
         )
 
@@ -1090,7 +1273,7 @@ def extract(reader):
     out = {
         "source": r.source,
         "internal_version_code": r.version,
-        "launch_layout": "eberick-native-launch-v1",
+        "launch_layout": "prj-native-launch-v1",
         "native_launch_profile_attempted": native_launch,
     }
 

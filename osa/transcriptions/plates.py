@@ -66,7 +66,7 @@ def prepare_plate_transfer(slabs, elevations, length):
             missing.append("floor_id")
         records.append(
             {
-                "source_id": f"eberick:{slab['object_id']}",
+                "source_id": f"prj:{slab['object_id']}",
                 "source_object_id": slab["object_id"],
                 "name": slab.get("name") or f"Laje_{slab['object_id']}",
                 "floor_id": floor_id,

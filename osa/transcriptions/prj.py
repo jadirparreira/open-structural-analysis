@@ -1,8 +1,8 @@
 """Transcrição experimental do lançamento PRJ por compatibilidade de layout.
 
-Não utiliza executáveis, DLLs ou bibliotecas do Eberick. Os vínculos e as
-cargas ainda não calibrados ficam no relatório, sem serem apresentados como
-cargas/apoios analíticos recuperados.
+A leitura interpreta os dados serializados sem executar código do arquivo.
+Vínculos e cargas ainda não calibrados ficam no relatório, sem serem apresentados
+como cargas ou apoios analíticos recuperados.
 """
 
 from __future__ import annotations
@@ -17,11 +17,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .contracts import ImportOptions, ImportResult, ProjectImportError
-from .eberick_reader import LayoutError, Reader, extract, load_stream
-from .eberick_reader.slabs import is_slab_element_class
+from .prj_reader import LayoutError, Reader, extract, load_stream
+from .prj_reader.slabs import is_slab_element_class
 from .plates import prepare_plate_transfer
 
 _REFERENCE_CODE = 3419
+_COLUMN_AXIS_LAYOUT_CODES = frozenset({3075, 3219, 3575})
 # Estes dados não geram ações no OSA. Se um deles falhar dentro de uma viga
 # ou pilar, o decodificador do elemento também falha e impede a importação.
 _EVIDENCE_ONLY_CLASSES = frozenset(
@@ -56,8 +57,69 @@ def _importable_column(column):
     )
 
 
-class EberickImporter:
-    name = "Eberick"
+def _same_column_geometry(first, second):
+    return (
+        first.get("name") == second.get("name")
+        and first.get("xy_raw") == second.get("xy_raw")
+        and first.get("rectangular_dimensions_candidate_raw")
+        == second.get("rectangular_dimensions_candidate_raw")
+    )
+
+
+def _beam_section_candidate_3075(section):
+    """Perfil observado com dois campos adicionais ainda sem semântica confirmada."""
+    values = section.get("geometric_values_raw", ())
+    return (
+        len(values) == 7
+        and section.get("shape_code_raw") == 0
+        and values[0] > 0 and values[1] > 0
+        and values[4] > 0 and values[5] > 0 and values[1] < values[5]
+        and all(abs(values[index]) < 1e-12 for index in (2, 3, 6))
+    )
+
+
+def _active_columns(data):
+    """Include CAD-only column records when they bridge native columns across floors."""
+    columns = list(data.get("columns", ()))
+    active = [column for column in columns if _importable_column(column)]
+    active_ids = {column["object_id"] for column in active}
+    floor_order = [item["floor_id"] for item in data.get("croquis", ())]
+    floor_indices = {floor_id: index for index, floor_id in enumerate(floor_order)}
+    by_floor = {}
+    for column in active:
+        by_floor.setdefault(column.get("floor_id"), []).append(column)
+
+    for column in columns:
+        if (
+            column.get("object_id") in active_ids
+            or column.get("class_name") != "ElementoPilar"
+            or column.get("region_role") != "base_cad"
+        ):
+            continue
+        index = floor_indices.get(column.get("floor_id"))
+        if index is None or index == 0 or index + 1 >= len(floor_order):
+            continue
+        previous_floor = floor_order[index - 1]
+        next_floor = floor_order[index + 1]
+        has_previous_column = any(
+            candidate.get("class_name") == "ElPilarFundacao"
+            and _same_column_geometry(candidate, column)
+            for candidate in by_floor.get(previous_floor, ())
+        )
+        has_next_column = any(
+            candidate.get("referenced_by_beam")
+            and _same_column_geometry(candidate, column)
+            for candidate in by_floor.get(next_floor, ())
+        )
+        if has_previous_column and has_next_column:
+            active.append(column)
+            active_ids.add(column["object_id"])
+            by_floor.setdefault(column.get("floor_id"), []).append(column)
+    return active
+
+
+class PrjImporter:
+    name = "PRJ"
     extensions = (".prj", ".prj.zip")
 
     def read(self, path: str | Path, options: ImportOptions) -> ImportResult:
@@ -89,7 +151,7 @@ class EberickImporter:
         options.validate()
         self._validate_launch(data)
         length = {"mm": 0.001, "cm": 0.01, "m": 1.0}[options.length_unit]
-        force = {"N": 0.001, "kN": 1.0, "kgf": 0.00980665, "tf": 9.80665}[
+        force = {"N": 0.001, "kN": 1.0, "kgf": 0.01, "tf": 10.0}[
             options.force_unit
         ]
         builder = _LaunchBuilder(data, options, length, force)
@@ -194,11 +256,7 @@ class EberickImporter:
                 raise ProjectImportError(
                     "A contagem de vigas/pavimentos do croqui não confere."
                 )
-        active = [
-            column
-            for column in data.get("columns", ())
-            if _importable_column(column)
-        ]
+        active = _active_columns(data)
         anchor_records = [
             *active,
             *(
@@ -229,11 +287,18 @@ class EberickImporter:
             ):
                 continue
             duplicate = any(
-                other.get("floor_id") == column.get("floor_id")
-                and other["name"] == column["name"]
+                other["name"] == column["name"]
                 and other["xy_raw"] == column["xy_raw"]
                 and other["rectangular_dimensions_candidate_raw"]
                 == column["rectangular_dimensions_candidate_raw"]
+                and (
+                    other.get("floor_id") == column.get("floor_id")
+                    or (
+                        column.get("region_role") == "base_cad"
+                        and column.get("class_name") == "ElementoPilar"
+                        and other.get("class_name") == "ElPilarFundacao"
+                    )
+                )
                 for other in active
             )
             if column.get("region_role") != "base_cad" or not duplicate:
@@ -259,7 +324,12 @@ class EberickImporter:
                         or math.isclose(values[0], values[2], abs_tol=1e-12)
                     )
                 )
-                if not rectangular:
+                supported_candidate = (
+                    kind == "beam"
+                    and data.get("internal_version_code") == 3075
+                    and _beam_section_candidate_3075(section)
+                )
+                if not rectangular and not supported_candidate:
                     raise ProjectImportError(
                         "A seção não corresponde ao perfil retangular estudado; importação cancelada."
                     )
@@ -279,14 +349,19 @@ class _LaunchBuilder:
         self.node_sources: dict[str, dict] = {}
         self.member_pairs: set[frozenset[str]] = set()
         self.materials: dict[str, dict] = {}
+        self.sections_by_id = {
+            section["object_id"]: section for section in data.get("sections", ())
+        }
         self.member_sources: dict[str, dict] = {}
         self.anchor_nodes: dict[int, str] = {}
         self.column_axes: dict[int, tuple[float, float]] = {}
         self.column_axis_evidence: list[dict] = []
         self.column_axis_rejected: list[dict] = []
+        self.section_review: list[dict] = []
         self.support_candidates: list[dict] = []
         self.omitted_lower_columns = 0
         self.omitted_column_segments = 0
+        self.omitted_column_details: list[dict] = []
         self.warnings = [
             "Unidades e cotas foram interpretadas segundo as opções desta importação.",
             (
@@ -358,7 +433,7 @@ class _LaunchBuilder:
         return clean or str(floor["floor_id"])
 
     def _resolve_column_axes(self, columns):
-        """Infer section centers from beam faces in the observed 3219 layout.
+        """Infer section centers from beam faces in the observed PRJ layouts.
 
         An insertion can be at the center or at a face. Each orthogonal beam
         endpoint supplies only the coordinate along the beam; the transverse
@@ -380,7 +455,8 @@ class _LaunchBuilder:
                 (width * sine + height * cosine) / 2,
             )
 
-        if self.data.get("internal_version_code") == 3219:
+        version = self.data.get("internal_version_code")
+        if version in _COLUMN_AXIS_LAYOUT_CODES:
             for beam in self.data["beams"]:
                 start, end = beam["xy_i_raw"], beam["xy_j_raw"]
                 dx, dy = end[0] - start[0], end[1] - start[1]
@@ -388,7 +464,20 @@ class _LaunchBuilder:
                 if length <= 1e-12:
                     continue
                 direction = (dx / length, dy / length)
-                axis = 0 if abs(direction[1]) < 1e-6 else 1 if abs(direction[0]) < 1e-6 else None
+                # Algumas vigas variam menos de 1 mm na direção transversal.
+                # Só as consideramos alinhadas quando ambos os limites são atendidos.
+                def aligned(transverse, component):
+                    return abs(component) < 1e-6 or (
+                        version in (3075, 3575)
+                        and abs(component) <= 0.001
+                        and abs(transverse) * self.length <= 0.001
+                    )
+
+                axis = (
+                    0 if aligned(dy, direction[1])
+                    else 1 if aligned(dx, direction[0])
+                    else None
+                )
                 if axis is None:
                     continue
                 for side, sign in (("i", -1), ("j", 1)):
@@ -400,7 +489,9 @@ class _LaunchBuilder:
                     if abs(math.sin(2 * angle)) > 1e-6:
                         continue
                     half = half_extents[ident][axis]
-                    value = beam[f"xy_{side}_raw"][axis] + sign * direction[axis] * half
+                    value = beam[f"xy_{side}_raw"][axis] + sign * math.copysign(
+                        half, direction[axis]
+                    )
                     if abs(value - column["xy_raw"][axis]) > half + tolerance:
                         self.column_axis_rejected.append(
                             {"column_id": ident, "column_name": column["name"],
@@ -466,7 +557,7 @@ class _LaunchBuilder:
         )
         if not all(math.isfinite(value) and value > 0 for value in (b, h)):
             raise ProjectImportError(f"Seção sem dimensões positivas: {source_label}.")
-        # O Eberick grava a rotação dos pilares em radianos. O modelo OSA usa
+        # O PRJ grava a rotação dos pilares em radianos. O modelo OSA usa
         # graus em torno do eixo longitudinal da barra. Trechos de viga não têm
         # esse campo por elemento; a rotação fixa da definição de seção não é
         # a rotação da viga no pórtico.
@@ -475,13 +566,28 @@ class _LaunchBuilder:
             rotation = math.degrees(
                 self._number(record.get("rotation_candidate_rad", 0.0), "Rotação")
             )
-        material, values = self._material(floor, kind)
+        material, values = self._material(floor, kind, record)
         if foundation_bar and self.next_foundation_member_index is not None:
             name = f"B{self.next_foundation_member_index}"
             self.next_foundation_member_index += 1
         else:
             name = f"B{self.next_member_index}"
             self.next_member_index += 1
+        section = self.sections_by_id.get(record.get("section_id"))
+        section_needs_review = (
+            kind == "beam"
+            and self.data.get("internal_version_code") == 3075
+            and section is not None
+            and _beam_section_candidate_3075(section)
+        )
+        if section_needs_review:
+            self.section_review.append({
+                "member_name": name,
+                "beam_name": record["name"],
+                "floor_id": floor["floor_id"],
+                "section_values_raw": list(section["geometric_values_raw"]),
+                "rectangular_candidate_mm": [b, h],
+            })
         self.members.append(
             {
                 "name": name,
@@ -503,18 +609,46 @@ class _LaunchBuilder:
             "object_id": record["object_id"],
             "floor_id": floor["floor_id"],
             "original_name": record["name"],
+            "source_group_name": record.get("beam_name") if kind == "beam" else None,
             "source_label": source_label,
             "kind": kind,
             "foundation_bar": foundation_bar,
             "referenced_by_beam": record.get("referenced_by_beam", False),
             "segment_id": record.get("segment_id"),
             "beam_object_id": record.get("beam_object_id"),
+            "section_requires_review": section_needs_review,
+            "material_override": record.get("material_override"),
             "rotation_source_rad": record.get("rotation_candidate_rad")
             if kind == "column"
             else None,
         }
 
-    def _material(self, floor, kind):
+    def _material(self, floor, kind, record):
+        override = record.get("material_override") if kind == "beam" else None
+        if override:
+            if override.get("type") != "Madeira":
+                raise ProjectImportError(
+                    f"Material individual {override.get('type')!r} da viga não mapeado."
+                )
+            from osa.data import CatalogLoader
+
+            reference = next(
+                item for item in CatalogLoader().materials()
+                if item["name"] == "Madeira Estrutural"
+            )
+            name = f"Madeira para revisão ({override['class_name']})"
+            values = [
+                reference["elastic_modulus_kn_m2"], reference["shear_modulus_kn_m2"],
+                reference["poisson_ratio"], reference["unit_weight_kn_m3"],
+            ]
+            self.materials[name] = {"type": "Madeira", "values": values}
+            warning = (
+                "Vigas de madeira usam propriedades de referência do OSA; "
+                "os valores nativos foram preservados no relatório e precisam ser revisados."
+            )
+            if warning not in self.warnings:
+                self.warnings.append(warning)
+            return name, values
         config = "CfgPavViga" if kind == "beam" else "CfgPavPilar"
         source_name = floor.get("material_defaults", {}).get(config)
         concrete = next(
@@ -529,7 +663,7 @@ class _LaunchBuilder:
                 raise ProjectImportError(
                     f"Material de {floor['name']} não identificado. Desative a leitura de propriedades para usar o concreto de referência do OSA."
                 )
-            name = f"Eberick {source_name}"
+            name = f"Concreto {source_name}"
             e = (
                 self._number(concrete["elastic_modulus_raw"], "Módulo")
                 * self.force
@@ -579,7 +713,7 @@ class _LaunchBuilder:
                 if index == 0
                 else elevations[floors[index - 1]["floor_id"]] + height
             )
-        active = [c for c in self.data["columns"] if _importable_column(c)]
+        active = _active_columns(self.data)
         lookup = {(c["floor_id"], c["name"]): c for c in active}
         if len(lookup) != len(active):
             raise ProjectImportError(
@@ -600,7 +734,7 @@ class _LaunchBuilder:
             "insertion_fallback" in entry["coordinate_sources"]
             for entry in self.column_axis_evidence
         )
-        if self.data.get("internal_version_code") == 3219:
+        if self.data.get("internal_version_code") in _COLUMN_AXIS_LAYOUT_CODES:
             self.warnings.append(
                 "Eixos de pilares foram estimados a partir das faces das vigas e "
                 "da continuidade entre pavimentos. "
@@ -635,6 +769,10 @@ class _LaunchBuilder:
                 if foundation_bar:
                     if not self.options.include_lower_columns:
                         self.omitted_lower_columns += 1
+                        self.omitted_column_details.append({
+                            "name": column["name"], "floor_id": floor["floor_id"],
+                            "reason": "prolongamento inferior desativado na importação",
+                        })
                         continue
                     foundation = column.get("foundation_raw") or {}
                     if foundation.get("kind") == "pile_cap" and foundation.get("height_reference") == "floor_to_foundation_bar_bottom":
@@ -643,6 +781,10 @@ class _LaunchBuilder:
                         height_raw = foundation.get("settlement_depth_raw")
                     else:
                         self.omitted_lower_columns += 1
+                        self.omitted_column_details.append({
+                            "name": column["name"], "floor_id": floor["floor_id"],
+                            "reason": "cota inferior não mapeada",
+                        })
                         continue
                     depth = (
                         self._number(height_raw, "Altura do pilar de fundação")
@@ -681,6 +823,10 @@ class _LaunchBuilder:
                     )
                     if previous is None:
                         self.omitted_column_segments += 1
+                        self.omitted_column_details.append({
+                            "name": column["name"], "floor_id": floor["floor_id"],
+                            "reason": "continuidade no pavimento anterior não identificada",
+                        })
                         continue
                     start = self.anchor_nodes[previous["object_id"]]
                 self._member(
@@ -750,7 +896,7 @@ class _LaunchBuilder:
             )
         if self.options.preserve_end_offsets:
             self.warnings.append(
-                "Deslocamentos de extremidade foram representados por ligações rígidas do OSA. A equivalência analítica com o Eberick ainda deve ser verificada."
+                "Deslocamentos de extremidade foram representados por ligações rígidas do OSA. A equivalência analítica com o modelo original ainda deve ser verificada."
             )
         else:
             self.warnings.append(
@@ -770,8 +916,13 @@ class _LaunchBuilder:
                 f"{self.omitted_column_segments} trecho(s) de pilar sem continuidade "
                 "identificada no pavimento anterior foram omitidos."
             )
+        if self.section_review:
+            self.warnings.append(
+                f"{len(self.section_review)} trecho(s) de viga têm dados adicionais de seção "
+                "não mapeados e usam uma seção retangular candidata; confira o resumo."
+            )
         self.warnings.append(
-            "Materiais usam configurações de pavimento, sem mapear sobreposições por elemento. O coeficiente de Poisson é informado nesta importação."
+            "Materiais de concreto usam configurações de pavimento, sem mapear outras sobreposições por elemento. O coeficiente de Poisson é informado nesta importação."
             if self.options.import_material_properties
             else "Os membros usam o concreto de referência do OSA; propriedades nativas não foram aplicadas."
         )
@@ -833,6 +984,9 @@ class _LaunchBuilder:
             and name not in _IMPORTED_LAUNCH_CLASSES
             and name not in _LAUNCH_METADATA_CLASSES
         ]
+        active_column_ids = {
+            column["object_id"] for column in _active_columns(self.data)
+        }
         excluded_element_counts = {
             "sapatas": sum(
                 (column.get("foundation_raw") or {}).get("kind") == "pad_footing"
@@ -862,6 +1016,7 @@ class _LaunchBuilder:
                 column.get("class_name") == "ElementoPilar"
                 and not column.get("referenced_by_beam")
                 and column.get("region_role") == "base_cad"
+                and column.get("object_id") not in active_column_ids
                 for column in self.data.get("columns", ())
             ),
             "pilares_fundacao_sem_referencia": sum(
@@ -892,12 +1047,12 @@ class _LaunchBuilder:
         }
         report = {
             "schema": "osa-import/v1",
-            "importer": "eberick",
+            "importer": "prj",
             "importer_version": "0.5",
             "source": source,
             "internal_version_code": self.data.get("internal_version_code"),
             "compatibility": {
-                "layout": self.data.get("launch_layout", "eberick-native-launch-v1"),
+                "layout": self.data.get("launch_layout", "prj-native-launch-v1"),
                 "reference_internal_code": _REFERENCE_CODE,
                 "mode": "reference_code"
                 if self.data.get("internal_version_code") == _REFERENCE_CODE
@@ -949,6 +1104,8 @@ class _LaunchBuilder:
                 "beam_to_support": "rigid links from corrected column axis to native beam endpoints",
                 "column_axes": self.column_axis_evidence,
                 "unmatched_beam_endpoints": self.column_axis_rejected,
+                "section_review": self.section_review,
+                "omitted_columns": self.omitted_column_details,
             },
             "floor_elevations_m": [
                 {"id": f["floor_id"], "name": f["name"], "z": elevations[f["floor_id"]]}
@@ -973,7 +1130,12 @@ class _LaunchBuilder:
             "members": sorted(self.members, key=lambda member: int(member["name"][1:])),
             "rigid_bars": self.rigid,
             "materials": self.materials,
-            "included_sections": {"Concreto": ["Retangular"]},
+            "included_sections": {
+                "Concreto": ["Retangular"],
+                **({"Madeira": ["Retangular"]} if any(
+                    item["type"] == "Madeira" for item in self.materials.values()
+                ) else {}),
+            },
             "actions": [],
             "action_groups": [],
             "load_cases": [],

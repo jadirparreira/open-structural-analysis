@@ -1,4 +1,4 @@
-"""Primitivas binárias. Não executa Eberick, DLLs ou conteúdo do projeto."""
+"""Primitivas binárias para leitura de arquivos PRJ."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def load_stream(path, member=None, max_bytes=256 * 1024 * 1024):
         info.update(container="binary", member=None)
     if data[:8] != b":\x01\x01\0\0\x1a\x1a\x1a":
         raise LayoutError(
-            "Assinatura inicial não reconhecida como uma das amostras Eberick."
+            "Assinatura inicial não reconhecida como um dos layouts PRJ conhecidos."
         )
     info.update(
         stream_size=len(data),

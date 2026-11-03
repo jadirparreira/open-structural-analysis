@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from osa.transcriptions import ImportOptions
 from osa.ui import main_window
-from osa.ui.import_dialogs import EberickImportDialog, ImportReportDialog
+from osa.ui.import_dialogs import PrjImportDialog, ImportReportDialog
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +49,7 @@ def _wait_for_loading(app, window):
 
 
 def test_options_and_open_filter_expose_prj(qt_app):
-    dialog = EberickImportDialog("example.prj")
+    dialog = PrjImportDialog("example.prj")
     assert dialog.options().length_unit == "cm"
     assert dialog.options().force_unit == "kgf"
     assert "*.prj" in main_window.MainWindow._import_file_filter
@@ -70,9 +70,9 @@ def test_cancel_pending_changes_does_not_load_another_project():
 @pytest.mark.parametrize(
     "source_env,node_count,bar_count,save_name",
     [
-        ("OSA_EBERICK_PRJ", 28, 16, "teste_conv.osa"),
+        ("OSA_TEST_PRJ", 28, 16, "teste_conv.osa"),
         (
-            "OSA_EBERICK_FOUNDATIONS_PRJ",
+            "OSA_FOUNDATIONS_PRJ",
             225,
             145,
             "Arara Azul - Ampliação.osa",
@@ -102,7 +102,7 @@ def test_real_window_import_save_and_reopen(
         def exec(self):
             return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(main_window, "EberickImportDialog", AcceptedImport)
+    monkeypatch.setattr(main_window, "PrjImportDialog", AcceptedImport)
     monkeypatch.setattr(main_window, "ImportReportDialog", AcceptedReport)
     window = main_window.MainWindow()
     errors = []
@@ -231,9 +231,14 @@ def test_report_shows_footing_position_and_plate_pending_state(qt_app):
     assert "-1.500" in plain
     assert "L1 — Térreo" in plain
     assert "Geometria de placa pendente" in plain
-    options = EberickImportDialog("example.prj")
-    assert "assentamento das sapatas" in options.lower_columns.text()
-    assert "altura do primeiro pavimento" not in options.lower_columns.text()
+    options = PrjImportDialog("example.prj")
+    selected_options = options.options()
+    assert selected_options.include_lower_columns is True
+    assert selected_options.preserve_end_offsets is True
+    assert selected_options.import_material_properties is True
+    assert not hasattr(options, "lower_columns")
+    assert not hasattr(options, "offsets")
+    assert not hasattr(options, "material_properties")
     report.close()
     options.close()
 
@@ -251,12 +256,22 @@ def test_report_identifies_unresolved_column_axis_and_beam_endpoint(qt_app):
                     {"beam_name": "VI-12_T1", "column_name": "P17",
                      "floor_id": 1, "axis": "y"}
                 ],
+                "section_review": [
+                    {"beam_name": "V6_T1", "member_name": "B125", "floor_id": 1,
+                     "rectangular_candidate_mm": [300, 800]}
+                ],
+                "omitted_columns": [
+                    {"name": "P25", "floor_id": 1,
+                     "reason": "continuidade no pavimento anterior não identificada"}
+                ],
             },
         }
     )
     text = dialog.report_sections["Geometria"].toPlainText()
     assert "P17 — Inferior: Y" in text
     assert "VI-12_T1 — P17 — Inferior (Y)" in text
+    assert "V6_T1 — B125 — Inferior: 300 × 800 mm" in text
+    assert "P25 — Inferior: continuidade no pavimento anterior não identificada" in text
     dialog.close()
 
 
@@ -308,7 +323,7 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
         QPalette.ColorRole.WindowText, QColor("#ffffff" if dark else "#24292f")
     )
     qt_app.setPalette(inherited)
-    options = EberickImportDialog("teste.prj")
+    options = PrjImportDialog("teste.prj")
     report = ImportReportDialog(
         {
             "source": {"filename": "teste.prj"},
