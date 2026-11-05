@@ -79,11 +79,10 @@ class ProcessingPanel(QFrame):
             self._set_step(key, "complete" if index < active_index else "active" if index == active_index else "pending")
         self.status.setText(self.step_labels[stage].text() + "…")
 
-    def succeed(self, result_count: int) -> None:
+    def succeed(self) -> None:
         for key, _text in self.steps:
             self._set_step(key, "complete")
-        suffix = "combinação processada" if result_count == 1 else "combinações processadas"
-        self.status.setText(f"Processamento da estrutura concluído com sucesso. {result_count} {suffix}.")
+        self.status.setText("Processamento da estrutura concluído com sucesso")
         self.status.setProperty("state", "success")
         self._refresh_style(self.status)
         self.close_button.show()

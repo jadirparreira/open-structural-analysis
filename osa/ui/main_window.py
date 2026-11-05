@@ -579,7 +579,7 @@ class MainWindow(QMainWindow):
         self.model.analysis_results = list(results)
         self.refresh_analysis_palette()
         self.refresh_selected_property_panel(self.palette.active_group)
-        self.processing_panel.succeed(len(self.model.analysis_results))
+        self.processing_panel.succeed()
 
     def _analysis_failed(self, message: str) -> None:
         self.processing_panel.fail(message)
