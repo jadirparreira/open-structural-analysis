@@ -41,9 +41,10 @@ def create_application(
     if splash is not None:
         splash.show()
         app.processEvents()
+        splash.wait_until_exposed(app)
         if on_splash_shown is not None:
-            # Hand over only after the vector splash has painted. The
-            # bootloader already gave feedback before Python/Qt loaded.
+            # In packaged builds with a bootloader splash, hand over only after
+            # the Qt splash is exposed so the transition does not flash blank.
             on_splash_shown()
     try:
         if sys.platform.startswith("linux"):

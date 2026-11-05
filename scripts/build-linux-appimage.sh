@@ -29,9 +29,6 @@ UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/osa-uv-cache}"
 export UV_CACHE_DIR
 
 uv run python scripts/prepare-dwg-converter.py
-QT_QPA_PLATFORM=offscreen uv run python scripts/render-startup-splash.py \
-    osa/resources/icons/openstructuralanalysis-startup.svg \
-    build/startup-splash.png
 uv run pyinstaller --noconfirm --clean "$SPEC_FILE"
 
 rm -rf "$APPDIR/usr"

@@ -80,19 +80,13 @@ analysis = Analysis(
     noarchive=False,
 )
 
-splash = Splash(
-    str(project_root / "build/startup-splash.png"),
-    binaries=analysis.binaries,
-    datas=analysis.datas,
-    center="primary",
-    always_on_top=True,
-)
-
+# O splash do bootloader do PyInstaller depende das bibliotecas Tcl/Tk da
+# distribuição Python usada no build. O AppImage usa o splash Qt da aplicação,
+# que permanece visível enquanto a janela principal é inicializada.
 pyz = PYZ(analysis.pure)
 
 executable = EXE(
     pyz,
-    splash,
     analysis.scripts,
     [],
     exclude_binaries=True,
@@ -107,7 +101,6 @@ executable = EXE(
 
 coll = COLLECT(
     executable,
-    splash.binaries,
     analysis.binaries,
     analysis.datas,
     strip=False,
