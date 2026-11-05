@@ -32,7 +32,7 @@ def test_mcp_application_switches_visual_sessions():
 
     assert application.get_session_state() == {
         "active_session": "Geometria",
-        "available_sessions": ["Geometria", "Ações", "Análise"],
+        "available_sessions": ["Geometria", "Verificação", "Ações", "Análise"],
     }
 
     application._on_session_changed = lambda session: (sessions.append(session), active_session.__setitem__(0, session))
@@ -41,6 +41,13 @@ def test_mcp_application_switches_visual_sessions():
     assert selected["active_session"] == "Análise"
     assert sessions == ["Análise"]
     assert application.get_session_state()["active_session"] == "Análise"
+
+    selected = application.set_session("Verificação")
+    assert selected["active_session"] == "Verificação"
+    assert sessions[-1] == "Memorial"
+    assert application.get_session_state()["active_session"] == "Verificação"
+    # Preserve older integrations that used the internal palette group name.
+    assert application.set_session("Memorial")["active_session"] == "Verificação"
 
 
 def test_mcp_application_reads_and_changes_the_open_model():
@@ -76,7 +83,7 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "load_cases": 0,
         "load_combinations": 0,
         "analysis_results": 0,
-        "materials": 3,
+        "materials": 8,
         "drawing_references": 0,
         "scene_views": 1,
         "active_scene_view": "Completo",

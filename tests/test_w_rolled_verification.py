@@ -84,34 +84,22 @@ def test_flexion_z_resistance_is_available_when_z_moment_is_zero():
     assert result["checks"]["flexocompressao"]["parameters"]["Mz_Rd_kn_cm"] > 0.0
 
 
-@pytest.mark.parametrize("sample,expected", [
-    ({"torque": 0.2}, "momento torsor"),
-    ({"shear_y": 10.0, "shear_z": 10.0}, "cortantes Y e Z simultâneos"),
-])
-def test_uncovered_w_actions_mark_element_as_unverified(sample, expected):
+def test_simultaneous_w_shears_do_not_add_an_unverified_status():
     model = make_w_model(sample={
         "x": 0.0, "axial": 0.0, "moment_y": 1.0, "moment_z": 0.0,
-        "shear_y": 0.0, "shear_z": 0.0, "torque": 0.0,
-        **sample,
+        "shear_y": 10.0, "shear_z": 10.0, "torque": 0.0,
     })
     result = verify_model(model)
     element = result["results"]["bar:W1"]
-
-    assert element["status"] == "not_checked"
-    assert result["summary"]["unverified"] == 1
-    assert any(expected in warning for warning in element["scope_warnings"])
-    assert "x=0.000 m" in element["scope_warnings"][0]
-    assert "ELU" in element["scope_warnings"][0]
-
-    model.verification_results = result["results"]
-    html = CalculationMemorialDialog._render(calculation_memory(model, ("W1",)), {})
-    assert expected in html
+    assert element["status"] == "checked"
+    assert result["summary"]["unverified"] == 0
+    assert "scope_warnings" not in element
 
 
-def test_small_solver_residuals_do_not_mark_w_member_as_unverified():
+def test_small_shear_solver_residuals_do_not_mark_w_member_as_unverified():
     model = make_w_model(sample={
         "x": 0.0, "axial": 0.0, "moment_y": 0.0, "moment_z": 0.0,
-        "shear_y": 0.12, "shear_z": 0.28, "torque": 0.0018,
+        "shear_y": 0.12, "shear_z": 0.28, "torque": 0.0,
     })
     element = verify_model(model)["results"]["bar:W1"]
 
@@ -119,7 +107,7 @@ def test_small_solver_residuals_do_not_mark_w_member_as_unverified():
     assert "scope_warnings" not in element
 
 
-def test_recommended_slenderness_limit_is_advisory_not_a_failed_check():
+def test_recommended_slenderness_limit_does_not_change_the_check_status():
     model = make_w_model(length=10.0, sample={
         "x": 0.0, "axial": 1.0, "moment_y": 1.0, "moment_z": 0.0,
         "shear_y": 0.0, "shear_z": 0.0, "torque": 0.0,
@@ -130,18 +118,13 @@ def test_recommended_slenderness_limit_is_advisory_not_a_failed_check():
     assert element["checks"]["axial_compression"]["parameters"]["slenderness_z"] > 200.0
     assert element["status"] == "checked"
     assert result["summary"]["unverified"] == 0
-    assert "advisory_warnings" in element
-
-    model.verification_results = result["results"]
-    html = CalculationMemorialDialog._render(calculation_memory(model, ("W1",)), {})
-    assert "L/r &gt; 200" in html
+    assert "advisory_warnings" not in element
 
 
-def test_memorial_shows_w_geometry_assumptions_without_changing_layout_style():
+def test_memorial_shows_the_w_rolled_radius():
     model = make_w_model()
+    model.verification_results = verify_model(model)["results"]
     html = CalculationMemorialDialog._render(calculation_memory(model, ("W1",)), {})
 
     assert "Raio de concordância adotado (r)" in html
-    assert "An = Ag" in html
-    assert "background:#fff8c5" in html
     assert _w_properties(model.bars["W1"])["r"] == 10.0

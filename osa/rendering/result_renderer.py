@@ -466,10 +466,6 @@ class ResultRenderer:
             if basis is None:
                 continue
             local_x, local_y, local_z = basis
-            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
-            if base_basis is None:
-                continue
-            _base_x, base_local_y, base_local_z = base_basis
             start = np.array((start_node.x, start_node.y, start_node.z), dtype=float)
             deformed = []
             visual_displacements = []
@@ -490,17 +486,13 @@ class ResultRenderer:
                     + visual_displacement
                 )
             deformed_centerline = np.asarray(deformed)
-            positioned_centerline = self._apply_solid_member_positioning(
-                deformed_centerline, member, local_x, base_local_y, base_local_z,
-            )
-            display_centerline = positioned_centerline if solid_members_visible else deformed_centerline
             reported = np.asarray(reported_displacements)
             magnitudes = np.linalg.norm(reported, axis=1)
             maximum_index = int(np.argmax(magnitudes))
             maximum_vector = visual_displacements[maximum_index]
             vector_length = float(np.linalg.norm(maximum_vector))
             outward = maximum_vector / vector_length * 0.12 if vector_length > 1e-12 else local_z * 0.12
-            label_positions.append(display_centerline[maximum_index] + outward)
+            label_positions.append(deformed_centerline[maximum_index] + outward)
             if components == "XYZ":
                 value_mm = float(magnitudes[maximum_index] * 1000.0)
             else:
@@ -521,12 +513,15 @@ class ResultRenderer:
                 if shape is None:
                     raise ValueError("Seção incompleta.")
                 longitudinal_edge_indices = self._solid_member_renderer.longitudinal_edge_indices(shape)
+                # Analysis results follow the analytical axis. Detailing-only
+                # face offsets, section offsets and cut angles do not affect
+                # the deformed profile.
                 self._append_deformed_member_solid(
                     face_points, faces, face_colors, edge_points, edges, edge_colors,
-                    positioned_centerline, local_x, local_y, local_z, shape.loops,
+                    deformed_centerline, local_x, local_y, local_z, shape.loops,
                     longitudinal_edge_indices, color,
                     np.clip(color.astype(float) * 0.65, 0, 255).astype(np.uint8),
-                    getattr(member, "solid_face_angles", (0.0, 0.0, 0.0, 0.0)),
+                    (0.0, 0.0, 0.0, 0.0),
                 )
             except (KeyError, TypeError, ValueError):
                 self._append_colored_polyline(
@@ -570,41 +565,6 @@ class ResultRenderer:
                 pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
             ))
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
-
-    @staticmethod
-    def _apply_solid_member_positioning(
-        centerline: np.ndarray,
-        member,
-        local_x: np.ndarray,
-        base_local_y: np.ndarray,
-        base_local_z: np.ndarray,
-    ) -> np.ndarray:
-        """Apply the member's visual placement to a deformed centerline.
-
-        The analysis remains tied to the original analytical member axis.  The
-        returned points are only the visual geometry used by the deformation
-        overlay, following the same rules as the solid-member renderer:
-        endpoint offsets act along the member axis and section offsets act in
-        the unrotated local Y/Z reference plane.
-        """
-        positioned = np.asarray(centerline, dtype=float).copy()
-        if len(positioned) < 2:
-            return positioned
-
-        face_offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
-        if len(face_offsets) == 2:
-            candidate_start = positioned[0] - local_x * float(face_offsets[0])
-            candidate_end = positioned[-1] + local_x * float(face_offsets[1])
-            if float(np.dot(candidate_end - candidate_start, local_x)) > 1e-9:
-                positioned[0], positioned[-1] = candidate_start, candidate_end
-
-        section_offsets = getattr(member, "solid_section_offsets", (0.0, 0.0))
-        if len(section_offsets) == 2:
-            positioned += (
-                base_local_y * float(section_offsets[0])
-                + base_local_z * float(section_offsets[1])
-            )
-        return positioned
 
     def _append_deformed_member_solid(
         self, face_points, faces, face_colors, edge_points, edges, edge_colors,

@@ -84,7 +84,7 @@ def test_rolled_columns_and_beam_have_balanced_joint_moments_in_the_frame_plane(
     for name, start, end, rotation in (("B1", "N1", "N2", 90), ("B2", "N2", "N3", 0),
                                         ("B3", "N4", "N3", 90)):
         model.add_bar(name, start, end)
-        model.update_bar_material(name, "Aço Estrutural", model.materials["Aço Estrutural"])
+        model.update_bar_material(name, "ASTM A36", model.materials["ASTM A36"])
         model.update_bar_section(name, "W Laminado")
         model.update_member_profile(name, "W 410 x 38.8", {"d": 399, "bf": 140, "tw": 6.4, "tf": 8.8})
         model.update_member_rotation(name, rotation)

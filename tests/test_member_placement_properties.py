@@ -82,9 +82,9 @@ def test_opening_and_editing_do_not_create_entities_or_invalidate_results(window
     set_material(editor, "Aço")
     panel._section_combo.setCurrentText("W Laminado")
     panel._release_boxes[0].setChecked(False)
-    panel._displacement_settings_button.click()
-    edit(editor.displacement_panel.rotation_input, "45")
-    assert editor.template.rotation == 45
+    # Positioning controls belong to Detalhamento, not the geometry creation flow.
+    assert panel._displacement_settings_button is None
+    assert panel._positioning_status is None
     assert editor.template.releases[0]
     assert window.model.bars == {"B1": original}
     assert tuple(window.model.nodes) == ("N1", "N2")
@@ -94,7 +94,7 @@ def test_opening_and_editing_do_not_create_entities_or_invalidate_results(window
     assert window.model.revision == revision
 
 
-def test_catalog_positioning_and_releases_are_inherited_by_each_new_member(window):
+def test_catalog_section_and_release_settings_are_inherited_by_each_new_member(window):
     window.start_member_placement()
     editor = window.member_placement_editor
     panel = editor.properties
@@ -111,23 +111,13 @@ def test_catalog_positioning_and_releases_are_inherited_by_each_new_member(windo
     assert editor.template.section_geometry
     assert editor.template.section_mirrored
 
-    panel._displacement_settings_button.click()
-    displacement = editor.displacement_panel
-    assert displacement.isVisible()
-    assert section.isHidden()
-    assert not panel._section_settings_button.isChecked()
-    edit(displacement.rotation_input, "45")
-    edit(displacement._solid_offset_inputs["A"], "125")
-    edit(displacement._solid_offset_inputs["B"], "250")
-    edit(displacement._position_parameter_inputs["Y"], "12,5")
-    edit(displacement._position_parameter_inputs["Z"], "-30")
     panel._release_boxes[0].setChecked(False)
     panel._release_boxes[9].setChecked(False)
     edit(panel._release_rotation_percent_inputs[7], "35")
     draft = editor.template
-    assert draft.rotation == 45
-    assert draft.solid_face_offsets == (0.125, 0.25)
-    assert draft.solid_section_offsets == (0.0125, -0.03)
+    assert draft.rotation == 0
+    assert draft.solid_face_offsets == (0.0, 0.0)
+    assert draft.solid_section_offsets == (0.0, 0.0)
     assert draft.releases[0] and draft.releases[9]
     assert draft.rotation_flexibility_percent[1] == 35
 
@@ -147,9 +137,7 @@ def test_catalog_positioning_and_releases_are_inherited_by_each_new_member(windo
     assert window._member_placement_start is None
 
     old_members = dict(window.model.bars)
-    edit(displacement.rotation_input, "90")
     launch(window, (2, 3, 0), (5, 3, 0))
-    assert window.model.bars["B3"].rotation == 90
     assert all(window.model.bars[name] == member for name, member in old_members.items())
 
 
@@ -198,7 +186,6 @@ def test_cancel_repeat_switch_tools_and_new_project_manage_the_draft(window):
     assert editor.properties.isVisible()
     assert editor.template.material == "Aço"
     assert editor.template.section == "W Laminado"
-    editor.properties._displacement_settings_button.click()
     window.start_measurement()
     assert editor.properties.isHidden() and editor.displacement_panel.isHidden()
     window.start_member_placement()
@@ -263,10 +250,10 @@ def test_placement_rejects_points_that_round_to_the_same_node(window):
 def test_configuration_panels_do_not_overlap_the_placement_editor(window, toggle):
     window.start_member_placement()
     editor = window.member_placement_editor
-    editor.properties._displacement_settings_button.click()
+    editor.properties._section_settings_button.click()
     getattr(window, toggle)()
     assert editor.properties.isHidden()
-    assert editor.displacement_panel.isHidden()
+    assert editor.section_panel.isHidden()
     assert window._command_mode is None
 
 

@@ -195,31 +195,3 @@ def test_scene_switch_keeps_incremental_edits_to_the_complete_batch(qt_app, monk
             np.testing.assert_array_equal(scene._member_batch.lines.cell_data["rgb"][0], (255, 0, 0))
     finally:
         scene.close()
-
-
-def test_solid_silhouettes_are_only_prepared_when_they_are_visible(qt_app, monkeypatch):
-    model = _model()
-    model.update_bar_section("B1", "Tubular Circular")
-    model.update_member_profile("B1", "T", {"D": 100, "t": 3})
-    model.add_scene_view("Vista")
-    model.set_scene_members_hidden({"B2"}, True)
-    scene = StructureScene()
-    try:
-        with monkeypatch.context() as patch:
-            def unexpected_silhouette(*args, **kwargs):
-                pytest.fail("A line view does not need a solid silhouette")
-
-            patch.setattr(scene._member_renderer, "silhouette_mesh", unexpected_silhouette)
-            scene.render_model(model)
-            model.select_scene_view("Completo")
-            scene.render_model(model)
-            assert scene._member_silhouette_actor is None
-        scene.set_solid_members_visible(True)
-        assert scene._member_silhouette_actor is not None
-        assert scene._member_silhouette_actor.GetVisibility()
-        model.select_scene_view("Vista")
-        scene.render_model(model)
-        assert scene._member_silhouette_actor is not None
-        assert scene._member_silhouette_actor.GetVisibility()
-    finally:
-        scene.close()

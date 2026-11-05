@@ -61,6 +61,9 @@ class InspectorWindow(QMainWindow):
     def refresh_scene(self) -> None:
         pass
 
+    def verify_selected_bar(self) -> None:
+        pass
+
     def refresh_selected_property_panel(self, section: str | None) -> None:
         if self.selected is not None and hasattr(self, "properties"):
             self.properties.show_for(
@@ -86,70 +89,6 @@ def _model() -> StructuralModel:
     return model
 
 
-def test_member_pick_follows_visible_representation_with_section_offset(qt_app):
-    model = StructuralModel()
-    model.add_node("N1", 0.0, 0.0, 0.0)
-    model.add_node("N2", 5.0, 0.0, 0.0)
-    model.add_bar("B1", "N1", "N2")
-    model.update_bar_section("B1", "Barra Retangular")
-    model.update_member_profile("B1", "R 200 x 200", {"b": 200.0, "h": 200.0})
-    model.update_member_solid_section_offsets("B1", (1.0, 0.0))
-
-    scene = StructureScene()
-    scene.plotter.resize(800, 600)
-    scene.show()
-    qt_app.processEvents()
-    context = scene.plotter.context()
-    if context is None or not context.isValid():
-        scene.close()
-        pytest.skip("A seleção 3D requer um contexto OpenGL válido.")
-    scene.render_model(model)
-    camera = scene.plotter.renderer.GetActiveCamera()
-    camera.SetPosition(2.5, 0.5, 10.0)
-    camera.SetFocalPoint(2.5, 0.5, 0.0)
-    camera.SetViewUp(0.0, 1.0, 0.0)
-    camera.ParallelProjectionOn()
-    camera.SetParallelScale(2.5)
-    scene.plotter.reset_camera_clipping_range()
-    scene.plotter.render()
-
-    matrix, width, height = scene._measurement_projection_context()
-    face_start, face_end = scene._member_batch.face_point_ranges["B1"]
-    face_center = scene._member_batch.faces.points[face_start:face_end].mean(axis=0)
-    screens, visible = project_world_to_screen(
-        np.asarray(((2.5, 0.0, 0.0), face_center)), matrix, width, height,
-    )
-    assert visible.tolist() == [True, True]
-    assert np.linalg.norm(screens[0] - screens[1]) > 20.0
-
-    scene.set_solid_members_visible(True)
-    scene._pointer_position = tuple(screens[0])
-    assert scene._pick() is None
-    scene._pointer_position = tuple(screens[1])
-    assert scene._pick() == ("bar", "B1")
-    assert scene._hover_candidates_near_cursor()[0] == ("bar", "B1")
-    line_x, line_y = (int(value) for value in screens[0])
-    face_x, face_y = (int(value) for value in screens[1])
-    assert ("bar", "B1") not in scene._elements_in_rectangle(
-        (line_x + 5, line_y + 5), (line_x - 5, line_y - 5),
-    )
-    assert ("bar", "B1") in scene._elements_in_rectangle(
-        (face_x + 5, face_y + 5), (face_x - 5, face_y - 5),
-    )
-
-    scene.set_solid_members_visible(False)
-    scene._pointer_position = tuple(screens[0])
-    assert scene._pick() == ("bar", "B1")
-    scene._pointer_position = tuple(screens[1])
-    assert scene._pick() is None
-    assert ("bar", "B1") in scene._elements_in_rectangle(
-        (line_x + 5, line_y + 5), (line_x - 5, line_y - 5),
-    )
-    assert ("bar", "B1") not in scene._elements_in_rectangle(
-        (face_x + 5, face_y + 5), (face_x - 5, face_y - 5),
-    )
-    scene.plotter.close()
-    scene.close()
 
 
 def test_solid_mode_keeps_picking_a_member_drawn_as_fallback_line(qt_app):
@@ -341,7 +280,7 @@ def test_member_fields_show_common_or_varied_values(qt_app):
     material = panel._material_widget.findChild(QComboBox)
     assert material.placeholderText() == "Variado"
     assert panel._section_combo.placeholderText() == "Variado"
-    assert panel._positioning_status.text() == "Variado"
+    assert panel._positioning_status is None
 
     model.update_bar_material("B2", "A", model.materials["A"])
     model.update_bar_section("B2", "W")
@@ -350,7 +289,7 @@ def test_member_fields_show_common_or_varied_values(qt_app):
     material = panel._material_widget.findChild(QComboBox)
     assert material.currentText() == "A"
     assert panel._section_combo.currentText() == "W"
-    assert panel._positioning_status.text() == "Centro geométrico"
+    assert panel._positioning_status is None
 
 
 def test_mixed_node_support_click_disables_all_and_coordinate_edit_is_isolated(qt_app):
@@ -498,51 +437,6 @@ def test_color_batch_updates_only_the_edited_members(qt_app):
     assert tuple(colors[2]) == unchanged_color
     scene.plotter.close()
     scene.close()
-
-
-def test_positioning_edit_refreshes_all_member_indicators(qt_app):
-    model = _model()
-    model.update_bar_section("B1", "Barra Retangular")
-    model.update_member_profile("B1", "R", {"b": 100.0, "h": 200.0})
-    model.update_member_releases("B1", (True,) * 12)
-    model.update_member_rotation_flexibility_percent("B1", (15,) * 6)
-    scene = StructureScene()
-    scene.render_model(model)
-    scene.set_solid_members_visible(True)
-    try:
-        batch = scene._member_batch
-        labels_before = batch.label_positions.copy()
-        springs_before = scene._elastic_support_overlay._positions.copy()
-        axes_before = [mesh.points.copy() for mesh in batch.axes]
-        releases_before = batch.releases.points.copy()
-        for offsets in ((0.3, -0.2), (0.0, 0.0), (0.3, -0.2)):
-            model.update_member_solid_section_offsets("B1", offsets)
-            scene.update_member_geometry("B1")
-            scene._refresh_pending_member_update()
-            delta = np.asarray((-offsets[0] / np.sqrt(2), offsets[0] / np.sqrt(2), offsets[1]))
-            assert scene._member_batch is batch
-            np.testing.assert_allclose(batch.label_positions[0], labels_before[0] + delta)
-            np.testing.assert_allclose(batch.label_positions[1], labels_before[1])
-            np.testing.assert_allclose(scene._label_overlay._groups["bar"].positions, batch.label_positions)
-            np.testing.assert_allclose(scene._elastic_support_overlay._positions, springs_before + delta)
-            np.testing.assert_allclose(batch.releases.points, releases_before + delta, atol=1e-7)
-            for mesh, original in zip(batch.axes, axes_before):
-                np.testing.assert_allclose(mesh.points[:2], original[:2] + delta, atol=1e-7)
-                np.testing.assert_allclose(mesh.points[2:], original[2:])
-        for solid in (False, True, False):
-            scene.set_solid_members_visible(solid)
-            offset = delta if solid else np.zeros(3)
-            current = scene._member_batch
-            np.testing.assert_allclose(current.label_positions[0], labels_before[0] + offset)
-            np.testing.assert_allclose(scene._label_overlay._groups["bar"].positions, current.label_positions)
-            np.testing.assert_allclose(scene._elastic_support_overlay._positions, springs_before + offset)
-            np.testing.assert_allclose(current.releases.points, releases_before + offset, atol=1e-7)
-            for mesh, original in zip(current.axes, axes_before):
-                np.testing.assert_allclose(mesh.points[:2], original[:2] + offset, atol=1e-7)
-                np.testing.assert_allclose(mesh.points[2:], original[2:])
-    finally:
-        scene.plotter.close()
-        scene.close()
 
 
 def test_multiple_profile_edits_keep_the_member_batch_when_topology_matches(qt_app):

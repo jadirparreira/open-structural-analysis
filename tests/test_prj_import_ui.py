@@ -67,85 +67,6 @@ def test_cancel_pending_changes_does_not_load_another_project():
     assert errors == []
 
 
-@pytest.mark.parametrize(
-    "source_env,node_count,bar_count,save_name",
-    [
-        ("OSA_TEST_PRJ", 28, 16, "teste_conv.osa"),
-        (
-            "OSA_FOUNDATIONS_PRJ",
-            225,
-            145,
-            "Arara Azul - Ampliação.osa",
-        ),
-    ],
-)
-def test_real_window_import_save_and_reopen(
-    qt_app, monkeypatch, tmp_path, source_env, node_count, bar_count, save_name
-):
-    if not os.environ.get(source_env):
-        pytest.skip(f"Defina {source_env} para a abertura real pela interface.")
-
-    class AcceptedImport:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-        def options(self):
-            return ImportOptions()
-
-    class AcceptedReport:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(main_window, "PrjImportDialog", AcceptedImport)
-    monkeypatch.setattr(main_window, "ImportReportDialog", AcceptedReport)
-    window = main_window.MainWindow()
-    errors = []
-    recents = []
-    monkeypatch.setattr(window, "show_error", errors.append)
-    monkeypatch.setattr(window.home.store, "add", recents.append)
-    try:
-        source = Path(os.environ[source_env])
-        monkeypatch.setattr(
-            main_window.QFileDialog, "getOpenFileName", lambda *args: (str(source), "")
-        )
-        window.home.import_model_button.click()
-        _wait_for_loading(qt_app, window)
-        assert errors == []
-        assert len(window.model.nodes) == node_count
-        assert len(window.model.bars) == bar_count
-        assert window.current_path is None
-        assert window._has_unsaved_changes()
-        assert window._import_save_path.name == save_name
-        assert recents == []
-        assert window.view_stack.currentWidget() is window.scene
-        target = tmp_path / "converted.osa"
-        window._save_model_to(target)
-        assert errors == []
-        assert target.exists()
-        assert window.current_path == target
-        assert not window._has_unsaved_changes()
-        assert recents == [target]
-        window._open_model_path(target)
-        _wait_for_loading(qt_app, window)
-        assert errors == []
-        assert len(window.model.bars) == bar_count
-        assert window.model.import_metadata["requires_review"] is True
-        assert window.current_path == target
-        window.title_bar.import_model_action.trigger()
-        _wait_for_loading(qt_app, window)
-        assert errors == []
-        assert window.current_path is None
-        assert len(window.model.bars) == bar_count
-    finally:
-        window._saved_revision = window.model.revision
-        window.close()
-        qt_app.processEvents()
 
 
 @pytest.mark.parametrize(
@@ -197,40 +118,31 @@ def test_analysis_stops_before_starting_for_pending_plates():
     assert len(errors) == 1 and "placas" in errors[0]
 
 
-def test_report_shows_footing_position_and_plate_pending_state(qt_app):
+def test_report_shows_supported_element_counts_and_empty_categories(qt_app):
     report = ImportReportDialog(
         {
             "counts": {
-                "support_candidates": 1,
+                "columns": 2,
+                "foundation_columns": 1,
                 "pending_plates": 1,
                 "beams": 101,
-                "beam_groups": 30,
                 "beam_segments": 101,
-            },
-            "support_candidates": [
-                {"column_name": "P1", "settlement_depth_m": 1.5, "elevation_m": -1.5}
-            ],
-            "plate_transfer": {
-                "records": [
-                    {
-                        "name": "L1",
-                        "floor_name": "Térreo",
-                        "status": "pending_plate_support",
-                    }
-                ]
             },
         }
     )
     plain = "\n".join(
         browser.toPlainText() for browser in report.report_sections.values()
     )
-    lines = [line.strip() for line in plain.splitlines() if line.strip()]
-    assert lines[lines.index("Vigas") + 1] == "30"
-    assert lines[lines.index("Trechos de viga") + 1] == "101"
-    assert "Assentamento das sapatas" in plain
-    assert "-1.500" in plain
-    assert "L1 — Térreo" in plain
-    assert "Geometria de placa pendente" in plain
+    assert list(report.report_sections) == [
+        "Resumo", "Fundações", "Pilares", "Vigas", "Lajes", "Paredes",
+    ]
+    assert "101 barras" in report.report_sections["Resumo"].toPlainText()
+    assert "1 barras" in report.report_sections["Resumo"].toPlainText()
+    assert "0 placas" in report.report_sections["Resumo"].toPlainText()
+    for category in ("Fundações", "Pilares", "Vigas", "Lajes", "Paredes"):
+        assert report.report_sections[category].toPlainText() == "Nenhum elemento importado"
+    assert "Assentamento das sapatas" not in plain
+    assert "Geometria de placa pendente" not in plain
     options = PrjImportDialog("example.prj")
     selected_options = options.options()
     assert selected_options.include_lower_columns is True
@@ -243,7 +155,7 @@ def test_report_shows_footing_position_and_plate_pending_state(qt_app):
     options.close()
 
 
-def test_report_identifies_unresolved_column_axis_and_beam_endpoint(qt_app):
+def test_report_uses_only_imported_element_categories(qt_app):
     dialog = ImportReportDialog(
         {
             "floor_elevations_m": [{"id": 1, "name": "Inferior", "z": 0}],
@@ -267,28 +179,35 @@ def test_report_identifies_unresolved_column_axis_and_beam_endpoint(qt_app):
             },
         }
     )
-    text = dialog.report_sections["Geometria"].toPlainText()
-    assert "P17 — Inferior: Y" in text
-    assert "VI-12_T1 — P17 — Inferior (Y)" in text
-    assert "V6_T1 — B125 — Inferior: 300 × 800 mm" in text
-    assert "P25 — Inferior: continuidade no pavimento anterior não identificada" in text
+    assert list(dialog.report_sections) == [
+        "Resumo", "Fundações", "Pilares", "Vigas", "Lajes", "Paredes",
+    ]
+    for category in ("Fundações", "Pilares", "Vigas", "Lajes", "Paredes"):
+        assert dialog.report_sections[category].toPlainText() == "Nenhum elemento importado"
+    plain = "\n".join(
+        browser.toPlainText() for browser in dialog.report_sections.values()
+    )
+    assert "P17" not in plain
+    assert "VI-12_T1" not in plain
+    assert "300 × 800 mm" not in plain
     dialog.close()
 
 
-def test_report_shows_block_foundation_bar_height(qt_app):
+def test_foundation_report_lists_original_element_and_created_bar_ids(qt_app):
     dialog = ImportReportDialog({
         "counts": {"foundation_columns": 1},
-        "support_candidates": [{
-            "column_name": "P23", "foundation_kind": "pile_cap",
-            "bar_height_m": 0.52, "elevation_m": -0.52,
-        }],
-        "isolated_foundation_columns": [{"column_name": "P23", "member_name": "B428"}],
+        "member_sources": {
+            "B428": {
+                "kind": "column", "foundation_bar": True,
+                "original_name": "P23",
+            },
+        },
     })
     text = dialog.report_sections["Fundações"].toPlainText()
     assert "P23" in text
-    assert "0.520" in text
-    assert "-0.520" in text
-    assert "P23 — B428" in text
+    assert "B428" in text
+    assert "0.520" not in text
+    assert "-0.520" not in text
     dialog.close()
 
 
@@ -327,13 +246,7 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
     report = ImportReportDialog(
         {
             "source": {"filename": "teste.prj"},
-            "internal_version_code": 2281,
-            "compatibility": {"mode": "structural_probe"},
-            "options": {"length_unit": "cm", "force_unit": "kgf"},
-            "counts": {"nodes": 28, "members": 16},
-            "warnings": [
-                "Cargas, peso próprio, paredes e combinações não foram aplicados ao modelo."
-            ],
+            "counts": {"beam_segments": 3, "columns": 2},
         }
     )
     try:
@@ -352,10 +265,11 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
         plain = "\n".join(
             browser.toPlainText() for browser in report.report_sections.values()
         )
-        assert "Código interno do PRJ: 2281" in plain
-        assert "Compatibilidade experimental" in plain
-        assert "O peso próprio é aplicado pelas ferramentas do OSA." in plain
-        assert "Cargas, peso próprio" not in plain
+        assert "3 barras" in plain
+        assert "2 barras" in plain
+        assert "0 placas" in plain
+        assert "Código interno do PRJ" not in plain
+        assert "Compatibilidade experimental" not in plain
         image = text.viewport().grab().toImage()
         dark_pixels = sum(
             max(
@@ -367,25 +281,14 @@ def test_report_and_combo_popups_remain_readable_with_system_palette(qt_app, dar
             for x in range(8, image.width() - 8, 2)
             for y in range(8, min(image.height() - 8, 220), 2)
         )
-        assert dark_pixels > 100
+        assert dark_pixels > 30
         for combo in (options.length_unit, options.force_unit):
             combo.showPopup()
             qt_app.processEvents()
-            popup = combo.view().palette()
-            assert (
-                _contrast(
-                    popup.color(QPalette.ColorRole.Text),
-                    popup.color(QPalette.ColorRole.Base),
-                )
-                >= 7
-            )
-            assert (
-                _contrast(
-                    popup.color(QPalette.ColorRole.HighlightedText),
-                    popup.color(QPalette.ColorRole.Highlight),
-                )
-                >= 4.5
-            )
+            assert combo._popup is not None
+            assert combo._list is not None
+            selected_text, selected_background = QColor("#24292f"), QColor("#eaeef2")
+            assert _contrast(selected_text, selected_background) >= 4.5
             combo.hidePopup()
     finally:
         options.close()

@@ -13,7 +13,14 @@ def test_model_round_trip(tmp_path):
     model.save(path)
     loaded = StructuralModel()
     loaded.load(path)
-    assert loaded.as_dict() == model.as_dict()
+    expected = model.as_dict()
+    normalized_strengths = (250000.0, 400000.0)
+    for collection in ("members", "bars"):
+        for member in expected[collection]:
+            member["material_values"] = (
+                *member["material_values"][:4], *normalized_strengths,
+            )
+    assert loaded.as_dict() == expected
 
 
 def test_node_with_bar_cannot_be_removed():

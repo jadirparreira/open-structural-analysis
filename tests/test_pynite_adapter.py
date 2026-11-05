@@ -404,9 +404,9 @@ def test_deformation_draws_an_amplified_deformed_member_centerline():
     assert actors
     assert len(positions) == 1
     assert labels == ("10 mm",)
-    assert positions[0][1] > 1.0
+    assert positions[0][1] == pytest.approx(0.13)
     assert len(plotter.meshes) == 3
-    assert np.max(plotter.meshes[1].points[:, 1]) == pytest.approx(1.1)
+    assert np.max(plotter.meshes[1].points[:, 1]) == pytest.approx(0.11)
 
     line_plotter = Plotter()
     line_actors, _positions, _labels = ResultRenderer().render(
@@ -445,13 +445,13 @@ def test_deformation_components_share_the_xyz_scale():
     ResultRenderer().render(plotter_y, model, result, "Deformação Y")
     ResultRenderer().render(plotter_xyz, model, result, "Deformação XYZ")
 
-    assert np.max(plotter_x.meshes[1].points[:, 0]) == pytest.approx(2.6)
-    assert np.max(plotter_y.meshes[1].points[:, 1]) == pytest.approx(0.9)
-    assert np.max(plotter_xyz.meshes[1].points[:, 0]) == pytest.approx(2.6)
-    assert np.max(plotter_xyz.meshes[1].points[:, 1]) == pytest.approx(0.9)
+    assert np.max(plotter_x.meshes[1].points[:, 0]) == pytest.approx(2.006)
+    assert np.max(plotter_y.meshes[1].points[:, 1]) == pytest.approx(0.108)
+    assert np.max(plotter_xyz.meshes[1].points[:, 0]) == pytest.approx(2.006)
+    assert np.max(plotter_xyz.meshes[1].points[:, 1]) == pytest.approx(0.108)
 
 
-def test_deformation_applies_solid_positioning_without_moving_analytic_reference():
+def test_deformation_ignores_detailing_positioning_without_moving_analytic_reference():
     class Plotter:
         def __init__(self):
             self.meshes = []
@@ -466,6 +466,7 @@ def test_deformation_applies_solid_positioning_without_moving_analytic_reference
         "B1", "N1", "N2", section="Retangular", profile="R 200 x 400",
         section_geometry=(("b", 200), ("h", 400)),
         solid_face_offsets=(0.2, 0.3), solid_section_offsets=(0.05, 0.07),
+        solid_face_angles=(10.0, 5.0, 8.0, 4.0),
     )}
     result = AnalysisResult(0, "Combinação", member_results={
         "B1": {"samples": (
@@ -481,12 +482,12 @@ def test_deformation_applies_solid_positioning_without_moving_analytic_reference
     deformed_face = plotter.meshes[1]
     assert np.min(reference.points[:, 0]) == pytest.approx(0.0)
     assert 1.9 < np.max(reference.points[:, 0]) < 2.0
-    assert np.min(deformed_face.points[:, 0]) == pytest.approx(-0.2)
-    assert np.max(deformed_face.points[:, 0]) == pytest.approx(2.3)
+    assert np.min(deformed_face.points[:, 0]) == pytest.approx(0.0)
+    assert np.max(deformed_face.points[:, 0]) == pytest.approx(2.0)
 
-    start_section = deformed_face.points[np.isclose(deformed_face.points[:, 0], -0.2)]
-    assert np.max(start_section[:, 1]) == pytest.approx(0.15)
-    assert np.max(start_section[:, 2]) == pytest.approx(0.27)
+    start_section = deformed_face.points[np.isclose(deformed_face.points[:, 0], 0.0)]
+    assert np.max(start_section[:, 1]) == pytest.approx(0.1)
+    assert np.max(start_section[:, 2]) == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize(

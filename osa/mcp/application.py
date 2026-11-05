@@ -31,7 +31,14 @@ ANALYSIS_DIAGRAMS = (
     "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
 )
 ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
-APPLICATION_SESSIONS = ("Geometria", "Memorial", "Ações", "Análise")
+APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise")
+_PALETTE_GROUPS = {
+    "Geometria": "Geometria",
+    "Verificação": "Memorial",
+    "Ações": "Ações",
+    "Análise": "Análise",
+}
+_LEGACY_SESSION_NAMES = {"Memorial": "Verificação"}
 
 
 class McpApplication:
@@ -125,6 +132,7 @@ class McpApplication:
     def get_session_state(self) -> dict[str, Any]:
         """Retorna a sessão visual atualmente aberta no OpenSA."""
         active_session = self._get_session() if self._get_session is not None else self._session
+        active_session = _LEGACY_SESSION_NAMES.get(active_session, active_session)
         return {
             "active_session": active_session,
             "available_sessions": list(APPLICATION_SESSIONS),
@@ -133,14 +141,15 @@ class McpApplication:
     def set_session(self, session: str) -> dict[str, Any]:
         """Abre uma sessão visual da aplicação."""
         normalized = str(session).strip()
+        normalized = _LEGACY_SESSION_NAMES.get(normalized, normalized)
         if normalized not in APPLICATION_SESSIONS:
             raise ValueError(
-                "Sessão desconhecida. Use Geometria, Memorial, Ações ou Análise."
+                "Sessão desconhecida. Use Geometria, Verificação, Ações ou Análise."
             )
         if self._on_session_changed is None:
             raise ValueError("A navegação visual do OpenSA não está disponível.")
-        self._session = normalized
-        self._on_session_changed(normalized)
+        self._session = _PALETTE_GROUPS[normalized]
+        self._on_session_changed(self._session)
         state = self.get_session_state()
         state["active_session"] = normalized
         return state

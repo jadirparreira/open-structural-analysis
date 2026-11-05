@@ -13,6 +13,16 @@ def test_packaged_mcp_server_needs_no_credential():
     assert "headers" not in server
 
 
+def test_claude_code_project_config_uses_streamable_http():
+    project_config = Path(__file__).resolve().parents[1] / ".mcp.json"
+    server = json.loads(project_config.read_text(encoding="utf-8"))["mcpServers"]["mcp-opensa"]
+
+    assert server == {
+        "type": "http",
+        "url": "http://127.0.0.1:8765/mcp-opensa",
+    }
+
+
 def test_local_mcp_integration_registers_and_updates_the_plugin(tmp_path: Path):
     plugin_root = tmp_path / "plugins"
     plugin_root.mkdir()

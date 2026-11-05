@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
         self._command_mode = "endpoint_alignment_bar_selection"
         self._endpoint_alignment_source_bar = None
         self.scene.set_endpoint_alignment_target(None)
-        self.refresh_member_geometry(source.name)
+        self.refresh_member_positioning(source.name)
         self.properties.update_positioning_status(source.name)
         offset_mm = offset * 1000.0
         self.history.append(
@@ -1086,7 +1086,7 @@ class MainWindow(QMainWindow):
         self._connect_member_ends_first_bar = None
         self.clear_selection()
         for name, endpoint_index, _offsets, _angles, _alpha_y, _alpha_z in updates:
-            self.refresh_member_geometry(name)
+            self.refresh_member_positioning(name)
             self.properties.update_positioning_status(name)
         first_update, second_update = updates
         self.history.append(
@@ -1306,7 +1306,7 @@ class MainWindow(QMainWindow):
             limited = tuple(min(angle, max(-angle, float(value))) for value in current)
             if limited != tuple(current):
                 self.model_service.update_member_solid_face_angles(name, limited)
-                self.refresh_member_geometry(name)
+                self.refresh_member_positioning(name)
         panel = getattr(self, "displacement_panel", None)
         if panel is not None:
             panel.set_solid_face_angle_limit(angle)
@@ -3997,6 +3997,10 @@ class MainWindow(QMainWindow):
                     self.refresh_scene()
                     return
         self.scene.update_member_geometry(member_name)
+
+    def refresh_member_positioning(self, member_name: str) -> None:
+        """Refresh a bar after a detailing-only face or section offset edit."""
+        self.scene.update_member_positioning(member_name)
 
     def refresh_member_color(self, member_name: str) -> None:
         self.scene.update_member_color(member_name)

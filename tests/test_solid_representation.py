@@ -46,6 +46,7 @@ def _model():
 def _assert_indicators_match_rebuild(scene):
     renderer = BatchedMemberRenderer()
     renderer.position_indicators_with_section = scene._solid_members_visible
+    renderer.solid_positioning_enabled = scene._member_renderer.solid_positioning_enabled
     expected = renderer.build(SimpleNamespace(
         bars={name: scene._model.bars[name] for name in scene._member_batch.names}, nodes=scene._model.nodes,
     ), scene._marker_radius_current)
@@ -128,7 +129,7 @@ def test_toggles_keep_actors_geometry_labels_and_scene_cache(qt_app, monkeypatch
         scene.close()
 
 
-def test_toggle_flushes_pending_positioning_edits(qt_app):
+def test_geometry_representation_toggle_does_not_apply_detailing_positioning(qt_app):
     model = _model()
     scene = StructureScene()
     try:
@@ -139,14 +140,7 @@ def test_toggle_flushes_pending_positioning_edits(qt_app):
             scene.set_solid_members_visible(solid)
             assert not scene._member_update_timer.isActive()
             _assert_indicators_match_rebuild(scene)
-        # An edit performed analytically must update the cached section offsets
-        # even though its labels and axes have not moved yet.
-        scene.set_solid_members_visible(False)
-        model.update_member_solid_section_offsets("B0", (0.8, -0.3))
-        scene.update_member_geometry("B0")
-        scene._refresh_pending_member_update()
-        scene.set_solid_members_visible(True)
-        _assert_indicators_match_rebuild(scene)
+            np.testing.assert_allclose(scene._member_batch.section_offsets, 0.0)
     finally:
         scene.close()
 

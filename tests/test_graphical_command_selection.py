@@ -276,7 +276,8 @@ def test_scene_hide_and_reveal_accept_ctrl_selection(window, monkeypatch):
 
 
 def test_group_command_accepts_ctrl_multiselection_and_groups_bars(window, monkeypatch):
-    window.palette.show_group("Verificação")
+    # "Verificação" is the visible palette label; the internal group is Memorial.
+    window.palette.show_group("Memorial")
     window.handle_command("GROUP")
     assert window._command_mode == "verification_group_selection"
 

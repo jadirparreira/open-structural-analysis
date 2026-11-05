@@ -208,7 +208,7 @@ def test_copy_member_properties_copies_only_the_selected_member_fields():
     model.add_node("N4", 6, 0, 0)
     model.add_bar("B1", "N1", "N2")
     model.add_bar("B2", "N3", "N4")
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
     model.update_member_color("B1", "#0969da")
@@ -410,7 +410,7 @@ def test_selfweight_creates_negative_global_z_loads_from_member_mass():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 4, 0, 0)
     model.add_bar("B1", "N1", "N2")
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 200 x 15.0", geometry)
@@ -418,10 +418,10 @@ def test_selfweight_creates_negative_global_z_loads_from_member_mass():
     response = commands.submit("selfweight")
 
     assert response.level == "instruction"
-    assert "Aço Estrutural" in response.message
+    assert "ASTM A36" in response.message
     assert "Todos" in response.message
     assert commands.pending == "selfweight_material"
-    response = commands.submit("Aço Estrutural")
+    response = commands.submit("ASTM A36")
     assert response.message.endswith("(Sim/Não)")
     assert commands.pending == "selfweight_confirmation"
     response = commands.submit("sim")
@@ -437,12 +437,12 @@ def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 4, 0, 0)
     model.add_bar("B1", "N1", "N2")
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 200 x 15.0", {"d": 200, "bf": 100, "tw": 6, "tf": 8})
 
     commands.submit("selfweight")
-    commands.submit("Aço Estrutural")
+    commands.submit("ASTM A36")
     invalid = commands.submit("talvez")
     assert invalid.level == "error"
     assert commands.pending == "selfweight_confirmation"
@@ -460,7 +460,7 @@ def test_selfweight_filters_members_by_selected_material_and_lists_custom_materi
     model.add_bar("B1", "N1", "N2")
     model.add_bar("B2", "N2", "N3")
     geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_material("B2", "Material leve", model.materials["Material leve"])
     for name in ("B1", "B2"):
         model.update_bar_section(name, "W Laminado")
@@ -703,7 +703,7 @@ def test_galpao_does_not_leave_a_pending_command():
                    if member.profile == "W 200 x 15.0"]
     assert len(cantilevers) == 10
     assert all(
-        member.material == "Aço Estrutural"
+        member.material == "ASTM A36"
         and member.section == "W Laminado"
         and member.geometry_dict() == {"d": 200.0, "bf": 100.0, "tw": 4.3, "tf": 5.2}
         for member in cantilevers
@@ -736,7 +736,7 @@ def test_galpao_does_not_leave_a_pending_command():
                      if member.profile == "U 100 x 50 x 3"]
     assert len(truss_members) == 485
     assert all(
-        member.material == "Aço Estrutural"
+        member.material == "ASTM A36"
         and member.section == "U Formado"
         and member.profile == "U 100 x 50 x 3"
         and member.geometry_dict() == {"d": 100.0, "bf": 50.0, "t": 3.0}
@@ -799,7 +799,7 @@ def test_galpao_does_not_leave_a_pending_command():
     assert len(overhang_purlins) == 24
     assert_member_color(purlins, "#6e7781")
     assert all(
-        member.material == "Aço Estrutural"
+        member.material == "ASTM A36"
         and member.section == "C Formado"
         and member.profile == "C Laminado 127 x 50 x 17 x 3.00"
         and member.geometry_dict() == {"d": 127.0, "bf": 50.0, "c": 17.0, "t": 3.0}
@@ -866,7 +866,7 @@ def test_galpao_does_not_leave_a_pending_command():
     assert len(ridge_braces) == 16
     assert len(purlin_ties) == 32
     assert all(
-        member.material == "Aço Estrutural"
+        member.material == "ASTM A36"
         and member.section == "Barra Circular"
         and member.profile == "Barra Redonda Ø10 mm"
         and member.geometry_dict() == {"d": 10.0}
@@ -929,7 +929,7 @@ def test_galpao_does_not_leave_a_pending_command():
                 if member.profile == "L Formado 30 x 30 x 3.00"]
     assert len(l_braces) == 64
     assert all(
-        member.material == "Aço Estrutural"
+        member.material == "ASTM A36"
         and member.section == "L Formado"
         and member.geometry_dict() == {"d": 30.0, "bf": 30.0, "t": 3.0}
         for member in l_braces
@@ -1069,7 +1069,7 @@ def test_mezanino_creates_three_steel_modules_with_catalogued_w_profiles():
         for node in model.nodes.values()
         if node.z == 0.0
     )
-    assert all(member.material == "Aço Estrutural" for member in model.bars.values())
+    assert all(member.material == "ASTM A36" for member in model.bars.values())
     profiles = {profile: [member for member in model.bars.values() if member.profile == profile]
                 for profile in ("W 250 x 44.8", "W 310 x 44.5", "W 200 x 22.5", "BC 10.0")}
     assert {profile: len(members) for profile, members in profiles.items()} == {

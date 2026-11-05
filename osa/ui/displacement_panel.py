@@ -340,7 +340,7 @@ class DisplacementPanel(QFrame):
         self._update_section_offset_inputs()
         self._update_position_buttons()
         for member in members:
-            self.window.refresh_member_geometry(member.name)
+            self.window.refresh_member_positioning(member.name)
         self._refresh_positioning_status()
 
     def _position_requested(self, position: str) -> None:
@@ -359,7 +359,7 @@ class DisplacementPanel(QFrame):
         self._update_section_offset_inputs()
         self._update_position_buttons()
         for member in members:
-            self.window.refresh_member_geometry(member.name)
+            self.window.refresh_member_positioning(member.name)
         self._refresh_positioning_status()
 
     def _section_offset_changed(self, parameter: str) -> None:
@@ -390,7 +390,7 @@ class DisplacementPanel(QFrame):
         self._update_section_offset_inputs()
         self._update_position_buttons()
         for member in members:
-            self.window.refresh_member_geometry(member.name)
+            self.window.refresh_member_positioning(member.name)
         self._refresh_positioning_status()
 
     @staticmethod
@@ -432,7 +432,7 @@ class DisplacementPanel(QFrame):
         self._update_position_buttons()
         self._refresh_positioning_status()
         for member, _endpoint_index in targets:
-            self.window.refresh_member_geometry(member.name)
+            self.window.refresh_member_positioning(member.name)
 
     @staticmethod
     def _format_angle(value: float) -> str:
@@ -452,7 +452,7 @@ class DisplacementPanel(QFrame):
                 self.window.model_service.update_member_solid_face_angles(
                     member.name, limited
                 )
-                self.window.refresh_member_geometry(member.name)
+                self.window.refresh_member_positioning(member.name)
         members = self._members()
         fields = (
             ("A", "Y", 0),
@@ -508,7 +508,7 @@ class DisplacementPanel(QFrame):
             self.window.model_service.update_member_solid_face_angles(
                 member.name, tuple(angles)
             )
-            self.window.refresh_member_geometry(member.name)
+            self.window.refresh_member_positioning(member.name)
         self._update_end_angle_inputs()
         self._refresh_positioning_status()
 

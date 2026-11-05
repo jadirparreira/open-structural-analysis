@@ -237,7 +237,7 @@ def test_pynite_builder_receives_calculated_area_inertias_and_torsion():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 3, 0, 0)
     model.add_bar("B1", "N1", "N2")
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_section("B1", "W Laminado")
     geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
     model.update_member_profile("B1", "W 200 x 15.0", geometry)
@@ -250,10 +250,10 @@ def test_pynite_builder_receives_calculated_area_inertias_and_torsion():
     assert section.Iy == pytest.approx(expected.i_major_mm4 * 1e-12)
     assert section.Iz == pytest.approx(expected.i_minor_mm4 * 1e-12)
     assert section.J == pytest.approx(expected.j_mm4 * 1e-12)
-    material = target.materials["Aço Estrutural"]
-    assert material.E == pytest.approx(model.materials["Aço Estrutural"][0])
-    assert material.G == pytest.approx(model.materials["Aço Estrutural"][1])
-    assert material.rho == pytest.approx(model.materials["Aço Estrutural"][3])
+    material = target.materials["ASTM A36"]
+    assert material.E == pytest.approx(model.materials["ASTM A36"][0])
+    assert material.G == pytest.approx(model.materials["ASTM A36"][1])
+    assert material.rho == pytest.approx(model.materials["ASTM A36"][3])
 
 
 def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
@@ -262,7 +262,7 @@ def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
     model.add_node("N2", 3, 0, 0)
     model.add_node("N3", 3, 2, 0)
     model.add_bar("B1", "N1", "N2")
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_section("B1", "W Laminado")
     geometry = {"d": 200, "bf": 100, "tw": 6, "tf": 8}
     model.update_member_profile("B1", "W 200 x 15.0", geometry)
@@ -278,10 +278,10 @@ def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
     assert rigid_section.Iz == pytest.approx(expected.i_minor_mm4 * 1e-12)
     assert rigid_section.J == pytest.approx(expected.j_mm4 * 1e-12)
     assert rigid_material.E == pytest.approx(
-        model.materials["Aço Estrutural"][0] * RIGID_LINK_STIFFNESS_FACTOR
+        model.materials["ASTM A36"][0] * RIGID_LINK_STIFFNESS_FACTOR
     )
     assert rigid_material.G == pytest.approx(
-        model.materials["Aço Estrutural"][1] * RIGID_LINK_STIFFNESS_FACTOR
+        model.materials["ASTM A36"][1] * RIGID_LINK_STIFFNESS_FACTOR
     )
     assert rigid_material.rho == pytest.approx(0.0)
     assert rigid.name in target.members

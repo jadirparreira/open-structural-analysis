@@ -5505,6 +5505,13 @@ class StructureScene(QWidget):
         self._pending_member_geometry_names.add(_member_name)
         self._schedule_member_update()
 
+    def update_member_positioning(self, _member_name: str) -> None:
+        # Section face positioning changes the derived edge and silhouette
+        # meshes as well as the solid vertices. Rebuild the selected member's
+        # complete visual subset so those cached contours follow the edit.
+        self._pending_member_full_names.add(_member_name)
+        self._schedule_member_update()
+
     def update_node_visual(self, _node_name: str) -> None:
         self._support_update_timer.start()
 

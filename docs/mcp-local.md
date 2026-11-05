@@ -15,11 +15,12 @@ da análise estrutural.
 
 ## Sessões da interface
 
-As sessões visuais disponíveis são `Geometria`, `Ações` e `Análise`. Use
-`get_session_state` para consultar a sessão aberta e `set_session` para abrir a
-sessão correspondente antes de uma sequência de operações. A sessão permanece
-visível enquanto as ferramentas MCP são executadas, permitindo acompanhar as
-alterações na tela.
+As sessões visuais disponíveis são `Geometria`, `Verificação`, `Ações` e
+`Análise`. Use `get_session_state` para consultar a sessão aberta e
+`set_session` para abrir a sessão correspondente antes de uma sequência de
+operações. O identificador antigo `Memorial` continua aceito como alias de
+`Verificação`. A sessão permanece visível enquanto as ferramentas MCP são
+executadas, permitindo acompanhar as alterações na tela.
 
 ## Ferramentas iniciais
 

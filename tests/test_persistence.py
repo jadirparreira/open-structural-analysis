@@ -145,7 +145,7 @@ def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
     model.update_node_supports("N1", (True, True, True, False, False, False))
     model.add_bar("B1", "N1", "N2")
     model.update_member_rotation_flexibility_percent("B1", (10, 20, 30, 40, 50, 60))
-    model.update_bar_material("B1", "Aço Estrutural", model.materials["Aço Estrutural"])
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
     model.update_bar_section("B1", "W Laminado")
     model.update_member_profile("B1", "W 150 x 13.0", {"d": 148, "bf": 100})
     model.update_member_section_mirrored("B1", True)
@@ -155,7 +155,12 @@ def test_round_trip_preserves_supports_material_section_and_profile(tmp_path):
     assert restored.nodes["N1"].supports == model.nodes["N1"].supports
     assert restored.bars["B1"].rotation_flexibility_percent == (10, 20, 30, 40, 50, 60)
     assert restored.bars["B1"].section_mirrored is True
-    assert restored.bars["B1"] == model.bars["B1"]
+    assert restored.bars["B1"].material == model.bars["B1"].material == "ASTM A36"
+    assert restored.bars["B1"].material_values == (
+        *model.bars["B1"].material_values, 0.0, 0.0,
+    )
+    assert restored.bars["B1"].profile == model.bars["B1"].profile
+    assert restored.bars["B1"].section_geometry == model.bars["B1"].section_geometry
 
 
 def test_project_thumbnail_is_persisted_without_affecting_model_round_trip(tmp_path):
@@ -171,7 +176,13 @@ def test_project_thumbnail_is_persisted_without_affecting_model_round_trip(tmp_p
 
     restored = StructuralModel()
     repository.load(restored, path)
-    assert restored.as_dict() == model.as_dict()
+    expected = model.as_dict()
+    for collection in ("members", "bars"):
+        for member in expected[collection]:
+            member["material_values"] = (
+                *member["material_values"][:4], 250000.0, 400000.0,
+            )
+    assert restored.as_dict() == expected
     assert repository.load_thumbnail(path) == thumbnail
 
 
@@ -208,7 +219,7 @@ def test_legacy_v2_materials_are_converted_to_kn_units_when_opened():
     model = StructuralModel()
     model.load_dict(data)
 
-    expected = (200000000.0, 76900000.0, 0.3, 76.9822025)
+    expected = (200000000.0, 76900000.0, 0.3, 76.9822025, 0.0, 0.0)
     assert model.materials["Aço legado"] == expected
     assert model.bars["B1"].material_values == expected
 
