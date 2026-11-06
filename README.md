@@ -11,3 +11,5 @@
   <a href="https://github.com/jadirparreira/open-structural-analysis/releases/latest"><img src="https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux-555555" alt="Windows e Linux"></a>
   <a href="https://github.com/jadirparreira/open-structural-analysis"><img src="https://img.shields.io/badge/website-GitHub-181717?logo=github&logoColor=white" alt="Website do projeto no GitHub"></a>
 </p>
+
+O Open Structural Analysis reúne ferramentas para criar e editar modelos estruturais, definir materiais, seções, apoios e carregamentos, executar análises e visualizar a geometria e os resultados em 3D. O projeto também oferece recursos para salvar modelos e importar desenhos como referências.
