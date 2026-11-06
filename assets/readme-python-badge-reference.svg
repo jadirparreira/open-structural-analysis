@@ -3,10 +3,20 @@
     <clipPath id="badge-shape">
       <rect width="92" height="20" rx="3"/>
     </clipPath>
+    <linearGradient id="label" x2="0" y2="1">
+      <stop stop-color="#7F7F7F"/>
+      <stop offset=".58" stop-color="#585858"/>
+      <stop offset="1" stop-color="#515151"/>
+    </linearGradient>
+    <linearGradient id="gold" x2="0" y2="1">
+      <stop stop-color="#D1BA7A"/>
+      <stop offset=".58" stop-color="#B79D58"/>
+      <stop offset="1" stop-color="#AD9246"/>
+    </linearGradient>
   </defs>
   <g clip-path="url(#badge-shape)">
-    <rect width="52" height="20" fill="#555"/>
-    <rect x="52" width="40" height="20" fill="#BC9F4F"/>
+    <rect width="52" height="20" fill="url(#label)"/>
+    <rect x="52" width="40" height="20" fill="url(#gold)"/>
     <path d="M52 0v20" stroke="#333" stroke-opacity=".28"/>
     <text x="26" y="14" fill="#fff" font-family="Verdana,Arial,sans-serif" font-size="11" text-anchor="middle">Python</text>
     <text x="72" y="14" fill="#fff" font-family="Verdana,Arial,sans-serif" font-size="11" text-anchor="middle">3.13</text>
