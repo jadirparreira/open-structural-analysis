@@ -2,18 +2,12 @@
   <img src="osa/resources/icons/openstructuralanalysis-startup.svg" alt="Open Structural Analysis">
 </p>
 
-Aplicação open source para modelagem e análise estrutural tridimensional, desenvolvida em Python com PySide6, PyVista e PyNite.
+<p align="center">Aplicação open source para modelagem e análise estrutural tridimensional</p>
 
-O Open Structural Analysis reúne ferramentas para criar e editar modelos estruturais, definir materiais, seções, apoios e carregamentos, executar análises e visualizar a geometria e os resultados em 3D. O projeto também oferece recursos para salvar modelos e importar desenhos como referências.
-
-O desenvolvimento está em andamento. A arquitetura modular permite evoluir a interface, a modelagem, os cálculos e as integrações de forma independente.
-
-## Recursos
-
-- Modelagem de estruturas por nós e barras em um ambiente 3D interativo.
-- Definição de materiais, seções, apoios, vinculações e carregamentos.
-- Análise estrutural e visualização de resultados.
-- Salvamento de projetos e importação de referências DXF e DWG.
-- Integração com assistentes por meio do protocolo MCP.
-
-Consulte a documentação de [referências DXF e DWG](docs/referencias-dxf.md) e de [integração MCP](docs/claude-mcp.md).
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%E2%80%933.13-3776AB?logo=python&logoColor=white" alt="Python 3.10 a 3.13"></a>
+  <a href="https://github.com/jadirparreira/open-structural-analysis/releases/latest"><img src="https://img.shields.io/github/v/release/jadirparreira/open-structural-analysis?display_name=tag" alt="Última versão"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/jadirparreira/open-structural-analysis" alt="Licença GPL-3.0-or-later"></a>
+  <a href="https://github.com/jadirparreira/open-structural-analysis/releases/latest"><img src="https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux-555555" alt="Windows e Linux"></a>
+  <a href="https://github.com/jadirparreira/open-structural-analysis"><img src="https://img.shields.io/badge/website-GitHub-181717?logo=github&logoColor=white" alt="Website do projeto no GitHub"></a>
+</p>
