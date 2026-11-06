@@ -1,6 +1,6 @@
-# Open Structural Analysis
-
-![Open Structural Analysis](osa/resources/icons/openstructuralanalysis-startup.svg)
+<p align="center">
+  <img src="osa/resources/icons/openstructuralanalysis-startup.svg" alt="Open Structural Analysis">
+</p>
 
 Aplicação open source para modelagem e análise estrutural tridimensional, desenvolvida em Python com PySide6, PyVista e PyNite.
 
