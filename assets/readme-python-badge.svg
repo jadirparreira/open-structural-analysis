@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="92" height="20" viewBox="0 0 92 20" role="img" aria-label="Python 3.13">
+  <defs>
+    <clipPath id="badge-shape">
+      <rect width="92" height="20" rx="3"/>
+    </clipPath>
+    <linearGradient id="label" x2="0" y2="1">
+      <stop stop-color="#777"/>
+      <stop offset="1" stop-color="#555"/>
+    </linearGradient>
+    <linearGradient id="gold" x2="0" y2="1">
+      <stop stop-color="#C4A658"/>
+      <stop offset=".52" stop-color="#BC9F4F"/>
+      <stop offset="1" stop-color="#B49747"/>
+    </linearGradient>
+    <linearGradient id="gloss" x2="0" y2="1">
+      <stop stop-color="#fff" stop-opacity=".24"/>
+      <stop offset=".48" stop-color="#fff" stop-opacity=".06"/>
+      <stop offset=".52" stop-color="#000" stop-opacity=".03"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".12"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#badge-shape)">
+    <rect width="52" height="20" fill="url(#label)"/>
+    <rect x="52" width="40" height="20" fill="url(#gold)"/>
+    <rect width="92" height="20" fill="url(#gloss)"/>
+    <path d="M52 0v20" stroke="#333" stroke-opacity=".28"/>
+    <text x="26" y="14" fill="#fff" font-family="Verdana,Arial,sans-serif" font-size="11" text-anchor="middle">Python</text>
+    <text x="72" y="14" fill="#fff" font-family="Verdana,Arial,sans-serif" font-size="11" text-anchor="middle">3.13</text>
+  </g>
+  <rect x=".5" y=".5" width="91" height="19" rx="3" fill="none" stroke="#000" stroke-opacity=".18"/>
+</svg>
