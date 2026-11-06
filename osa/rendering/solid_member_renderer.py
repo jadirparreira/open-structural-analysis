@@ -14,10 +14,10 @@ from .local_axes_renderer import LocalAxesRenderer
 
 
 def face_angle_displacement(y, z, alpha_y: float, alpha_z: float):
-    """Return the axial offset of a section point from its geometric centroid."""
+    """Return the axial offset using rotations about the local Y and Z axes."""
     return (
-        -np.tan(np.deg2rad(float(alpha_y))) * np.asarray(y, dtype=float)
-        -np.tan(np.deg2rad(float(alpha_z))) * np.asarray(z, dtype=float)
+        -np.tan(np.deg2rad(float(alpha_z))) * np.asarray(y, dtype=float)
+        -np.tan(np.deg2rad(float(alpha_y))) * np.asarray(z, dtype=float)
     )
 
 

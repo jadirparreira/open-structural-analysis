@@ -25,7 +25,7 @@ PROTECTED_ACTION_GROUP_NAMES = frozenset(("PP+AP+AV", "PP+AV+AP"))
 PROJECT_SITE_URL = "https://www.opensa.com.br"
 PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
 PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
-PROJECT_VERSION = "2026.3"
+PROJECT_VERSION = "2026.4"
 
 
 class _SettingsChoiceSwitch(QFrame):
@@ -135,9 +135,10 @@ class UnsavedChangesDialog(QDialog):
             "QDialog { background: #ffffff; border: 0; }"
             "QLabel { color: #57606a; }"
             "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
-            "QPushButton { min-height: 34px; padding: 4px 16px; border: 0; border-radius: 6px; "
-            "background: #f6f8fa; color: #57606a; }"
-            "QPushButton:hover { background: #eaeef2; }"
+            "QPushButton#secondaryButton { min-height: 34px; padding: 4px 16px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; "
+            "background: #f6f8fa; color: #24292f; }"
+            "QPushButton#secondaryButton:hover { background: #eaeef2; }"
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 14)
@@ -156,6 +157,7 @@ class UnsavedChangesDialog(QDialog):
         discard_button = QPushButton("Descartar")
         save_button = QPushButton("Salvar")
         for button in (cancel_button, discard_button, save_button):
+            button.setObjectName("secondaryButton")
             button.setIcon(QIcon())
             buttons.addWidget(button)
         cancel_button.clicked.connect(lambda: self._finish(self.CANCEL))

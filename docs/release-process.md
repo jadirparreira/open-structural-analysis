@@ -75,13 +75,13 @@ publish-release
 O job `build-linux-appimage` será responsável por gerar:
 
 ```text
-OpenStructuralAnalysis-2026.3-Linux-x86_64.AppImage
+OpenStructuralAnalysis-2026.4-Linux-x86_64.AppImage
 ```
 
 O job `build-windows-installer` será responsável por gerar:
 
 ```text
-OpenStructuralAnalysis-2026.3-Windows-x86_64-Setup.exe
+OpenStructuralAnalysis-2026.4-Windows-x86_64-Setup.exe
 ```
 
 O job `publish-release` anexará os dois arquivos e o arquivo de checksums ao release do GitHub:
@@ -99,7 +99,7 @@ vANO.SEQUÊNCIA
 Por exemplo:
 
 ```text
-v2026.3
+v2026.4
 ```
 
 Antes da publicação, a automação deverá validar que a versão da tag corresponde à versão definida no `pyproject.toml`, executar os testes e verificar se os dois pacotes foram gerados corretamente.
@@ -120,10 +120,10 @@ O primeiro lançamento foi:
 2026.1
 ```
 
-O próximo lançamento será `2026.3`. As tags Git usam o mesmo número com o prefixo `v`:
+O próximo lançamento será `2026.4`. As tags Git usam o mesmo número com o prefixo `v`:
 
 ```text
-v2026.3
+v2026.4
 ```
 
 Os releases serão publicados como versões estáveis. Não serão utilizados, inicialmente, sufixos como `rc`, `beta` ou `pre`.
@@ -135,6 +135,7 @@ o mês. Correções e melhorias entram no próximo lançamento. Por exemplo:
 2026.1
 2026.2
 2026.3
+2026.4
 ```
 
 ## Primeiro release

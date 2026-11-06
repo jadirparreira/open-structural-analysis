@@ -774,14 +774,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # The deformed end face has local normal proportional to
-        # (1, tan(alphaY), tan(alphaZ)); use the selected face normal to set
-        # both angles, then solve A/B for the plane's position through the hit.
+        # alphaY is rotation about local Y, so it is determined by the normal's
+        # local Z component; alphaZ is rotation about local Z and uses local Y.
+        # Then solve A/B for the plane's position through the hit.
         if normal_x < 0.0:
             face_normal = -face_normal
             normal_x = -normal_x
-        alpha_y = math.degrees(math.atan(float(np.dot(face_normal, basis[1])) / normal_x))
-        alpha_z = math.degrees(math.atan(float(np.dot(face_normal, basis[2])) / normal_x))
+        alpha_y = math.degrees(math.atan(float(np.dot(face_normal, basis[2])) / normal_x))
+        alpha_z = math.degrees(math.atan(float(np.dot(face_normal, basis[1])) / normal_x))
         limit = self.solid_face_angle_limit_degrees
         if abs(alpha_y) > limit + 1e-9 or abs(alpha_z) > limit + 1e-9:
             self.history.append(
@@ -990,10 +990,10 @@ class MainWindow(QMainWindow):
                 )
                 return False
             alpha_y = math.degrees(
-                math.atan(float(np.dot(plane_normal, basis[1])) / normal_x)
+                math.atan(float(np.dot(plane_normal, basis[2])) / normal_x)
             )
             alpha_z = math.degrees(
-                math.atan(float(np.dot(plane_normal, basis[2])) / normal_x)
+                math.atan(float(np.dot(plane_normal, basis[1])) / normal_x)
             )
             if abs(alpha_y) > limit + 1e-9 or abs(alpha_z) > limit + 1e-9:
                 self.history.append(
