@@ -13,3 +13,5 @@
 </p>
 
 O Open Structural Analysis reúne ferramentas para criar e editar modelos estruturais, definir materiais, seções, apoios e carregamentos, executar análises e visualizar a geometria e os resultados em 3D. O projeto também oferece recursos para salvar modelos e importar desenhos como referências.
+
+![Modelo estrutural analisado no Open Structural Analysis](assets/readme-model-preview.png)
