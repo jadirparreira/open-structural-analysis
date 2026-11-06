@@ -35,13 +35,12 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 - **Apoios e vínculos:** definição de restrições, apoios elásticos, liberações nas extremidades e ligações rígidas.
 - **Ações e combinações:** organização de casos e grupos de ações, aplicação de cargas nodais e em barras, momentos e peso próprio, e configuração de combinações.
 - **Análise estrutural:** processamento do modelo e visualização de deslocamentos, reações de apoio e diagramas de esforço normal, cortantes, momentos fletores e torção por combinação.
-- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em DOCX. A cobertura das verificações está em evolução; consulte as hipóteses e limitações apresentadas pelo próprio programa.
+- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em DOCX. A cobertura das verificações está em evolução, com hipóteses e limitações apresentadas pelo próprio programa.
 - **Detalhamento:** criação de vistas para detalhamento de barras, alinhamento e conexão de extremidades, com exportação da vista 2D para DXF.
-- **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto. Consulte [Referências DXF e DWG](docs/referencias-dxf.md).
-- **Importação experimental de PRJ:** leitura geométrica de determinados arquivos `.prj` e `.prj.zip`; a cobertura é parcial e o modelo importado precisa ser revisado. Consulte [Importação PRJ](docs/importacao-prj.md).
+- **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto.
 - **Exportação DXF:** exportação do modelo e de vistas de detalhamento para uso em ferramentas CAD.
 - **Organização da cena:** gerenciamento de vistas nomeadas e controle de visibilidade dos elementos no modelo.
-- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com clientes compatíveis. Consulte [MCP local](docs/mcp-local.md).
+- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com clientes compatíveis.
 
 <a id="instalacao"></a>
 ## Instalação
