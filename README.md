@@ -5,7 +5,7 @@
 <p align="center">Aplicação open source para modelagem e análise estrutural tridimensional</p>
 
 <p align="center">
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.13-FFD43B?logo=python&logoColor=3776AB" alt="Python 3.13"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.13-FFD43B" alt="Python 3.13"></a>
   <a href="https://github.com/jadirparreira/open-structural-analysis/releases/latest"><img src="https://img.shields.io/github/v/release/jadirparreira/open-structural-analysis?display_name=tag&label=Vers%C3%A3o" alt="Versão"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/jadirparreira/open-structural-analysis" alt="Licença GPL-3.0-or-later"></a>
   <a href="https://github.com/jadirparreira/open-structural-analysis/releases/latest"><img src="https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux-555555" alt="Windows e Linux"></a>
