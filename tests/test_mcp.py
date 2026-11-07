@@ -532,6 +532,7 @@ def test_mcp_application_controls_geometry_view_options():
         "reference_axes_visible": True,
         "node_labels_visible": True,
         "member_labels_visible": True,
+        "plate_labels_visible": True,
         "local_axes_visible": True,
         "nodes_visible": True,
         "solid_members_visible": True,

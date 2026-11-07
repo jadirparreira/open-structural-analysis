@@ -1112,6 +1112,7 @@ class McpApplication:
             "reference_axes_visible",
             "node_labels_visible",
             "member_labels_visible",
+            "plate_labels_visible",
             "local_axes_visible",
             "nodes_visible",
             "solid_members_visible",

@@ -221,6 +221,22 @@ def test_axes_command_controls_visibility_and_configaxes_opens_editor(reference_
     assert not window._handle_interface_command("REFERENCEAXES")
 
 
+def test_plate_identifier_button_and_command(reference_window):
+    _app, window = reference_window
+    window.model.add_plate(((0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)))
+    window.scene.render_model(window.model)
+
+    button = window.top_icon_palette._visibility_buttons["plate"]
+    assert button.isChecked()
+    assert button.accessibleName() == "Identificadores das placas"
+    assert "PLATELABELS" in button.toolTip()
+    assert window.scene._label_overlay._groups["plate"].text == ("P1",)
+
+    assert window._handle_interface_command("PLATELABELS")
+    assert not button.isChecked()
+    assert not window.scene._label_overlay._groups["plate"].visible
+
+
 def test_reference_selection_highlight_and_origin_follow_inspector(reference_window):
     _app, window = reference_window
     scene = window.scene

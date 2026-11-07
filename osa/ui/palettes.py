@@ -383,6 +383,7 @@ class FloatingPalette(QFrame):
             "nodes_visible",
             "node_labels_visible",
             "member_labels_visible",
+            "plate_labels_visible",
             "local_axes_visible",
             "member_releases_visible",
             "semirigid_links_visible",
@@ -848,6 +849,7 @@ class TopIconPalette(QFrame):
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores das barras", "bar"),
+                                        ("square-p.svg", "Identificadores das placas", "plate"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
                                         ("release.svg", "Vinculações das barras", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
@@ -861,6 +863,7 @@ class TopIconPalette(QFrame):
                 "reference-axes": "AXES",
                 "node": "NODELABELS",
                 "bar": "MEMBERLABELS",
+                "plate": "PLATELABELS",
                 "axes": "LOCALAXES",
                 "nodes": "NODES",
                 "solid": "SOLIDS",
@@ -898,6 +901,10 @@ class TopIconPalette(QFrame):
             elif kind == "bar":
                 button.toggled.connect(
                     lambda visible: window._apply_mcp_view_change("member_labels_visible", visible)
+                )
+            elif kind == "plate":
+                button.toggled.connect(
+                    lambda visible: window._apply_mcp_view_change("plate_labels_visible", visible)
                 )
             else:
                 button.toggled.connect(lambda visible, element_kind=kind:
@@ -1364,6 +1371,7 @@ class TopIconPalette(QFrame):
             "reference_axes_visible": "reference-axes",
             "node_labels_visible": "node",
             "member_labels_visible": "bar",
+            "plate_labels_visible": "plate",
             "local_axes_visible": "axes",
             "nodes_visible": "nodes",
             "solid_members_visible": "solid",

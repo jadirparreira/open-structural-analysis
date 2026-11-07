@@ -193,7 +193,18 @@ class GridRenderer:
 
     def render_current(self, plotter):
         """Install the already prepared grid mesh in a plotter."""
-        return plotter.add_mesh(
+        actor = plotter.add_mesh(
             self.mesh, scalars="rgba", rgb=True, line_width=1, pickable=False,
-            name="reference-grid", render=False,
+            name="reference-grid", reset_camera=False, render=False,
+        )
+        self.configure_actor(actor)
+        return actor
+
+    @staticmethod
+    def configure_actor(actor) -> None:
+        """Keep the reference grid behind structural elements from any view."""
+        actor.GetShaderProperty().AddVertexShaderReplacement(
+            "//VTK::PositionVC::Impl", True,
+            "//VTK::PositionVC::Impl\n  gl_Position.z = gl_Position.w * 0.99999;\n",
+            False,
         )

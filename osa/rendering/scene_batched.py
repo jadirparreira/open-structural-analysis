@@ -33,6 +33,7 @@ from .elastic_support_overlay import ElasticSupportOverlay
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
 from .navigation_widget import NavigationWidget
+from .plate_antialiasing import PlateAntialiasing
 from .reference_axes_renderer import ReferenceAxesRenderer
 from .result_renderer import ResultRenderer
 from .snap_geometry import segment_intersections
@@ -166,6 +167,7 @@ class StructureScene(QWidget):
         # project. The setting can be changed live from Program Settings.
         self._antialiasing_samples = self._default_antialiasing_samples
         self.plotter = QtInteractor(self, multi_samples=self._antialiasing_samples)
+        self._plate_antialiasing = PlateAntialiasing(self.plotter.renderer)
         layout.addWidget(self.plotter)
         self.plotter.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.plotter.installEventFilter(self)
@@ -415,7 +417,7 @@ class StructureScene(QWidget):
         self._grid_visible = True
         self._reference_axes_visible = True
         self._nodes_visible = True
-        self._labels_visibility = {"node": True, "bar": True}
+        self._labels_visibility = {"node": True, "bar": True, "plate": True}
         self._verification_identifier_modes = {"name": False, "utilization": False}
         self._verification_palette_visible = False
         self._utilization_thermometer_visible = False
@@ -687,6 +689,7 @@ class StructureScene(QWidget):
             self._label_overlay.clear()
             self._elastic_support_overlay.set_members((), (), 0.0)
             self._add_reference_axis_labels()
+            yield from self._plate_identifier_label_steps()
             if preserve_camera and camera_state is not None:
                 self._restore_camera(camera_state)
             else:
@@ -1052,6 +1055,7 @@ class StructureScene(QWidget):
         if samples == self._antialiasing_samples:
             return
         self._antialiasing_samples = samples
+        self._update_plate_antialiasing()
         self.plotter.render_window.SetMultiSamples(samples)
         self.plotter.render_window.Modified()
         self.plotter.render()
@@ -1460,6 +1464,7 @@ class StructureScene(QWidget):
                 "node", self._node_batch.label_positions, self._node_batch.names,
                 visible=self._labels_visibility["node"],
             )
+        yield from self._plate_identifier_label_steps()
         yield from self._label_overlay.set_group_steps(
             "action", self._action_label_positions, self._action_labels,
             visible=True, deduplicate=True,
@@ -1467,6 +1472,15 @@ class StructureScene(QWidget):
         yield from self._label_overlay.set_group_steps(
             "result", self._result_label_positions, self._result_labels,
             visible=self._result_layer_is_visible(), deduplicate=True,
+        )
+
+    def _plate_identifier_label_steps(self):
+        positions = np.asarray([
+            self._plate_identifier_position(plate) for plate in self._model.plates.values()
+        ], dtype=float).reshape(-1, 3)
+        yield from self._label_overlay.set_group_steps(
+            "plate", positions, tuple(self._model.plates),
+            visible=self._labels_visibility["plate"],
         )
 
     def _add_reference_axis_labels(self) -> None:
@@ -1546,6 +1560,12 @@ class StructureScene(QWidget):
             mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
             self._update_plate_edge_style(name)
+        self._update_plate_antialiasing()
+
+    def _update_plate_antialiasing(self) -> None:
+        self._plate_antialiasing.set_active(
+            bool(self._plate_actors) and not self._solid_members_visible
+        )
 
     def _update_plate_edge_style(self, name: str) -> None:
         actor = self._plate_edge_actors[name]
@@ -1556,7 +1576,7 @@ class StructureScene(QWidget):
             actor.GetProperty().SetOpacity(1.0)
         else:
             actor.GetProperty().SetColor(*pv.Color("#6e7781").float_rgb)
-            actor.GetProperty().SetOpacity(0.7)
+            actor.GetProperty().SetOpacity(1.0)
         target = ('plate', name)
         if target in self._selected_elements:
             actor.GetProperty().SetColor(*pv.Color('#0969da').float_rgb)
@@ -1605,6 +1625,13 @@ class StructureScene(QWidget):
         for actor, data in ((self._plate_actors[name], mesh), (self._plate_edge_actors[name], edges)):
             actor.GetMapper().SetInputData(data)
             actor.GetMapper().Modified()
+        positions = np.asarray([
+            self._plate_identifier_position(item) for item in self._model.plates.values()
+        ], dtype=float).reshape(-1, 3)
+        self._label_overlay.set_group(
+            "plate", positions, tuple(self._model.plates),
+            visible=self._labels_visibility["plate"],
+        )
         if render:
             self._schedule_plate_intersections()
             self._sync_highlights()
@@ -2633,6 +2660,7 @@ class StructureScene(QWidget):
             "reference_axes_visible": self._reference_axes_visible,
             "node_labels_visible": self._labels_visibility["node"],
             "member_labels_visible": self._labels_visibility["bar"],
+            "plate_labels_visible": self._labels_visibility["plate"],
             "local_axes_visible": self._local_axes_visible,
             "nodes_visible": self._nodes_visible,
             "solid_members_visible": self._solid_members_visible,
@@ -4963,6 +4991,7 @@ class StructureScene(QWidget):
             and not self._support_update_timer.isActive()
         )
         self._solid_members_visible = visible
+        self._update_plate_antialiasing()
         self._member_renderer.position_indicators_with_section = visible
         self._elastic_support_overlay.follow_section = visible
         self._apply_rigid_bar_session_visibility()
@@ -5073,6 +5102,17 @@ class StructureScene(QWidget):
             self._sync_verification_identifier_labels()
         else:
             self._label_overlay.set_group_visible(kind, visible)
+
+    def _plate_identifier_position(self, plate) -> np.ndarray:
+        points = np.asarray(plate.contour, dtype=float)
+        center = np.mean(points, axis=0)
+        if not self._solid_members_visible:
+            return center
+        _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
+        normal = basis[-1]
+        if normal[np.argmax(np.abs(normal))] < 0:
+            normal = -normal
+        return center + normal * (plate.thickness_mm / 2000.0)
 
     def _bar_identifier_overlay_visible(self) -> bool:
         """Route verification bar IDs through element labels so groups stay unified."""
@@ -5601,11 +5641,7 @@ class StructureScene(QWidget):
                 or old_grid.GetNumberOfCells() != self._grid_renderer.mesh.n_cells
             ):
                 self.plotter.renderer.RemoveActor(self._grid_actor)
-                self._grid_actor = self.plotter.add_mesh(
-                    self._grid_renderer.mesh, scalars="rgba", rgb=True,
-                    line_width=1, pickable=False, name="reference-grid",
-                    reset_camera=False, render=False,
-                )
+                self._grid_actor = self._grid_renderer.render_current(self.plotter)
                 self._grid_actor.SetVisibility(self._grid_visible)
             else:
                 self._grid_actor.GetMapper().SetInputData(self._grid_renderer.mesh)

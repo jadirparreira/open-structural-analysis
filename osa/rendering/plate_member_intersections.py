@@ -82,7 +82,7 @@ def _dash_path(path, dash_points, lines, ownership, pair):
     total = float(lengths.sum())
     if total <= 1e-6:
         return
-    dash = max(0.025, min(0.15, total / 20))
+    dash = 0.025  # Comprimento fixo de 25 mm nas unidades do modelo (m).
     period = 2 * dash
     position = 0.0
     current = []
@@ -123,6 +123,84 @@ def _dash_path(path, dash_points, lines, ownership, pair):
     finish()
 
 
+def _member_edge_segments(batch, names):
+    """Mapeia as arestas sólidas de cada barra em segmentos 3D."""
+    mesh = getattr(batch, "edges", None)
+    if mesh is None or not hasattr(batch, "edge_cell_ranges"):
+        return {name: np.empty((0, 2, 3), dtype=float) for name in names}
+    connectivity = np.asarray(mesh.lines, dtype=np.int64)
+    points = np.asarray(mesh.points, dtype=float)
+    ranges = {name: batch.edge_cell_ranges.get(name, (0, 0)) for name in names}
+    segments = {name: [] for name in names}
+    if not len(connectivity):
+        return {name: np.empty((0, 2, 3), dtype=float) for name in names}
+
+    cell_ranges = sorted(
+        (start, end, name)
+        for name, (start, end) in ranges.items()
+        if end > start
+    )
+    cursor = 0
+    cell_index = 0
+    range_index = 0
+    while cursor < len(connectivity):
+        count = int(connectivity[cursor])
+        ids = connectivity[cursor + 1:cursor + count + 1]
+        while range_index < len(cell_ranges) and cell_ranges[range_index][1] <= cell_index:
+            range_index += 1
+        if range_index < len(cell_ranges):
+            start, end, name = cell_ranges[range_index]
+            if start <= cell_index < end:
+                segments[name].extend(np.stack((points[ids[:-1]], points[ids[1:]]), axis=1))
+        cursor += count + 1
+        cell_index += 1
+    return {
+        name: np.asarray(value, dtype=float).reshape(-1, 2, 3)
+        for name, value in segments.items()
+    }
+
+
+def _without_member_edges(path, edge_segments):
+    """Recorta apenas as partes da interseção coincidentes com arestas sólidas."""
+    if not len(edge_segments):
+        yield path
+        return
+
+    current = []
+    for start, end in zip(path[:-1], path[1:]):
+        vector = end - start
+        length_squared = float(np.dot(vector, vector))
+        if length_squared <= 1e-18:
+            continue
+        length = np.sqrt(length_squared)
+        relative = edge_segments - start
+        parameters = np.einsum("ijk,k->ij", relative, vector) / length_squared
+        residual = relative - parameters[:, :, None] * vector
+        # 0,01 mm de tolerância para arredondamento das malhas.
+        on_line = np.all(np.linalg.norm(residual, axis=2) <= 1e-5, axis=1)
+        low = np.maximum(np.min(parameters, axis=1), 0.0)
+        high = np.minimum(np.max(parameters, axis=1), 1.0)
+        overlaps = sorted(zip(low[on_line & ((high - low) * length > 1e-8)],
+                              high[on_line & ((high - low) * length > 1e-8)]))
+        position = 0.0
+        for low_bound, high_bound in overlaps:
+            if low_bound > position + 1e-10:
+                if not current:
+                    current.append(start + position * vector)
+                current.append(start + low_bound * vector)
+            if high_bound > position:
+                if len(current) >= 2:
+                    yield np.asarray(current)
+                current = []
+                position = high_bound
+        if position < 1.0 - 1e-10:
+            if not current:
+                current.append(start + position * vector)
+            current.append(end)
+    if len(current) >= 2:
+        yield np.asarray(current)
+
+
 def dashed_plate_member_intersections(plate_meshes, batch, *, include_member_pairs=False) -> pv.PolyData:
     """Agrupa cruzamentos entre superfícies, sem alterar o modelo estrutural.
 
@@ -144,6 +222,7 @@ def dashed_plate_member_intersections(plate_meshes, batch, *, include_member_pai
         return pv.PolyData()
     lows, highs = np.asarray(lows), np.asarray(highs)
     member_indices = {name: index for index, name in enumerate(names)}
+    edge_segments = _member_edge_segments(batch, names)
     dash_points, lines, ownership = [], [], []
 
     def append_crossings(source, candidates, source_owner=-1, plate_owner=-1):
@@ -151,7 +230,12 @@ def dashed_plate_member_intersections(plate_meshes, batch, *, include_member_pai
             return
         members = _surface_for_members(batch, [names[index] for index in candidates], member_indices)
         for owner, path in _crossing_paths(source, members):
-            _dash_path(path, dash_points, lines, ownership, (source_owner, owner, plate_owner))
+            source_name = names[source_owner] if source_owner >= 0 else None
+            edges = edge_segments[names[owner]]
+            if source_name is not None:
+                edges = np.concatenate((edge_segments[source_name], edges))
+            for visible_path in _without_member_edges(path, edges):
+                _dash_path(visible_path, dash_points, lines, ownership, (source_owner, owner, plate_owner))
 
     for plate_index, plate in enumerate(plate_meshes):
         if not plate.n_cells:

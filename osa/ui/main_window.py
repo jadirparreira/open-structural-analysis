@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
         "bar", "plate", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
-        "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
+        "configaxes", "nodelabels", "memberlabels", "platelabels", "localaxes", "nodes",
         "solids", "releases", "semirigid", "supports", "scene", "configreference",
     })
 
@@ -2601,6 +2601,7 @@ class MainWindow(QMainWindow):
             "axes": "reference-axes",
             "nodelabels": "node",
             "memberlabels": "bar",
+            "platelabels": "plate",
             "localaxes": "axes",
             "nodes": "nodes",
             "solids": "solid",
@@ -4139,6 +4140,8 @@ class MainWindow(QMainWindow):
             self.scene.set_labels_visible("node", visible)
         elif option == "member_labels_visible":
             self.scene.set_labels_visible("bar", visible)
+        elif option == "plate_labels_visible":
+            self.scene.set_labels_visible("plate", visible)
         elif option in {
             "node_forces_visible", "node_moments_visible",
             "member_forces_visible", "member_moments_visible",

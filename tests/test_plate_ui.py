@@ -1,8 +1,8 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-import pytest
 import numpy as np
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from osa.analysis.pynite.model_builder import ModelBuilder
@@ -177,6 +177,7 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     plate = window.model.plates['P1']
     assert plate.color == window.model.bars['B1'].color == '#6e7781'
     assert window.scene._plate_actors['P1'].GetProperty().GetOpacity() == pytest.approx(.7)
+    assert window.scene._plate_antialiasing._active
     assert plate.supports == (('bar', 'B1'), ('bar', 'B2'), ('bar', 'B3'), ('rigid_bar', 'N4-N1'))
     click(window, 'plate', 'P1')
     panel = window.properties
@@ -196,6 +197,7 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     assert window.model.plates['P1'].color == '#ff0000'
     window.scene.set_solid_members_visible(True)
     assert window.scene._plate_actors['P1'].GetProperty().GetOpacity() == pytest.approx(1.0)
+    assert not window.scene._plate_antialiasing._active
     surface = window.scene._plate_actors['P1'].GetMapper().GetInput()
     assert surface.GetBounds()[5] - surface.GetBounds()[4] == pytest.approx(.24)
     window.scene.plotter.view_xy()
@@ -214,6 +216,12 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     assert outline.GetNumberOfVerts() == 0
     window.scene.set_solid_members_visible(False)
     assert window.scene._plate_actors['P1'].GetProperty().GetOpacity() == pytest.approx(.7)
+    assert window.scene._plate_antialiasing._active
+    window.scene.set_antialiasing_samples(0)
+    assert window.scene._plate_antialiasing._active
+    window.scene.set_antialiasing_samples(4)
+    assert window.scene._plate_antialiasing._active
+    assert window.scene._plate_edge_actors['P1'].GetProperty().GetOpacity() == pytest.approx(1.0)
     outline = window.scene._plate_edge_actors['P1'].GetMapper().GetInput()
     assert outline.GetNumberOfLines() == 1
     assert outline.GetNumberOfPoints() == 4
