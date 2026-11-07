@@ -14,6 +14,7 @@ from osa.mcp import LocalMcpServer, McpApplication
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
+from osa.services.plate_contour import plate_contour
 from osa.transcriptions import is_import_path
 from osa.transcriptions.plates import require_no_pending_plates
 
@@ -33,6 +34,7 @@ from .dialogs import (
     DetailingViewsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
+    PlateClosureDialog,
     ProgramSettingsDialog,
     SelfweightDialog,
     SettingsDialog,
@@ -92,7 +94,7 @@ class MainWindow(QMainWindow):
     _open_file_filter = _project_file_filter
     _import_file_filter = "Projeto PRJ (*.prj *.prj.zip)"
     _interface_commands = frozenset({
-        "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
+        "bar", "plate", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
         "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
@@ -156,6 +158,8 @@ class MainWindow(QMainWindow):
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        plate_closure = str(self._program_settings.value("plates/closure", "perguntar"))
+        self._plate_closure_mode = plate_closure if plate_closure in {"perguntar", "automatico"} else "perguntar"
         self._solid_face_angle_limit_degrees = self._read_solid_face_angle_limit()
         self._minimum_bar_restraint_angle_degrees = self._read_minimum_bar_restraint_angle()
         self.model.minimum_bar_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
@@ -191,9 +195,14 @@ class MainWindow(QMainWindow):
         self._create_project_loading_overlay()
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_saved_endpoint_snap = None
         self.scene.element_clicked.connect(self.select_element)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
-        self.scene.empty_clicked.connect(self.clear_selection)
+        self.scene.empty_clicked.connect(self._empty_scene_clicked)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
         self.scene.enter_pressed.connect(self._confirm_scene_view_selection)
@@ -397,6 +406,9 @@ class MainWindow(QMainWindow):
             require_no_pending_plates(self.model.import_metadata)
         except ValueError as error:
             self.show_error(str(error))
+            return
+        if self.model.plates:
+            self.show_error("A análise de placas ainda não está implementada. Remova as placas para analisar o modelo.")
             return
         if self.model.import_metadata.get("requires_review"):
             dialog = ImportReportDialog(self.model.import_metadata, self, review=True)
@@ -1277,6 +1289,17 @@ class MainWindow(QMainWindow):
         return self._member_intermediate_snap_split_mode
 
     @property
+    def plate_closure_mode(self) -> str:
+        return self._plate_closure_mode
+
+    def set_plate_closure_mode(self, mode: str) -> None:
+        if mode not in {"perguntar", "automatico"}:
+            raise ValueError("Opção inválida para fechamento da placa.")
+        self._plate_closure_mode = mode
+        self._program_settings.setValue("plates/closure", mode)
+        self._program_settings.sync()
+
+    @property
     def minimum_bar_restraint_angle_degrees(self) -> float:
         return self._minimum_bar_restraint_angle_degrees
 
@@ -1513,6 +1536,13 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
+        if (command_bar is not None and watched is command_bar.input
+                and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and self._command_mode == "plate_selection"
+                and not command_bar.input.text().strip()):
+            self._confirm_command_selection()
+            return True
         if (
             scene is not None
             and command_bar is not None
@@ -2225,6 +2255,9 @@ class MainWindow(QMainWindow):
     def _confirm_command_selection(self) -> None:
         """Apply commands to the shared Ctrl selection when ENTER is pressed."""
         mode = self._command_mode
+        if mode == "plate_selection":
+            self._finish_plate_selection()
+            return
         if mode not in {
             "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "action_selection", "verification_group_selection",
@@ -2378,6 +2411,177 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         self.refresh_scene()
 
+    def start_plate_placement(self) -> None:
+        self.cancel_member_placement()
+        self._remember_last_command(self.start_plate_placement)
+        self.command_session.cancel()
+        self.clear_selection()
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._command_mode = "plate_selection"
+        self.history.append(
+            "> <b>Adicionar placa</b> <span style='color:#57606a'>"
+            "(Selecione as barras do contorno; ENTER conclui e ESC cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _plate_add_selection(self, kind: str, name: str) -> None:
+        target = (kind, name)
+        if kind not in {"bar", "rigid_bar"} or target in self._plate_selection:
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        element = (self.model.bars if kind == "bar" else self.model.rigid_bars).get(name)
+        if element is None:
+            return
+        a, b = (self.model.nodes[element.start_node], self.model.nodes[element.end_node])
+        segment = ((a.x, a.y, a.z), (b.x, b.y, b.z))
+        if any(
+            all(math.dist(point, endpoint) < 1e-8 for point, endpoint in zip(segment, old))
+            or all(math.dist(point, endpoint) < 1e-8 for point, endpoint in zip(segment, reversed(old)))
+            for old in self._plate_segments
+        ) or any(
+            sum(math.dist(point, endpoint) < 1e-8 for old in self._plate_segments for endpoint in old) >= 2
+            for point in segment
+        ):
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(A barra repetiria uma aresta ou criaria uma ramificação)</span>"
+            )
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        self._plate_selection.append(target)
+        self._plate_segments.append(segment)
+        self.selected_elements = list(self._plate_selection)
+        self.selected = target
+        self.scene.set_selection_highlight(self._plate_selection)
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>"
+            f"(Barra {escape(name)} selecionada; selecione a próxima ou pressione ENTER)</span>"
+        )
+        try:
+            contour = plate_contour(self._plate_segments)
+        except ValueError:
+            return
+        self._create_plate(contour)
+
+    def _finish_plate_selection(self) -> None:
+        if not self._plate_segments:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Selecione as barras do contorno)</span>"
+            )
+            return
+        if self.plate_closure_mode == "automatico":
+            choice = "automatic"
+        else:
+            dialog = PlateClosureDialog(self)
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            dialog.exec()
+            choice = dialog.choice
+        if choice == "automatic":
+            try:
+                contour = plate_contour(self._plate_segments, close_automatically=True)
+            except ValueError as error:
+                self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                return
+            self._create_plate(contour)
+        elif choice == "manual":
+            self._command_mode = "plate_manual"
+            self._plate_saved_endpoint_snap = self.scene._snap_types["endpoint"]
+            self.scene._snap_types["endpoint"] = True
+            self.scene.set_member_placement_mode(True)
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>"
+                "(Clique em duas extremidades livres para ligá-las; ESC cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+        else:
+            self.cancel_member_placement()
+
+    def _plate_manual_point(self, point) -> None:
+        segments = self._plate_segments + self._plate_manual_segments
+        points = [p for segment in segments for p in segment]
+        free = [p for p in points if sum(math.dist(p, q) < 1e-8 for q in points) == 1]
+        if not free:
+            return
+        nearest = min(free, key=lambda p: math.dist(p, point))
+        if math.dist(nearest, point) > 0.002:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Selecione uma extremidade livre)</span>"
+            )
+            return
+        if self._plate_manual_start is None:
+            self._plate_manual_start = nearest
+            self.scene.set_member_preview_start(nearest)
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>(Selecione outra extremidade livre)</span>"
+            )
+            return
+        if math.dist(self._plate_manual_start, nearest) < 1e-8:
+            return
+        new_segment = (self._plate_manual_start, nearest)
+        candidate = self._plate_segments + self._plate_manual_segments + [new_segment]
+        remaining = len(free) - 2
+        reachable = {self._plate_manual_start}
+        while True:
+            extended = reachable | {
+                endpoint for a, b in segments for endpoint, other in ((a, b), (b, a))
+                if any(math.dist(other, point) < 1e-8 for point in reachable)
+            }
+            if extended == reachable:
+                break
+            reachable = extended
+        if remaining and any(math.dist(nearest, point) < 1e-8 for point in reachable):
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Esta ligação fecharia apenas parte do contorno)</span>"
+            )
+            self.scene.set_member_preview_start(None)
+            self._plate_manual_start = None
+            return
+        if remaining == 0:
+            try:
+                plate_contour(candidate)
+            except ValueError as error:
+                self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                self.scene.set_member_preview_start(None)
+                self._plate_manual_start = None
+                return
+        self._plate_manual_segments.append(new_segment)
+        self._plate_manual_start = None
+        self.scene.set_member_preview_start(None)
+        self.scene.set_plate_manual_segments(self._plate_manual_segments)
+        try:
+            contour = plate_contour(self._plate_segments + self._plate_manual_segments)
+        except ValueError as error:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>"
+                f"({escape(str(error))} Selecione outras extremidades livres)</span>"
+            )
+            return
+        self._create_plate(contour)
+
+    def _create_plate(self, contour) -> None:
+        try:
+            plate = self.model.add_plate(contour, supports=self._plate_selection)
+        except ValueError as error:
+            self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+            return
+        self._command_mode = None
+        self._restore_plate_snap()
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_plate_manual_segments([])
+        self.clear_selection()
+        self.scene.render_model(self.model)
+        self.history.append(f"> <b>Adicionar placa</b> <span style='color:#57606a'>(Placa {escape(plate.name)} criada)</span>")
+
+    def _restore_plate_snap(self) -> None:
+        if self._plate_saved_endpoint_snap is not None:
+            self.scene._snap_types["endpoint"] = self._plate_saved_endpoint_snap
+            self._plate_saved_endpoint_snap = None
+
     def _handle_interface_command(self, command: str) -> bool:
         """Dispatch one-word commands that mirror visible interface buttons."""
         text = command.strip()
@@ -2411,6 +2615,11 @@ class MainWindow(QMainWindow):
             "membermoment": "member_moments",
         }
         command_label = escape(name.upper())
+
+        if name == "plate":
+            self.palette.show_group("Geometria")
+            self.start_plate_placement()
+            return True
 
         if name == "scene":
             self.palette.show_group("Geometria")
@@ -2567,6 +2776,9 @@ class MainWindow(QMainWindow):
 
     def _handle_member_placement_point(self, point: object) -> None:
         """Advance the two-click graphical member placement flow."""
+        if self._command_mode == "plate_manual":
+            self._plate_manual_point(tuple(float(value) for value in point))
+            return
         if self._command_mode != "member_placement":
             return
         coordinates = tuple(float(value) for value in point)
@@ -2815,6 +3027,21 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode in {"plate_selection", "plate_manual"}:
+            self._command_mode = None
+            self._restore_plate_snap()
+            self._plate_selection = []
+            self._plate_segments = []
+            self._plate_manual_segments = []
+            self._plate_manual_start = None
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.scene.set_plate_manual_segments([])
+            self.clear_selection()
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode == "connect_member_ends_selection":
             self._command_mode = None
             self._connect_member_ends_first_bar = None
@@ -3090,6 +3317,9 @@ class MainWindow(QMainWindow):
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
+        if self._command_mode == "plate_selection":
+            self._plate_add_selection(kind, name)
+            return
         self.axes_panel.hide()
         self.reference_panel.hide()
         self.selected = kind, name
@@ -3275,6 +3505,11 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self._command_mode == "plate_selection":
+            for kind, name in elements:
+                if self._command_mode == "plate_selection":
+                    self._plate_add_selection(kind, name)
+            return
         if self.palette.active_group == "Detalhamento":
             expanded = list(elements)
             seen = set(expanded)
@@ -3366,6 +3601,12 @@ class MainWindow(QMainWindow):
                 self.close_section_panel()
                 self.close_displacement_panel()
 
+    def _empty_scene_clicked(self) -> None:
+        if self._command_mode == "plate_selection":
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        self.clear_selection()
+
     def clear_selection(self) -> None:
         self.selected = None
         self.selected_elements = []
@@ -3407,12 +3648,17 @@ class MainWindow(QMainWindow):
                     self.model_service.remove_member(name)
                 elif kind == "rigid_bar":
                     self.model_service.remove_rigid_bar(name)
+                elif kind == "plate":
+                    self.model.remove_plate(name)
                 else:
                     continue
             except ValueError as error:
                 self.show_error(str(error))
                 continue
-            self.scene.remove_element(kind, name)
+            if kind == "plate":
+                self.scene.render_model(self.model)
+            else:
+                self.scene.remove_element(kind, name)
         self.clear_selection()
 
 
@@ -3431,6 +3677,11 @@ class MainWindow(QMainWindow):
         self.show_home()
 
     def _reset_model_state(self) -> None:
+        self._restore_plate_snap()
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
         self.member_placement_editor.reset()
         self.reference_panel.hide()
         self.split_member_dialog.hide()

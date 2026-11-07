@@ -1059,6 +1059,22 @@ class TopIconPalette(QFrame):
         layout.addWidget(add_member_button)
         self.add_member_button = add_member_button
 
+        plate_button = QToolButton(self)
+        plate_button.setFixedSize(24, 24)
+        plate_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "plate.svg"))
+        )
+        plate_button.setIconSize(QSize(19, 19))
+        plate_tooltip = _command_tooltip("Placa", "PLATE")
+        plate_button.setToolTip(plate_tooltip)
+        plate_button.setProperty("paletteTooltip", plate_tooltip)
+        plate_button.setAccessibleName("Placa")
+        plate_button.clicked.connect(lambda: window.handle_command("PLATE"))
+        plate_button.installEventFilter(self)
+        plate_button.setStyleSheet(add_member_button.styleSheet())
+        layout.addWidget(plate_button)
+        self.plate_button = plate_button
+
         split_member_button = QToolButton(self)
         split_member_button.setFixedSize(24, 24)
         split_member_button.setIcon(

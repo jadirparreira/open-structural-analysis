@@ -36,6 +36,7 @@ from .navigation_widget import NavigationWidget
 from .reference_axes_renderer import ReferenceAxesRenderer
 from .result_renderer import ResultRenderer
 from .snap_geometry import segment_intersections
+from .plate_member_intersections import dashed_plate_member_intersections
 
 
 _UTILIZATION_COLOR_BANDS = (
@@ -428,6 +429,15 @@ class StructureScene(QWidget):
         self._endpoint_alignment_highlight_actor = None
         self._selected: tuple[str, str] | None = None
         self._selected_elements: tuple[tuple[str, str], ...] = ()
+        self._plate_actors = {}
+        self._plate_edge_actors = {}
+        self._plate_manual_actors = []
+        self._plate_intersection_actor = None
+        self._plate_intersection_key = None
+        self._plate_intersection_names = ()
+        self._plate_intersection_plate_names = ()
+        self._plate_intersection_overlays = {}
+        self._plate_intersection_highlight_key = None
         self._scene_selection_mode: str | None = None
         self._selection_press: tuple[int, int] | None = None
         self._selection_dragged = False
@@ -520,6 +530,10 @@ class StructureScene(QWidget):
         self._member_update_timer.setSingleShot(True)
         self._member_update_timer.setInterval(24)
         self._member_update_timer.timeout.connect(self._refresh_pending_member_update)
+        self._plate_intersection_timer = QTimer(self)
+        self._plate_intersection_timer.setSingleShot(True)
+        self._plate_intersection_timer.setInterval(30)
+        self._plate_intersection_timer.timeout.connect(self._refresh_plate_intersections)
         self._support_update_timer = QTimer(self)
         self._support_update_timer.setSingleShot(True)
         self._support_update_timer.setInterval(24)
@@ -663,6 +677,7 @@ class StructureScene(QWidget):
         if self._reference_axes_actor is not None:
             self._reference_axes_actor.SetVisibility(self._reference_axes_visible)
         self._refresh_selected_reference_axis()
+        self._add_plates()
         yield
 
         if not model.nodes:
@@ -815,6 +830,7 @@ class StructureScene(QWidget):
         self._rendered_actions = tuple(self._model.actions.values())
         self._rendered_revision = self._model.revision
         self._rendered_verification_group_revision = self._model.verification_group_revision
+        self._schedule_plate_intersections()
 
     def refresh_model_changes(self, model: StructuralModel) -> None:
         """Refresh only layers affected by edits to an existing structure."""
@@ -1494,6 +1510,10 @@ class StructureScene(QWidget):
             ]
         solid = self._pick_solid_member(preview=preview)
         if solid is None:
+            if not candidates:
+                plate = self._pick_plate()
+                if plate is not None:
+                    candidates.append(plate)
             return candidates
         if solid in candidates:
             candidates.remove(solid)
@@ -1503,6 +1523,233 @@ class StructureScene(QWidget):
         insert_at = 1 if candidates and candidates[0][0] == "node" else 0
         candidates.insert(insert_at, solid)
         return candidates
+
+    def _add_plates(self) -> None:
+        self._plate_actors = {}
+        self._plate_edge_actors = {}
+        self._plate_manual_actors = []
+        for name, plate in self._model.plates.items():
+            mesh, edges = self._plate_meshes(plate)
+            actor = self.plotter.add_mesh(
+                mesh, color=plate.color, opacity=1.0 if self._solid_members_visible else 0.7, show_edges=False,
+                reset_camera=False, render=False,
+                name=f"plate:{name}",
+            )
+            self._plate_actors[name] = actor
+            self._plate_edge_actors[name] = self.plotter.add_mesh(
+                edges, color="#6e7781", line_width=1.5, pickable=False,
+                lighting=False,
+                reset_camera=False, render=False, name=f"plate-outline:{name}",
+            )
+            mapper = self._plate_edge_actors[name].GetMapper()
+            mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+            self._update_plate_edge_style(name)
+
+    def _update_plate_edge_style(self, name: str) -> None:
+        actor = self._plate_edge_actors[name]
+        if self._solid_members_visible:
+            rgb = np.asarray(pv.Color(self._model.plates[name].color).int_rgb, dtype=float)
+            color = np.clip(rgb * 0.65, 0, 255).astype(np.uint8) / 255.0
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetOpacity(1.0)
+        else:
+            actor.GetProperty().SetColor(*pv.Color("#6e7781").float_rgb)
+            actor.GetProperty().SetOpacity(0.7)
+        target = ('plate', name)
+        if target in self._selected_elements:
+            actor.GetProperty().SetColor(*pv.Color('#0969da').float_rgb)
+            actor.GetProperty().SetOpacity(1.0)
+            actor.GetProperty().SetLineWidth(self._solid_highlight_line_width)
+        elif self._hovered == target:
+            actor.GetProperty().SetColor(*pv.Color('#24292f').float_rgb)
+            actor.GetProperty().SetOpacity(1.0)
+            actor.GetProperty().SetLineWidth(self._solid_highlight_line_width)
+        else:
+            actor.GetProperty().SetLineWidth(1.5)
+
+    def _plate_meshes(self, plate):
+        points = np.asarray(plate.contour, dtype=float)
+        count = len(points)
+        face = np.asarray([count, *range(count)])
+        if self._solid_members_visible:
+            _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
+            normal = basis[-1]
+            if normal[np.argmax(np.abs(normal))] < 0:
+                normal = -normal
+            extrusion = normal * plate.thickness_mm / 1000.0
+            bottom = points - extrusion / 2
+            mesh = pv.PolyData(bottom, face).triangulate().extrude(extrusion, capping=True)
+            edge_points = np.vstack((bottom, bottom + extrusion))
+            lines = [count + 1, *range(count), 0, count + 1,
+                     *range(count, 2 * count), count]
+            for index in range(count):
+                lines.extend((2, index, index + count))
+        else:
+            mesh = pv.PolyData(points, face).triangulate()
+            edge_points = points
+            lines = [count + 1, *range(count), 0]
+        edges = pv.PolyData(edge_points)
+        edges.verts = np.empty(0, dtype=np.int64)
+        edges.lines = np.asarray(lines)
+        return mesh, edges
+
+    def update_plate_rendering(self, name: str, *, render: bool = True) -> None:
+        if name not in self._plate_actors or name not in self._model.plates:
+            return
+        plate = self._model.plates[name]
+        mesh, edges = self._plate_meshes(plate)
+        self._plate_actors[name].GetProperty().SetOpacity(1.0 if self._solid_members_visible else 0.7)
+        self._update_plate_edge_style(name)
+        for actor, data in ((self._plate_actors[name], mesh), (self._plate_edge_actors[name], edges)):
+            actor.GetMapper().SetInputData(data)
+            actor.GetMapper().Modified()
+        if render:
+            self._schedule_plate_intersections()
+            self._sync_highlights()
+            self.plotter.reset_camera_clipping_range()
+            self.plotter.render()
+
+    def _plate_intersections_geometry_key(self):
+        if not self._solid_members_visible or self._member_batch is None:
+            return None
+        faces = self._member_batch.faces
+        if not faces.n_cells:
+            return None
+        if not self._plate_actors and len(self._member_batch.face_cell_ranges) < 2:
+            return None
+        plates = tuple((plate.name, plate.contour, plate.thickness_mm)
+                       for plate in self._model.plates.values())
+        return (id(faces), faces.GetPoints().GetMTime(), faces.GetPolys().GetMTime(), plates)
+
+    def _schedule_plate_intersections(self) -> None:
+        key = self._plate_intersections_geometry_key()
+        if key == self._plate_intersection_key:
+            return
+        if self._plate_intersection_actor is not None:
+            self._plate_intersection_actor.SetVisibility(False)
+        for actor in self._plate_intersection_overlays.values():
+            actor.SetVisibility(False)
+        if key is None:
+            self._plate_intersection_timer.stop()
+            self._plate_intersection_key = None
+            return
+        self._plate_intersection_timer.start()
+
+    def _refresh_plate_intersections(self) -> None:
+        key = self._plate_intersections_geometry_key()
+        if key is None:
+            return
+        meshes = [self._plate_meshes(plate)[0] for plate in self._model.plates.values()]
+        lines = dashed_plate_member_intersections(meshes, self._member_batch, include_member_pairs=True)
+        if self._plate_intersection_actor is not None:
+            self.plotter.remove_actor(self._plate_intersection_actor, reset_camera=False, render=False)
+            self._plate_intersection_actor = None
+        for actor in self._plate_intersection_overlays.values():
+            self.plotter.remove_actor(actor, reset_camera=False, render=False)
+        self._plate_intersection_overlays = {}
+        if lines.n_cells:
+            self._plate_intersection_names = tuple(
+                name for name, (start, end) in self._member_batch.face_point_ranges.items()
+                if end > start and name in self._member_batch.face_cell_ranges
+            )
+            self._plate_intersection_plate_names = tuple(self._model.plates)
+            actor = self.plotter.add_mesh(
+                lines, color='#454b52', line_width=1.5, lighting=False,
+                pickable=False, reset_camera=False, render=False, name="plate-member-intersections",
+            )
+            mapper = actor.GetMapper()
+            mapper.SetInputData(lines)
+            mapper.ScalarVisibilityOff()
+            mapper.Modified()
+            mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-4.0, -4.0)
+            self._plate_intersection_actor = actor
+            self._plate_intersection_highlight_key = None
+            self._sync_plate_intersection_highlights()
+        self._plate_intersection_key = key
+        self.plotter.render()
+
+    def _sync_plate_intersection_highlights(self) -> None:
+        actor = self._plate_intersection_actor
+        if actor is None or not actor.GetVisibility():
+            return
+        selected = frozenset(target for target in self._selected_elements if target[0] in {'bar', 'plate'})
+        hovered = self._hovered if self._hovered and self._hovered[0] in {'bar', 'plate'} else None
+        key = (selected, hovered)
+        if key == self._plate_intersection_highlight_key:
+            return
+        mesh = pv.wrap(actor.GetMapper().GetInput())
+        first = np.asarray(mesh.cell_data['member_a'])
+        second = np.asarray(mesh.cell_data['member_b'])
+        plates = np.asarray(mesh.cell_data['plate'])
+        bar_indices = {name: index for index, name in enumerate(self._plate_intersection_names)}
+        plate_indices = {name: index for index, name in enumerate(self._plate_intersection_plate_names)}
+
+        def mask_for(targets):
+            bars = [bar_indices[name] for kind, name in targets if kind == 'bar' and name in bar_indices]
+            plate_ids = [plate_indices[name] for kind, name in targets if kind == 'plate' and name in plate_indices]
+            return np.isin(first, bars) | np.isin(second, bars) | np.isin(plates, plate_ids)
+
+        selected_mask = mask_for(selected)
+        hover_mask = mask_for((hovered,)) & ~selected_mask if hovered else np.zeros(mesh.n_cells, dtype=bool)
+        for slot, mask, color in (('hover', hover_mask, '#24292f'), ('selected', selected_mask, '#0969da')):
+            overlay = self._plate_intersection_overlays.get(slot)
+            if not np.any(mask):
+                if overlay is not None:
+                    overlay.SetVisibility(False)
+                continue
+            data = vtk.vtkPolyData()
+            data.SetPoints(mesh.GetPoints())
+            cells = vtk.vtkCellArray()
+            for index in np.flatnonzero(mask):
+                cells.InsertNextCell(mesh.GetCell(int(index)).GetPointIds())
+            data.SetLines(cells)
+            if overlay is None:
+                overlay = self.plotter.add_mesh(
+                    pv.wrap(data), color=color, line_width=self._solid_highlight_line_width,
+                    lighting=False, pickable=False, reset_camera=False, render=False,
+                    name=f'plate-intersections-{slot}',
+                )
+                mapper = overlay.GetMapper()
+                mapper.ScalarVisibilityOff()
+                mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-8.0, -8.0)
+                self._plate_intersection_overlays[slot] = overlay
+            overlay.GetMapper().SetInputData(data)
+            overlay.GetMapper().Modified()
+            overlay.SetVisibility(True)
+        self._plate_intersection_highlight_key = key
+
+    def set_plate_manual_segments(self, segments) -> None:
+        for actor in self._plate_manual_actors:
+            self.plotter.remove_actor(actor, reset_camera=False, render=False)
+        self._plate_manual_actors = []
+        for start, end in segments:
+            actor = self.plotter.add_mesh(
+                pv.Line(start, end), color="#0969da", line_width=3,
+                pickable=False, reset_camera=False, render=False,
+            )
+            self._plate_manual_actors.append(actor)
+        self.plotter.render()
+
+    def _pick_plate(self):
+        if not self._plate_actors:
+            return None
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        picker.PickFromListOn()
+        for actor in self._plate_actors.values():
+            picker.AddPickList(actor)
+        x, y = self.plotter.iren.get_event_position()
+        if not picker.Pick(x, y, 0, self.plotter.renderer):
+            return None
+        picked = picker.GetActor()
+        return next((("plate", name) for name, actor in self._plate_actors.items()
+                     if actor == picked), None)
 
     def _configure_solid_picker(self) -> None:
         self._solid_picker.InitializePickList()
@@ -4275,12 +4522,13 @@ class StructureScene(QWidget):
             self.placement_point_clicked.emit(tuple(float(value) for value in position))
 
     def _sync_highlights(self) -> None:
+        self._sync_plate_intersection_highlights()
         selected_elements = self._selected_elements or (
             (self._selected,) if self._selected is not None else ()
         )
         groups: dict[str, list[tuple[str, str]]] = {}
         for kind, name in selected_elements:
-            if kind == "node":
+            if kind in {"node", "plate"}:
                 continue
             slot = f"selected:{kind}"
             if (
@@ -4293,7 +4541,7 @@ class StructureScene(QWidget):
         desired = {slot: tuple(targets) for slot, targets in groups.items()}
         selected_targets = set(selected_elements)
         hover = None if self._hovered in selected_targets else self._hovered
-        if hover is not None and hover[0] != "node":
+        if hover is not None and hover[0] not in {"node", "plate"}:
             hover_targets = (hover,)
             if self._verification_group_selection_active and hover[0] == "bar":
                 group = self._model.verification_group_for(hover[1])
@@ -4304,6 +4552,10 @@ class StructureScene(QWidget):
         node_colors = {
             name: "#0969da" for kind, name in selected_elements if kind == "node"
         }
+        for name, actor in self._plate_actors.items():
+            color = QColor(self._model.plates[name].color)
+            actor.GetProperty().SetColor(color.redF(), color.greenF(), color.blueF())
+            self._update_plate_edge_style(name)
         if hover is not None and hover[0] == "node":
             node_colors[hover[1]] = "#4b5563"
 
@@ -4720,6 +4972,12 @@ class StructureScene(QWidget):
         if not current:
             self.render_model(self._model)
             return
+
+        for name in self._plate_actors:
+            self.update_plate_rendering(name, render=False)
+        self._schedule_plate_intersections()
+        if self._plate_actors:
+            self.plotter.reset_camera_clipping_range()
 
         # Faces, edges and analytical lines already coexist in the scene.
         # Only their visibility and the displaced indicators need to change.
@@ -5853,6 +6111,8 @@ class StructureScene(QWidget):
         self.refresh_model_changes(self._model)
 
     def element_center(self, kind: str, name: str) -> tuple[float, float, float]:
+        if kind == "plate":
+            return tuple(np.mean(self._model.plates[name].contour, axis=0))
         if kind == "node":
             node = self._model.nodes[name]
             return node.x, node.y, node.z
@@ -6349,7 +6609,8 @@ class StructureScene(QWidget):
             kind, name = target
             collection = (
                 self._model.nodes if kind == "node"
-                else self._model.bars if kind == "bar" else self._model.rigid_bars
+                else self._model.bars if kind == "bar"
+                else self._model.plates if kind == "plate" else self._model.rigid_bars
             )
             if name not in collection:
                 return False
@@ -6375,6 +6636,10 @@ class StructureScene(QWidget):
         self._selected = self._selected_elements[-1] if self._selected_elements else None
 
     def _clear_actor_references(self) -> None:
+        self._plate_intersection_timer.stop()
+        self._plate_intersection_actor = None
+        self._plate_intersection_overlays = {}
+        self._plate_intersection_key = None
         for actor in self._local_axis_actors:
             self._local_axes_renderer.RemoveActor(actor)
         self._grid_actor = None

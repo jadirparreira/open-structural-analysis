@@ -464,6 +464,54 @@ class PropertyPanel(QFrame):
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
+        if kind == "plate":
+            plate = self.window.model.plates[name]
+            self.kind_control.hide()
+            self.title.setText("Placa")
+            self.name.setText("Identidade")
+            self.name.show()
+            self._identity_row.show()
+            self.identity_value.setText(name)
+            self._verification_name_row.hide()
+            self.verify_bar_container.hide()
+            self.member_color_button.show()
+            self.member_color_button.setToolTip("Definir cor da placa")
+            self.member_color_button.setAccessibleName("Definir cor da placa")
+            self._set_member_color_button(plate.color)
+            self._calculation_properties_button.hide()
+            self.delete_button.hide()
+            for row in self._verification_result_rows:
+                row.hide()
+            supports = ", ".join(bar for _, bar in plate.supports) or "Nenhuma"
+            for label, value in (("Barras", supports), ("Material", "Concreto Estrutural")):
+                title = QLabel(label)
+                title.setObjectName("propertySection")
+                field = QLineEdit(value)
+                field.setObjectName("identityDisplay")
+                field.setReadOnly(True)
+                field.setAccessibleName(label)
+                field.setToolTip(value)
+                self._add_context_widget(title)
+                self._add_context_widget(field)
+            thickness_label = QLabel("Espessura")
+            thickness_label.setObjectName("propertySection")
+            self._add_context_widget(thickness_label)
+            thickness = CompactDoubleSpinBox()
+            thickness.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            thickness.setDecimals(2)
+            thickness.setRange(0.01, 1_000_000.0)
+            thickness.setValue(plate.thickness_mm)
+            thickness.setAccessibleName("Espessura da placa (mm)")
+            thickness.editingFinished.connect(lambda: self._plate_thickness_changed(name, thickness))
+            self._add_context_widget(self._editable_unit_box(thickness, "mm"))
+            self.layout.activate()
+            self.setMinimumHeight(0)
+            self.adjustSize()
+            self.resize(self.width(), self.sizeHint().height())
+            self.show()
+            self.reposition()
+            QTimer.singleShot(0, self._refresh_size)
+            return
         verification_mode = section == "Memorial"
         detailing_mode = section == "Detalhamento"
         show_verify_bar = (
@@ -485,6 +533,8 @@ class PropertyPanel(QFrame):
         )
         self.verification_name_input.setReadOnly(False)
         self.member_color_button.setVisible(kind == "bar" and section == "Geometria")
+        if kind == "bar":
+            self.member_color_button.setAccessibleName("Definir cor da barra")
         self._calculation_properties_button.setVisible(
             kind == "bar" and verification_mode and bool(names)
         )
@@ -2328,14 +2378,17 @@ class PropertyPanel(QFrame):
                       selection=self.window.selected_elements)
 
     def _toggle_color_palette(self) -> None:
-        if not self._selected or self._selected[0] != "bar":
+        if not self._selected or self._selected[0] not in {"bar", "plate"}:
             return
         if self._color_palette.isVisible():
             self._color_palette.hide()
             return
         if self.window.section_panel.isVisible():
             self.window.close_section_panel(self._section_settings_button)
-        colors = [self.window.model.bars[name].color for name in self._selected_names("bar")]
+        if self._selected[0] == "plate":
+            colors = [self.window.model.plates[self._selected[1]].color]
+        else:
+            colors = [self.window.model.bars[name].color for name in self._selected_names("bar")]
         color = colors[0] if self._all_equal(colors) else ""
         self._color_palette.set_selected(color)
         self.reposition_color_palette()
@@ -2353,13 +2406,25 @@ class PropertyPanel(QFrame):
         self._color_palette.move(position)
 
     def _color_selected(self, color: str) -> None:
-        if not self._selected or self._selected[0] != "bar":
+        if not self._selected or self._selected[0] not in {"bar", "plate"}:
+            return
+        if self._selected[0] == "plate":
+            name = self._selected[1]
+            self.window.model.update_plate(name, color=color)
+            self.window.scene.update_plate_rendering(name)
+            self._set_member_color_button(color)
             return
         member_names = self._selected_names("bar")
         for member_name in member_names:
             self.window.model_service.update_member_color(member_name, color)
         self.window.refresh_member_colors(member_names)
         self._set_member_color_button(color)
+
+    def _plate_thickness_changed(self, name: str, field: QDoubleSpinBox) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        self.window.model.update_plate(name, thickness_mm=field.value())
+        self.window.scene.update_plate_rendering(name)
 
     def _delete_requested(self) -> None:
         self.window.delete_selected()

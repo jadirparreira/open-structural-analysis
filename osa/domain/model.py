@@ -16,6 +16,7 @@ from .entities import (
     LoadCase,
     LoadCombination,
     Node,
+    Plate,
     ReferenceAxis,
     RigidBar,
 )
@@ -36,6 +37,7 @@ class StructuralModel:
         self.verification_element_names: dict[str, str] = {}
         self.verification_element_groups: list[dict[str, object]] = []
         self.rigid_bars: dict[str, RigidBar] = {}
+        self.plates: dict[str, Plate] = {}
         self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
         self.references: dict[str, DrawingReference] = {}
         self.materials = {name: tuple(values) for name, values in (materials or {}).items()}
@@ -65,8 +67,60 @@ class StructuralModel:
     def members(self) -> dict[str, Bar]:
         return self.bars
 
+    def add_plate(self, contour, *, name: str | None = None, supports=(), color="#6e7781", thickness_mm=100.0) -> Plate:
+        from osa.services.plate_contour import plate_contour
+
+        points = tuple(tuple(point) for point in contour)
+        ordered = plate_contour(zip(points, points[1:] + points[:1]))
+        if name is None:
+            number = 1
+            while f"P{number}" in self.plates:
+                number += 1
+            name = f"P{number}"
+        if not isinstance(name, str) or not name.startswith("P") or not name[1:].isdigit() or int(name[1:]) < 1 or name in self.plates:
+            raise ValueError("A identidade da placa é inválida ou duplicada.")
+        supports = tuple(tuple(item) for item in supports)
+        if any(len(item) != 2 or item[0] not in {"bar", "rigid_bar"}
+               or item[1] not in (self.bars if item[0] == "bar" else self.rigid_bars)
+               for item in supports) or len(set(supports)) != len(supports):
+            raise ValueError("As barras de apoio da placa são inválidas.")
+        if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
+            raise ValueError("A cor da placa é inválida.")
+        thickness_mm = float(thickness_mm)
+        if not math.isfinite(thickness_mm) or thickness_mm <= 0:
+            raise ValueError("A espessura da placa deve ser positiva e finita.")
+        plate = Plate(name, ordered, supports, color.lower(), thickness_mm)
+        self.plates[name] = plate
+        self._touch()
+        return plate
+
+    def update_plate(self, name: str, *, color=None, thickness_mm=None) -> None:
+        plate = self.plates[name]
+        if color is None:
+            color = plate.color
+        if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
+            raise ValueError("A cor da placa é inválida.")
+        thickness = plate.thickness_mm if thickness_mm is None else float(thickness_mm)
+        if not math.isfinite(thickness) or thickness <= 0:
+            raise ValueError("A espessura da placa deve ser positiva e finita.")
+        updated = replace(plate, color=color.lower(), thickness_mm=thickness)
+        if updated != plate:
+            self.plates[name] = updated
+            self._touch()
+
+    def remove_plate(self, name: str) -> None:
+        if name not in self.plates:
+            raise ValueError("Placa não encontrada.")
+        del self.plates[name]
+        self._touch()
+
     def _touch(self) -> None:
         self.revision += 1
+        for name, plate in tuple(self.plates.items()):
+            supports = tuple((kind, bar) for kind, bar in plate.supports
+                             if bar in (self.bars if kind == "bar" else self.rigid_bars))
+            if supports != plate.supports:
+                self.plates[name] = replace(plate, supports=supports)
         self.analysis_results.clear()
         self.verification_results.clear()
         self._restraint_lengths_cache = None
@@ -1417,6 +1471,7 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
+        self.plates.clear()
         self.references.clear()
         self.import_metadata.clear()
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}

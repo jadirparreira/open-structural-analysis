@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 from itertools import product
 from math import floor, isfinite
 import copy
+import math
 from typing import Any
 
 from osa.domain import (
@@ -81,6 +82,7 @@ class ProjectSerializer:
             # "bars" mantém interoperabilidade com leitores antigos.
             "bars": [asdict(member) for member in model.bars.values()],
             "rigid_bars": [asdict(rigid) for rigid in model.rigid_bars.values()],
+            "plates": [asdict(plate) for plate in model.plates.values()],
             "axes": {direction: [asdict(axis) for axis in axes] for direction, axes in model.axes.items()},
             "references": [dump_reference(reference) for reference in model.references.values()],
             "materials": {
@@ -262,6 +264,24 @@ class ProjectSerializer:
             rigid_pairs.add(frozenset((rigid.start_node, rigid.end_node)))
             candidate.rigid_bars[rigid.name] = rigid
 
+        for item in data.get("plates", ()):
+            supports = item.get("supports")
+            if supports is None:
+                contour = item["contour"]
+                edges = list(zip(contour, contour[1:] + contour[:1]))
+                supports = []
+                for kind, members in (("bar", candidate.bars), ("rigid_bar", candidate.rigid_bars)):
+                    for name, member in members.items():
+                        nodes = [candidate.nodes[member.start_node], candidate.nodes[member.end_node]]
+                        points = [(node.x, node.y, node.z) for node in nodes]
+                        if any(all(math.dist(p, q) <= 1e-8 for p, q in zip(points, edge))
+                               or all(math.dist(p, q) <= 1e-8 for p, q in zip(points, reversed(edge)))
+                               for edge in edges):
+                            supports.append((kind, name))
+            candidate.add_plate(item["contour"], name=item["name"], supports=supports,
+                                color=item.get("color", "#b7c6d5"),
+                                thickness_mm=item.get("thickness_mm", 100.0))
+
         candidate.set_reference_axes({
             direction: tuple(
                 ReferenceAxis(str(axis["label"]), float(axis["value"]))
@@ -393,6 +413,7 @@ class ProjectSerializer:
         model.verification_element_names = candidate.verification_element_names
         model.verification_element_groups = candidate.verification_element_groups
         model.rigid_bars = candidate.rigid_bars
+        model.plates = candidate.plates
         model.axes = candidate.axes
         model.references = candidate.references
         model.materials = candidate.materials

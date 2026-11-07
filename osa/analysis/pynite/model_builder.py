@@ -20,6 +20,8 @@ class ModelBuilder:
         self.section_properties = section_properties or SectionPropertyService()
 
     def build(self, source: StructuralModel):
+        if source.plates:
+            raise ValueError("A análise de placas ainda não está implementada. Remova as placas para analisar o modelo.")
         try:
             from Pynite import FEModel3D
         except ImportError as error:

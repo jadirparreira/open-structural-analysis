@@ -39,7 +39,7 @@ class _SettingsChoiceSwitch(QFrame):
         self._buttons = {}
         self._animation = None
         widths = (
-            (46, 46)
+            ((90, 90) if any(len(label) > 6 for _, label in self._choices) else (46, 46))
             if len(self._choices) == 2
             else (46, 46, 46)
             if len(self._choices) == 3 and all(len(label) <= 4 for _, label in self._choices)
@@ -168,6 +168,38 @@ class UnsavedChangesDialog(QDialog):
     def _finish(self, choice: str) -> None:
         self.choice = choice
         self.accept()
+
+
+class PlateClosureDialog(UnsavedChangesDialog):
+    """Escolha de fechamento do contorno de placa ainda aberto."""
+
+    def __init__(self, parent=None):
+        QDialog.__init__(self, parent)
+        self.choice = self.CANCEL
+        self.setWindowTitle("Fechar contorno")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(420, 175)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QPushButton { min-height: 34px; padding: 4px 16px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        title = QLabel("Fechar contorno")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        layout.addWidget(QLabel("O contorno está aberto. Como deseja fechá-lo?"))
+        row = QHBoxLayout()
+        row.addStretch()
+        for label, choice in (("Cancelar", self.CANCEL), ("Manual", "manual"), ("Automático", "automatic")):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, value=choice: self._finish(value))
+            row.addWidget(button)
+        layout.addLayout(row)
 
 
 class MemberSnapSplitDialog(QDialog):
@@ -1879,6 +1911,7 @@ class ProgramSettingsDialog(QDialog):
         categories.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         categories.addItem("Snaps")
         categories.addItem("Barras")
+        categories.addItem("Placas")
         categories.addItem("Vídeo")
         categories.addItem("MCP")
         pages = QStackedWidget()
@@ -2073,6 +2106,30 @@ class ProgramSettingsDialog(QDialog):
         members_layout.addLayout(members_close_row)
         pages.addWidget(members_page)
 
+        plates_page = QWidget()
+        plates_layout = QVBoxLayout(plates_page)
+        plates_layout.addSpacing(10)
+        closure_label = QLabel("Fechar contorno")
+        closure_label.setObjectName("hint")
+        closure_label.setWordWrap(True)
+        closure_label.setAccessibleName("Fechar contorno")
+        plates_layout.addWidget(closure_label)
+        self._plate_closure_switch = _SettingsChoiceSwitch(
+            (("perguntar", "Perguntar"), ("automatico", "Automático")),
+            self.window.plate_closure_mode,
+            self.window.set_plate_closure_mode,
+            self,
+        )
+        plates_layout.addWidget(self._plate_closure_switch, 0, Qt.AlignmentFlag.AlignLeft)
+        plates_layout.addStretch(1)
+        plates_close_button = QPushButton("Fechar")
+        plates_close_button.setObjectName("closeProperties")
+        plates_close_button.clicked.connect(self.accept)
+        plates_close_row = QHBoxLayout()
+        plates_close_row.addStretch()
+        plates_close_row.addWidget(plates_close_button)
+        plates_layout.addLayout(plates_close_row)
+        pages.addWidget(plates_page)
         video_page = QWidget()
         video_layout = QVBoxLayout(video_page)
         video_layout.addSpacing(10)

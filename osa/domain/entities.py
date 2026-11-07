@@ -97,6 +97,17 @@ class RigidBar:
     end_node: str
 
 
+@dataclass(frozen=True, slots=True)
+class Plate:
+    """Contorno geométrico de uma placa, em metros."""
+
+    name: str
+    contour: tuple[tuple[float, float, float], ...]
+    supports: tuple[tuple[str, str], ...] = ()
+    color: str = "#6e7781"
+    thickness_mm: float = 100.0
+
+
 # Compatibilidade pública com o nome utilizado até agora.
 Bar = Member
 

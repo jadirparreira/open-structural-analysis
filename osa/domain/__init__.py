@@ -11,6 +11,7 @@ from .entities import (
     Material,
     Member,
     Node,
+    Plate,
     ReferenceAxis,
     RigidBar,
     Section,
@@ -20,5 +21,5 @@ from .model import StructuralModel
 
 __all__ = [
     "Action", "ActionDefinition", "ActionGroup", "AnalysisResult", "Bar", "LoadCase", "LoadCombination",
-    "Material", "Member", "Node", "ReferenceAxis", "RigidBar", "Section", "StructuralModel", "Support",
+    "Material", "Member", "Node", "Plate", "ReferenceAxis", "RigidBar", "Section", "StructuralModel", "Support",
 ]
