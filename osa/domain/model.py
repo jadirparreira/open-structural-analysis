@@ -67,7 +67,10 @@ class StructuralModel:
     def members(self) -> dict[str, Bar]:
         return self.bars
 
-    def add_plate(self, contour, *, name: str | None = None, supports=(), color="#6e7781", thickness_mm=100.0) -> Plate:
+    def add_plate(
+        self, contour, *, name: str | None = None, supports=(), color="#6e7781",
+        thickness_mm=100.0, material: str | None = None,
+    ) -> Plate:
         from osa.services.plate_contour import plate_contour
 
         points = tuple(tuple(point) for point in contour)
@@ -89,12 +92,19 @@ class StructuralModel:
         thickness_mm = float(thickness_mm)
         if not math.isfinite(thickness_mm) or thickness_mm <= 0:
             raise ValueError("A espessura da placa deve ser positiva e finita.")
-        plate = Plate(name, ordered, supports, color.lower(), thickness_mm)
+        if material is None:
+            material = next(
+                (candidate for candidate, kind in self.material_types.items() if kind == "Concreto"),
+                "Concreto Estrutural",
+            )
+        if not isinstance(material, str) or not material.strip():
+            raise ValueError("A placa deve possuir um material válido.")
+        plate = Plate(name, ordered, supports, color.lower(), thickness_mm, material)
         self.plates[name] = plate
         self._touch()
         return plate
 
-    def update_plate(self, name: str, *, color=None, thickness_mm=None) -> None:
+    def update_plate(self, name: str, *, color=None, thickness_mm=None, material=None) -> None:
         plate = self.plates[name]
         if color is None:
             color = plate.color
@@ -103,7 +113,10 @@ class StructuralModel:
         thickness = plate.thickness_mm if thickness_mm is None else float(thickness_mm)
         if not math.isfinite(thickness) or thickness <= 0:
             raise ValueError("A espessura da placa deve ser positiva e finita.")
-        updated = replace(plate, color=color.lower(), thickness_mm=thickness)
+        material = plate.material if material is None else str(material).strip()
+        if not material:
+            raise ValueError("A placa deve possuir um material válido.")
+        updated = replace(plate, color=color.lower(), thickness_mm=thickness, material=material)
         if updated != plate:
             self.plates[name] = updated
             self._touch()
@@ -112,6 +125,9 @@ class StructuralModel:
         if name not in self.plates:
             raise ValueError("Placa não encontrada.")
         del self.plates[name]
+        for action_name, action in tuple(self.actions.items()):
+            if action.target == name:
+                del self.actions[action_name]
         self._touch()
 
     def _touch(self) -> None:
@@ -1157,7 +1173,7 @@ class StructuralModel:
 
     def remove_orphaned_actions(self) -> tuple[str, ...]:
         """Remove actions whose target no longer exists in the model."""
-        valid_targets = set(self.nodes) | set(self.bars) | set(self.rigid_bars)
+        valid_targets = set(self.nodes) | set(self.bars) | set(self.rigid_bars) | set(self.plates)
         orphaned = tuple(
             name for name, action in self.actions.items()
             if action.target not in valid_targets

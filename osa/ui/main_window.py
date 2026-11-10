@@ -12,6 +12,10 @@ from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
+from osa.rendering.plate_result_display import (
+    DEFAULT_PLATE_RESULT_DISPLAY_MODE,
+    is_plate_result_display_mode,
+)
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
 from osa.services.plate_contour import plate_contour
@@ -43,8 +47,8 @@ from .dialogs import (
 from .displacement_panel import DisplacementPanel
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
+from .import_dialogs import ImportReportDialog, PrjImportDialog
 from .loading_indicator import LoadingIndicator
-from .import_dialogs import PrjImportDialog, ImportReportDialog
 from .mcp_dispatcher import McpQtDispatcher
 from .member_placement_panel import MemberPlacementEditor
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
@@ -62,13 +66,13 @@ from .project_load_worker import ProjectLoadWorker
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
+    HPLaminadoSectionPanel,
     ILaminadoSectionPanel,
     LLaminadoSectionPanel,
     ParametricSectionPanel,
     TLaminadoSectionPanel,
     ULaminadoSectionPanel,
     WLaminadoSectionPanel,
-    HPLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
 from .verification_worker import VerificationWorker
@@ -160,6 +164,13 @@ class MainWindow(QMainWindow):
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
         plate_closure = str(self._program_settings.value("plates/closure", "perguntar"))
         self._plate_closure_mode = plate_closure if plate_closure in {"perguntar", "automatico"} else "perguntar"
+        plate_result_mode = str(self._program_settings.value(
+            "plates/resultDisplayMode", DEFAULT_PLATE_RESULT_DISPLAY_MODE,
+        ))
+        self._plate_result_display_mode = (
+            plate_result_mode if is_plate_result_display_mode(plate_result_mode)
+            else DEFAULT_PLATE_RESULT_DISPLAY_MODE
+        )
         self._solid_face_angle_limit_degrees = self._read_solid_face_angle_limit()
         self._minimum_bar_restraint_angle_degrees = self._read_minimum_bar_restraint_angle()
         self.model.minimum_bar_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
@@ -184,6 +195,7 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
         self.scene = StructureScene(shell)
+        self.scene.set_plate_result_display_mode(self._plate_result_display_mode)
         self.home = HomePage(shell)
         self.view_stack = QStackedWidget(shell)
         self.view_stack.addWidget(self.home)
@@ -407,9 +419,6 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.show_error(str(error))
             return
-        if self.model.plates:
-            self.show_error("A análise de placas ainda não está implementada. Remova as placas para analisar o modelo.")
-            return
         if self.model.import_metadata.get("requires_review"):
             dialog = ImportReportDialog(self.model.import_metadata, self, review=True)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -629,6 +638,7 @@ class MainWindow(QMainWindow):
         dialog = ProgramSettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        self.set_plate_result_display_mode(dialog.selected_plate_result_display_mode)
 
     def open_detailing_views(self) -> None:
         if self._detailing_views_dialog_open:
@@ -1298,6 +1308,20 @@ class MainWindow(QMainWindow):
         self._plate_closure_mode = mode
         self._program_settings.setValue("plates/closure", mode)
         self._program_settings.sync()
+
+    @property
+    def plate_result_display_mode(self) -> str:
+        return self._plate_result_display_mode
+
+    def set_plate_result_display_mode(self, mode: str) -> None:
+        if not is_plate_result_display_mode(mode):
+            raise ValueError("Opção inválida para a visualização dos resultados das placas.")
+        if mode == self._plate_result_display_mode:
+            return
+        self._plate_result_display_mode = mode
+        self._program_settings.setValue("plates/resultDisplayMode", mode)
+        self._program_settings.sync()
+        self.scene.set_plate_result_display_mode(mode)
 
     @property
     def minimum_bar_restraint_angle_degrees(self) -> float:
@@ -2614,6 +2638,7 @@ class MainWindow(QMainWindow):
             "nodemoment": "node_moments",
             "memberforce": "member_forces",
             "membermoment": "member_moments",
+            "platepressure": "plate_pressures",
         }
         command_label = escape(name.upper())
 
@@ -4145,6 +4170,7 @@ class MainWindow(QMainWindow):
         elif option in {
             "node_forces_visible", "node_moments_visible",
             "member_forces_visible", "member_moments_visible",
+            "plate_pressures_visible",
         }:
             self.scene.set_action_visibility(option.removesuffix("_visible"), visible)
         else:

@@ -1,13 +1,13 @@
 import os
+
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
-from osa.analysis.pynite.model_builder import ModelBuilder
-from osa.persistence.project_repository import ProjectRepository
 from osa.model import StructuralModel
+from osa.persistence.project_repository import ProjectRepository
 from osa.ui.main_window import MainWindow
 
 
@@ -52,8 +52,6 @@ def test_closed_contour_create_inspect_save_delete(window, tmp_path):
     restored = StructuralModel()
     ProjectRepository().load(restored, path)
     assert restored.plates == window.model.plates
-    with pytest.raises(ValueError, match='placas'):
-        ModelBuilder().build(restored)
     window.delete_selected()
     assert not window.model.plates
 
@@ -234,6 +232,54 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     assert ('bar', 'B1') not in restored.plates['P1'].supports
 
 
+def test_plate_action_and_analysis_panels_show_only_the_requested_fields(window):
+    from PySide6.QtWidgets import QLabel, QLineEdit
+
+    window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    window.scene.render_model(window.model)
+    window.selected_action_name = 'Caso'
+    window.action_service.add_plate_surface_pressure('P1', -3.0, 'Caso')
+
+    panel = window.properties
+    panel.show_for('plate', 'P1', 'Ações')
+    assert panel.name.text() == 'Identidade'
+    assert panel.identity_value.text() == 'P1'
+    assert not panel.member_color_button.isVisible()
+    assert panel.findChild(QLabel, 'propertySection').text() == 'Identidade'
+    labels = [label.text() for label in panel.findChildren(QLabel)]
+    assert 'Ação distribuída' in labels
+    assert 'Barras' not in labels and 'Material' not in labels and 'Espessura' not in labels
+    pressure_field = next(
+        field for field in panel.findChildren(QLineEdit)
+        if field.accessibleName() == 'Ação distribuída na laje (kN/m²)'
+    )
+    assert pressure_field.text() == '-3'
+    assert all(field.accessibleName() != 'Espessura da placa (mm)'
+               for field in panel.findChildren(QLineEdit))
+    assert panel._format_plate_pressure(1.23456) == '1.235'
+    assert panel._format_plate_pressure(1.2) == '1.2'
+    assert panel._format_plate_pressure(1.0) == '1'
+
+    window.model.add_bar('B4', 'N4', 'N2')
+    window.action_service.add_member_selfweight('B4', -1.0, 'Peso próprio')
+    window.selected_action_name = 'Peso próprio'
+    panel.show_for('plate', 'P1', 'Ações')
+    selfweight_field = next(
+        field for field in panel.findChildren(QLineEdit)
+        if field.accessibleName() == 'Peso próprio distribuído da placa (kN/m²)'
+    )
+    expected_pressure = -window.model.materials['Concreto Estrutural'][3] * 0.1
+    assert float(selfweight_field.text()) == pytest.approx(round(expected_pressure, 3))
+    assert selfweight_field.isReadOnly()
+
+    panel.show_for('plate', 'P1', 'Análise')
+    QApplication.processEvents()
+    labels = [label.text() for label in panel.findChildren(QLabel) if label.isVisible()]
+    assert panel.identity_value.text() == 'P1'
+    assert not panel.member_color_button.isVisible()
+    assert labels == ['Placa', 'Identidade']
+
+
 def test_old_plate_recovers_matching_supports(window):
     from osa.persistence.project_serializer import ProjectSerializer
     window.start_plate_placement()
@@ -344,6 +390,126 @@ def test_bar_hover_and_selection_color_only_associated_intersections(window):
     assert scene._plate_intersection_actor.GetMapper().GetInput().GetNumberOfLines() == mesh.n_lines
     assert scene._plate_intersection_actor.GetProperty().GetColor() == pytest.approx((69/255, 75/255, 82/255))
     assert scene._plate_actors['P1'].GetProperty().GetColor() == pytest.approx(original_face)
+
+
+def test_deformation_hides_original_plate_mesh_during_hover(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    model.add_plate(((-2, -2, 0), (6, -2, 0), (6, 5, 0), (-2, 5, 0)))
+    for name in ('B1', 'B2'):
+        model.update_bar_section(name, 'Barra Retangular')
+        model.update_member_profile(name, name, {'b': 300, 'h': 300})
+    scene.render_model(model)
+    scene.set_solid_members_visible(False)
+    assert scene._plate_fe_mesh_actors['P1'].GetVisibility()
+
+    nodes = {
+        'FE::N1': {'coordinates': (-2, -2, 0), 'DZ': 0.0},
+        'FE::N2': {'coordinates': (6, -2, 0), 'DZ': -0.01},
+        'FE::N3': {'coordinates': (6, 5, 0), 'DZ': -0.01},
+        'FE::N4': {'coordinates': (-2, 5, 0), 'DZ': 0.0},
+    }
+    model.analysis_results = [AnalysisResult(
+        model.revision, 'Result', plate_results={
+            'P1': {'nodes': nodes, 'elements': {'Q1': {'nodes': tuple(nodes)}}},
+        },
+    )]
+    scene._hovered = ('plate', 'P1')
+    scene._sync_highlights()
+    scene.set_analysis_result('Result', 'Deformação XYZ')
+    scene.set_analysis_visible(True)
+
+    assert not scene._plate_actors['P1'].GetVisibility()
+    assert not scene._plate_fe_mesh_actors['P1'].GetVisibility()
+    scene._sync_highlights()
+    assert not scene._plate_fe_mesh_actors['P1'].GetVisibility()
+
+    scene.set_analysis_visible(False)
+    assert scene._plate_fe_mesh_actors['P1'].GetVisibility()
+
+
+def test_node_markers_follow_deformation_scale_and_return_to_original_position(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    node_index = scene._node_batch.names.index('N2')
+    original = np.asarray(scene._node_glyph_points.points[node_index]).copy()
+    model.analysis_results = [AnalysisResult(
+        model.revision, 'Result', node_results={
+            'N2': {'DX': 0.01, 'DY': -0.02, 'DZ': 0.03},
+        },
+    )]
+    scene._hovered = ('node', 'N2')
+    scene._sync_highlights()
+
+    scene.set_analysis_deformation_scale(10)
+    scene.set_analysis_result('Result', 'Deformação XYZ')
+    scene.set_analysis_visible(True)
+    assert scene._node_glyph_points.points[node_index] == pytest.approx(
+        original + np.asarray((0.01, -0.02, 0.03)) * 10,
+    )
+
+    scene.set_analysis_deformation_scale(20)
+    assert scene._node_glyph_points.points[node_index] == pytest.approx(
+        original + np.asarray((0.01, -0.02, 0.03)) * 20,
+    )
+
+    scene.set_analysis_visible(False)
+    assert scene._node_glyph_points.points[node_index] == pytest.approx(original)
+
+
+def test_analysis_palette_has_independent_bar_and_plate_diagram_toggles(window):
+    palette = window.analysis_top_palette
+    assert palette.result_diagrams_button.toolTip() == 'Diagrama nas barras'
+    assert palette.plate_diagrams_button.toolTip() == 'Diagrama nas placas'
+    assert palette.result_diagrams_button.isChecked()
+    assert palette.plate_diagrams_button.isChecked()
+
+    palette.plate_diagrams_button.setChecked(False)
+    assert not window.scene.analysis_view_state()['plate_diagrams_visible']
+    assert palette.result_diagrams_button.isChecked()
+
+    palette.diagram_selector.setCurrentText('Deformação XYZ')
+    assert not palette.result_diagrams_button.isEnabled()
+    assert palette.plate_diagrams_button.isEnabled()
+
+
+def test_plate_diagram_toggle_shows_and_hides_colored_plate_results(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    scene.render_model(model)
+    nodes = {
+        'FE::1': {'coordinates': (0, 0, 0)},
+        'FE::2': {'coordinates': (4, 0, 0)},
+        'FE::3': {'coordinates': (4, 3, 0)},
+        'FE::4': {'coordinates': (0, 3, 0)},
+    }
+    model.analysis_results = [AnalysisResult(model.revision, 'Result', plate_results={
+        'P1': {'nodes': nodes, 'elements': {
+            'Q1': {'nodes': tuple(nodes), 'moment': [1.0, -2.0, 0.5]},
+        }},
+    })]
+
+    scene.set_analysis_result('Result', 'Fletor Y')
+    scene.set_analysis_visible(True)
+    assert len(scene._plate_result_actors) == 2
+    scale = scene._result_color_scale_widget
+    assert not scale.isHidden()
+    assert scale.size().width() == 120
+    assert scale.size().height() == 365
+    assert scale._unit == 'kN·m/m'
+    assert scale._format_value(-2.0) == '-2,000'
+    assert not scale.findChildren(QLabel)
+    assert not scene._plate_actors['P1'].GetVisibility()
+    assert not scene._result_actors
+
+    scene.set_analysis_plate_diagrams_visible(False)
+    assert not scene._plate_result_actors
+    assert scale.isHidden()
+    assert scene._plate_actors['P1'].GetVisibility()
 
 
 def test_plate_selection_highlights_only_its_own_intersections(window):

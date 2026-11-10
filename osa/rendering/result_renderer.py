@@ -11,6 +11,7 @@ import pyvista as pv
 from osa.sections import section_shape
 
 from .local_axes_renderer import LocalAxesRenderer
+from .result_color_map import RESULT_COLOR_STOPS, RESULT_MESH_COLOR, result_colors
 from .solid_member_renderer import SolidMemberRenderer
 
 
@@ -49,7 +50,8 @@ class ResultRenderer:
 
     def render(
         self, plotter, model, result, diagram: str, *, solid_members_visible: bool = True,
-        deformation_scale: float = 1.0,
+        deformation_scale: float = 1.0, plate_diagrams_visible: bool = False,
+        include_plate_surfaces: bool = True,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         if result is None:
             return [], np.empty((0, 3)), ()
@@ -57,7 +59,7 @@ class ResultRenderer:
             components = diagram.removeprefix("Deformação ") or "XYZ"
             return self._render_deformation(
                 plotter, model, result, components, solid_members_visible,
-                deformation_scale,
+                deformation_scale, plate_diagrams_visible, include_plate_surfaces,
             )
         if diagram == self.REACTION_DIAGRAM:
             return self._render_reactions(plotter, model, result)
@@ -169,6 +171,313 @@ class ResultRenderer:
                 reset_camera=False, render=False, render_lines_as_tubes=True,
             ))
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+
+    def result_range(
+        self, result, diagram: str, display_mode: str = "nos_media_macro",
+    ) -> tuple[float, float]:
+        """Return the scalar range for the selected plate-result presentation."""
+        values: list[float] = []
+        if diagram.startswith("Deformação"):
+            components = diagram.removeprefix("Deformação ") or "XYZ"
+            plate_values = [
+                self._deformation_scalar(node_values, components)
+                for plate_result in result.plate_results.values()
+                for node_values in plate_result.get("nodes", {}).values()
+            ]
+            if plate_values:
+                # Slab contours use FE plate nodes as their range source.
+                values.extend(plate_values)
+            else:
+                values.extend(
+                    self._deformation_scalar(node_values, components)
+                    for node_values in result.node_results.values()
+                )
+                values.extend(
+                    self._deformation_scalar(sample, components)
+                    for member_result in result.member_results.values()
+                    for sample in member_result.get("samples", ())
+                )
+        else:
+            macro_sums: dict[tuple[str, str], float] = {}
+            macro_counts: dict[tuple[str, str], int] = {}
+            node_sums: dict[str, float] = {}
+            node_counts: dict[str, int] = {}
+            for plate_name, plate_result in result.plate_results.items():
+                element_values = self._plate_element_values(plate_result, diagram)
+                if display_mode == "centros":
+                    values.extend(center for center, _nodal in element_values.values())
+                    continue
+                for element_name, element in plate_result.get("elements", {}).items():
+                    samples = element_values.get(element_name)
+                    node_names = element.get("nodes", ())
+                    if samples is None or len(node_names) != 4:
+                        continue
+                    _center, nodal = samples
+                    values.extend(nodal)
+                    for node_name, value in zip(node_names, nodal, strict=True):
+                        key = (plate_name, node_name)
+                        macro_sums[key] = macro_sums.get(key, 0.0) + value
+                        macro_counts[key] = macro_counts.get(key, 0) + 1
+                        node_sums[node_name] = node_sums.get(node_name, 0.0) + value
+                        node_counts[node_name] = node_counts.get(node_name, 0) + 1
+            if display_mode == "nos_media_macro":
+                values = [macro_sums[key] / macro_counts[key] for key in macro_sums]
+            elif display_mode == "nos_media":
+                values = [node_sums[key] / node_counts[key] for key in node_sums]
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if not finite.size:
+            return (0.0, 1.0)
+        low, high = float(finite.min()), float(finite.max())
+        return (low, high if high - low > 1e-12 else low + 1.0)
+
+    def render_plate_contours(
+        self, plotter, model, result, diagram: str, *, deformation_scale: float = 1.0,
+        value_range: tuple[float, float] | None = None,
+        display_mode: str = "nos_media_macro",
+    ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
+        """Render plate result contours using the selected FE interpolation mode."""
+        if result is None:
+            return [], np.empty((0, 3)), ()
+        value_range = value_range or self.result_range(result, diagram, display_mode)
+        components = diagram.removeprefix("Deformação ") if diagram.startswith("Deformação") else ""
+        scale = max(1.0, min(100.0, float(deformation_scale)))
+        actors: list[object] = []
+        all_positions: list[np.ndarray] = []
+        all_labels: list[str] = []
+        plate_meshes = []
+        macro_sums: dict[tuple[str, str], float] = {}
+        macro_counts: dict[tuple[str, str], int] = {}
+        node_sums: dict[str, float] = {}
+        node_counts: dict[str, int] = {}
+        for plate_name, plate_result in result.plate_results.items():
+            plate = model.plates.get(plate_name)
+            nodes = plate_result.get("nodes", {})
+            elements = plate_result.get("elements", {})
+            if plate is None or not nodes or not elements:
+                continue
+            node_names = tuple(nodes)
+            node_index = {name: index for index, name in enumerate(node_names)}
+            coordinates = np.asarray([
+                nodes[name].get("coordinates", (0.0, 0.0, 0.0)) for name in node_names
+            ], dtype=float)
+            quads = [
+                tuple(node_index[name] for name in element.get("nodes", ()))
+                for element in elements.values()
+                if len(element.get("nodes", ())) == 4
+                and all(name in node_index for name in element["nodes"])
+            ]
+            if not quads:
+                continue
+            if components:
+                base_scalars = np.asarray([
+                    self._deformation_scalar(nodes[name], components) for name in node_names
+                ], dtype=float)
+                displacement = np.asarray([
+                    self._deformation_vector(nodes[name], components) for name in node_names
+                ], dtype=float)
+                coordinates = coordinates + displacement * scale
+                element_samples = {}
+                for element_name, element in elements.items():
+                    quad_names = element.get("nodes", ())
+                    if len(quad_names) != 4 or not all(name in node_index for name in quad_names):
+                        continue
+                    nodal = tuple(base_scalars[node_index[name]] for name in quad_names)
+                    element_samples[element_name] = (float(np.mean(nodal)), nodal)
+            else:
+                element_samples = self._plate_element_values(plate_result, diagram)
+                if not element_samples:
+                    continue
+            sample_rows = []
+            for element_name, element in elements.items():
+                samples = element_samples.get(element_name)
+                quad_names = element.get("nodes", ())
+                if samples is None or len(quad_names) != 4 or not all(name in node_index for name in quad_names):
+                    continue
+                center, nodal = samples
+                quad = tuple(node_index[name] for name in quad_names)
+                sample_rows.append((quad, quad_names, center, nodal))
+                for node_name, value in zip(quad_names, nodal, strict=True):
+                    macro_key = (plate_name, node_name)
+                    macro_sums[macro_key] = macro_sums.get(macro_key, 0.0) + value
+                    macro_counts[macro_key] = macro_counts.get(macro_key, 0) + 1
+                    node_sums[node_name] = node_sums.get(node_name, 0.0) + value
+                    node_counts[node_name] = node_counts.get(node_name, 0) + 1
+            if not sample_rows:
+                continue
+            plate_meshes.append((
+                plate_name, plate_result, nodes, node_names, node_index, coordinates,
+                sample_rows, displacement if components else None,
+            ))
+
+        for (
+            plate_name, _plate_result, nodes, node_names, node_index, coordinates,
+            sample_rows, displacement,
+        ) in plate_meshes:
+            if display_mode == "centros":
+                mesh_faces = np.asarray([
+                    value for quad, _names, _center, _nodal in sample_rows
+                    for value in (4, *quad)
+                ], dtype=np.int64)
+                surface = pv.PolyData(coordinates, faces=mesh_faces)
+                surface.cell_data["result_value"] = np.asarray(
+                    [center for _quad, _names, center, _nodal in sample_rows], dtype=float,
+                )
+                scalar_preference = "cell"
+                interpolate_before_map = False
+            elif display_mode == "nos_sem_media":
+                unshared_points = []
+                unshared_faces = []
+                unshared_values = []
+                for _quad, quad_names, _center, nodal in sample_rows:
+                    start = len(unshared_points)
+                    unshared_points.extend(
+                        coordinates[node_index[name]] for name in quad_names
+                    )
+                    unshared_faces.extend((4, start, start + 1, start + 2, start + 3))
+                    unshared_values.extend(nodal)
+                surface = pv.PolyData(
+                    np.asarray(unshared_points, dtype=float),
+                    faces=np.asarray(unshared_faces, dtype=np.int64),
+                )
+                surface.point_data["result_value"] = np.asarray(unshared_values, dtype=float)
+                scalar_preference = "point"
+                interpolate_before_map = True
+            else:
+                surface_faces = np.asarray([
+                    value for quad, _names, _center, _nodal in sample_rows
+                    for value in (4, *quad)
+                ], dtype=np.int64)
+                surface = pv.PolyData(coordinates, faces=surface_faces)
+                if display_mode == "nos_media":
+                    sums, counts = node_sums, node_counts
+                else:
+                    sums, counts = macro_sums, macro_counts
+                node_values = np.asarray([
+                    sums[(plate_name, name)] / counts[(plate_name, name)]
+                    if display_mode == "nos_media_macro"
+                    else sums[name] / counts[name]
+                    for name in node_names
+                ], dtype=float)
+                surface.point_data["result_value"] = node_values
+                scalar_preference = "point"
+                interpolate_before_map = True
+            actors.append(plotter.add_mesh(
+                surface, scalars="result_value", cmap=list(RESULT_COLOR_STOPS),
+                n_colors=len(RESULT_COLOR_STOPS), clim=value_range,
+                preference=scalar_preference,
+                interpolate_before_map=interpolate_before_map, opacity=1.0,
+                smooth_shading=False, lighting=True, show_scalar_bar=False, pickable=False,
+                reset_camera=False, render=False, name=f"result-plate:{plate_name}",
+            ))
+            edge_pairs = {
+                (min(start, end), max(start, end))
+                for quad, _names, _center, _nodal in sample_rows
+                for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0]), strict=True)
+            }
+            encoded_edges = np.asarray(
+                [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
+                dtype=np.int64,
+            )
+            edge_mesh = pv.PolyData(coordinates, lines=encoded_edges)
+            actors.append(plotter.add_mesh(
+                edge_mesh, color=RESULT_MESH_COLOR, line_width=1.0,
+                lighting=False, pickable=False, reset_camera=False, render=False,
+                name=f"result-plate-mesh:{plate_name}",
+            ))
+            if components:
+                magnitudes = np.linalg.norm(displacement, axis=1)
+                maximum_index = int(np.argmax(magnitudes))
+                if magnitudes[maximum_index] > 1e-12:
+                    all_positions.append(coordinates[maximum_index])
+                    all_labels.append(self._format_displacement(
+                        self._deformation_display_value(nodes[node_names[maximum_index]], components),
+                    ))
+        return actors, np.asarray(all_positions, dtype=float).reshape(-1, 3), tuple(all_labels)
+
+    @staticmethod
+    def _deformation_vector(values, components: str) -> np.ndarray:
+        return np.asarray((
+            float(values.get("DX", values.get("deflection_x", 0.0))) if "X" in components else 0.0,
+            float(values.get("DY", values.get("deflection_y", 0.0))) if "Y" in components else 0.0,
+            float(values.get("DZ", values.get("deflection_z", 0.0))) if "Z" in components else 0.0,
+        ), dtype=float)
+
+    @classmethod
+    def _deformation_scalar(cls, values, components: str) -> float:
+        vector = cls._deformation_vector(values, components)
+        if components == "XYZ":
+            return float(np.linalg.norm(vector))
+        return float(vector["XYZ".index(components)])
+
+    @classmethod
+    def _deformation_display_value(cls, values, components: str) -> float:
+        return cls._deformation_scalar(values, components) * 1000.0
+
+    @staticmethod
+    def _plate_result_field(plate_result, diagram: str):
+        field_by_diagram = {
+            "Normal": ("membrane", 0),
+            "Cortante Y": ("shear", 1),
+            "Cortante Z": ("shear", 0),
+            "Torsor": ("moment", 2),
+            "Fletor Y": ("moment", 0),
+            "Fletor Z": ("moment", 1),
+        }
+        field = field_by_diagram.get(diagram)
+        if field is None:
+            return None
+        key, component = field
+        element_values = {}
+        for name, element in plate_result.get("elements", {}).items():
+            components = np.asarray(element.get(key, ()), dtype=float).reshape(-1)
+            if len(components) <= component:
+                continue
+            element_values[name] = float(components[component])
+        return (component, element_values) if element_values else None
+
+    @classmethod
+    def _plate_element_values(cls, plate_result, diagram: str):
+        """Return each element's center value and its four extrapolated nodal values."""
+        field = cls._plate_result_field(plate_result, diagram)
+        nodal_field = cls._plate_result_nodal_field(plate_result, diagram)
+        if field is None:
+            return {}
+        component, center_values = field
+        nodal_values = nodal_field[1] if nodal_field is not None else {}
+        result = {}
+        for element_name, center in center_values.items():
+            corners = nodal_values.get(element_name)
+            if corners is None or len(corners) != 4:
+                result[element_name] = (center, (center,) * 4)
+            else:
+                result[element_name] = (
+                    center,
+                    tuple(float(values[component]) for values in corners),
+                )
+        return result
+
+    @staticmethod
+    def _plate_result_nodal_field(plate_result, diagram: str):
+        field_by_diagram = {
+            "Normal": ("membrane_nodal", 0),
+            "Cortante Y": ("shear_nodal", 1),
+            "Cortante Z": ("shear_nodal", 0),
+            "Torsor": ("moment_nodal", 2),
+            "Fletor Y": ("moment_nodal", 0),
+            "Fletor Z": ("moment_nodal", 1),
+        }
+        field = field_by_diagram.get(diagram)
+        if field is None:
+            return None
+        key, component = field
+        values_by_element = {}
+        for name, element in plate_result.get("elements", {}).items():
+            nodal = np.asarray(element.get(key, ()), dtype=float)
+            if nodal.ndim != 2 or nodal.shape[0] != 4 or nodal.shape[1] <= component:
+                continue
+            values_by_element[name] = nodal
+        return (component, values_by_element) if values_by_element else None
 
     def _render_reactions(self, plotter, model, result) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         """Renderiza reações nodais nos eixos globais, apontando para o nó.
@@ -420,7 +729,8 @@ class ResultRenderer:
 
     def _render_deformation(
         self, plotter, model, result, components: str, solid_members_visible: bool,
-        deformation_scale: float,
+        deformation_scale: float, color_bars_by_value: bool = False,
+        include_plate_surfaces: bool = True,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         """Sobrepõe as linhas de centro das barras na configuração deformada."""
         samples_by_member = {
@@ -428,7 +738,7 @@ class ResultRenderer:
             for name, values in result.member_results.items()
             if name in model.bars
         }
-        maximum = max(
+        member_maximum = max(
             (
                 float(np.linalg.norm([
                     float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
@@ -440,12 +750,23 @@ class ResultRenderer:
             ),
             default=0.0,
         )
-        actors = self._render_undeformed_reference(plotter, model)
+        plate_results = getattr(result, "plate_results", {})
+        plate_maximum = max((
+            float(np.linalg.norm([
+                float(values.get("DX", 0.0)) if "X" in components else 0.0,
+                float(values.get("DY", 0.0)) if "Y" in components else 0.0,
+                float(values.get("DZ", 0.0)) if "Z" in components else 0.0,
+            ]))
+            for plate_result in plate_results.values()
+            for values in plate_result.get("nodes", {}).values()
+        ), default=0.0)
+        maximum = max(member_maximum, plate_maximum)
+        actors: list[object] = []
         if maximum <= 1e-12:
             return actors, np.empty((0, 3)), ()
         # Results are in model units; 1× therefore draws the real deformation.
         # Larger values are an explicit visual amplification from the palette.
-        scale = max(1.0, min(10.0, float(deformation_scale)))
+        scale = max(1.0, min(100.0, float(deformation_scale)))
         face_points: list[np.ndarray] = []
         faces: list[int] = []
         edge_points: list[np.ndarray] = []
@@ -457,6 +778,25 @@ class ResultRenderer:
         line_colors: list[np.ndarray] = []
         label_positions: list[np.ndarray] = []
         labels: list[str] = []
+        deformation_value_range = (
+            self.result_range(result, f"Deformação {components}")
+            if color_bars_by_value else None
+        )
+        plate_actors: list[object] = []
+        plate_positions = np.empty((0, 3), dtype=float)
+        plate_labels: tuple[str, ...] = ()
+        if include_plate_surfaces:
+            if color_bars_by_value:
+                plate_actors, plate_positions, plate_labels = self.render_plate_contours(
+                    plotter, model, result, f"Deformação {components}",
+                    deformation_scale=scale,
+                )
+            else:
+                plate_actors, plate_positions, plate_labels = self._render_plate_deformation(
+                    plotter, model, plate_results, components, scale, solid_members_visible,
+                )
+        label_positions.extend(plate_positions)
+        labels.extend(plate_labels)
         for name, samples in samples_by_member.items():
             member = model.bars.get(name)
             if member is None or len(samples) < 2:
@@ -486,6 +826,9 @@ class ResultRenderer:
                     + visual_displacement
                 )
             deformed_centerline = np.asarray(deformed)
+            deformed_section_bases = self._deformed_section_bases(
+                deformed_centerline, local_x, local_y, local_z,
+            )
             reported = np.asarray(reported_displacements)
             magnitudes = np.linalg.norm(reported, axis=1)
             maximum_index = int(np.argmax(magnitudes))
@@ -500,10 +843,21 @@ class ResultRenderer:
                 value_mm = float(reported[maximum_index, component_index] * 1000.0)
             labels.append(self._format_displacement(value_mm))
             color = np.asarray(pv.Color(member.color).int_rgb, dtype=np.uint8)
+            station_colors = None
+            if color_bars_by_value:
+                scalar_values = np.asarray([
+                    self._deformation_scalar(sample, components) for sample in samples
+                ], dtype=float)
+                station_colors = result_colors(scalar_values, deformation_value_range)
             if not solid_members_visible:
-                self._append_colored_polyline(
-                    line_points, lines, line_colors, deformed_centerline, color,
-                )
+                if station_colors is None:
+                    self._append_colored_polyline(
+                        line_points, lines, line_colors, deformed_centerline, color,
+                    )
+                else:
+                    self._append_segmented_colored_polyline(
+                        line_points, lines, line_colors, deformed_centerline, station_colors,
+                    )
                 continue
             try:
                 shape = section_shape(
@@ -518,15 +872,20 @@ class ResultRenderer:
                 # the deformed profile.
                 self._append_deformed_member_solid(
                     face_points, faces, face_colors, edge_points, edges, edge_colors,
-                    deformed_centerline, local_x, local_y, local_z, shape.loops,
+                    deformed_centerline, deformed_section_bases, shape.loops,
                     longitudinal_edge_indices, color,
                     np.clip(color.astype(float) * 0.65, 0, 255).astype(np.uint8),
-                    (0.0, 0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0, 0.0), station_colors,
                 )
             except (KeyError, TypeError, ValueError):
-                self._append_colored_polyline(
-                    line_points, lines, line_colors, deformed_centerline, color,
-                )
+                if station_colors is None:
+                    self._append_colored_polyline(
+                        line_points, lines, line_colors, deformed_centerline, color,
+                    )
+                else:
+                    self._append_segmented_colored_polyline(
+                        line_points, lines, line_colors, deformed_centerline, station_colors,
+                    )
         if face_points:
             mesh = pv.PolyData(np.asarray(face_points), faces=np.asarray(faces))
             mesh.cell_data["rgb"] = np.asarray(face_colors)
@@ -561,21 +920,136 @@ class ResultRenderer:
             line_mesh = pv.PolyData(np.asarray(line_points), lines=np.asarray(lines))
             line_mesh.cell_data["rgb"] = np.asarray(line_colors)
             actors.append(plotter.add_mesh(
-                line_mesh, scalars="rgb", rgb=True, line_width=2.0, lighting=False,
+                line_mesh, scalars="rgb", rgb=True, line_width=1.25, lighting=False,
                 pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
             ))
+        actors.extend(plate_actors)
         return actors, np.asarray(label_positions, dtype=float), tuple(labels)
+
+    def _render_plate_deformation(
+        self, plotter, model, plate_results, components, scale, solid_members_visible,
+    ):
+        """Draw deformed FE plate surfaces."""
+        plates = getattr(model, "plates", {})
+        deformed_actors: list[object] = []
+        label_positions: list[np.ndarray] = []
+        labels: list[str] = []
+
+        for plate_name, plate_result in plate_results.items():
+            plate = plates.get(plate_name)
+            nodes = plate_result.get("nodes", {})
+            elements = plate_result.get("elements", {})
+            if plate is None or not nodes or not elements:
+                continue
+            node_names = tuple(nodes)
+            node_index = {name: index for index, name in enumerate(node_names)}
+            original = np.asarray([
+                nodes[name].get("coordinates", (0.0, 0.0, 0.0)) for name in node_names
+            ], dtype=float)
+            displacement = np.asarray([
+                (
+                    float(nodes[name].get("DX", 0.0)) if "X" in components else 0.0,
+                    float(nodes[name].get("DY", 0.0)) if "Y" in components else 0.0,
+                    float(nodes[name].get("DZ", 0.0)) if "Z" in components else 0.0,
+                )
+                for name in node_names
+            ], dtype=float)
+            quads = [
+                tuple(node_index[name] for name in element.get("nodes", ()))
+                for element in elements.values()
+                if len(element.get("nodes", ())) == 4
+                and all(name in node_index for name in element["nodes"])
+            ]
+            if not quads:
+                continue
+
+            deformed = original + displacement * scale
+            mesh_faces = np.asarray(
+                [value for quad in quads for value in (4, *quad)], dtype=np.int64,
+            )
+            mesh = pv.PolyData(deformed, faces=mesh_faces)
+            deformed_actors.append(plotter.add_mesh(
+                mesh, color=getattr(plate, "color", "#6e7781"),
+                opacity=1.0 if solid_members_visible else 0.7,
+                show_edges=False,
+                smooth_shading=False, lighting=True, pickable=False,
+                reset_camera=False, render=False,
+            ))
+            edge_pairs = {
+                (min(start, end), max(start, end))
+                for quad in quads
+                for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0]))
+            }
+            encoded_edges = np.asarray(
+                [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
+                dtype=np.int64,
+            )
+            edge_mesh = pv.PolyData(deformed, lines=encoded_edges)
+            edge_actor = plotter.add_mesh(
+                edge_mesh, color="#57606a", opacity=1.0, line_width=1.0,
+                lighting=False, pickable=False, reset_camera=False, render=False,
+            )
+            edge_mapper = edge_actor.GetMapper() if hasattr(edge_actor, "GetMapper") else None
+            if edge_mapper is not None:
+                edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+            deformed_actors.append(edge_actor)
+
+            magnitudes = np.linalg.norm(displacement, axis=1)
+            maximum_index = int(np.argmax(magnitudes))
+            if magnitudes[maximum_index] > 1e-12:
+                vector = displacement[maximum_index]
+                label_positions.append(
+                    deformed[maximum_index] + vector / magnitudes[maximum_index] * 0.12,
+                )
+                if components == "XYZ":
+                    value_mm = float(magnitudes[maximum_index] * 1000.0)
+                else:
+                    component_index = "XYZ".index(components)
+                    value_mm = float(displacement[maximum_index, component_index] * 1000.0)
+                labels.append(self._format_displacement(value_mm))
+
+        return deformed_actors, label_positions, labels
+
+    @staticmethod
+    def _deformed_section_bases(centerline, original_x, original_y, original_z):
+        """Keep each section normal to the displaced centerline without scaling it."""
+        bases = []
+        for index in range(len(centerline)):
+            if index == 0:
+                tangent = centerline[1] - centerline[0]
+            elif index == len(centerline) - 1:
+                tangent = centerline[-1] - centerline[-2]
+            else:
+                tangent = centerline[index + 1] - centerline[index - 1]
+            length = float(np.linalg.norm(tangent))
+            tangent = tangent / length if length > 1e-12 else original_x
+            transverse_y = original_y - tangent * float(np.dot(original_y, tangent))
+            transverse_length = float(np.linalg.norm(transverse_y))
+            if transverse_length <= 1e-8:
+                transverse_y = original_z - tangent * float(np.dot(original_z, tangent))
+                transverse_length = float(np.linalg.norm(transverse_y))
+            if transverse_length <= 1e-8:
+                transverse_y = np.cross(original_z, tangent)
+                transverse_length = float(np.linalg.norm(transverse_y))
+            transverse_y /= transverse_length
+            transverse_z = np.cross(tangent, transverse_y)
+            transverse_z /= max(float(np.linalg.norm(transverse_z)), 1e-12)
+            bases.append((tangent, transverse_y, transverse_z))
+        return tuple(bases)
 
     def _append_deformed_member_solid(
         self, face_points, faces, face_colors, edge_points, edges, edge_colors,
-        centerline, local_x, local_y, local_z, loops, longitudinal_edge_indices,
-        color, edge_color, face_angles,
+        centerline, section_bases, loops, longitudinal_edge_indices,
+        color, edge_color, face_angles, station_colors=None,
     ) -> None:
         """Extruda a seção real ao longo da configuração deformada calculada."""
         angle_tangents = np.tan(np.deg2rad(np.asarray(face_angles, dtype=float)))
         for loop_index, loop in enumerate(loops):
             ring_offsets: list[int] = []
             for ring_index, center in enumerate(centerline):
+                local_x, local_y, local_z = section_bases[ring_index]
                 ring_offsets.append(len(face_points))
                 fraction_b = ring_index / max(1, len(centerline) - 1)
                 face_points.extend(
@@ -589,11 +1063,14 @@ class ResultRenderer:
                     for y, z in loop
                 )
             size = len(loop)
-            for ring_a, ring_b in pairwise(ring_offsets):
+            for station_index, (ring_a, ring_b) in enumerate(pairwise(ring_offsets)):
                 for index in range(size):
                     next_index = (index + 1) % size
                     faces.extend((4, ring_a + index, ring_a + next_index, ring_b + next_index, ring_b + index))
-                    face_colors.append(color)
+                    face_colors.append(
+                        np.rint(np.mean(station_colors[station_index:station_index + 2], axis=0)).astype(np.uint8)
+                        if station_colors is not None else color
+                    )
             self._append_colored_polyline(edge_points, edges, edge_colors, [
                 face_points[ring_offsets[0] + index] for index in (*range(size), 0)
             ], edge_color)
@@ -612,41 +1089,19 @@ class ResultRenderer:
         lines.extend((len(polyline), *range(offset, offset + len(polyline))))
         colors.append(color)
 
+    @staticmethod
+    def _append_segmented_colored_polyline(points, lines, colors, polyline, station_colors) -> None:
+        for index, (start, end) in enumerate(pairwise(polyline)):
+            offset = len(points)
+            points.extend((start, end))
+            lines.extend((2, offset, offset + 1))
+            colors.append(np.rint(np.mean(station_colors[index:index + 2], axis=0)).astype(np.uint8))
+
     @classmethod
     def _format_displacement(cls, value_mm: float) -> str:
         rounded = cls._display_value(value_mm)
         number = f"{rounded:.{cls.DISPLAY_DECIMALS}f}".rstrip("0").rstrip(".").replace(".", ",")
         return f"{number} mm"
-
-    def _render_undeformed_reference(self, plotter, model) -> list[object]:
-        """Cria um único ator tracejado como referência para a deformada."""
-        points: list[np.ndarray] = []
-        lines: list[int] = []
-        for member in model.bars.values():
-            start_node = model.nodes[member.start_node]
-            end_node = model.nodes[member.end_node]
-            start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
-            end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
-            delta = end - start
-            length = float(np.linalg.norm(delta))
-            if length <= 1e-12:
-                continue
-            dash_count = max(3, round(length / 0.16))
-            dash_length = length / dash_count * 0.60
-            spacing = length / dash_count
-            for index in range(dash_count):
-                dash_start = start + delta * (index * spacing / length)
-                dash_end = start + delta * min((index * spacing + dash_length) / length, 1.0)
-                offset = len(points)
-                points.extend((dash_start, dash_end))
-                lines.extend((2, offset, offset + 1))
-        if not points:
-            return []
-        mesh = pv.PolyData(np.asarray(points), lines=np.asarray(lines))
-        return [plotter.add_mesh(
-            mesh, color=self.UNDEFORMED_COLOR, line_width=1.0, lighting=False,
-            pickable=False, reset_camera=False, render=False, render_lines_as_tubes=True,
-        )]
 
     def _render_shear_geometry(
         self,

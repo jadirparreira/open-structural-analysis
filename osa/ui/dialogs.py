@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
+from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
@@ -2109,6 +2110,36 @@ class ProgramSettingsDialog(QDialog):
         plates_page = QWidget()
         plates_layout = QVBoxLayout(plates_page)
         plates_layout.addSpacing(10)
+        results_label = QLabel("Visualização dos resultados das placas")
+        results_label.setObjectName("hint")
+        results_label.setWordWrap(True)
+        plates_layout.addWidget(results_label)
+        self._plate_result_display_combo = QComboBox()
+        self._plate_result_display_combo.setObjectName("plateResultDisplayMode")
+        self._plate_result_display_combo.setAccessibleName(
+            "Visualização dos resultados das placas"
+        )
+        self._selected_plate_result_display_mode = (
+            self.window.plate_result_display_mode
+        )
+        for mode, label in PLATE_RESULT_DISPLAY_MODES:
+            self._plate_result_display_combo.addItem(label, mode)
+        selected_index = self._plate_result_display_combo.findData(
+            self._selected_plate_result_display_mode
+        )
+        self._plate_result_display_combo.setCurrentIndex(max(0, selected_index))
+        self._plate_result_display_combo.currentIndexChanged.connect(
+            self._stage_plate_result_display_mode
+        )
+        self._plate_result_display_combo.setMinimumWidth(300)
+        plates_layout.addWidget(self._plate_result_display_combo, 0, Qt.AlignmentFlag.AlignLeft)
+        result_display_hint = QLabel(
+            "A alteração será aplicada ao fechar Configurações."
+        )
+        result_display_hint.setObjectName("hint")
+        result_display_hint.setWordWrap(True)
+        plates_layout.addWidget(result_display_hint)
+        plates_layout.addSpacing(12)
         closure_label = QLabel("Fechar contorno")
         closure_label.setObjectName("hint")
         closure_label.setWordWrap(True)
@@ -2234,6 +2265,15 @@ class ProgramSettingsDialog(QDialog):
         layout.addWidget(categories)
         layout.addWidget(pages, 1)
         outer.addLayout(layout, 1)
+
+    @property
+    def selected_plate_result_display_mode(self) -> str:
+        return self._selected_plate_result_display_mode
+
+    def _stage_plate_result_display_mode(self, index: int) -> None:
+        mode = self._plate_result_display_combo.itemData(index)
+        if mode:
+            self._selected_plate_result_display_mode = str(mode)
 
     def _toggle_mcp(self, enabled: bool) -> None:
         try:

@@ -611,6 +611,23 @@ class McpApplication:
             members.append({"name": name, **values})
         return {"revision": self.model.revision, "combination": combination, "members": members}
 
+    def get_plate_analysis_results(
+        self,
+        combination: str,
+        plate_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Retorna deslocamentos nodais e esforços locais dos elementos de laje."""
+        result = self._analysis_result(combination)
+        names = tuple(plate_names) if plate_names is not None else tuple(result.plate_results)
+        unknown = set(names) - set(result.plate_results)
+        if unknown:
+            raise ValueError("Lajes sem resultado: " + ", ".join(sorted(unknown)) + ".")
+        return {
+            "revision": self.model.revision,
+            "combination": combination,
+            "plates": [{"name": name, **result.plate_results[name]} for name in names],
+        }
+
     def get_support_reactions(
         self,
         combination: str,
@@ -619,7 +636,7 @@ class McpApplication:
         """Retorna as reações nos nós apoiados."""
         result = self._analysis_result(combination)
         names = tuple(node_names) if node_names is not None else tuple(self.model.nodes)
-        unknown = set(names) - set(result.node_results)
+        unknown = (set(names) - set(self.model.nodes)) | (set(names) - set(result.node_results))
         if unknown:
             raise ValueError("Nós sem resultado: " + ", ".join(sorted(unknown)) + ".")
         reaction_keys = ("RXN_FX", "RXN_FY", "RXN_FZ", "RXN_MX", "RXN_MY", "RXN_MZ")
@@ -729,6 +746,15 @@ class McpApplication:
         self._notify_model_changed()
         return {"revision": self.model.revision, "action": self._action_payload(action)}
 
+    def add_plate_pressure(self, plate_name: str, pressure: float, load_case: str) -> dict[str, Any]:
+        self._validate_load_target(plate_name, "plate", load_case)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_plate_surface_pressure(
+            plate_name, self._finite_load_value(pressure, "pressure"), load_case,
+        )
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action)}
+
     def update_applied_load(
         self,
         action_name: str,
@@ -768,6 +794,9 @@ class McpApplication:
         elif kind.startswith("member_distributed_force_"):
             target_kind = "bar"
             prefix = "member_distributed_force_"
+        elif kind == "plate_surface_pressure":
+            target_kind = "plate"
+            prefix = kind
         else:
             raise ValueError(f"O tipo de ação '{kind}' não pode ser atualizado pelo MCP.")
         self._validate_load_target(updated_target, target_kind, updated_load_case)
@@ -789,6 +818,10 @@ class McpApplication:
                 self._finite_load_value(final, "final"),
             )
             kind = f"{prefix}{'local_' if updated_reference == 'local' else ''}{updated_direction}"
+        elif kind == "plate_surface_pressure":
+            if direction is not None or initial is not None or final is not None or reference is not None:
+                raise ValueError("Pressão de laje deve ser atualizada usando apenas value.")
+            components = (current.components[0] if value is None else self._finite_load_value(value, "value"),)
         else:
             if initial is not None or final is not None or reference is not None:
                 raise ValueError("Esta ação concentrada deve ser atualizada usando apenas value.")
@@ -879,6 +912,8 @@ class McpApplication:
             raise ValueError(f"Nó '{name}' não encontrado.")
         if kind == "bar" and name not in self.model.bars:
             raise ValueError(f"Barra '{name}' não encontrado.")
+        if kind == "plate" and name not in self.model.plates:
+            raise ValueError(f"Laje '{name}' não encontrada.")
 
     def _ensure_load_case_accepts_loads(self, load_case: str) -> None:
         if self.action_service.has_selfweight(load_case):
@@ -1124,6 +1159,7 @@ class McpApplication:
             "node_moments_visible",
             "member_forces_visible",
             "member_moments_visible",
+            "plate_pressures_visible",
         }
         unknown = set(options) - available
         if unknown:

@@ -1,12 +1,13 @@
 import os
+
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QListWidget
 
-from osa.ui.dialogs import ProgramSettingsDialog
 import osa.ui.main_window as main_window
+from osa.ui.dialogs import ProgramSettingsDialog
 
 
 @pytest.fixture
@@ -54,6 +55,47 @@ def test_plate_closure_setting_persists_without_transparency_control(isolated_wi
     reopened = main_window.MainWindow()
     try:
         assert reopened.plate_closure_mode == 'automatico'
+    finally:
+        reopened.scene.plotter.close()
+        reopened.hide()
+        reopened.deleteLater()
+
+
+def test_plate_result_display_modes_are_staged_until_settings_close(isolated_window, monkeypatch):
+    window = isolated_window
+    original_mode = window.plate_result_display_mode
+    dialog = ProgramSettingsDialog(window)
+    combo = dialog._plate_result_display_combo
+    assert [combo.itemData(index) for index in range(combo.count())] == [
+        'centros', 'nos_sem_media', 'nos_media', 'nos_media_macro',
+    ]
+    combo.setCurrentIndex(combo.findData('centros'))
+    assert dialog.selected_plate_result_display_mode == 'centros'
+    assert window.plate_result_display_mode == original_mode
+
+    class ClosingSettingsDialog:
+        def __init__(self, parent):
+            self.parent = parent
+            self.selected_plate_result_display_mode = 'nos_sem_media'
+
+        def move(self, _position):
+            pass
+
+        def rect(self):
+            return self.parent.rect()
+
+        def exec(self):
+            assert self.parent.plate_result_display_mode == original_mode
+            return 0
+
+    monkeypatch.setattr(main_window, 'ProgramSettingsDialog', ClosingSettingsDialog)
+    window.open_program_settings()
+    assert window.plate_result_display_mode == 'nos_sem_media'
+    assert window.scene.analysis_view_state()['plate_result_display_mode'] == 'nos_sem_media'
+
+    reopened = main_window.MainWindow()
+    try:
+        assert reopened.plate_result_display_mode == 'nos_sem_media'
     finally:
         reopened.scene.plotter.close()
         reopened.hide()

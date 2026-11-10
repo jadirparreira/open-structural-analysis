@@ -62,13 +62,57 @@ class ActionRenderer:
             if visibility.get("node_moments", True)
             and action.kind.startswith("node_moment_") and len(action.components) == 1
         ]
+        plate_pressure_actions = [
+            action for action in visible_actions
+            if visibility.get("plate_pressures", True)
+            and action.kind == "plate_surface_pressure" and len(action.components) == 1
+        ]
+        plate_loads = []
+        for action in plate_pressure_actions:
+            if action.target not in getattr(model, "plates", {}):
+                continue
+            sample_points, _normal = self._plate_action_samples(model, action.target)
+            surface_faces, surface_edges = self._plate_action_surface(model, action.target)
+            if not sample_points or not surface_faces:
+                continue
+            pressure = float(action.components[0])
+            plate_loads.append((
+                pressure, np.array((0.0, 0.0, np.sign(pressure))), sample_points,
+                self.COLOR, surface_faces, surface_edges,
+            ))
+
+        selfweight_actions = [
+            action for action in visible_actions
+            if visibility.get("plate_pressures", True)
+            and action.kind == "member_distributed_force_selfweight_Z"
+        ]
+        if selfweight_actions:
+            for plate_name, plate in getattr(model, "plates", {}).items():
+                sample_points, _normal = self._plate_action_samples(model, plate_name)
+                material = getattr(model, "materials", {}).get(plate.material)
+                if not sample_points or material is None:
+                    continue
+                pressure = -float(material[3]) * float(plate.thickness_mm) / 1000.0
+                if np.isclose(pressure, 0.0):
+                    continue
+                surface_faces, surface_edges = self._plate_action_surface(model, plate_name)
+                if not surface_faces:
+                    continue
+                plate_loads.append((
+                    pressure, np.array((0.0, 0.0, np.sign(pressure))), sample_points,
+                    self.SELFWEIGHT_COLOR, surface_faces, surface_edges,
+                ))
         maximum_intensity = max(
             (
                 abs(component)
-                for action in (*distributed_actions, *node_force_actions)
+                for action in (*distributed_actions, *node_force_actions, *plate_pressure_actions)
                 for component in action.components
             ),
             default=0.0,
+        )
+        maximum_intensity = max(
+            maximum_intensity,
+            max((abs(load[0]) for load in plate_loads), default=0.0),
         )
         for action in distributed_actions if maximum_intensity else ():
             member = model.bars.get(action.target)
@@ -227,6 +271,36 @@ class ActionRenderer:
             label_positions.append(center + plane_u * (self.MOMENT_RADIUS * 1.35))
             labels.append(self._format_node_moment(action.components[0]))
 
+        for pressure, direction, positions, color, surface_faces, surface_edges in plate_loads:
+            if np.isclose(pressure, 0.0):
+                continue
+            arrow_length = self._force_height(pressure, maximum_intensity)
+            surface_offset = -direction * arrow_length
+            for vertices in surface_faces:
+                self._append_face(face_batches, color, vertices + surface_offset)
+            if surface_edges:
+                edge_points = np.asarray([
+                    point + surface_offset
+                    for edge in surface_edges for point in edge
+                ])
+                edge_lines = tuple(
+                    value
+                    for index in range(len(surface_edges))
+                    for value in (2, index * 2, index * 2 + 1)
+                )
+                self._append_lines(
+                    line_batches, (color, 2.0), edge_points, edge_lines,
+                )
+            for center in positions:
+                line_start = center - direction * arrow_length
+                points, lines = self._add_node_force_arrow(
+                    plotter, line_start, center, direction, arrow_length,
+                )
+                self._append_lines(line_batches, (color, 2.5), points, lines)
+            label_center = positions[0] - direction * (arrow_length + self.LABEL_CLEARANCE)
+            label_positions.append(label_center)
+            labels.append(self._format_pressure(pressure))
+
         for color, (points, faces) in face_batches.items():
             if not points:
                 continue
@@ -314,8 +388,81 @@ class ActionRenderer:
         return ActionRenderer._format_number(value) + " kNm/m"
 
     @staticmethod
+    def _format_pressure(value: float) -> str:
+        return ActionRenderer._format_number(value) + " kN/m²"
+
+    @staticmethod
     def _format_node_moment(value: float) -> str:
         return ActionRenderer._format_number(value) + " kNm"
+
+    @staticmethod
+    def _plate_action_samples(model, plate_name: str, maximum_count: int = 16):
+        """Return spread quad centroids and the mesh's positive normal."""
+        mesh = getattr(model, "plate_mesh", None)
+        if mesh is not None:
+            connectivity = getattr(mesh, "elements", {}).get(plate_name, ())
+            nodes = np.asarray(getattr(mesh, "nodes", ()), dtype=float)
+            if len(connectivity) and len(nodes):
+                quads = nodes[np.asarray(connectivity, dtype=int)]
+                centroids = quads.mean(axis=1)
+                normal = np.cross(quads[0, 1] - quads[0, 0], quads[0, 3] - quads[0, 0])
+                length = float(np.linalg.norm(normal))
+                if length > 1e-12:
+                    return ActionRenderer._spread_points(centroids, maximum_count), normal / length
+
+        plate = getattr(model, "plates", {}).get(plate_name)
+        if plate is None or len(plate.contour) < 3:
+            return (), np.array((0.0, 0.0, 1.0))
+        points = np.asarray(plate.contour, dtype=float)
+        normal = np.zeros(3, dtype=float)
+        for second, third in zip(points[1:-1], points[2:]):
+            normal = np.cross(second - points[0], third - points[0])
+            if np.linalg.norm(normal) > 1e-12:
+                break
+        length = float(np.linalg.norm(normal))
+        if length <= 1e-12:
+            return (), np.array((0.0, 0.0, 1.0))
+        return (points.mean(axis=0),), normal / length
+
+    @staticmethod
+    def _plate_action_surface(model, plate_name: str):
+        """Return FE surface cells and only their exterior edges."""
+        mesh = getattr(model, "plate_mesh", None)
+        connectivity = getattr(mesh, "elements", {}).get(plate_name, ()) if mesh is not None else ()
+        nodes = np.asarray(getattr(mesh, "nodes", ()), dtype=float) if mesh is not None else np.empty((0, 3))
+        if len(connectivity) and len(nodes):
+            quads = tuple(nodes[np.asarray(element, dtype=int)] for element in connectivity)
+            edge_counts: dict[tuple[int, int], int] = {}
+            for element in connectivity:
+                for start, end in zip(element, (*element[1:], element[0])):
+                    edge = (min(start, end), max(start, end))
+                    edge_counts[edge] = edge_counts.get(edge, 0) + 1
+            boundary = tuple(
+                (nodes[start], nodes[end]) for (start, end), count in edge_counts.items()
+                if count == 1
+            )
+            return quads, boundary
+
+        plate = getattr(model, "plates", {}).get(plate_name)
+        if plate is None or len(plate.contour) < 3:
+            return (), ()
+        contour = np.asarray(plate.contour, dtype=float)
+        edges = tuple((contour[index], contour[(index + 1) % len(contour)])
+                      for index in range(len(contour)))
+        return (contour,), edges
+
+    @staticmethod
+    def _spread_points(points: np.ndarray, maximum_count: int) -> tuple[np.ndarray, ...]:
+        if len(points) <= maximum_count:
+            return tuple(points)
+        center = points.mean(axis=0)
+        selected = [int(np.argmin(np.linalg.norm(points - center, axis=1)))]
+        distances = np.linalg.norm(points - points[selected[0]], axis=1)
+        while len(selected) < maximum_count:
+            index = int(np.argmax(distances))
+            selected.append(index)
+            distances = np.minimum(distances, np.linalg.norm(points - points[index], axis=1))
+        return tuple(points[index] for index in selected)
 
     def _add_moment_symbol(
         self,

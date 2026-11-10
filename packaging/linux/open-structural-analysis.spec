@@ -44,6 +44,7 @@ pyvista_datas, pyvista_binaries, pyvista_hiddenimports = collect_all("pyvista")
 pyvistaqt_datas, pyvistaqt_binaries, pyvistaqt_hiddenimports = collect_all("pyvistaqt")
 vtk_datas, vtk_binaries, vtk_hiddenimports = collect_all("vtkmodules")
 ezdxf_datas, ezdxf_binaries, ezdxf_hiddenimports = collect_all("ezdxf")
+gmsh_datas, gmsh_binaries, gmsh_hiddenimports = collect_all("gmsh")
 
 converter_dir = project_root / "build-tools" / "libredwg" / sys.platform
 converter_name = "dwg2dxf.exe" if sys.platform == "win32" else "dwg2dxf"
@@ -57,13 +58,14 @@ for path in converter_dir.iterdir():
     else:
         data_files.append(entry)
 
-datas = unique(data_files + pyvista_datas + pyvistaqt_datas + vtk_datas + ezdxf_datas)
-binaries = unique(converter_binaries + pyvista_binaries + pyvistaqt_binaries + vtk_binaries + ezdxf_binaries)
+datas = unique(data_files + pyvista_datas + pyvistaqt_datas + vtk_datas + ezdxf_datas + gmsh_datas)
+binaries = unique(converter_binaries + pyvista_binaries + pyvistaqt_binaries + vtk_binaries + ezdxf_binaries + gmsh_binaries)
 hiddenimports = unique(
     pyvista_hiddenimports
     + pyvistaqt_hiddenimports
     + vtk_hiddenimports
     + ezdxf_hiddenimports
+    + gmsh_hiddenimports
 )
 
 

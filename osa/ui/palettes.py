@@ -1479,6 +1479,7 @@ class ActionTopPalette(QFrame):
             ("node-moment.svg", "Momentos nos nós", "node_moments"),
             ("member-force.svg", "Forças nas barras", "member_forces"),
             ("member-moment.svg", "Momentos nas barras", "member_moments"),
+            ("plate.svg", "Pressões nas lajes", "plate_pressures"),
         ):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
@@ -1489,6 +1490,7 @@ class ActionTopPalette(QFrame):
                 "node_moments": "NODEMOMENT",
                 "member_forces": "MEMBERFORCE",
                 "member_moments": "MEMBERMOMENT",
+                "plate_pressures": "PLATEPRESSURE",
             }[kind]
             palette_tooltip = _command_tooltip(tooltip, command)
             button.setToolTip(palette_tooltip)
@@ -1568,6 +1570,7 @@ class ActionTopPalette(QFrame):
             "node_moments_visible": "node_moments",
             "member_forces_visible": "member_forces",
             "member_moments_visible": "member_moments",
+            "plate_pressures_visible": "plate_pressures",
         }.get(option)
         button = self._action_visibility_buttons.get(kind) if kind is not None else None
         if button is not None:
@@ -1672,7 +1675,7 @@ class AnalysisTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "result-diagram.svg"))
         )
         result_diagrams_button.setIconSize(QSize(17, 17))
-        result_diagrams_tooltip = "Diagrama dos resultados"
+        result_diagrams_tooltip = "Diagrama nas barras"
         result_diagrams_button.setToolTip(result_diagrams_tooltip)
         result_diagrams_button.setProperty("paletteTooltip", result_diagrams_tooltip)
         result_diagrams_button.setAccessibleName(result_diagrams_tooltip)
@@ -1682,6 +1685,22 @@ class AnalysisTopPalette(QFrame):
         result_diagrams_button.installEventFilter(self)
         selectors_layout.addWidget(result_diagrams_button)
         self.result_diagrams_button = result_diagrams_button
+        plate_diagrams_button = QToolButton(self)
+        plate_diagrams_button.setFixedSize(24, 24)
+        plate_diagrams_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "plate.svg"))
+        )
+        plate_diagrams_button.setIconSize(QSize(17, 17))
+        plate_diagrams_tooltip = "Diagrama nas placas"
+        plate_diagrams_button.setToolTip(plate_diagrams_tooltip)
+        plate_diagrams_button.setProperty("paletteTooltip", plate_diagrams_tooltip)
+        plate_diagrams_button.setAccessibleName(plate_diagrams_tooltip)
+        plate_diagrams_button.setCheckable(True)
+        plate_diagrams_button.setChecked(True)
+        plate_diagrams_button.toggled.connect(window.scene.set_analysis_plate_diagrams_visible)
+        plate_diagrams_button.installEventFilter(self)
+        selectors_layout.addWidget(plate_diagrams_button)
+        self.plate_diagrams_button = plate_diagrams_button
         self.diagram_selector.currentTextChanged.connect(self._update_result_diagrams_button)
         self._update_result_diagrams_button(self.diagram_selector.currentText())
         self.deformation_scale_button = QToolButton(self)
@@ -1723,17 +1742,27 @@ class AnalysisTopPalette(QFrame):
             Qt.Orientation.Vertical, self.deformation_scale_popup,
         )
         self.deformation_scale_slider.setObjectName("deformationScaleSlider")
-        self.deformation_scale_slider.setRange(1, 10)
+        # Slider positions map to 1x, then 10x increments through 100x.
+        self.deformation_scale_slider.setRange(0, 10)
         self.deformation_scale_slider.setSingleStep(1)
         self.deformation_scale_slider.setPageStep(1)
-        self.deformation_scale_slider.setValue(1)
+        self.deformation_scale_slider.setTickPosition(QSlider.TickPosition.TicksBothSides)
+        self.deformation_scale_slider.setTickInterval(1)
+        self.deformation_scale_slider.setValue(0)
         self.deformation_scale_slider.setInvertedAppearance(True)
         self.deformation_scale_slider.setFixedWidth(18)
-        self.deformation_scale_slider.setFixedHeight(132)
+        self.deformation_scale_slider.setFixedHeight(144)
         self.deformation_scale_slider.setAccessibleName("Amplificação da deformação")
-        self.deformation_scale_slider.setAccessibleDescription("De 1x, deslocamento real, até 10x")
+        self.deformation_scale_slider.setAccessibleDescription(
+            "Níveis: 1x e de 10x a 100x em passos de 10x"
+        )
         self.deformation_scale_slider.valueChanged.connect(self._deformation_scale_changed)
         popup_layout.addWidget(self.deformation_scale_slider, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.deformation_scale_value = QLabel("1×", self.deformation_scale_popup)
+        self.deformation_scale_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.deformation_scale_value.setMinimumWidth(48)
+        self.deformation_scale_value.setObjectName("deformationScaleValue")
+        popup_layout.addWidget(self.deformation_scale_value)
         self.diagram_selector.currentTextChanged.connect(self._update_deformation_scale_controls)
         self._update_deformation_scale_controls(self.diagram_selector.currentText())
         self.pending = QFrame(self)
@@ -1813,9 +1842,17 @@ class AnalysisTopPalette(QFrame):
     def _update_result_diagrams_button(self, result_type: str) -> None:
         """The result-visibility toggle does not apply to deformation views."""
         self.result_diagrams_button.setEnabled(not result_type.startswith("Deformação"))
+        self.plate_diagrams_button.setEnabled(result_type != "Reações de apoio")
 
-    def _deformation_scale_changed(self, scale: int) -> None:
+    def _deformation_scale_changed(self, position: int) -> None:
+        scale = self._deformation_scale_for_position(position)
+        self.deformation_scale_value.setText(f"{scale}×")
+        self.deformation_scale_slider.setToolTip(f"Amplificação da deformação: {scale}×")
         self._window.scene.set_analysis_deformation_scale(scale)
+
+    @staticmethod
+    def _deformation_scale_for_position(position: int) -> int:
+        return 1 if position == 0 else int(position) * 10
 
     def _update_deformation_scale_controls(self, result_type: str) -> None:
         enabled = result_type.startswith("Deformação")
@@ -1834,7 +1871,7 @@ class AnalysisTopPalette(QFrame):
         self.deformation_scale_popup.raise_()
 
     def _position_deformation_scale_popup(self) -> None:
-        self.deformation_scale_popup.setFixedWidth(max(1, self.height()))
+        self.deformation_scale_popup.setFixedWidth(max(56, self.height()))
         self.deformation_scale_popup.adjustSize()
         anchor = self.deformation_scale_button.mapToGlobal(
             QPoint(self.deformation_scale_button.width() // 2, self.deformation_scale_button.height() + 10)

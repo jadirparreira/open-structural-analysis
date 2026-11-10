@@ -495,6 +495,7 @@ def test_mcp_application_controls_action_visibility_options():
         "node_moments_visible": True,
         "member_forces_visible": True,
         "member_moments_visible": True,
+        "plate_pressures_visible": True,
     }
     application = McpApplication(
         model,
@@ -503,9 +504,10 @@ def test_mcp_application_controls_action_visibility_options():
         get_view_state=lambda: dict(view),
     )
 
-    result = application.set_view_options({"node_forces_visible": False})
+    result = application.set_view_options({"node_forces_visible": False, "plate_pressures_visible": False})
 
     assert result["view"]["node_forces_visible"] is False
+    assert result["view"]["plate_pressures_visible"] is False
 
 
 def test_mcp_application_updates_and_deletes_rigid_bars_and_member_endpoints():

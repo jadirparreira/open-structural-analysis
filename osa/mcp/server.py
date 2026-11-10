@@ -457,6 +457,18 @@ class LocalMcpServer:
             )
 
         @self.server.tool(
+            name="get_plate_analysis_results",
+            title="Consultar resultados das lajes",
+            description="Consulta deslocamentos nodais e esforços locais por elemento de laje.",
+            annotations=read_only,
+        )
+        def get_plate_analysis_results(
+            combination: str,
+            plate_names: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self.application.get_plate_analysis_results(combination, plate_names)
+
+        @self.server.tool(
             name="get_support_reactions",
             title="Consultar reações de apoio",
             description="Consulta forças e momentos de reação nos nós apoiados.",
@@ -520,6 +532,15 @@ class LocalMcpServer:
             load_case: str,
         ) -> dict[str, Any]:
             return self.application.add_node_moment(node_name, direction, value_knm, load_case)
+
+        @self.server.tool(
+            name="add_plate_pressure",
+            title="Aplicar pressão na laje",
+            description="Aplica ou atualiza uma pressão superficial em kN/m² na malha da laje.",
+            annotations=write,
+        )
+        def add_plate_pressure(plate_name: str, pressure_kn_m2: float, load_case: str) -> dict[str, Any]:
+            return self.application.add_plate_pressure(plate_name, pressure_kn_m2, load_case)
 
         @self.server.tool(
             name="add_member_distributed_load",
@@ -797,7 +818,8 @@ class LocalMcpServer:
                 "member_labels_visible, plate_labels_visible, local_axes_visible, nodes_visible, "
                 "solid_members_visible, member_releases_visible, semirigid_links_visible, "
                 "node_supports_visible, snap_enabled (sempre ativo), node_forces_visible, node_moments_visible, "
-                "member_forces_visible e member_moments_visible. Informe somente os campos desejados."
+                "member_forces_visible, member_moments_visible e plate_pressures_visible. "
+                "Informe somente os campos desejados."
             ),
             annotations=write,
         )

@@ -474,36 +474,40 @@ class PropertyPanel(QFrame):
             self.identity_value.setText(name)
             self._verification_name_row.hide()
             self.verify_bar_container.hide()
-            self.member_color_button.show()
+            self.member_color_button.setVisible(section == "Geometria")
             self.member_color_button.setToolTip("Definir cor da placa")
             self.member_color_button.setAccessibleName("Definir cor da placa")
-            self._set_member_color_button(plate.color)
+            if section == "Geometria":
+                self._set_member_color_button(plate.color)
             self._calculation_properties_button.hide()
             self.delete_button.hide()
             for row in self._verification_result_rows:
                 row.hide()
-            supports = ", ".join(bar for _, bar in plate.supports) or "Nenhuma"
-            for label, value in (("Barras", supports), ("Material", "Concreto Estrutural")):
-                title = QLabel(label)
-                title.setObjectName("propertySection")
-                field = QLineEdit(value)
-                field.setObjectName("identityDisplay")
-                field.setReadOnly(True)
-                field.setAccessibleName(label)
-                field.setToolTip(value)
-                self._add_context_widget(title)
-                self._add_context_widget(field)
-            thickness_label = QLabel("Espessura")
-            thickness_label.setObjectName("propertySection")
-            self._add_context_widget(thickness_label)
-            thickness = CompactDoubleSpinBox()
-            thickness.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            thickness.setDecimals(2)
-            thickness.setRange(0.01, 1_000_000.0)
-            thickness.setValue(plate.thickness_mm)
-            thickness.setAccessibleName("Espessura da placa (mm)")
-            thickness.editingFinished.connect(lambda: self._plate_thickness_changed(name, thickness))
-            self._add_context_widget(self._editable_unit_box(thickness, "mm"))
+            if section not in {"Ações", "Análise"}:
+                supports = ", ".join(bar for _, bar in plate.supports) or "Nenhuma"
+                for label, value in (("Barras", supports), ("Material", plate.material)):
+                    title = QLabel(label)
+                    title.setObjectName("propertySection")
+                    field = QLineEdit(value)
+                    field.setObjectName("identityDisplay")
+                    field.setReadOnly(True)
+                    field.setAccessibleName(label)
+                    field.setToolTip(value)
+                    self._add_context_widget(title)
+                    self._add_context_widget(field)
+                thickness_label = QLabel("Espessura")
+                thickness_label.setObjectName("propertySection")
+                self._add_context_widget(thickness_label)
+                thickness = CompactDoubleSpinBox()
+                thickness.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+                thickness.setDecimals(2)
+                thickness.setRange(0.01, 1_000_000.0)
+                thickness.setValue(plate.thickness_mm)
+                thickness.setAccessibleName("Espessura da placa (mm)")
+                thickness.editingFinished.connect(lambda: self._plate_thickness_changed(name, thickness))
+                self._add_context_widget(self._editable_unit_box(thickness, "mm"))
+            elif section == "Ações":
+                self._show_plate_pressure_input(name)
             self.layout.activate()
             self.setMinimumHeight(0)
             self.adjustSize()
@@ -1899,6 +1903,14 @@ class PropertyPanel(QFrame):
             (item for item in results if item.load_reference == selected_reference),
             results[0] if selected_reference is None else None,
         )
+        if kind == "plate":
+            plate_result = result.plate_results.get(name) if result is not None else None
+            if not isinstance(plate_result, dict):
+                message = QLabel("Estrutura não analisada")
+                self._add_context_widget(message)
+                return
+            self._show_plate_analysis_values(plate_result)
+            return
         data_key = "node_results" if kind == "node" else "member_results"
         names = self._selected_names(kind) or [name]
         values = [getattr(result, data_key).get(target) for target in names] if result is not None else []
@@ -1911,6 +1923,47 @@ class PropertyPanel(QFrame):
             self._show_node_analysis_values(self._common_analysis_values(values))
         else:
             self._show_member_analysis_values(values)
+
+    def _show_plate_analysis_values(self, result: dict) -> None:
+        elements = tuple(result.get("elements", {}).values())
+        nodes = tuple(result.get("nodes", {}).values())
+        if nodes:
+            displacement = max(
+                (sum(float(node.get(axis, 0.0)) ** 2 for axis in ("DX", "DY", "DZ")) ** 0.5
+                 for node in nodes),
+                default=0.0,
+            )
+            displacement_title = QLabel("Deslocamento máximo dos nós da malha")
+            displacement_title.setObjectName("propertySection")
+            self._add_context_widget(displacement_title)
+            displacement_value = QLabel(f"{displacement:.4g} m")
+            displacement_value.setObjectName("identityDisplay")
+            displacement_value.setAccessibleName("Deslocamento máximo da laje (m)")
+            self._add_context_widget(displacement_value)
+        components = (
+            ("Mx", "moment", 0, "kN·m/m"),
+            ("My", "moment", 1, "kN·m/m"),
+            ("Mxy", "moment", 2, "kN·m/m"),
+            ("Qx", "shear", 0, "kN/m"),
+            ("Qy", "shear", 1, "kN/m"),
+            ("Sx", "membrane", 0, "kN/m²"),
+            ("Sy", "membrane", 1, "kN/m²"),
+            ("Txy", "membrane", 2, "kN/m²"),
+        )
+        title = QLabel("Esforços máximos por elemento")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        for label, key, index, unit in components:
+            values = [abs(float(item[key][index])) for item in elements if len(item.get(key, ())) > index]
+            if not values:
+                continue
+            row_title = QLabel(label)
+            row_title.setObjectName("propertySection")
+            self._add_context_widget(row_title)
+            value = QLabel(f"{max(values):.4g} {unit}")
+            value.setObjectName("identityDisplay")
+            value.setAccessibleName(f"{label} máximo ({unit})")
+            self._add_context_widget(value)
 
     @staticmethod
     def _common_analysis_values(values: list[dict | None]) -> dict:
@@ -2285,6 +2338,7 @@ class PropertyPanel(QFrame):
         self._analysis_switch_buttons.clear()
         self._node_action_inputs.clear()
         for widget in self._context_widgets:
+            widget.hide()
             self.layout.removeWidget(widget)
             widget.deleteLater()
         self._context_widgets.clear()
@@ -2425,6 +2479,75 @@ class PropertyPanel(QFrame):
             return
         self.window.model.update_plate(name, thickness_mm=field.value())
         self.window.scene.update_plate_rendering(name)
+
+    def _show_plate_pressure_input(self, name: str) -> None:
+        title = QLabel("Ação distribuída")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        load_case = self.window.selected_action_name
+        if not load_case:
+            message = QLabel("Selecione uma ação ativa para lançar a pressão.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
+            return
+        if self.window.action_service.has_selfweight(load_case):
+            plate = self.window.model.plates[name]
+            material = self.window.model.materials.get(plate.material)
+            pressure = 0.0 if material is None else (
+                -float(material[3]) * float(plate.thickness_mm) / 1000.0
+            )
+            value_box = self._action_unit_box("kN/m²")
+            field = value_box.findChild(QLineEdit)
+            field.setText(self._format_plate_pressure(pressure))
+            field.setReadOnly(True)
+            field.setAccessibleName("Peso próprio distribuído da placa (kN/m²)")
+            field.setToolTip("Valor calculado pelo peso específico do material e pela espessura da placa.")
+            self._add_context_widget(value_box)
+            return
+        action = next((item for item in self.window.model.actions.values()
+                       if item.kind == "plate_surface_pressure" and item.target == name
+                       and item.load_case == load_case), None)
+        value_box = self._action_unit_box("kN/m²")
+        field = value_box.findChild(QLineEdit)
+        field.setText("" if action is None else self._format_plate_pressure(action.components[0]))
+        field.setPlaceholderText("0")
+        field.setAccessibleName("Ação distribuída na laje (kN/m²)")
+        field.setToolTip("Valor positivo atua no sentido global +Z; valor negativo, no sentido global -Z.")
+        field.editingFinished.connect(lambda: self._plate_pressure_changed(name, field))
+        self._add_context_widget(value_box)
+
+    def _plate_pressure_changed(self, name: str, field: QLineEdit) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        load_case = self.window.selected_action_name
+        if not load_case:
+            return
+        raw_value = field.text().strip()
+        if not raw_value:
+            self._update_plate_pressure_field(name, field, load_case)
+            return
+        try:
+            pressure = float(raw_value.replace(",", "."))
+            if not isfinite(pressure):
+                raise ValueError
+        except ValueError:
+            self._update_plate_pressure_field(name, field, load_case)
+            return
+        self.window.action_service.add_plate_surface_pressure(name, pressure, load_case)
+        self.window.refresh_scene()
+
+    def _update_plate_pressure_field(self, name: str, field: QLineEdit, load_case: str) -> None:
+        action = next((item for item in self.window.model.actions.values()
+                       if item.kind == "plate_surface_pressure" and item.target == name
+                       and item.load_case == load_case), None)
+        field.setText("" if action is None else self._format_plate_pressure(action.components[0]))
+
+    @staticmethod
+    def _format_plate_pressure(value: float) -> str:
+        rounded = round(float(value), 3)
+        if rounded == 0.0:
+            return "0"
+        return f"{rounded:.3f}".rstrip("0").rstrip(".")
 
     def _delete_requested(self) -> None:
         self.window.delete_selected()

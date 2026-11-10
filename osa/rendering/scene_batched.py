@@ -10,7 +10,7 @@ import numpy as np
 import pyvista as pv
 import vtk
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
@@ -34,11 +34,15 @@ from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
 from .navigation_widget import NavigationWidget
 from .plate_antialiasing import PlateAntialiasing
+from .plate_member_intersections import dashed_plate_member_intersections
+from .plate_result_display import (
+    DEFAULT_PLATE_RESULT_DISPLAY_MODE,
+    is_plate_result_display_mode,
+)
 from .reference_axes_renderer import ReferenceAxesRenderer
+from .result_color_map import RESULT_COLOR_STOPS
 from .result_renderer import ResultRenderer
 from .snap_geometry import segment_intersections
-from .plate_member_intersections import dashed_plate_member_intersections
-
 
 _UTILIZATION_COLOR_BANDS = (
     "#2563EB", "#1E7FD9", "#1999C4", "#17ACAA", "#20B987",
@@ -122,6 +126,78 @@ class SelectionRectangle(QWidget):
         painter.fillRect(self.rect(), fill)
         painter.setPen(QPen(color, 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+
+class ResultColorScale(QWidget):
+    """Compact, text-free contour scale styled like the app's floating panels."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("resultColorScale")
+        self.setFixedSize(120, 365)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._value_range = (0.0, 1.0)
+        self._unit = ""
+
+    def set_result(self, value_range: tuple[float, float], unit: str) -> None:
+        self._value_range = tuple(float(value) for value in value_range)
+        self._unit = unit
+        self.update()
+
+    @staticmethod
+    def _format_value(value: float) -> str:
+        return f"{value:.3f}".replace(".", ",")
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            colors = QRectF(self.width() - 52.0, 16.5, 35.0, self.height() - 17.0)
+            clip = QPainterPath()
+            clip.addRoundedRect(colors, 8, 8)
+            painter.save()
+            painter.setClipPath(clip)
+            band_height = colors.height() / len(RESULT_COLOR_STOPS)
+            for index, color in enumerate(reversed(RESULT_COLOR_STOPS)):
+                top = colors.top() + index * band_height
+                painter.fillRect(
+                    QRectF(colors.left(), top, colors.width(), band_height + 0.5),
+                    QColor(color),
+                )
+            painter.restore()
+
+            font = QFont()
+            font.setPixelSize(11)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("#24292f"))
+            metrics = QFontMetricsF(font)
+            label_height = metrics.height()
+            unit_width = max(colors.width(), metrics.horizontalAdvance(self._unit) + 4.0)
+            painter.drawText(
+                QRectF(colors.center().x() - unit_width / 2.0, 0, unit_width, 14),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                self._unit,
+            )
+            low, high = self._value_range
+            # Label every other color band to keep the value scale legible.
+            for index in range(9):
+                fraction = index / 8
+                value = high + (low - high) * fraction
+                y = colors.top() + colors.height() * fraction
+                label_y = min(
+                    max(colors.top(), y - label_height / 2),
+                    self.height() - label_height,
+                )
+                painter.drawText(
+                    QRectF(0, label_y, colors.left() - 8, label_height),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    self._format_value(value),
+                )
+        finally:
+            painter.end()
 
 
 class StructureScene(QWidget):
@@ -332,6 +408,9 @@ class StructureScene(QWidget):
         self._equalize_readout_widths()
         self._snap_marker = SnapMarker(self.plotter)
         self._snap_marker.hide()
+        self._result_color_scale_widget = ResultColorScale(self.plotter)
+        self._result_color_scale_widget.hide()
+        self._result_color_scale_available = False
         self._measurement_start_marker = SnapMarker(self.plotter)
         self._measurement_start_marker.hide()
         self._orientation_widget = NavigationWidget.create(self.plotter)
@@ -390,6 +469,8 @@ class StructureScene(QWidget):
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels: tuple[str, ...] = ()
         self._result_actors: list[object] = []
+        self._plate_result_actors: list[object] = []
+        self._plate_result_names: set[str] = set()
         self._result_line_widths: list[tuple[object, float]] = []
         self._result_label_positions = np.empty((0, 3), dtype=float)
         self._result_labels: tuple[str, ...] = ()
@@ -397,9 +478,11 @@ class StructureScene(QWidget):
         self._actions_visible = False
         self._analysis_visible = False
         self._result_diagrams_visible = True
+        self._analysis_plate_diagrams_visible = True
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
         self._analysis_deformation_scale = 1.0
+        self._plate_result_display_mode = DEFAULT_PLATE_RESULT_DISPLAY_MODE
         self._action_layer_key: tuple[object, ...] | None = None
         self._result_layer_key: tuple[object, ...] | None = None
         self._action_visibility = {
@@ -407,6 +490,7 @@ class StructureScene(QWidget):
             "node_moments": True,
             "member_forces": True,
             "member_moments": True,
+            "plate_pressures": True,
         }
         self._highlight_actors: dict[str, object] = {}
         self._highlight_targets: dict[str, tuple[tuple[str, str], ...]] = {}
@@ -433,6 +517,7 @@ class StructureScene(QWidget):
         self._selected_elements: tuple[tuple[str, str], ...] = ()
         self._plate_actors = {}
         self._plate_edge_actors = {}
+        self._plate_fe_mesh_data = None
         self._plate_manual_actors = []
         self._plate_intersection_actor = None
         self._plate_intersection_key = None
@@ -1175,9 +1260,13 @@ class StructureScene(QWidget):
         }
         actions = {
             name: action for name, action in self._model.actions.items()
-            if action.target in bars or action.target in nodes
+            if action.target in bars or action.target in nodes or action.target in self._model.plates
         }
-        return SimpleNamespace(bars=bars, rigid_bars=rigid_bars, nodes=nodes, actions=actions)
+        return SimpleNamespace(
+            bars=bars, rigid_bars=rigid_bars, nodes=nodes, actions=actions,
+            plates=self._model.plates, materials=self._model.materials,
+            plate_mesh=self._plate_fe_mesh_data,
+        )
 
     def _add_scene_reveal_preview(
         self, hidden_members: set[str], hidden_rigid_bars: set[str] | None = None,
@@ -1358,14 +1447,46 @@ class StructureScene(QWidget):
 
     def _clear_result_layer(self) -> None:
         self._remove_actors(self._result_actors)
+        self._remove_actors(self._plate_result_actors)
+        self._result_color_scale_available = False
+        self._result_color_scale_widget.hide()
         self._result_layer_key = None
         self._result_actors = []
+        self._plate_result_actors = []
+        self._plate_result_names = set()
         self._result_line_widths = []
         self._result_label_positions = np.empty((0, 3), dtype=float)
         self._result_labels = ()
         self._label_overlay.set_group(
             "result", self._result_label_positions, (), visible=False, deduplicate=True,
         )
+
+    def _position_result_color_scale(self) -> None:
+        widget = self._result_color_scale_widget
+        widget.move(
+            max(0, self.plotter.width() - widget.width() - 8),
+            max(12, (self.plotter.height() - widget.height()) // 2),
+        )
+
+    @staticmethod
+    def _result_unit(diagram: str) -> str:
+        if diagram.startswith("Deformação"):
+            return "mm"
+        if diagram in {"Normal", "Cortante Y", "Cortante Z"}:
+            return "kN/m"
+        if diagram in {"Torsor", "Fletor Y", "Fletor Z"}:
+            return "kN·m/m"
+        return ""
+
+    def _show_result_color_scale(
+        self, value_range: tuple[float, float], unit: str,
+    ) -> None:
+        self._result_color_scale_available = True
+        self._result_color_scale_widget.set_result(value_range, unit)
+        if self._analysis_visible:
+            self._position_result_color_scale()
+            self._result_color_scale_widget.show()
+            self._result_color_scale_widget.raise_()
 
     def _refresh_action_layer(self) -> None:
         """Refresh only action geometry and labels."""
@@ -1384,6 +1505,8 @@ class StructureScene(QWidget):
         if not self._analysis_visible or self._active_analysis_combination is None:
             self._result_layer_key = None
             self._result_actors = []
+            self._plate_result_actors = []
+            self._plate_result_names = set()
             self._result_line_widths = []
             self._result_label_positions = np.empty((0, 3), dtype=float)
             self._result_labels = ()
@@ -1396,23 +1519,98 @@ class StructureScene(QWidget):
             ),
             None,
         )
-        self._result_actors, self._result_label_positions, self._result_labels = self._result_renderer.render(
-            self.plotter, self._scene_filtered_model(), result, self._active_result_type,
+        model = self._scene_filtered_model()
+        diagram = self._active_result_type
+        contour_value_range = (
+            self._result_renderer.result_range(
+                result, diagram, self._plate_result_display_mode,
+            )
+            if result is not None and (
+                diagram.startswith("Deformação")
+                or self._analysis_plate_diagrams_visible
+                and diagram != self._result_renderer.REACTION_DIAGRAM
+            )
+            else None
+        )
+        self._result_actors, label_positions, labels = self._result_renderer.render(
+            self.plotter, model, result, diagram,
             solid_members_visible=self._solid_members_visible,
             deformation_scale=self._analysis_deformation_scale,
+            plate_diagrams_visible=(
+                self._analysis_plate_diagrams_visible or diagram.startswith("Deformação")
+            ),
+            include_plate_surfaces=False,
         )
+        self._plate_result_actors = []
+        self._plate_result_names = set()
+        if result is not None:
+            if diagram.startswith("Deformação"):
+                if self._analysis_plate_diagrams_visible:
+                    self._plate_result_actors, plate_positions, plate_labels = (
+                        self._result_renderer.render_plate_contours(
+                            self.plotter, model, result, diagram,
+                            display_mode=self._plate_result_display_mode,
+                            deformation_scale=self._analysis_deformation_scale,
+                            value_range=contour_value_range,
+                        )
+                    )
+                else:
+                    self._plate_result_actors, plate_positions, plate_labels = (
+                        self._result_renderer._render_plate_deformation(
+                            self.plotter, model, result.plate_results,
+                            diagram.removeprefix("Deformação ") or "XYZ",
+                            self._analysis_deformation_scale, self._solid_members_visible,
+                        )
+                    )
+                self._plate_result_names = self._deformed_plate_names()
+                label_positions = np.vstack((
+                    np.asarray(label_positions, dtype=float).reshape(-1, 3),
+                    np.asarray(plate_positions, dtype=float).reshape(-1, 3),
+                ))
+                labels = tuple(labels) + tuple(plate_labels)
+            elif self._analysis_plate_diagrams_visible and diagram != self._result_renderer.REACTION_DIAGRAM:
+                self._plate_result_actors, plate_positions, plate_labels = (
+                    self._result_renderer.render_plate_contours(
+                        self.plotter, model, result, diagram,
+                        value_range=contour_value_range,
+                        display_mode=self._plate_result_display_mode,
+                    )
+                )
+                self._plate_result_names = self._renderable_plate_result_names(result, diagram)
+        if (
+            result is not None and contour_value_range is not None
+            and (
+                self._plate_result_actors
+                or diagram.startswith("Deformação") and result.member_results
+            )
+        ):
+            display_range = contour_value_range
+            if diagram.startswith("Deformação"):
+                display_range = tuple(value * 1000.0 for value in display_range)
+            self._show_result_color_scale(display_range, self._result_unit(diagram))
+        self._result_label_positions = np.asarray(label_positions, dtype=float).reshape(-1, 3)
+        self._result_labels = tuple(labels)
         self._result_layer_key = (
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
         )
         self._result_line_widths = []
-        if self._active_result_type.startswith("Deformação") and self._result_actors:
-            # Primeiro ator é sempre a referência indeformada tracejada.
-            self._result_line_widths.append((self._result_actors[0], 1.0))
-            if not self._solid_members_visible and len(self._result_actors) > 1:
-                self._result_line_widths.append((self._result_actors[1], 2.0))
+        if (
+            self._active_result_type.startswith("Deformação")
+            and self._result_actors and not self._solid_members_visible
+        ):
+            # The centerline uses the same screen width as the undeformed
+            # member lines. Only register it when this result actually has
+            # member samples; plate-only deformations also return actors.
+            has_member_lines = any(
+                name in self._scene_filtered_model().bars and values.get("samples")
+                for name, values in result.member_results.items()
+            )
+            if has_member_lines:
+                self._result_line_widths.append((self._result_actors[0], self._member_line_width))
         self._apply_result_layer_visibility()
 
     def _result_layer_is_visible(self) -> bool:
@@ -1425,6 +1623,18 @@ class StructureScene(QWidget):
         visible = self._result_layer_is_visible()
         for actor in self._result_actors:
             actor.SetVisibility(visible)
+        plate_results_visible = (
+            self._analysis_visible and self._analysis_plate_diagrams_visible
+            if not self._active_result_type.startswith("Deformação")
+            else self._analysis_visible
+        )
+        for actor in self._plate_result_actors:
+            actor.SetVisibility(plate_results_visible)
+        scale_visible = self._analysis_visible and self._result_color_scale_available
+        self._result_color_scale_widget.setVisible(scale_visible)
+        if scale_visible:
+            self._position_result_color_scale()
+            self._result_color_scale_widget.raise_()
         self._label_overlay.set_group_visible("result", visible)
 
     def _refresh_result_layer(self) -> None:
@@ -1541,7 +1751,14 @@ class StructureScene(QWidget):
     def _add_plates(self) -> None:
         self._plate_actors = {}
         self._plate_edge_actors = {}
+        self._plate_fe_mesh_actors = {}
         self._plate_manual_actors = []
+        try:
+            from osa.analysis.pynite.plate_mesh import generate_plate_mesh
+            plate_fe_mesh = generate_plate_mesh(self._model.plates)
+        except (RuntimeError, ValueError):
+            plate_fe_mesh = None
+        self._plate_fe_mesh_data = plate_fe_mesh
         for name, plate in self._model.plates.items():
             mesh, edges = self._plate_meshes(plate)
             actor = self.plotter.add_mesh(
@@ -1555,6 +1772,28 @@ class StructureScene(QWidget):
                 lighting=False,
                 reset_camera=False, render=False, name=f"plate-outline:{name}",
             )
+            if plate_fe_mesh is not None:
+                connectivity = plate_fe_mesh.elements.get(name, ())
+                edge_pairs = set()
+                for quad in connectivity:
+                    for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0])):
+                        edge_pairs.add((min(start, end), max(start, end)))
+                if edge_pairs:
+                    lines = np.asarray(
+                        [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
+                        dtype=np.int64,
+                    )
+                    line_mesh = pv.PolyData(plate_fe_mesh.nodes, lines=lines)
+                    self._plate_fe_mesh_actors[name] = self.plotter.add_mesh(
+                        line_mesh, color="#57606a", line_width=1.0, pickable=False,
+                        lighting=False, reset_camera=False, render=False, name=f"plate-fe-mesh:{name}",
+                    )
+                    fe_mesh_actor = self._plate_fe_mesh_actors[name]
+                    fe_mesh_actor.SetVisibility(not self._solid_members_visible)
+                    fe_mapper = fe_mesh_actor.GetMapper()
+                    fe_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                    fe_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                    fe_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
             mapper = self._plate_edge_actors[name].GetMapper()
             mapper.SetResolveCoincidentTopologyToPolygonOffset()
             mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
@@ -1577,6 +1816,11 @@ class StructureScene(QWidget):
         else:
             actor.GetProperty().SetColor(*pv.Color("#6e7781").float_rgb)
             actor.GetProperty().SetOpacity(1.0)
+        fe_mesh_actor = self._plate_fe_mesh_actors.get(name)
+        if fe_mesh_actor is not None:
+            fe_mesh_actor.SetVisibility(
+                not self._solid_members_visible and name not in self._deformed_plate_names()
+            )
         target = ('plate', name)
         if target in self._selected_elements:
             actor.GetProperty().SetColor(*pv.Color('#0969da').float_rgb)
@@ -1694,6 +1938,10 @@ class StructureScene(QWidget):
             mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-4.0, -4.0)
             self._plate_intersection_actor = actor
+            deformation_active = (
+                self._analysis_visible and self._active_result_type.startswith("Deformação")
+            )
+            actor.SetVisibility(not deformation_active)
             self._plate_intersection_highlight_key = None
             self._sync_plate_intersection_highlights()
         self._plate_intersection_key = key
@@ -2672,6 +2920,7 @@ class StructureScene(QWidget):
             "node_moments_visible": self._action_visibility["node_moments"],
             "member_forces_visible": self._action_visibility["member_forces"],
             "member_moments_visible": self._action_visibility["member_moments"],
+            "plate_pressures_visible": self._action_visibility["plate_pressures"],
         }
 
     def analysis_view_state(self) -> dict[str, object]:
@@ -2680,6 +2929,8 @@ class StructureScene(QWidget):
             "selected_combination": self._active_analysis_combination,
             "selected_diagram": self._active_result_type,
             "result_diagrams_visible": self._result_diagrams_visible,
+            "plate_diagrams_visible": self._analysis_plate_diagrams_visible,
+            "plate_result_display_mode": self._plate_result_display_mode,
         }
 
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:
@@ -4644,6 +4895,7 @@ class StructureScene(QWidget):
                 mesh, color=color, style="wireframe", line_width=2,
                 lighting=False, pickable=False, reset_camera=False, render=False,
             )
+            actor.SetPosition(*self._displayed_node_displacements().get(name, np.zeros(3)))
             actor.SetVisibility(self._nodes_visible)
         actor.SetObjectName(f"highlight:{slot}")
         self._highlight_actors[slot] = actor
@@ -4938,9 +5190,118 @@ class StructureScene(QWidget):
         end = self._model.nodes[rigid.end_node]
         return pv.Line((start.x, start.y, start.z), (end.x, end.y, end.z))
 
+    def _update_deformed_node_markers(self) -> None:
+        """Move node glyphs with the active displacement and restore their base positions otherwise."""
+        points = self._node_glyph_points
+        batch = self._node_batch
+        if points is None or batch is None or not batch.names:
+            return
+        offsets = self._displayed_node_displacements()
+        positions = np.asarray([
+            (self._model.nodes[name].x, self._model.nodes[name].y, self._model.nodes[name].z)
+            for name in batch.names
+        ], dtype=float)
+        for index, name in enumerate(batch.names):
+            positions[index] += offsets.get(name, np.zeros(3))
+        points.points = positions
+        points.GetPoints().Modified()
+        points.Modified()
+        for slot, targets in self._highlight_targets.items():
+            actor = self._highlight_actors.get(slot)
+            if actor is not None and targets and targets[0][0] == "node":
+                actor.SetPosition(*offsets.get(targets[0][1], np.zeros(3)))
+
+    def _displayed_node_displacements(self) -> dict[str, np.ndarray]:
+        if not (
+            self._analysis_visible
+            and self._active_result_type.startswith("Deformação")
+        ):
+            return {}
+        result = next((
+            item for item in self._model.analysis_results
+            if item.load_reference == self._active_analysis_combination
+            and item.model_revision == self._model.revision
+        ), None)
+        if result is None:
+            return {}
+        components = self._active_result_type.removeprefix("Deformação ") or "XYZ"
+        scale = self._analysis_deformation_scale
+        return {
+            name: np.asarray((
+                float(displacement.get("DX", 0.0)) if "X" in components else 0.0,
+                float(displacement.get("DY", 0.0)) if "Y" in components else 0.0,
+                float(displacement.get("DZ", 0.0)) if "Z" in components else 0.0,
+            )) * scale
+            for name, displacement in result.node_results.items()
+        }
+
+    def _deformed_plate_names(self) -> set[str]:
+        """Return plates represented by the active deformed FE surface."""
+        if not (
+            self._analysis_visible
+            and self._active_result_type.startswith("Deformação")
+        ):
+            return set()
+        selected_result = next((
+            result for result in self._model.analysis_results
+            if result.load_reference == self._active_analysis_combination
+            and result.model_revision == self._model.revision
+        ), None)
+        if selected_result is None:
+            return set()
+        return {
+            name for name, values in selected_result.plate_results.items()
+            if any(
+                len(element.get("nodes", ())) == 4
+                for element in values.get("elements", {}).values()
+            )
+        }
+
+    def _renderable_plate_result_names(self, result, diagram: str) -> set[str]:
+        if result is None or diagram == self._result_renderer.REACTION_DIAGRAM:
+            return set()
+        names = set()
+        for name, values in result.plate_results.items():
+            if name not in self._model.plates:
+                continue
+            if not any(
+                len(element.get("nodes", ())) == 4
+                for element in values.get("elements", {}).values()
+            ):
+                continue
+            if diagram.startswith("Deformação") or self._result_renderer._plate_result_field(values, diagram):
+                names.add(name)
+        return names
+
     def _apply_representation_visibility(self) -> None:
         deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
         solid = self._solid_members_visible and not deformation_active
+        self._update_deformed_node_markers()
+        deformed_plate_names = self._deformed_plate_names()
+        hidden_plate_names = deformed_plate_names | (
+            self._plate_result_names if self._analysis_visible else set()
+        )
+        for name, actor in self._plate_actors.items():
+            actor.SetVisibility(name not in hidden_plate_names)
+        for name, actor in self._plate_edge_actors.items():
+            actor.SetVisibility(name not in hidden_plate_names)
+        for name, actor in self._plate_fe_mesh_actors.items():
+            actor.SetVisibility(name not in hidden_plate_names and not self._solid_members_visible)
+        show_plate_intersections = (
+            not deformation_active and self._plate_intersections_geometry_key() is not None
+        )
+        if self._plate_intersection_actor is not None:
+            self._plate_intersection_actor.SetVisibility(show_plate_intersections)
+        if deformation_active:
+            for actor in self._plate_intersection_overlays.values():
+                actor.SetVisibility(False)
+            self._plate_intersection_highlight_key = None
+        elif show_plate_intersections:
+            self._plate_intersection_highlight_key = None
+            self._sync_plate_intersection_highlights()
+        else:
+            for actor in self._plate_intersection_overlays.values():
+                actor.SetVisibility(False)
         if self._member_line_actor is not None:
             self._member_line_actor.SetVisibility(not solid and not deformation_active)
         if self._member_face_actor is not None:
@@ -5045,7 +5406,9 @@ class StructureScene(QWidget):
                     visible=self._result_layer_is_visible(), deduplicate=True,
                 )
         elif self._result_layer_key is not None:
-            self._result_layer_key = (*self._result_layer_key[:-1], visible)
+            self._result_layer_key = (
+                *self._result_layer_key[:-1], visible,
+            )
         self._apply_representation_visibility()
         self._configure_solid_picker()
         self.plotter.render()
@@ -5531,6 +5894,7 @@ class StructureScene(QWidget):
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
         )
         if not visible and self._result_actors:
@@ -5556,9 +5920,21 @@ class StructureScene(QWidget):
         else:
             self._result_layer_key = None
 
+    def set_plate_result_display_mode(self, mode: str) -> None:
+        """Set the interpolation mode used to color plate results."""
+        if not is_plate_result_display_mode(mode):
+            raise ValueError("Modo de visualização dos resultados das placas inválido.")
+        if mode == self._plate_result_display_mode:
+            return
+        self._plate_result_display_mode = mode
+        if self._analysis_visible:
+            self._refresh_result_layer()
+        else:
+            self._result_layer_key = None
+
     def set_analysis_deformation_scale(self, scale: float) -> None:
         """Set the visual amplification for analysis deformation overlays."""
-        scale = max(1.0, min(10.0, float(scale)))
+        scale = max(1.0, min(100.0, float(scale)))
         if scale == self._analysis_deformation_scale:
             return
         self._analysis_deformation_scale = scale
@@ -5576,6 +5952,15 @@ class StructureScene(QWidget):
         if self._analysis_visible:
             self._apply_result_layer_visibility()
             self.plotter.render()
+
+    def set_analysis_plate_diagrams_visible(self, visible: bool) -> None:
+        """Show or hide color-mapped plate result contours."""
+        visible = bool(visible)
+        if visible == self._analysis_plate_diagrams_visible:
+            return
+        self._analysis_plate_diagrams_visible = visible
+        if self._analysis_visible:
+            self._refresh_result_layer()
 
     def set_action_visibility(self, kind: str, visible: bool) -> None:
         """Liga ou desliga uma das quatro categorias de ações renderizadas."""
@@ -6732,6 +7117,7 @@ class StructureScene(QWidget):
             self._label_overlay.resize_to_parent()
             self._elastic_support_overlay.resize_to_parent()
             self._model_info_overlay.raise_()
+            self._position_result_color_scale()
             self._sync_labels()
             self._orientation_widget.resize()
             self._orientation_widget.sync_from_camera()

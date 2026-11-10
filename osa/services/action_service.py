@@ -147,6 +147,18 @@ class ActionService:
             (float(value), float(value)), load_case,
         ))
 
+    def add_plate_surface_pressure(self, target: str, pressure: float, load_case: str) -> Action:
+        if self.has_selfweight(load_case):
+            raise ValueError(
+                f"A ação '{load_case}' está restrita ao peso próprio; remova-o antes de lançar outras cargas."
+            )
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", "plate_surface_pressure", target, (float(pressure),), load_case,
+        ))
+
     def replace_action_with_selfweight(
         self, load_case: str, weights: tuple[tuple[str, float], ...],
     ) -> tuple[Action, ...]:

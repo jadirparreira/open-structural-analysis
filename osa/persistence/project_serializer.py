@@ -280,7 +280,8 @@ class ProjectSerializer:
                             supports.append((kind, name))
             candidate.add_plate(item["contour"], name=item["name"], supports=supports,
                                 color=item.get("color", "#b7c6d5"),
-                                thickness_mm=item.get("thickness_mm", 100.0))
+                                thickness_mm=item.get("thickness_mm", 100.0),
+                                material=item.get("material"))
 
         candidate.set_reference_axes({
             direction: tuple(
@@ -403,6 +404,7 @@ class ProjectSerializer:
                     item["load_reference"],
                     item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
                     item.get("member_results", {}) if consume else dict(item.get("member_results", {})),
+                    item.get("plate_results", {}) if consume else dict(item.get("plate_results", {})),
                 )
                 for item in data.get("results", ())
             ]

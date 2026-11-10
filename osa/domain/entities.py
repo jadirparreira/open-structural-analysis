@@ -106,6 +106,7 @@ class Plate:
     supports: tuple[tuple[str, str], ...] = ()
     color: str = "#6e7781"
     thickness_mm: float = 100.0
+    material: str = "Concreto Estrutural"
 
 
 # Compatibilidade pública com o nome utilizado até agora.
@@ -178,3 +179,4 @@ class AnalysisResult:
     load_reference: str
     node_results: MutableMapping[str, Any] = field(default_factory=dict)
     member_results: MutableMapping[str, Any] = field(default_factory=dict)
+    plate_results: MutableMapping[str, Any] = field(default_factory=dict)
