@@ -471,8 +471,13 @@ def test_analysis_palette_has_independent_bar_and_plate_diagram_toggles(window):
     assert palette.result_diagrams_button.isChecked()
 
     palette.diagram_selector.setCurrentText('Deformação XYZ')
-    assert not palette.result_diagrams_button.isEnabled()
+    assert palette.result_diagrams_button.isEnabled()
     assert palette.plate_diagrams_button.isEnabled()
+
+    palette.result_diagrams_button.setChecked(False)
+    assert not window.scene.analysis_view_state()['result_diagrams_visible']
+    palette.result_diagrams_button.setChecked(True)
+    assert window.scene.analysis_view_state()['result_diagrams_visible']
 
 
 def test_plate_diagram_toggle_shows_and_hides_colored_plate_results(window):

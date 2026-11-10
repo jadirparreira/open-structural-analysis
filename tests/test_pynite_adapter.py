@@ -29,6 +29,12 @@ def test_mezanino_is_analyzed_with_its_actions_and_an_implicit_combination():
     assert stages == ["model", "loads", "combinations", "solve", "results"]
     assert sum(node["RXN_FZ"] for node in result.node_results.values()) == pytest.approx(252.968, abs=0.001)
     assert max(abs(node["DZ"]) for node in result.node_results.values()) > 0
+    assert min(node["DZ"] for node in result.node_results.values()) < 0
+    assert min(
+        sample["deflection_z"]
+        for member in result.member_results.values()
+        for sample in member["samples"]
+    ) < 0
 
 
 def test_slab_supported_beam_results_keep_the_full_original_member_length():
@@ -274,7 +280,7 @@ def test_result_color_map_uses_equal_width_discrete_bands():
     assert not np.array_equal(colors[2], colors[3])
 
 
-def test_plate_deformation_color_range_uses_plate_mesh_displacements():
+def test_deformation_color_range_is_shared_by_plates_and_bars():
     model = StructuralModel()
     model.add_plate(((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)))
     coordinates = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0))
@@ -297,8 +303,8 @@ def test_plate_deformation_color_range_uses_plate_mesh_displacements():
         }},
     )
 
-    assert ResultRenderer().result_range(result, "Deformação Z") == pytest.approx((-0.03, 0.0))
-    assert ResultRenderer().result_range(result, "Deformação XYZ") == pytest.approx((0.0, 0.03))
+    assert ResultRenderer().result_range(result, "Deformação Z") == pytest.approx((-0.30, 0.0))
+    assert ResultRenderer().result_range(result, "Deformação XYZ") == pytest.approx((0.0, 0.30))
 
     class Plotter:
         def __init__(self):
@@ -312,7 +318,7 @@ def test_plate_deformation_color_range_uses_plate_mesh_displacements():
     ResultRenderer().render_plate_contours(plotter, model, result, "Deformação XYZ")
     surface, options = plotter.meshes[0]
     assert surface.point_data["result_value"] == pytest.approx((0.0, 0.01, 0.02, 0.03))
-    assert options["clim"] == pytest.approx((0.0, 0.03))
+    assert options["clim"] == pytest.approx((0.0, 0.30))
 
     import pyvista as pv
 
@@ -322,7 +328,7 @@ def test_plate_deformation_color_range_uses_plate_mesh_displacements():
             real_plotter, model, result, "Deformação XYZ",
         )
         lookup_table = actors[0].mapper.lookup_table
-        mapped_colors = [lookup_table.map_value(value) for value in (0.0, 0.015, 0.03)]
+        mapped_colors = [lookup_table.map_value(value) for value in (0.0, 0.15, 0.30)]
         assert len({tuple(color) for color in mapped_colors}) == 3
         assert not real_plotter.scalar_bars
     finally:
@@ -733,24 +739,56 @@ def test_deformation_draws_an_amplified_deformed_member_centerline():
     line_plotter = Plotter()
     line_actors, _positions, _labels = ResultRenderer().render(
         line_plotter, model, result, "Deformação XYZ", solid_members_visible=False,
+        bar_diagrams_visible=False,
     )
     assert len(line_actors) == len(line_plotter.meshes) == 1
     assert line_plotter.options[0]["line_width"] == 1.25
     assert tuple(line_plotter.meshes[0].cell_data["rgb"][0]) == (110, 119, 129)
 
     colored_plotter = Plotter()
-    ResultRenderer().render(
+    _actors, _positions, labels = ResultRenderer().render(
         colored_plotter, model, result, "Deformação XYZ",
-        solid_members_visible=False, plate_diagrams_visible=True,
+        solid_members_visible=False, bar_diagrams_visible=True,
     )
     assert tuple(colored_plotter.meshes[0].cell_data["rgb"][0]) != (110, 119, 129)
+    assert labels == ("10 mm",)
 
     colored_solid_plotter = Plotter()
     ResultRenderer().render(
         colored_solid_plotter, model, result, "Deformação XYZ",
-        solid_members_visible=True, plate_diagrams_visible=True,
+        solid_members_visible=True, bar_diagrams_visible=True,
     )
     assert tuple(colored_solid_plotter.meshes[0].cell_data["rgb"][0]) != (110, 119, 129)
+
+
+def test_xyz_deformation_moves_down_in_global_z_but_colors_by_positive_magnitude():
+    class Plotter:
+        def __init__(self):
+            self.meshes = []
+
+        def add_mesh(self, mesh, **_options):
+            self.meshes.append(mesh)
+            return object()
+
+    model = StructuralModel()
+    model.nodes = {"N1": Node("N1", 0, 0, 0), "N2": Node("N2", 2, 0, 0)}
+    model.bars = {"B1": Bar("B1", "N1", "N2")}
+    result = AnalysisResult(0, "Combo", member_results={"B1": {"samples": (
+        {"x": 0.0, "deflection_x": 0.0, "deflection_y": 0.0, "deflection_z": 0.0},
+        {"x": 2.0, "deflection_x": 0.0, "deflection_y": 0.0, "deflection_z": -0.01},
+    )}})
+    plotter = Plotter()
+
+    _actors, _positions, labels = ResultRenderer().render(
+        plotter, model, result, "Deformação XYZ", solid_members_visible=False,
+        bar_diagrams_visible=True,
+    )
+
+    points = plotter.meshes[0].points
+    assert points[:, 2].min() == pytest.approx(-0.01)
+    assert points[:, 2].max() == pytest.approx(0.0)
+    assert ResultRenderer().result_range(result, "Deformação XYZ") == pytest.approx((0.0, 0.01))
+    assert labels == ("10 mm",)
 
 
 def test_deformation_components_share_the_xyz_scale():

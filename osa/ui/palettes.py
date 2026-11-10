@@ -1840,8 +1840,8 @@ class AnalysisTopPalette(QFrame):
         self._update_deformation_scale_controls(result_type)
 
     def _update_result_diagrams_button(self, result_type: str) -> None:
-        """The result-visibility toggle does not apply to deformation views."""
-        self.result_diagrams_button.setEnabled(not result_type.startswith("Deformação"))
+        """Allow the bar toggle to control color and values on deformed bars."""
+        self.result_diagrams_button.setEnabled(True)
         self.plate_diagrams_button.setEnabled(result_type != "Reações de apoio")
 
     def _deformation_scale_changed(self, position: int) -> None:

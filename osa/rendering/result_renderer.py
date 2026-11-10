@@ -50,7 +50,8 @@ class ResultRenderer:
 
     def render(
         self, plotter, model, result, diagram: str, *, solid_members_visible: bool = True,
-        deformation_scale: float = 1.0, plate_diagrams_visible: bool = False,
+        deformation_scale: float = 1.0, bar_diagrams_visible: bool = True,
+        plate_diagrams_visible: bool = False,
         include_plate_surfaces: bool = True,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         if result is None:
@@ -59,7 +60,8 @@ class ResultRenderer:
             components = diagram.removeprefix("Deformação ") or "XYZ"
             return self._render_deformation(
                 plotter, model, result, components, solid_members_visible,
-                deformation_scale, plate_diagrams_visible, include_plate_surfaces,
+                deformation_scale, bar_diagrams_visible, plate_diagrams_visible,
+                include_plate_surfaces,
             )
         if diagram == self.REACTION_DIAGRAM:
             return self._render_reactions(plotter, model, result)
@@ -184,19 +186,18 @@ class ResultRenderer:
                 for plate_result in result.plate_results.values()
                 for node_values in plate_result.get("nodes", {}).values()
             ]
-            if plate_values:
-                # Slab contours use FE plate nodes as their range source.
-                values.extend(plate_values)
-            else:
-                values.extend(
-                    self._deformation_scalar(node_values, components)
-                    for node_values in result.node_results.values()
-                )
-                values.extend(
-                    self._deformation_scalar(sample, components)
-                    for member_result in result.member_results.values()
-                    for sample in member_result.get("samples", ())
-                )
+            # Bars and plates share one legend so the same displacement has
+            # the same color regardless of which structural element carries it.
+            values.extend(plate_values)
+            values.extend(
+                self._deformation_scalar(node_values, components)
+                for node_values in result.node_results.values()
+            )
+            values.extend(
+                self._deformation_scalar(sample, components)
+                for member_result in result.member_results.values()
+                for sample in member_result.get("samples", ())
+            )
         else:
             macro_sums: dict[tuple[str, str], float] = {}
             macro_counts: dict[tuple[str, str], int] = {}
@@ -729,7 +730,8 @@ class ResultRenderer:
 
     def _render_deformation(
         self, plotter, model, result, components: str, solid_members_visible: bool,
-        deformation_scale: float, color_bars_by_value: bool = False,
+        deformation_scale: float, bar_diagrams_visible: bool = True,
+        plate_diagrams_visible: bool = False,
         include_plate_surfaces: bool = True,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
         """Sobrepõe as linhas de centro das barras na configuração deformada."""
@@ -780,13 +782,13 @@ class ResultRenderer:
         labels: list[str] = []
         deformation_value_range = (
             self.result_range(result, f"Deformação {components}")
-            if color_bars_by_value else None
+            if bar_diagrams_visible else None
         )
         plate_actors: list[object] = []
         plate_positions = np.empty((0, 3), dtype=float)
         plate_labels: tuple[str, ...] = ()
         if include_plate_surfaces:
-            if color_bars_by_value:
+            if plate_diagrams_visible:
                 plate_actors, plate_positions, plate_labels = self.render_plate_contours(
                     plotter, model, result, f"Deformação {components}",
                     deformation_scale=scale,
@@ -835,16 +837,17 @@ class ResultRenderer:
             maximum_vector = visual_displacements[maximum_index]
             vector_length = float(np.linalg.norm(maximum_vector))
             outward = maximum_vector / vector_length * 0.12 if vector_length > 1e-12 else local_z * 0.12
-            label_positions.append(deformed_centerline[maximum_index] + outward)
-            if components == "XYZ":
-                value_mm = float(magnitudes[maximum_index] * 1000.0)
-            else:
-                component_index = "XYZ".index(components)
-                value_mm = float(reported[maximum_index, component_index] * 1000.0)
-            labels.append(self._format_displacement(value_mm))
+            if bar_diagrams_visible:
+                label_positions.append(deformed_centerline[maximum_index] + outward)
+                if components == "XYZ":
+                    value_mm = float(magnitudes[maximum_index] * 1000.0)
+                else:
+                    component_index = "XYZ".index(components)
+                    value_mm = float(reported[maximum_index, component_index] * 1000.0)
+                labels.append(self._format_displacement(value_mm))
             color = np.asarray(pv.Color(member.color).int_rgb, dtype=np.uint8)
             station_colors = None
-            if color_bars_by_value:
+            if bar_diagrams_visible:
                 scalar_values = np.asarray([
                     self._deformation_scalar(sample, components) for sample in samples
                 ], dtype=float)

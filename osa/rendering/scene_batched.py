@@ -1536,9 +1536,8 @@ class StructureScene(QWidget):
             self.plotter, model, result, diagram,
             solid_members_visible=self._solid_members_visible,
             deformation_scale=self._analysis_deformation_scale,
-            plate_diagrams_visible=(
-                self._analysis_plate_diagrams_visible or diagram.startswith("Deformação")
-            ),
+            bar_diagrams_visible=self._result_diagrams_visible,
+            plate_diagrams_visible=self._analysis_plate_diagrams_visible,
             include_plate_surfaces=False,
         )
         self._plate_result_actors = []
@@ -1577,13 +1576,18 @@ class StructureScene(QWidget):
                     )
                 )
                 self._plate_result_names = self._renderable_plate_result_names(result, diagram)
-        if (
-            result is not None and contour_value_range is not None
-            and (
-                self._plate_result_actors
-                or diagram.startswith("Deformação") and result.member_results
+        deformation_has_colored_results = (
+            diagram.startswith("Deformação") and result is not None and (
+                self._analysis_plate_diagrams_visible and bool(result.plate_results)
+                or self._result_diagrams_visible and bool(result.member_results)
             )
-        ):
+        )
+        has_colored_results = (
+            deformation_has_colored_results
+            if diagram.startswith("Deformação")
+            else bool(self._plate_result_actors)
+        )
+        if result is not None and contour_value_range is not None and has_colored_results:
             display_range = contour_value_range
             if diagram.startswith("Deformação"):
                 display_range = tuple(value * 1000.0 for value in display_range)
@@ -1594,6 +1598,7 @@ class StructureScene(QWidget):
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._result_diagrams_visible,
             self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
         )
@@ -5894,6 +5899,7 @@ class StructureScene(QWidget):
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._result_diagrams_visible,
             self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
         )
@@ -5944,14 +5950,17 @@ class StructureScene(QWidget):
             self._result_layer_key = None
 
     def set_analysis_diagrams_visible(self, visible: bool) -> None:
-        """Show or hide result diagrams without affecting deformation views."""
+        """Toggle bar result diagrams or bar colors/values in deformation views."""
         visible = bool(visible)
         if visible == self._result_diagrams_visible:
             return
         self._result_diagrams_visible = visible
         if self._analysis_visible:
-            self._apply_result_layer_visibility()
-            self.plotter.render()
+            if self._active_result_type.startswith("Deformação"):
+                self._refresh_result_layer()
+            else:
+                self._apply_result_layer_visibility()
+                self.plotter.render()
 
     def set_analysis_plate_diagrams_visible(self, visible: bool) -> None:
         """Show or hide color-mapped plate result contours."""
