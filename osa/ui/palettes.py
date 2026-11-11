@@ -1624,7 +1624,8 @@ class AnalysisTopPalette(QFrame):
 
     diagram_options = (
         "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
-        "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
+        "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
+        "Reações de apoio",
     )
 
     def __init__(self, window: "MainWindow") -> None:
@@ -1709,10 +1710,10 @@ class AnalysisTopPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "lens.svg"))
         )
         self.deformation_scale_button.setIconSize(QSize(19, 19))
-        scale_button_tooltip = "Escala de deformação"
+        scale_button_tooltip = "Escala"
         self.deformation_scale_button.setToolTip(scale_button_tooltip)
         self.deformation_scale_button.setProperty("paletteTooltip", scale_button_tooltip)
-        self.deformation_scale_button.setAccessibleName("Escala da deformação")
+        self.deformation_scale_button.setAccessibleName("Escala")
         self.deformation_scale_button.installEventFilter(self)
         self.deformation_scale_button.clicked.connect(self._toggle_deformation_scale_popup)
         selectors_layout.addWidget(self.deformation_scale_button)
@@ -1742,7 +1743,8 @@ class AnalysisTopPalette(QFrame):
             Qt.Orientation.Vertical, self.deformation_scale_popup,
         )
         self.deformation_scale_slider.setObjectName("deformationScaleSlider")
-        # Slider positions map to 1x, then 10x increments through 100x.
+        # The same control keeps separate positions for deformations and
+        # force diagrams, whose scale ranges have different meanings.
         self.deformation_scale_slider.setRange(0, 10)
         self.deformation_scale_slider.setSingleStep(1)
         self.deformation_scale_slider.setPageStep(1)
@@ -1752,10 +1754,9 @@ class AnalysisTopPalette(QFrame):
         self.deformation_scale_slider.setInvertedAppearance(True)
         self.deformation_scale_slider.setFixedWidth(18)
         self.deformation_scale_slider.setFixedHeight(144)
-        self.deformation_scale_slider.setAccessibleName("Amplificação da deformação")
-        self.deformation_scale_slider.setAccessibleDescription(
-            "Níveis: 1x e de 10x a 100x em passos de 10x"
-        )
+        self.deformation_scale_slider.setAccessibleName("Escala")
+        self._deformation_scale_position = 0
+        self._bar_diagram_scale_position = 9
         self.deformation_scale_slider.valueChanged.connect(self._deformation_scale_changed)
         popup_layout.addWidget(self.deformation_scale_slider, 0, Qt.AlignmentFlag.AlignHCenter)
         self.deformation_scale_value = QLabel("1×", self.deformation_scale_popup)
@@ -1763,8 +1764,8 @@ class AnalysisTopPalette(QFrame):
         self.deformation_scale_value.setMinimumWidth(48)
         self.deformation_scale_value.setObjectName("deformationScaleValue")
         popup_layout.addWidget(self.deformation_scale_value)
-        self.diagram_selector.currentTextChanged.connect(self._update_deformation_scale_controls)
-        self._update_deformation_scale_controls(self.diagram_selector.currentText())
+        self.diagram_selector.currentTextChanged.connect(self._update_scale_controls)
+        self._update_scale_controls(self.diagram_selector.currentText())
         self.pending = QFrame(self)
         self.pending.setObjectName("analysisPending")
         pending_layout = QHBoxLayout(self.pending)
@@ -1837,7 +1838,7 @@ class AnalysisTopPalette(QFrame):
         self.diagram_selector.blockSignals(False)
         result_type = self.diagram_selector.currentText()
         self._update_result_diagrams_button(result_type)
-        self._update_deformation_scale_controls(result_type)
+        self._update_scale_controls(result_type)
 
     def _update_result_diagrams_button(self, result_type: str) -> None:
         """Allow the bar toggle to control color and values on deformed bars."""
@@ -1845,20 +1846,61 @@ class AnalysisTopPalette(QFrame):
         self.plate_diagrams_button.setEnabled(result_type != "Reações de apoio")
 
     def _deformation_scale_changed(self, position: int) -> None:
-        scale = self._deformation_scale_for_position(position)
-        self.deformation_scale_value.setText(f"{scale}×")
-        self.deformation_scale_slider.setToolTip(f"Amplificação da deformação: {scale}×")
-        self._window.scene.set_analysis_deformation_scale(scale)
+        result_type = self.diagram_selector.currentText()
+        if result_type.startswith("Deformação"):
+            self._deformation_scale_position = position
+            scale = self._deformation_scale_for_position(position)
+            self.deformation_scale_value.setText(f"{scale}×")
+            self.deformation_scale_slider.setToolTip(f"Escala da deformação: {scale}×")
+            self._window.scene.set_analysis_deformation_scale(scale)
+        else:
+            self._bar_diagram_scale_position = position
+            scale = self._bar_diagram_scale_for_position(position)
+            label = f"{scale:.1f}×".replace(".", ",")
+            self.deformation_scale_value.setText(label)
+            self.deformation_scale_slider.setToolTip(f"Escala do diagrama: {label}")
+            self._window.scene.set_analysis_diagram_scale(scale)
 
     @staticmethod
     def _deformation_scale_for_position(position: int) -> int:
         return 1 if position == 0 else int(position) * 10
 
-    def _update_deformation_scale_controls(self, result_type: str) -> None:
-        enabled = result_type.startswith("Deformação")
+    @staticmethod
+    def _bar_diagram_scale_for_position(position: int) -> float:
+        return (int(position) + 1) / 10.0
+
+    def _update_scale_controls(self, result_type: str) -> None:
+        deformation = result_type.startswith("Deformação")
+        enabled = deformation or result_type != "Reações de apoio"
         self.deformation_scale_button.setEnabled(enabled)
         if not enabled:
             self.deformation_scale_popup.hide()
+            return
+        slider = self.deformation_scale_slider
+        slider.blockSignals(True)
+        if deformation:
+            slider.setRange(0, 10)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setTickInterval(1)
+            slider.setAccessibleDescription("Níveis: 1× e de 10× a 100× em passos de 10×")
+            slider.setValue(self._deformation_scale_position)
+            scale = self._deformation_scale_for_position(self._deformation_scale_position)
+            label = f"{scale}×"
+            tooltip = f"Escala da deformação: {label}"
+        else:
+            slider.setRange(0, 9)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setTickInterval(1)
+            slider.setAccessibleDescription("Níveis: 0,1× a 1,0× em passos de 0,1×")
+            slider.setValue(self._bar_diagram_scale_position)
+            scale = self._bar_diagram_scale_for_position(self._bar_diagram_scale_position)
+            label = f"{scale:.1f}×".replace(".", ",")
+            tooltip = f"Escala do diagrama: {label}"
+        slider.blockSignals(False)
+        self.deformation_scale_value.setText(label)
+        slider.setToolTip(tooltip)
 
     def _toggle_deformation_scale_popup(self) -> None:
         if not self.deformation_scale_button.isEnabled():

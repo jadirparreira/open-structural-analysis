@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
         self._plate_manual_start = None
         self._plate_saved_endpoint_snap = None
         self.scene.element_clicked.connect(self.select_element)
+        self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
         self.scene.empty_clicked.connect(self._empty_scene_clicked)
         self.scene.selection_changed.connect(self._selection_changed)
@@ -3343,6 +3344,8 @@ class MainWindow(QMainWindow):
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
+        if self.palette.active_group == "Análise":
+            return
         if self._command_mode == "plate_selection":
             self._plate_add_selection(kind, name)
             return
@@ -3531,6 +3534,9 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self.palette.active_group == "Análise":
+            self.clear_selection()
+            return
         if self._command_mode == "plate_selection":
             for kind, name in elements:
                 if self._command_mode == "plate_selection":
@@ -3591,6 +3597,9 @@ class MainWindow(QMainWindow):
     def refresh_selected_property_panel(self, section: str | None) -> None:
         """Rebuild the open inspector when the work section changes."""
         active_section = section or "Geometria"
+        if active_section == "Análise":
+            self.clear_selection()
+            return
         if active_section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.close_section_panel()
         if active_section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
@@ -4231,6 +4240,224 @@ class MainWindow(QMainWindow):
     def _sync_analysis_result(self) -> None:
         if hasattr(self, "scene"):
             self.scene.set_analysis_result(self.selected_analysis_combination, self.selected_analysis_diagram)
+
+    def _show_analysis_point_result(self, kind: str, name: str, point: object) -> None:
+        """Show the active analysis value at a clicked model location."""
+        point = np.asarray(point, dtype=float).reshape(3)
+        combination = self.selected_analysis_combination
+        result = next((item for item in self.model.analysis_results
+                       if item.load_reference == combination
+                       and item.model_revision == self.model.revision), None)
+        if result is None:
+            self.scene.hide_analysis_point_result()
+            return
+        diagram = self.selected_analysis_diagram
+        renderer = self.scene._result_renderer
+        unit = self.scene._result_unit(diagram)
+        detail = " · ".join(
+            f"{axis}: {coordinate:.3f}".replace(".", ",") + " m"
+            for axis, coordinate in zip("XYZ", point)
+        )
+        raw_value: float | None = None
+        display_value = "Sem resultados neste ponto"
+        if kind == "bar":
+            member = self.model.bars.get(name)
+            member_result = result.member_results.get(name)
+            if member is not None and member_result:
+                first, last = self.model.nodes[member.start_node], self.model.nodes[member.end_node]
+                start = np.asarray((first.x, first.y, first.z), dtype=float)
+                end = np.asarray((last.x, last.y, last.z), dtype=float)
+                length = float(member_result.get("length", np.linalg.norm(end - start)))
+                samples = member_result.get("samples", ())
+                if diagram.startswith("Deformação") and len(samples) >= 2:
+                    components = diagram.removeprefix("Deformação ") or "XYZ"
+                    basis = LocalAxesRenderer.basis(first, last, member.rotation)
+                    scale = max(1.0, min(100.0, float(self.scene._analysis_deformation_scale)))
+                    if basis is not None:
+                        curve = np.asarray([
+                            start + basis[0] * float(sample.get("x", 0.0)) + np.asarray((
+                                float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
+                                float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0,
+                                float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0,
+                            )) * scale for sample in samples
+                        ], dtype=float)
+                        distances = []
+                        positions = []
+                        for index, (a, b) in enumerate(zip(curve, curve[1:])):
+                            delta = b - a
+                            denominator = float(np.dot(delta, delta))
+                            fraction = 0.0 if denominator <= 1e-12 else float(np.clip(
+                                np.dot(point - a, delta) / denominator, 0.0, 1.0,
+                            ))
+                            distances.append(float(np.linalg.norm(point - (a + fraction * delta))))
+                            x0 = float(samples[index].get("x", 0.0))
+                            x1 = float(samples[index + 1].get("x", x0))
+                            positions.append(x0 + fraction * (x1 - x0))
+                        position = positions[int(np.argmin(distances))]
+                    else:
+                        position = 0.0
+                else:
+                    fraction = float(np.clip(np.dot(point - start, end - start) /
+                                             max(float(np.dot(end - start, end - start)), 1e-12), 0.0, 1.0))
+                    position = fraction * length
+                if diagram.startswith("Deformação"):
+                    components = diagram.removeprefix("Deformação ") or "XYZ"
+                    key = {"X": "deflection_x", "Y": "deflection_y", "Z": "deflection_z"}.get(components)
+                    if samples:
+                        if key:
+                            raw_value = self._interpolate_member_samples(samples, position, key) * 1000.0
+                        else:
+                            vector = np.asarray([self._interpolate_member_samples(samples, position, f"deflection_{axis}")
+                                                 for axis in "xyz"], dtype=float)
+                            raw_value = float(np.linalg.norm(vector) * 1000.0)
+                elif diagram in renderer.DIAGRAMS and samples:
+                    result_key, _axis, _result_unit, display_sign, _geometry_sign = renderer.DIAGRAMS[diagram]
+                    raw_value = self._interpolate_member_samples(samples, position, result_key) * display_sign
+                if diagram in renderer.DIAGRAMS:
+                    unit = renderer.DIAGRAMS[diagram][2]
+        elif kind == "node":
+            node_values = result.node_results.get(name, {})
+            if diagram == renderer.REACTION_DIAGRAM:
+                components = [(key.removeprefix("RXN_"), float(node_values.get(key, 0.0)))
+                              for key in (*renderer._REACTION_FORCE_KEYS, *renderer._REACTION_MOMENT_KEYS)]
+                forces = " · ".join(
+                    f"{label}: {renderer._format_value(value, 'kN')}"
+                    for label, value in components[:3]
+                )
+                moments = " · ".join(
+                    f"{label}: {renderer._format_value(value, 'kN·m')}"
+                    for label, value in components[3:]
+                )
+                display_value = f"Reações de apoio\n{forces}\n{moments}"
+            elif diagram.startswith("Deformação"):
+                components = diagram.removeprefix("Deformação ") or "XYZ"
+                raw_value = renderer._deformation_display_value(node_values, components)
+            elif diagram in renderer.DIAGRAMS:
+                result_key, _axis, _result_unit, display_sign, _geometry_sign = renderer.DIAGRAMS[diagram]
+                connected_values = []
+                for bar_name, bar in self.model.bars.items():
+                    if name not in {bar.start_node, bar.end_node}:
+                        continue
+                    member_result = result.member_results.get(bar_name, {})
+                    samples = member_result.get("samples", ())
+                    if not samples:
+                        continue
+                    sample = samples[0] if bar.start_node == name else samples[-1]
+                    value = float(sample.get(result_key, 0.0)) * display_sign
+                    connected_values.append(f"{bar_name}: {renderer._format_value(value, renderer.DIAGRAMS[diagram][2])}")
+                if connected_values:
+                    display_value = "\n".join(connected_values)
+        elif kind == "plate":
+            plate_result = result.plate_results.get(name)
+            if plate_result:
+                raw_value = self._sample_analysis_plate(plate_result, diagram, point)
+        if raw_value is not None:
+            display_value = renderer._format_value(raw_value, unit)
+        no_reaction_result = (
+            diagram == renderer.REACTION_DIAGRAM
+            and kind in {"bar", "plate", "rigid_bar"}
+        )
+        if no_reaction_result:
+            display_value = "Reações de apoio:\nSem resultados neste ponto"
+        elif not (kind == "node" and diagram == renderer.REACTION_DIAGRAM):
+            display_value = f"{diagram}: {display_value}"
+        self.scene.show_analysis_point_result(
+            kind, name, point, detail, display_value,
+            wide=kind == "node" and diagram == renderer.REACTION_DIAGRAM,
+        )
+
+    @staticmethod
+    def _interpolate_member_samples(samples, position: float, key: str) -> float:
+        rows = [(float(sample.get("x", 0.0)), float(sample.get(key, 0.0))) for sample in samples]
+        if not rows:
+            return 0.0
+        rows.sort(key=lambda row: row[0])
+        positions = [row[0] for row in rows]
+        index = int(np.searchsorted(positions, position, side="right"))
+        if index <= 0:
+            return rows[0][1]
+        if index >= len(rows):
+            return rows[-1][1]
+        x0, y0 = rows[index - 1]
+        x1, y1 = rows[index]
+        fraction = 0.0 if abs(x1 - x0) <= 1e-12 else (position - x0) / (x1 - x0)
+        return y0 + fraction * (y1 - y0)
+
+    def _sample_analysis_plate(self, plate_result, diagram: str, point: np.ndarray) -> float | None:
+        renderer = self.scene._result_renderer
+        plate_nodes = plate_result.get("nodes", {})
+        elements = plate_result.get("elements", {})
+        if diagram.startswith("Deformação"):
+            components = diagram.removeprefix("Deformação ") or "XYZ"
+            nodal_values = {node: renderer._deformation_display_value(values, components)
+                            for node, values in plate_nodes.items()}
+            element_values = {}
+        else:
+            element_values = renderer._plate_element_values(plate_result, diagram)
+            nodal_values = {}
+            if self.scene._plate_result_display_mode in {"nos_media", "nos_media_macro"}:
+                sums: dict[str, float] = {}
+                counts: dict[str, int] = {}
+                active_result = next((item for item in self.model.analysis_results
+                                      if item.load_reference == self.selected_analysis_combination
+                                      and item.model_revision == self.model.revision), None)
+                sources = (
+                    active_result.plate_results.values()
+                    if self.scene._plate_result_display_mode == "nos_media" and active_result
+                    else (plate_result,)
+                )
+                for source in sources:
+                    source_values = renderer._plate_element_values(source, diagram)
+                    for element_name, (_center, corners) in source_values.items():
+                        for node_name, value in zip(source.get("elements", {}).get(element_name, {}).get("nodes", ()), corners):
+                            sums[node_name] = sums.get(node_name, 0.0) + value
+                            counts[node_name] = counts.get(node_name, 0) + 1
+                nodal_values = {node: sums[node] / counts[node] for node in sums if counts[node]}
+        for element_name, element in elements.items():
+            node_names = element.get("nodes", ())
+            if len(node_names) != 4 or any(node not in plate_nodes for node in node_names):
+                continue
+            corners = np.asarray([plate_nodes[node].get("coordinates", ()) for node in node_names], dtype=float)
+            if corners.shape != (4, 3):
+                continue
+            if diagram.startswith("Deformação"):
+                components = diagram.removeprefix("Deformação ") or "XYZ"
+                scale = self.scene._analysis_deformation_scale
+                corners = corners + np.asarray([
+                    [float(plate_nodes[node].get(f"D{axis}", 0.0)) if axis in components else 0.0
+                     for axis in "XYZ"] for node in node_names
+                ]) * scale
+            local = np.asarray(point, dtype=float)
+            u = v = 0.5
+            for _ in range(12):
+                weights = np.asarray(((1-u)*(1-v), u*(1-v), u*v, (1-u)*v))
+                current = weights @ corners
+                du = (1-v)*(corners[1]-corners[0]) + v*(corners[2]-corners[3])
+                dv = (1-u)*(corners[3]-corners[0]) + u*(corners[2]-corners[1])
+                jacobian = np.column_stack((du, dv))
+                step = np.linalg.lstsq(jacobian, local-current, rcond=None)[0]
+                u += float(step[0]); v += float(step[1])
+                if np.linalg.norm(step) < 1e-8:
+                    break
+            weights = np.asarray(((1-u)*(1-v), u*(1-v), u*v, (1-u)*v))
+            residual = float(np.linalg.norm(weights @ corners - local))
+            if residual > max(0.02, float(np.ptp(corners, axis=0).max()) * 0.03) or not (-0.05 <= u <= 1.05 and -0.05 <= v <= 1.05):
+                continue
+            if diagram.startswith("Deformação"):
+                values = [nodal_values.get(node) for node in node_names]
+                return None if any(value is None for value in values) else float(weights @ np.asarray(values))
+            if element_name not in element_values:
+                return None
+            center, corners_value = element_values[element_name]
+            if self.scene._plate_result_display_mode == "centros":
+                return float(center)
+            if self.scene._plate_result_display_mode == "nos_sem_media":
+                values = np.asarray(corners_value, dtype=float)
+            else:
+                values = np.asarray([nodal_values.get(node, corners_value[index])
+                                     for index, node in enumerate(node_names)], dtype=float)
+            return float(weights @ values)
+        return None
 
     def _apply_mcp_analysis_view(self, combination: str, diagram: str) -> None:
         """Atualiza os seletores e o resultado visual após uma chamada MCP."""

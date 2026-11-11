@@ -23,12 +23,13 @@ class ResultRenderer:
 
     POSITIVE_COLOR = "#0969da"
     NEGATIVE_COLOR = "#cf222e"
-    MAX_HEIGHT = 0.75
+    MAX_HEIGHT = 1.0
     REACTION_FORCE_LENGTH = 0.50
     REACTION_MOMENT_DIAMETER = 0.50
     REACTION_LABEL_CLEARANCE = 0.12
     DEFORMATION_COLOR = "#8250df"
     UNDEFORMED_COLOR = "#8c959f"
+    PLATE_CONTOUR_SUBDIVISIONS = 8
     _millimeters_to_model_units = 1e-3
     DISPLAY_DECIMALS = 3
     DIAGRAMS: ClassVar[dict[str, tuple[str, int, str, float, float]]] = {
@@ -51,6 +52,7 @@ class ResultRenderer:
     def render(
         self, plotter, model, result, diagram: str, *, solid_members_visible: bool = True,
         deformation_scale: float = 1.0, bar_diagrams_visible: bool = True,
+        diagram_scale: float = 1.0,
         plate_diagrams_visible: bool = False,
         include_plate_surfaces: bool = True,
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
@@ -81,9 +83,8 @@ class ResultRenderer:
             ),
             default=0.0,
         )
-        span = self._model_span(model)
         scale = (
-            min(self.MAX_HEIGHT, max(0.18, span * 0.035)) / maximum
+            self.MAX_HEIGHT * max(0.1, min(1.0, float(diagram_scale))) / maximum
             if maximum > 0.0
             else 0.0
         )
@@ -234,6 +235,7 @@ class ResultRenderer:
 
     def render_plate_contours(
         self, plotter, model, result, diagram: str, *, deformation_scale: float = 1.0,
+        solid_members_visible: bool = True,
         value_range: tuple[float, float] | None = None,
         display_mode: str = "nos_media_macro",
     ) -> tuple[list[object], np.ndarray, tuple[str, ...]]:
@@ -344,6 +346,7 @@ class ResultRenderer:
                 surface.point_data["result_value"] = np.asarray(unshared_values, dtype=float)
                 scalar_preference = "point"
                 interpolate_before_map = True
+                refinement_rows = sample_rows
             else:
                 surface_faces = np.asarray([
                     value for quad, _names, _center, _nodal in sample_rows
@@ -363,14 +366,93 @@ class ResultRenderer:
                 surface.point_data["result_value"] = node_values
                 scalar_preference = "point"
                 interpolate_before_map = True
-            actors.append(plotter.add_mesh(
+                refinement_rows = [
+                    (
+                        quad, names, center,
+                        tuple(float(node_values[index]) for index in quad),
+                    )
+                    for quad, names, center, _nodal in sample_rows
+                ]
+            if scalar_preference == "point":
+                # Refine each FE quad with bilinear shape functions so the
+                # color bands and their isolines follow the same interpolation
+                # instead of taking a diagonal shortcut across coarse quads.
+                surface = self._refine_plate_result_surface(
+                    coordinates, refinement_rows,
+                )
+            plate_opacity = 1.0 if solid_members_visible else 0.7
+            surface_actor = plotter.add_mesh(
                 surface, scalars="result_value", cmap=list(RESULT_COLOR_STOPS),
                 n_colors=len(RESULT_COLOR_STOPS), clim=value_range,
                 preference=scalar_preference,
-                interpolate_before_map=interpolate_before_map, opacity=1.0,
+                interpolate_before_map=interpolate_before_map,
+                opacity=plate_opacity,
                 smooth_shading=False, lighting=True, show_scalar_bar=False, pickable=False,
                 reset_camera=False, render=False, name=f"result-plate:{plate_name}",
-            ))
+            )
+            surface_actor.SetObjectName(f"result-plate:{plate_name}")
+            actors.append(surface_actor)
+            low, high = (float(value) for value in value_range)
+            if scalar_preference == "point" and high - low > 1e-12:
+                # Draw one continuous isoline at each boundary between the
+                # displayed color bands. Scalar coloring reuses the surface
+                # palette so every line stays in the same color family.
+                interfaces = np.linspace(
+                    low, high, len(RESULT_COLOR_STOPS) + 1,
+                )[1:-1]
+                interface_mesh = surface.contour(
+                    isosurfaces=interfaces, scalars="result_value",
+                )
+                if interface_mesh.n_cells:
+                    actor = plotter.add_mesh(
+                        interface_mesh, scalars="result_value",
+                        cmap=list(RESULT_COLOR_STOPS),
+                        n_colors=len(RESULT_COLOR_STOPS), clim=value_range,
+                        preference="point", line_width=1.5, opacity=1.0,
+                        lighting=False, show_scalar_bar=False, pickable=False,
+                        reset_camera=False, render=False,
+                        name=f"result-plate-interfaces:{plate_name}",
+                    )
+                    mapper = actor.GetMapper()
+                    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                    mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+                    actors.append(actor)
+            elif display_mode == "centros" and high - low > 1e-12:
+                # Center-value plots have constant color per element, so
+                # their color interfaces follow shared edges between elements.
+                edge_bands: dict[tuple[int, int], list[int]] = {}
+                for quad, _names, center, _nodal in sample_rows:
+                    band = max(0, min(
+                        int((float(center) - low) / (high - low) * len(RESULT_COLOR_STOPS)),
+                        len(RESULT_COLOR_STOPS) - 1,
+                    ))
+                    for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0]), strict=True):
+                        edge = (min(start, end), max(start, end))
+                        edge_bands.setdefault(edge, []).append(band)
+                edges_by_band: dict[int, list[tuple[int, int]]] = {}
+                for edge, bands in edge_bands.items():
+                    if len(bands) > 1 and min(bands) != max(bands):
+                        edges_by_band.setdefault(max(bands), []).append(edge)
+                for band, edges in edges_by_band.items():
+                    line_mesh = pv.PolyData(
+                        coordinates,
+                        lines=np.asarray([
+                            value for start, end in edges for value in (2, start, end)
+                        ], dtype=np.int64),
+                    )
+                    actor = plotter.add_mesh(
+                        line_mesh, color=RESULT_COLOR_STOPS[band],
+                        line_width=1.5, opacity=1.0, lighting=False,
+                        show_scalar_bar=False, pickable=False,
+                        reset_camera=False, render=False,
+                        name=f"result-plate-interfaces:{plate_name}:{band}",
+                    )
+                    mapper = actor.GetMapper()
+                    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                    mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+                    actors.append(actor)
             edge_pairs = {
                 (min(start, end), max(start, end))
                 for quad, _names, _center, _nodal in sample_rows
@@ -414,6 +496,45 @@ class ResultRenderer:
     @classmethod
     def _deformation_display_value(cls, values, components: str) -> float:
         return cls._deformation_scalar(values, components) * 1000.0
+
+    @classmethod
+    def _refine_plate_result_surface(cls, coordinates, sample_rows) -> pv.PolyData:
+        """Build a bilinearly subdivided quad mesh for plate colors and isolines."""
+        divisions = cls.PLATE_CONTOUR_SUBDIVISIONS
+        local_axis = np.linspace(0.0, 1.0, divisions + 1)
+        points: list[np.ndarray] = []
+        values: list[float] = []
+        faces: list[int] = []
+        row_width = divisions + 1
+        for quad, _names, _center, nodal in sample_rows:
+            corners = np.asarray(coordinates[np.asarray(quad, dtype=int)], dtype=float)
+            corner_values = np.asarray(nodal, dtype=float)
+            start = len(points)
+            for v in local_axis:
+                for u in local_axis:
+                    weights = np.asarray((
+                        (1.0 - u) * (1.0 - v),
+                        u * (1.0 - v),
+                        u * v,
+                        (1.0 - u) * v,
+                    ))
+                    points.append(weights @ corners)
+                    values.append(float(weights @ corner_values))
+            for row in range(divisions):
+                for column in range(divisions):
+                    lower_left = start + row * row_width + column
+                    lower_right = lower_left + 1
+                    upper_left = lower_left + row_width
+                    upper_right = upper_left + 1
+                    faces.extend((
+                        4, lower_left, lower_right, upper_right, upper_left,
+                    ))
+        refined = pv.PolyData(
+            np.asarray(points, dtype=float),
+            faces=np.asarray(faces, dtype=np.int64),
+        )
+        refined.point_data["result_value"] = np.asarray(values, dtype=float)
+        return refined
 
     @staticmethod
     def _plate_result_field(plate_result, diagram: str):
@@ -792,6 +913,7 @@ class ResultRenderer:
                 plate_actors, plate_positions, plate_labels = self.render_plate_contours(
                     plotter, model, result, f"Deformação {components}",
                     deformation_scale=scale,
+                    solid_members_visible=solid_members_visible,
                 )
             else:
                 plate_actors, plate_positions, plate_labels = self._render_plate_deformation(
@@ -971,13 +1093,15 @@ class ResultRenderer:
                 [value for quad in quads for value in (4, *quad)], dtype=np.int64,
             )
             mesh = pv.PolyData(deformed, faces=mesh_faces)
-            deformed_actors.append(plotter.add_mesh(
+            surface_actor = plotter.add_mesh(
                 mesh, color=getattr(plate, "color", "#6e7781"),
                 opacity=1.0 if solid_members_visible else 0.7,
                 show_edges=False,
                 smooth_shading=False, lighting=True, pickable=False,
                 reset_camera=False, render=False,
-            ))
+            )
+            surface_actor.SetObjectName(f"result-plate:{plate_name}")
+            deformed_actors.append(surface_actor)
             edge_pairs = {
                 (min(start, end), max(start, end))
                 for quad in quads
@@ -992,6 +1116,7 @@ class ResultRenderer:
                 edge_mesh, color="#57606a", opacity=1.0, line_width=1.0,
                 lighting=False, pickable=False, reset_camera=False, render=False,
             )
+            edge_actor.SetObjectName(f"result-plate-edges:{plate_name}")
             edge_mapper = edge_actor.GetMapper() if hasattr(edge_actor, "GetMapper") else None
             if edge_mapper is not None:
                 edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
@@ -1146,11 +1271,6 @@ class ResultRenderer:
 
     def _result_color(self, value: float) -> str:
         return self.NEGATIVE_COLOR if value < 0.0 else self.POSITIVE_COLOR
-
-    @staticmethod
-    def _model_span(model) -> float:
-        coordinates = np.asarray([(node.x, node.y, node.z) for node in model.nodes.values()])
-        return float(np.max(np.ptp(coordinates, axis=0))) if len(coordinates) else 1.0
 
     @classmethod
     def _format_force(cls, value: float) -> str:

@@ -32,6 +32,7 @@ from .drawing_reference_renderer import DrawingReferenceRenderer
 from .elastic_support_overlay import ElasticSupportOverlay
 from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
+from .local_axes_renderer import LocalAxesRenderer
 from .navigation_widget import NavigationWidget
 from .plate_antialiasing import PlateAntialiasing
 from .plate_member_intersections import dashed_plate_member_intersections
@@ -207,6 +208,7 @@ class StructureScene(QWidget):
     _default_antialiasing_samples = 4
 
     element_clicked = Signal(str, str, object)
+    analysis_point_clicked = Signal(str, str, object)
     solid_face_clicked = Signal(object)
     empty_clicked = Signal()
     selection_changed = Signal(object)
@@ -411,6 +413,35 @@ class StructureScene(QWidget):
         self._result_color_scale_widget = ResultColorScale(self.plotter)
         self._result_color_scale_widget.hide()
         self._result_color_scale_available = False
+        self._analysis_point_marker_actor = None
+        self._analysis_point_world: np.ndarray | None = None
+        self._analysis_point_card = QFrame(self.plotter)
+        self._analysis_point_card.setObjectName("analysisPointResultCard")
+        self._analysis_point_card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._analysis_point_card.setFixedWidth(200)
+        self._analysis_point_card.setStyleSheet(
+            "QFrame#analysisPointResultCard { background: rgba(246, 248, 250, 245); "
+            "border: 1px solid #d0d7de; border-radius: 8px; }"
+            "QLabel { color: #57606a; background: transparent; border: 0; "
+            "font-size: 11px; padding: 0; }"
+            "QLabel#analysisPointIdentity { font-weight: 700; }"
+            "QLabel#analysisPointValue { color: #57606a; font-size: 12px; }"
+        )
+        card_layout = QVBoxLayout(self._analysis_point_card)
+        card_layout.setContentsMargins(9, 7, 9, 7)
+        card_layout.setSpacing(2)
+        self._analysis_point_identity = QLabel("", self._analysis_point_card)
+        self._analysis_point_identity.setObjectName("analysisPointIdentity")
+        self._analysis_point_detail = QLabel("", self._analysis_point_card)
+        self._analysis_point_value = QLabel("", self._analysis_point_card)
+        self._analysis_point_value.setObjectName("analysisPointValue")
+        for label in (self._analysis_point_identity, self._analysis_point_detail, self._analysis_point_value):
+            label.setWordWrap(True)
+        card_layout.addWidget(self._analysis_point_identity)
+        card_layout.addWidget(self._analysis_point_detail)
+        card_layout.addWidget(self._analysis_point_value)
+        self._analysis_point_card.adjustSize()
+        self._analysis_point_card.hide()
         self._measurement_start_marker = SnapMarker(self.plotter)
         self._measurement_start_marker.hide()
         self._orientation_widget = NavigationWidget.create(self.plotter)
@@ -482,6 +513,7 @@ class StructureScene(QWidget):
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
         self._analysis_deformation_scale = 1.0
+        self._analysis_diagram_scale = 1.0
         self._plate_result_display_mode = DEFAULT_PLATE_RESULT_DISPLAY_MODE
         self._action_layer_key: tuple[object, ...] | None = None
         self._result_layer_key: tuple[object, ...] | None = None
@@ -1536,6 +1568,7 @@ class StructureScene(QWidget):
             self.plotter, model, result, diagram,
             solid_members_visible=self._solid_members_visible,
             deformation_scale=self._analysis_deformation_scale,
+            diagram_scale=self._analysis_diagram_scale,
             bar_diagrams_visible=self._result_diagrams_visible,
             plate_diagrams_visible=self._analysis_plate_diagrams_visible,
             include_plate_surfaces=False,
@@ -1550,6 +1583,7 @@ class StructureScene(QWidget):
                             self.plotter, model, result, diagram,
                             display_mode=self._plate_result_display_mode,
                             deformation_scale=self._analysis_deformation_scale,
+                            solid_members_visible=self._solid_members_visible,
                             value_range=contour_value_range,
                         )
                     )
@@ -1573,6 +1607,7 @@ class StructureScene(QWidget):
                         self.plotter, model, result, diagram,
                         value_range=contour_value_range,
                         display_mode=self._plate_result_display_mode,
+                        solid_members_visible=self._solid_members_visible,
                     )
                 )
                 self._plate_result_names = self._renderable_plate_result_names(result, diagram)
@@ -1598,6 +1633,7 @@ class StructureScene(QWidget):
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._analysis_diagram_scale,
             self._result_diagrams_visible,
             self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
@@ -2017,6 +2053,25 @@ class StructureScene(QWidget):
         self.plotter.render()
 
     def _pick_plate(self):
+        if self._analysis_visible:
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.0005)
+            picker.PickFromListOn()
+            actors = [
+                actor for actor in self._plate_result_actors
+                if actor.GetVisibility()
+                and str(actor.GetObjectName() or "").startswith("result-plate:")
+            ]
+            for actor in actors:
+                actor.SetPickable(True)
+                picker.AddPickList(actor)
+            x, y = self.plotter.iren.get_event_position()
+            hit = bool(actors) and picker.Pick(x, y, 0, self.plotter.renderer)
+            for actor in actors:
+                actor.SetPickable(False)
+            if hit:
+                plate_name = str(picker.GetActor().GetObjectName()).removeprefix("result-plate:")
+                return "plate", plate_name
         if not self._plate_actors:
             return None
         picker = vtk.vtkCellPicker()
@@ -2356,8 +2411,17 @@ class StructureScene(QWidget):
     def _hover_candidates_near_cursor(self) -> list[tuple[str, str]]:
         return self._pick_candidates()
 
+    def _analysis_hover_node_at_cursor(self) -> tuple[str, str] | None:
+        """Return only a node candidate for the restricted Analysis hover."""
+        if self._pointer_position is None:
+            return None
+        return next(
+            (target for target in self._screen_pick_candidates() if target[0] == "node"),
+            None,
+        )
+
     def _cycle_hover(self) -> None:
-        if self._camera_interacting:
+        if self._camera_interacting or self._analysis_visible:
             return
         self._hover_timer.stop()
         x, y = self.plotter.iren.get_event_position()
@@ -2441,6 +2505,7 @@ class StructureScene(QWidget):
                 and event.button() == Qt.MouseButton.LeftButton
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier
                 and not self._placement_active()
+                and not self._analysis_visible
                 and getattr(self.window(), "_command_mode", None) in (
                     None, "scene_hide_selection", "scene_reveal_selection",
                     "copy_elements_selection", "copy_member_properties_selection",
@@ -2509,7 +2574,7 @@ class StructureScene(QWidget):
 
     def _update_selection_rectangle(self, x: int, y: int) -> None:
         start = self._ctrl_selection_press
-        if start is None:
+        if start is None or self._analysis_visible:
             return
         if np.hypot(x - start[0], y - start[1]) <= self._placement_drag_tolerance_pixels:
             return
@@ -2525,7 +2590,7 @@ class StructureScene(QWidget):
         start = self._ctrl_selection_press
         self._ctrl_selection_press = None
         self._selection_rectangle.hide()
-        if start is None:
+        if start is None or self._analysis_visible:
             return
         selected = list(self._selected_elements)
         if np.hypot(x - start[0], y - start[1]) <= self._placement_drag_tolerance_pixels:
@@ -2736,6 +2801,19 @@ class StructureScene(QWidget):
         if position != self._tab_hover_position:
             self._tab_hover_candidates = []
             self._tab_hover_position = None
+        if self._analysis_visible:
+            if self._orientation_widget.is_pointer_over(x, y):
+                self._hover_timer.stop()
+                picked = None
+            else:
+                picked = self._analysis_hover_node_at_cursor()
+                if not self._hover_timer.isActive():
+                    self._hover_timer.start()
+            if picked != self._hovered:
+                self._hovered = picked
+                self._sync_highlights()
+                self.plotter.render()
+            return
         if self._placement_active():
             # Placement has its own snap marker. A solid VTK hover pick can
             # otherwise block the cursor for a full frame on a dense model.
@@ -4345,6 +4423,17 @@ class StructureScene(QWidget):
     def _update_hover(self) -> None:
         if self._camera_interacting or self._placement_active():
             return
+        if self._analysis_visible:
+            x, y = self.plotter.iren.get_event_position()
+            picked = (
+                None if self._orientation_widget.is_pointer_over(x, y)
+                else self._analysis_hover_node_at_cursor()
+            )
+            if picked != self._hovered:
+                self._hovered = picked
+                self._sync_highlights()
+                self.plotter.render()
+            return
         if self._endpoint_alignment_target is not None:
             if self._pick_and_highlight_endpoint_alignment_face():
                 self.plotter.render()
@@ -4379,6 +4468,23 @@ class StructureScene(QWidget):
             or np.hypot(x - start[0], y - start[1]) > self._placement_drag_tolerance_pixels
         ):
             return
+        if self._analysis_visible:
+            picked = self._analysis_hover_node_at_cursor()
+            if picked is not None and picked != self._hovered:
+                self._hovered = picked
+                self._sync_highlights()
+            if picked is None:
+                picked = self._pick()
+            if picked is None:
+                self.hide_analysis_point_result()
+                self.empty_clicked.emit()
+                return
+            kind, name = picked
+            point = self._analysis_click_world_point(kind, name, int(x), int(y))
+            if point is None:
+                point = self.element_center(kind, name)
+            self.analysis_point_clicked.emit(kind, name, np.asarray(point, dtype=float))
+            return
         if self._endpoint_alignment_target is not None:
             hit = self._pick_solid_face()
             if hit is not None:
@@ -4403,6 +4509,151 @@ class StructureScene(QWidget):
             return
         kind, name = picked
         self.element_clicked.emit(kind, name, self.element_center(kind, name))
+
+    def _analysis_click_world_point(self, kind: str, name: str, x: int, y: int) -> np.ndarray | None:
+        if kind == "node":
+            node = self._model.nodes.get(name)
+            if node is None:
+                return None
+            point = np.asarray((node.x, node.y, node.z), dtype=float)
+            return point + self._displayed_node_displacements().get(name, np.zeros(3))
+        if kind == "plate":
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.0005)
+            picker.PickFromListOn()
+            actors = [
+                actor for actor in self._plate_result_actors
+                if actor.GetVisibility()
+                and str(actor.GetObjectName() or "").startswith("result-plate:")
+            ]
+            for actor in actors:
+                actor.SetPickable(True)
+                picker.AddPickList(actor)
+            hit = bool(actors) and picker.Pick(x, y, 0, self.plotter.renderer)
+            for actor in actors:
+                actor.SetPickable(False)
+            if hit:
+                return np.asarray(picker.GetPickPosition(), dtype=float)
+        if kind in {"bar", "rigid_bar"}:
+            elements = self._model.bars if kind == "bar" else self._model.rigid_bars
+            element = elements.get(name)
+            if element is None:
+                return None
+            first = self._model.nodes.get(element.start_node)
+            last = self._model.nodes.get(element.end_node)
+            if first is None or last is None:
+                return None
+            if kind == "bar" and self._active_result_type.startswith("Deformação"):
+                result = next((item for item in self._model.analysis_results
+                               if item.load_reference == self._active_analysis_combination
+                               and item.model_revision == self._model.revision), None)
+                samples = result.member_results.get(name, {}).get("samples", ()) if result else ()
+                if len(samples) >= 2:
+                    components = self._active_result_type.removeprefix("Deformação ") or "XYZ"
+                    scale = max(1.0, min(100.0, float(self._analysis_deformation_scale)))
+                    start_point = np.asarray((first.x, first.y, first.z), dtype=float)
+                    basis = LocalAxesRenderer.basis(first, last, element.rotation)
+                    if basis is not None:
+                        local_x = basis[0]
+                        curve = np.asarray([
+                            start_point + local_x * float(sample.get("x", 0.0)) + np.asarray((
+                                float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
+                                float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0,
+                                float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0,
+                            )) * scale for sample in samples
+                        ], dtype=float)
+                        matrix, _, _ = self._measurement_projection_context()
+                        screens, visible = project_world_to_screen(
+                            curve, matrix, self.plotter.width(), self.plotter.height(),
+                            clip_to_viewport=False,
+                        )
+                        if visible.any():
+                            pointer = np.asarray((x, self.plotter.height() - y), dtype=float)
+                            best = None
+                            for index in range(len(curve) - 1):
+                                if not (visible[index] and visible[index + 1]):
+                                    continue
+                                delta = screens[index + 1] - screens[index]
+                                denominator = float(np.dot(delta, delta))
+                                ratio = 0.0 if denominator <= 1e-12 else float(np.clip(
+                                    np.dot(pointer - screens[index], delta) / denominator, 0.0, 1.0,
+                                ))
+                                distance = float(np.linalg.norm(pointer - (screens[index] + ratio * delta)))
+                                if best is None or distance < best[0]:
+                                    best = (distance, index, ratio)
+                            if best is not None:
+                                _distance, index, ratio = best
+                                return curve[index] + ratio * (curve[index + 1] - curve[index])
+            offsets = self._displayed_node_displacements()
+            start = np.asarray((first.x, first.y, first.z), dtype=float) + offsets.get(element.start_node, 0.0)
+            end = np.asarray((last.x, last.y, last.z), dtype=float) + offsets.get(element.end_node, 0.0)
+            matrix, _, _ = self._measurement_projection_context()
+            screens, visible = project_world_to_screen(np.vstack((start, end)), matrix,
+                                                        self.plotter.width(), self.plotter.height(),
+                                                        clip_to_viewport=False)
+            if not visible.all():
+                return (start + end) / 2.0
+            delta = screens[1] - screens[0]
+            length_squared = float(np.dot(delta, delta))
+            screen_point = np.asarray((x, self.plotter.height() - y), dtype=float)
+            fraction = 0.0 if length_squared <= 1e-12 else float(
+                np.clip(np.dot(screen_point - screens[0], delta) / length_squared, 0.0, 1.0)
+            )
+            return start + fraction * (end - start)
+        return None
+
+    def show_analysis_point_result(self, kind: str, name: str, point: object,
+                                   detail: str, value: str, *, wide: bool = False) -> None:
+        self.hide_analysis_point_result()
+        self._analysis_point_card.setFixedWidth(250 if wide else 200)
+        world = np.asarray(point, dtype=float).reshape(3)
+        self._analysis_point_world = world
+        radius = max(0.005, self._node_marker_radius() * 0.5)
+        marker = pv.Sphere(radius=radius, center=world, theta_resolution=16, phi_resolution=12)
+        self._analysis_point_marker_actor = self.plotter.add_mesh(
+            marker, color="#24292f", smooth_shading=True, reset_camera=False,
+            render=False, name="analysis-point-result-marker",
+        )
+        self._analysis_point_marker_actor.SetPickable(False)
+        self._analysis_point_identity.setText(f"{name} · {self._analysis_element_label(kind)}")
+        self._analysis_point_detail.setText(detail)
+        self._analysis_point_value.setText(value)
+        self._analysis_point_card.adjustSize()
+        self._analysis_point_card.show()
+        self._position_analysis_point_card()
+        self._analysis_point_card.raise_()
+        self.plotter.render()
+
+    @staticmethod
+    def _analysis_element_label(kind: str) -> str:
+        return {"node": "Nó", "bar": "Barra", "rigid_bar": "Barra rígida", "plate": "Placa"}.get(kind, "Elemento")
+
+    def hide_analysis_point_result(self, *, remove_marker: bool = True) -> None:
+        self._analysis_point_card.hide()
+        self._analysis_point_world = None
+        if remove_marker and self._analysis_point_marker_actor is not None:
+            self.plotter.remove_actor(self._analysis_point_marker_actor, reset_camera=False, render=False)
+            self._analysis_point_marker_actor = None
+
+    def _position_analysis_point_card(self) -> None:
+        if self._analysis_point_world is None:
+            return
+        matrix, _, _ = self._measurement_projection_context()
+        screen, visible = project_world_to_screen(
+            self._analysis_point_world.reshape(1, 3), matrix,
+            self.plotter.width(), self.plotter.height(), clip_to_viewport=False,
+        )
+        if not visible[0]:
+            self._analysis_point_card.hide()
+            return
+        width, height = self.plotter.width(), self.plotter.height()
+        px, py = screen[0]
+        card_width, card_height = self._analysis_point_card.width(), self._analysis_point_card.height()
+        left = min(max(int(px + 14), 8), max(8, width - card_width - 8))
+        top = min(max(int(py - card_height / 2), 8), max(8, height - card_height - 8))
+        self._analysis_point_card.move(left, top)
+        self._analysis_point_card.show()
+        self._analysis_point_card.raise_()
 
     def _placement_world_position(self) -> np.ndarray | None:
         if self._manual_edit_target is not None:
@@ -5895,10 +6146,21 @@ class StructureScene(QWidget):
         if visible == self._analysis_visible:
             return
         self._analysis_visible = visible
+        if not visible:
+            self.hide_analysis_point_result()
+        if visible:
+            self._hover_timer.stop()
+            self.cancel_ctrl_selection()
+            self._tab_hover_candidates = []
+            self._tab_hover_position = None
+            if self._hovered is not None:
+                self._hovered = None
+                self._sync_highlights()
         current_key = (
             id(self._model), self._model.revision, self._model.view_revision,
             self._active_analysis_combination,
             self._active_result_type, self._analysis_deformation_scale,
+            self._analysis_diagram_scale,
             self._result_diagrams_visible,
             self._analysis_plate_diagrams_visible, self._plate_result_display_mode,
             self._solid_members_visible,
@@ -5919,6 +6181,7 @@ class StructureScene(QWidget):
         combination = combination or None
         if combination == self._active_analysis_combination and result_type == self._active_result_type:
             return
+        self.hide_analysis_point_result()
         self._active_analysis_combination = combination
         self._active_result_type = result_type
         if self._analysis_visible:
@@ -5945,6 +6208,17 @@ class StructureScene(QWidget):
             return
         self._analysis_deformation_scale = scale
         if self._analysis_visible and self._active_result_type.startswith("Deformação"):
+            self._refresh_result_layer()
+        elif self._result_layer_key is not None:
+            self._result_layer_key = None
+
+    def set_analysis_diagram_scale(self, scale: float) -> None:
+        """Set the normalized display scale for bar force and moment diagrams."""
+        scale = max(0.1, min(1.0, float(scale)))
+        if scale == self._analysis_diagram_scale:
+            return
+        self._analysis_diagram_scale = scale
+        if self._analysis_visible and not self._active_result_type.startswith("Deformação"):
             self._refresh_result_layer()
         elif self._result_layer_key is not None:
             self._result_layer_key = None
@@ -6882,6 +7156,7 @@ class StructureScene(QWidget):
     def _sync_labels(self, *, render_preview: bool = True) -> None:
         self._label_overlay.sync(self.plotter.renderer)
         self._elastic_support_overlay.sync(self.plotter.renderer)
+        self._position_analysis_point_card()
         if hasattr(self, "_coordinate_readout"):
             self._update_coordinate_readout()
             if (
