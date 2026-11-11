@@ -309,6 +309,8 @@ class PropertyPanel(QFrame):
         self._solid_offsets_widget: QWidget | None = None
         self._positioning_status: QLineEdit | None = None
         self._displacement_settings_button: QToolButton | None = None
+        self._subtractions_button: QToolButton | None = None
+        self._subtractions_status: QLineEdit | None = None
         self._releases_widget: QWidget | None = None
         self._releases_header: QWidget | None = None
         self._release_stack: QStackedWidget | None = None
@@ -349,6 +351,11 @@ class PropertyPanel(QFrame):
             return
         if self._selected[0] == "node" and self.window.palette.active_group == "Detalhamento":
             self.window.model.set_node_display_name(
+                self._selected[1], self.verification_name_input.text(),
+            )
+            return
+        if self._selected[0] == "plate" and self.window.palette.active_group == "Detalhamento":
+            self.window.model.set_plate_display_name(
                 self._selected[1], self.verification_name_input.text(),
             )
             return
@@ -480,7 +487,14 @@ class PropertyPanel(QFrame):
             self.name.show()
             self._identity_row.show()
             self.identity_value.setText(name)
-            self._verification_name_row.hide()
+            self._verification_name_row.setVisible(detailing_mode)
+            if detailing_mode:
+                self.verification_name_input.setReadOnly(False)
+                self.verification_name_input.setAccessibleName("Nome da placa")
+                with QSignalBlocker(self.verification_name_input):
+                    self.verification_name_input.setText(
+                        self.window.model.plate_display_names.get(name, "")
+                    )
             self.verify_bar_button.setText("Verificar placa")
             self.verify_bar_button.setAccessibleName("Verificar placa isoladamente")
             self.verify_bar_button.setEnabled(False)
@@ -1104,6 +1118,9 @@ class PropertyPanel(QFrame):
         self._positioning_status = status
         self._solid_offsets_widget = offset_row
         self.layout.addWidget(offset_row)
+        names = self._selected_names("bar")
+        if names:
+            self._show_subtractions_row("bar", names[-1])
 
     def _show_plate_positioning(self, plate) -> None:
         """Show the detailing-only normal displacement control for a plate."""
@@ -1142,6 +1159,62 @@ class PropertyPanel(QFrame):
         self._positioning_status = status
         self._solid_offsets_widget = row
         self.layout.addWidget(row)
+        self._show_subtractions_row("plate", plate.name)
+
+    def _show_subtractions_row(self, kind: str, name: str) -> None:
+        element = (self.window.model.bars if kind == "bar" else self.window.model.plates)[name]
+        label = QLabel("Subtrações")
+        label.setObjectName("propertySection")
+        cutters = tuple(element.detail_subtractions)
+        summary = ", ".join(cutter_name for _cutter_kind, cutter_name in cutters) or "Nenhuma"
+        value = QLineEdit(summary)
+        value.setReadOnly(True)
+        value.setObjectName("identityDisplay")
+        value.setAccessibleName("Subtrações recebidas")
+        value.setToolTip("\n".join(
+            f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+            for cutter_kind, cutter_name in cutters
+        ) or "Nenhuma subtração aplicada")
+        self._subtractions_status = value
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(value, 1)
+        button = QToolButton()
+        button.setFixedSize(34, 34)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "detailing-layout.svg")))
+        button.setIconSize(QSize(18, 18))
+        button.setToolTip("Gerenciar subtrações")
+        button.setAccessibleName("Gerenciar subtrações")
+        button.setCheckable(True)
+        button.clicked.connect(
+            lambda _checked=False, selected_kind=kind, selected_name=name, trigger=button:
+            self.window.toggle_subtractions_panel(selected_kind, selected_name, trigger)
+        )
+        button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        row_layout.addWidget(button)
+        self._subtractions_button = button
+        self._add_context_widget(label)
+        self._add_context_widget(row)
+
+    def update_subtractions_status(self, kind: str, name: str) -> None:
+        if self._subtractions_status is None:
+            return
+        element = (self.window.model.bars if kind == "bar" else self.window.model.plates).get(name)
+        if element is None:
+            return
+        cutters = tuple(element.detail_subtractions)
+        self._subtractions_status.setText(
+            ", ".join(cutter_name for _cutter_kind, cutter_name in cutters) or "Nenhuma"
+        )
+        self._subtractions_status.setToolTip("\n".join(
+            f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+            for cutter_kind, cutter_name in cutters
+        ) or "Nenhuma subtração aplicada")
 
     @classmethod
     def _plate_positioning_summary(cls, plate) -> str:
@@ -2345,6 +2418,10 @@ class PropertyPanel(QFrame):
             self.reposition()
 
     def _clear_form(self) -> None:
+        if self._subtractions_button is not None:
+            self.window.close_subtractions_panel(self._subtractions_button)
+            self._subtractions_button = None
+        self._subtractions_status = None
         self._clear_context_widgets()
         if self._displacement_settings_button is not None:
             self.window.close_displacement_panel(self._displacement_settings_button)

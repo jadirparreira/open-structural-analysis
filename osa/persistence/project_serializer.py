@@ -76,6 +76,7 @@ class ProjectSerializer:
             "analysis_axes": ANALYSIS_AXES,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "node_display_names": model.node_display_names,
+            "plate_display_names": model.plate_display_names,
             "members": [asdict(member) for member in model.bars.values()],
             "verification_element_names": model.verification_element_names,
             "verification_element_groups": model.verification_element_groups,
@@ -134,6 +135,16 @@ class ProjectSerializer:
             data.pop("bars", None)
 
         candidate = type(model)()
+        saved_bar_subtractions = tuple(
+            (item.get("name"), item.get("detail_subtractions", ()))
+            for item in data.get("members", data.get("bars", ()))
+            if isinstance(item, dict) and item.get("detail_subtractions")
+        )
+        saved_plate_subtractions = tuple(
+            (item.get("name"), item.get("detail_subtractions", ()))
+            for item in data.get("plates", ())
+            if isinstance(item, dict) and item.get("detail_subtractions")
+        )
         for item in data.get("references", ()):
             candidate.add_reference(load_reference(item))
             if yield_control is not None:
@@ -238,6 +249,13 @@ class ProjectSerializer:
         ):
             raise ValueError("Os nomes personalizados dos nós são inválidos.")
         candidate.node_display_names = dict(raw_node_names)
+        raw_plate_names = data.get("plate_display_names", {})
+        if not isinstance(raw_plate_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.plates or not isinstance(value, str)
+            for name, value in raw_plate_names.items()
+        ):
+            raise ValueError("Os nomes personalizados das placas são inválidos.")
+        candidate.plate_display_names = dict(raw_plate_names)
         raw_groups = data.get("verification_element_groups", [])
         if not isinstance(raw_groups, list):
             raise ValueError("Os grupos de elementos de verificação são inválidos.")
@@ -284,6 +302,11 @@ class ProjectSerializer:
                                 material=item.get("material"),
                                 positioning_displacement=item.get("positioning_displacement", 0.0),
                                 edge_positioning=item.get("edge_positioning", ()))
+
+        for name, cuts in saved_bar_subtractions:
+            candidate.update_detail_subtractions("bar", name, cuts)
+        for name, cuts in saved_plate_subtractions:
+            candidate.update_detail_subtractions("plate", name, cuts)
 
         candidate.set_reference_axes({
             direction: tuple(
@@ -413,6 +436,7 @@ class ProjectSerializer:
 
         model.nodes = candidate.nodes
         model.node_display_names = candidate.node_display_names
+        model.plate_display_names = candidate.plate_display_names
         model.bars = candidate.bars
         model.verification_element_names = candidate.verification_element_names
         model.verification_element_groups = candidate.verification_element_groups

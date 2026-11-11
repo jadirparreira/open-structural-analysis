@@ -785,6 +785,23 @@ class DetailingTopPalette(QFrame):
             "QToolButton:pressed { background: #d0d7de; }"
         )
         layout.addWidget(self.connect_ends_button)
+        self.subtract_button = QToolButton(self)
+        self.subtract_button.setFixedSize(30, 30)
+        self.subtract_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "subtract-shape.svg"))
+        )
+        self.subtract_button.setIconSize(QSize(21, 21))
+        self.subtract_button.setToolTip("Subtrair trecho")
+        self.subtract_button.setProperty("paletteTooltip", "Subtrair trecho")
+        self.subtract_button.setAccessibleName("Subtrair trecho")
+        self.subtract_button.clicked.connect(window.start_detail_subtraction)
+        self.subtract_button.installEventFilter(self)
+        self.subtract_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.subtract_button)
         button = QToolButton(self)
         button.setFixedSize(30, 30)
         button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
@@ -844,6 +861,7 @@ class DetailingTopPalette(QFrame):
             self.align_faces_button,
             self.additional_detailing_button,
             self.connect_ends_button,
+            self.subtract_button,
             self.manage_views_button,
         ):
             if event.type() == QEvent.Type.Enter:

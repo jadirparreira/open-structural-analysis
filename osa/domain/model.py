@@ -33,6 +33,7 @@ class StructuralModel:
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
         self.node_display_names: dict[str, str] = {}
+        self.plate_display_names: dict[str, str] = {}
         self.bars: dict[str, Bar] = {}
         self.verification_element_names: dict[str, str] = {}
         self.verification_element_groups: list[dict[str, object]] = []
@@ -163,10 +164,72 @@ class StructuralModel:
             normalized.append((edge_name, displacement, angle))
         return tuple(normalized)
 
+    def _validated_detail_subtractions(self, target_kind, target_name, values):
+        elements = {"bar": self.bars, "plate": self.plates}
+        targets = elements.get(target_kind)
+        if targets is None or target_name not in targets:
+            raise ValueError("O elemento que receberá a subtração não existe.")
+        normalized = []
+        seen = set()
+        for item in values:
+            if len(item) != 2:
+                raise ValueError("Cada subtração deve identificar um elemento.")
+            cutter_kind, cutter_name = item
+            cutters = elements.get(cutter_kind)
+            if cutters is None or cutter_name not in cutters:
+                raise ValueError("O elemento de referência da subtração não existe.")
+            if (cutter_kind, cutter_name) == (target_kind, target_name):
+                raise ValueError("Um elemento não pode ser subtraído de si mesmo.")
+            pair = cutter_kind, cutter_name
+            if pair in seen:
+                raise ValueError("Esse elemento já foi usado para subtrair o alvo.")
+            seen.add(pair)
+            normalized.append(pair)
+        return tuple(normalized)
+
+    def update_detail_subtractions(
+        self, target_kind: str, target_name: str, cutters,
+    ) -> None:
+        normalized = self._validated_detail_subtractions(
+            target_kind, target_name, cutters,
+        )
+        elements = self.bars if target_kind == "bar" else self.plates
+        element = elements[target_name]
+        if element.detail_subtractions == normalized:
+            return
+        elements[target_name] = replace(element, detail_subtractions=normalized)
+        self._touch()
+
+    def add_detail_subtraction(
+        self, target_kind: str, target_name: str, cutter_kind: str, cutter_name: str,
+    ) -> None:
+        elements = self.bars if target_kind == "bar" else self.plates if target_kind == "plate" else None
+        if elements is None or target_name not in elements:
+            raise ValueError("O elemento que receberá a subtração não existe.")
+        current = elements[target_name].detail_subtractions
+        self.update_detail_subtractions(
+            target_kind, target_name, (*current, (cutter_kind, cutter_name)),
+        )
+
+    def _remove_detail_subtraction_references(self, removed_kind: str, removed_name: str) -> None:
+        removed = (removed_kind, removed_name)
+        for elements in (self.bars, self.plates):
+            for name, element in tuple(elements.items()):
+                if removed in element.detail_subtractions:
+                    elements[name] = replace(
+                        element,
+                        detail_subtractions=tuple(
+                            cutter for cutter in element.detail_subtractions
+                            if cutter != removed
+                        ),
+                    )
+
     def remove_plate(self, name: str) -> None:
         if name not in self.plates:
             raise ValueError("Placa não encontrada.")
         del self.plates[name]
+        self.plate_display_names.pop(name, None)
+        self._remove_detail_subtraction_references("plate", name)
         for action_name, action in tuple(self.actions.items()):
             if action.target == name:
                 del self.actions[action_name]
@@ -187,6 +250,9 @@ class StructuralModel:
         }
         self.node_display_names = {
             name: value for name, value in self.node_display_names.items() if name in self.nodes
+        }
+        self.plate_display_names = {
+            name: value for name, value in self.plate_display_names.items() if name in self.plates
         }
         self.verification_element_groups = [
             group for group in self.verification_element_groups
@@ -354,6 +420,16 @@ class StructuralModel:
             self.node_display_names.pop(name, None)
         self._touch()
 
+    def set_plate_display_name(self, name: str, value: str) -> None:
+        if name not in self.plates:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        value = value.strip()
+        if value:
+            self.plate_display_names[name] = value
+        else:
+            self.plate_display_names.pop(name, None)
+        self._touch()
+
     def update_nodes_coordinates(
         self, changes: dict[str, tuple[float, float, float]],
     ) -> None:
@@ -491,6 +567,7 @@ class StructuralModel:
             return
         member = self.bars[name]
         del self.bars[name]
+        self._remove_detail_subtraction_references("bar", name)
         self._remove_actions_for_target(name)
         self._delete_orphan_nodes((member.start_node, member.end_node))
         self._touch()

@@ -23,6 +23,7 @@ dependencies = [
     "python-docx>=1.2.0",
     "latex2mathml>=3.81.1",
     "mathml2omml-as>=0.1.0",
+    "manifold3d>=3.3,<4",
 ]
 
 [project.optional-dependencies]

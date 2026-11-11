@@ -329,6 +329,13 @@ class ModelService:
     def update_plate_edge_positioning(self, name: str, edge_positioning):
         return self.model.update_plate(name, edge_positioning=edge_positioning)
 
+    def add_detail_subtraction(
+        self, target_kind: str, target_name: str, cutter_kind: str, cutter_name: str,
+    ):
+        return self.model.add_detail_subtraction(
+            target_kind, target_name, cutter_kind, cutter_name,
+        )
+
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 

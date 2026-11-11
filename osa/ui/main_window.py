@@ -75,6 +75,7 @@ from .section_panel import (
     WLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
+from .subtractions_panel import SubtractionsPanel
 from .verification_worker import VerificationWorker
 from .window_frame import TitleBar, WindowFrame
 
@@ -154,6 +155,7 @@ class MainWindow(QMainWindow):
         self._member_placement_start_snap_member_name: str | None = None
         self._member_placement_start_snap_target: tuple[str, str] | None = None
         self._endpoint_alignment_source: tuple[str, str] | None = None
+        self._detail_subtraction_target: tuple[str, str] | None = None
         self._face_alignment_source: tuple[str, str] | None = None
         self._face_alignment_source_hit = None
         self._connect_member_ends_first_bar: str | None = None
@@ -343,6 +345,8 @@ class MainWindow(QMainWindow):
         self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.subtractions_panel = SubtractionsPanel(self)
+        self._detail_subtraction_visible_refs: set[tuple[str, str, str, str]] = set()
         self.displacement_panel = DisplacementPanel(self)
         self.calculation_properties_panel = CalculationPropertiesPanel(self)
         self.processing_panel = ProcessingPanel(self)
@@ -702,6 +706,29 @@ class MainWindow(QMainWindow):
         self.history.append(
             "> <b>Alinhar extremidade</b> "
             "<span style='color:#57606a'>(Selecione a barra ou placa que será ajustada; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_detail_subtraction(self) -> None:
+        """Start a target-then-cutter detailing subtraction command."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._detail_subtraction_target = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "detail_subtraction_target_selection"
+        self.history.append(
+            "> <b>Subtrair trecho</b> "
+            "<span style='color:#57606a'>(Selecione a barra ou placa que será cortada; Esc cancela)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1884,6 +1911,8 @@ class MainWindow(QMainWindow):
             self.history.reposition()
         if hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.section_panel.reposition()
+        if hasattr(self, "subtractions_panel") and self.subtractions_panel.isVisible():
+            self.subtractions_panel.reposition()
         if hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.displacement_panel.reposition()
         if hasattr(self, "calculation_properties_panel") and self.calculation_properties_panel.isVisible():
@@ -2045,6 +2074,69 @@ class MainWindow(QMainWindow):
         self.calculation_properties_panel.hide()
         if button is not None:
             button.setChecked(False)
+
+    def close_subtractions_panel(self, button=None) -> None:
+        self.subtractions_panel.hide()
+        if self._detail_subtraction_visible_refs:
+            self._detail_subtraction_visible_refs.clear()
+            self.scene.set_detail_subtraction_previews(())
+        trigger = button if button is not None else self.properties._subtractions_button
+        if trigger is not None:
+            trigger.setChecked(False)
+
+    def toggle_subtractions_panel(self, kind: str, name: str, button=None) -> None:
+        panel = self.subtractions_panel
+        if panel.isVisible() and panel._target == (kind, name):
+            self.close_subtractions_panel(button)
+            return
+        self.properties.close_color_palette()
+        self.close_displacement_panel(self.properties._displacement_settings_button)
+        self.close_section_panel(self.properties._section_settings_button)
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
+        if panel.isVisible():
+            self.close_subtractions_panel()
+        panel.configure_for(kind, name)
+        panel.reposition()
+        panel.show()
+        panel.raise_()
+        if button is not None:
+            button.setChecked(True)
+
+    def set_detail_subtraction_preview(
+        self, target: tuple[str, str], cutter: tuple[str, str], visible: bool,
+    ) -> None:
+        key = (*target, *cutter)
+        if visible:
+            self._detail_subtraction_visible_refs.add(key)
+        else:
+            self._detail_subtraction_visible_refs.discard(key)
+        self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
+
+    def remove_detail_subtraction(
+        self, target: tuple[str, str], cutter: tuple[str, str],
+    ) -> None:
+        target_kind, target_name = target
+        elements = self.model.bars if target_kind == "bar" else self.model.plates
+        element = elements.get(target_name)
+        if element is None or cutter not in element.detail_subtractions:
+            return
+        was_open = self.subtractions_panel.isVisible()
+        self._detail_subtraction_visible_refs.discard((*target, *cutter))
+        self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
+        self.model.update_detail_subtractions(
+            target_kind, target_name,
+            tuple(reference for reference in element.detail_subtractions if reference != cutter),
+        )
+        self.refresh_scene()
+        self.properties.update_subtractions_status(*target)
+        if was_open:
+            self.subtractions_panel.configure_for(*target)
+            self.subtractions_panel.reposition()
+            self.subtractions_panel.show()
+            self.subtractions_panel.raise_()
+            if self.properties._subtractions_button is not None:
+                self.properties._subtractions_button.setChecked(True)
+            self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
 
     def toggle_calculation_properties_panel(self, button=None) -> None:
         if self.calculation_properties_panel.isVisible():
@@ -3494,6 +3586,17 @@ class MainWindow(QMainWindow):
             )
             return
         if self._command_mode in {
+            "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
+        }:
+            self._command_mode = None
+            self._detail_subtraction_target = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Subtrair trecho</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
         }:
             self._command_mode = None
@@ -3775,6 +3878,77 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode == "plate_selection":
             self._plate_add_selection(kind, name)
+            return
+        if self._command_mode in {
+            "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
+        }:
+            if kind not in {"bar", "plate"}:
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra ou placa)</span>"
+                )
+                self.clear_selection()
+                return
+            if self._command_mode == "detail_subtraction_target_selection":
+                self._detail_subtraction_target = (kind, name)
+                self._command_mode = "detail_subtraction_cutter_selection"
+                self.clear_selection()
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#57606a'>(Selecione o elemento que servirá de cortador; "
+                    "o alvo pode receber outros cortes; Esc encerra)</span>"
+                )
+                self.scene.plotter.setFocus()
+                return
+            target = self._detail_subtraction_target
+            if target is None:
+                self._command_mode = "detail_subtraction_target_selection"
+                self.clear_selection()
+                return
+            if target == (kind, name):
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Escolha um elemento cortador diferente do alvo)</span>"
+                )
+                self.clear_selection()
+                return
+            try:
+                self.model_service.add_detail_subtraction(*target, kind, name)
+            except ValueError as error:
+                self.history.append(
+                    f"> <b>Subtrair trecho</b> "
+                    f"<span style='color:#8c959f'>({escape(str(error))})</span>"
+                )
+                self.clear_selection()
+                return
+            self.refresh_scene()
+            self.clear_selection()
+            if (*target, kind, name) in self.scene._detail_subtraction_failures:
+                target_element = (
+                    self.model.bars[target[1]] if target[0] == "bar"
+                    else self.model.plates[target[1]]
+                )
+                self.model.update_detail_subtractions(
+                    *target,
+                    tuple(
+                        reference for reference in target_element.detail_subtractions
+                        if reference != (kind, name)
+                    ),
+                )
+                self.refresh_scene()
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Não foi possível gerar um corte válido; "
+                    "a geometria original foi preservada)</span>"
+                )
+                self.scene.plotter.setFocus()
+                return
+            self.history.append(
+                "> <b>Subtrair trecho</b> <span style='color:#57606a'>"
+                f"(Corte de {escape(name)} aplicado em {escape(target[1])}; "
+                "selecione outro cortador ou pressione Esc)</span>"
+            )
+            self.scene.plotter.setFocus()
             return
         self.axes_panel.hide()
         self.reference_panel.hide()
@@ -4076,6 +4250,7 @@ class MainWindow(QMainWindow):
     def clear_selection(self) -> None:
         self.selected = None
         self.selected_elements = []
+        self.close_subtractions_panel()
         if self.scene._selected_elements:
             self.scene.set_selection_highlight(())
         self.properties.hide()
@@ -4513,6 +4688,8 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.scene.refresh_model_changes(self.model)
+        if self._detail_subtraction_visible_refs:
+            self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
         self.properties.update_delete_button_state()
 
     def show_home(self) -> None:

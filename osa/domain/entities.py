@@ -83,6 +83,8 @@ class Member:
     # Overrides used only by member verification, in native units: lengths in
     # metres and Ct/Cb dimensionless. Missing entries retain automatic values.
     calculation_property_overrides: tuple[tuple[str, float], ...] = ()
+    # References to solids subtracted from this member in detailing only.
+    detail_subtractions: tuple[tuple[str, str], ...] = ()
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)
@@ -112,6 +114,8 @@ class Plate:
     # Só afetam a geometria exibida no detalhamento; a análise usa plate.contour.
     # Itens: nome da barra de contorno, deslocamento (mm), inclinação (graus).
     edge_positioning: tuple[tuple[str, float, float], ...] = ()
+    # References to solids subtracted from this plate in detailing only.
+    detail_subtractions: tuple[tuple[str, str], ...] = ()
 
 
 # Compatibilidade pública com o nome utilizado até agora.

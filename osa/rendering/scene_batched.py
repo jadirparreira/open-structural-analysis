@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,8 @@ from .batched_renderer import (
     MemberBatch,
     NodeBatch,
     PreparedSceneGeometry,
+    _boolean_difference_mesh,
+    _boolean_intersection_mesh,
     _offset_cells,
 )
 from .drawing_reference_renderer import DrawingReferenceRenderer
@@ -449,6 +452,7 @@ class StructureScene(QWidget):
         self._model = StructuralModel()
         self._verification_group_selection_active = False
         self._detailing_session_active = False
+        self._detail_subtraction_failures: set[tuple[str, str, str, str]] = set()
         self._member_batch: MemberBatch | None = None
         self._node_batch: NodeBatch | None = None
         self._member_geometry_cache_key: tuple[object, ...] | None = None
@@ -466,6 +470,7 @@ class StructureScene(QWidget):
         self._rigid_geometry_cache: tuple[tuple[str, ...], pv.PolyData] | None = None
         self._rendered_nodes: dict[str, object] = {}
         self._rendered_members: dict[str, object] = {}
+        self._rendered_plates: dict[str, object] = {}
         self._rendered_rigid_bars: dict[str, object] = {}
         self._rendered_axes: tuple[tuple[str, tuple[object, ...]], ...] = ()
         self._rendered_actions: tuple[object, ...] = ()
@@ -526,6 +531,8 @@ class StructureScene(QWidget):
             "plate_pressures": True,
         }
         self._highlight_actors: dict[str, object] = {}
+        self._detail_subtraction_preview_requests: set[tuple[str, str, str, str]] = set()
+        self._detail_subtraction_preview_actors: dict[tuple[str, str, str, str], tuple[object, object]] = {}
         self._highlight_targets: dict[str, tuple[tuple[str, str], ...]] = {}
         self._highlighted_node_colors: dict[str, str] = {}
         self._highlight_state_key: tuple[object, ...] | None = None
@@ -757,13 +764,21 @@ class StructureScene(QWidget):
         self._pending_member_full_names.clear()
         if (
             prepared_geometry is not None
-            and prepared_geometry.solid_positioning_enabled
-            != self._member_renderer.solid_positioning_enabled
+            and (
+                prepared_geometry.solid_positioning_enabled
+                != self._member_renderer.solid_positioning_enabled
+                or any(
+                    element.detail_subtractions
+                    for element in (*model.bars.values(), *model.plates.values())
+                )
+            )
         ):
             prepared_geometry = None
         camera_state = self._camera_state()
         preserve_camera = bool(preserve_camera and self._camera_initialized)
         self._model = model
+        self._detail_subtraction_failures.clear()
+        self._detail_subtraction_meshes = self._build_detail_subtraction_meshes(model)
         hidden_members = self._scene_hidden_members()
         hidden_rigid_bars = self._scene_hidden_rigid_bars()
         if prepared_geometry is None:
@@ -837,7 +852,9 @@ class StructureScene(QWidget):
         # rendered batch keyed by the domain data it actually consumes.
         source_key = self._member_cache_key(model)
         member_key = prepared_geometry.member_key if prepared_geometry is not None else (
-            *source_key[:2], tuple(item for item in source_key[2] if item[0].name in visible_bars),
+            *source_key[:2],
+            tuple(item for item in source_key[2] if item[0].name in visible_bars),
+            *source_key[3:],
         )
         if source_key != self._scene_member_source_key:
             # Incremental edits can already have updated the complete batch.
@@ -852,7 +869,11 @@ class StructureScene(QWidget):
             self._scene_member_source_key = prepared_geometry.source_member_key
         if member_key != self._member_geometry_cache_key or self._member_geometry_cache is None:
             if self._scene_member_source is None:
-                self._scene_member_source = self._member_renderer.build(model, self._marker_radius_current)
+                self._scene_member_source = self._member_renderer.build(
+                    model, self._marker_radius_current,
+                    subtraction_meshes=self._detail_subtractions_by_target(model),
+                    subtraction_failures=self._detail_subtraction_failures,
+                )
                 self._scene_member_source_key = source_key
             self._member_geometry_cache = self._member_renderer.filter_members(
                 self._scene_member_source, set(visible_bars),
@@ -915,6 +936,7 @@ class StructureScene(QWidget):
         self._apply_representation_visibility()
         self._configure_solid_picker()
         self._sync_highlights()
+        self._sync_detail_subtraction_previews()
 
         if preserve_camera and camera_state is not None:
             self._restore_camera(camera_state)
@@ -949,6 +971,7 @@ class StructureScene(QWidget):
         """Remember immutable domain values represented by the current actors."""
         self._rendered_nodes = dict(self._model.nodes)
         self._rendered_members = dict(self._model.bars)
+        self._rendered_plates = dict(self._model.plates)
         self._rendered_rigid_bars = dict(self._model.rigid_bars)
         self._rendered_axes = tuple(
             (direction, tuple(axes)) for direction, axes in self._model.axes.items()
@@ -961,6 +984,20 @@ class StructureScene(QWidget):
     def refresh_model_changes(self, model: StructuralModel) -> None:
         """Refresh only layers affected by edits to an existing structure."""
         self._drawing_reference_renderer.sync(self.plotter, model.references)
+        if any(
+            self._rendered_members.get(name) is not None
+            and self._rendered_members[name].detail_subtractions != member.detail_subtractions
+            for name, member in model.bars.items()
+        ) or any(
+            self._rendered_plates.get(name) is not None
+            and self._rendered_plates[name].detail_subtractions != plate.detail_subtractions
+            for name, plate in model.plates.items()
+        ):
+            # A subtraction changes the topology of the target solid and can
+            # also change plate actors. Rebuild the complete solid batches so
+            # incremental member updates cannot restore the uncut source mesh.
+            self.render_model(model)
+            return
         if model.verification_group_revision != self._rendered_verification_group_revision:
             self.render_model(model)
             return
@@ -1878,7 +1915,7 @@ class StructureScene(QWidget):
         else:
             actor.GetProperty().SetLineWidth(1.5)
 
-    def _plate_meshes(self, plate):
+    def _plate_meshes(self, plate, *, apply_subtractions: bool = True):
         points = self._plate_display_contour(plate)
         count = len(points)
         detailing_solid = (
@@ -1887,7 +1924,9 @@ class StructureScene(QWidget):
         if detailing_solid and (plate.edge_positioning or plate.supports):
             detailed = self._detailed_plate_meshes(plate, points)
             if detailed is not None:
-                return detailed
+                return self._subtract_plate_meshes(
+                    plate, detailed, apply_subtractions=apply_subtractions,
+                )
         face = np.asarray([count, *range(count)])
         if self._solid_members_visible:
             _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
@@ -1909,7 +1948,73 @@ class StructureScene(QWidget):
         edges = pv.PolyData(edge_points)
         edges.verts = np.empty(0, dtype=np.int64)
         edges.lines = np.asarray(lines)
-        return mesh, edges
+        return self._subtract_plate_meshes(
+            plate, (mesh, edges), apply_subtractions=apply_subtractions,
+        )
+
+    def _subtract_plate_meshes(self, plate, meshes, *, apply_subtractions: bool):
+        mesh, edges = meshes
+        if not apply_subtractions or not (
+            self._detailing_session_active and self._solid_members_visible
+            and plate.detail_subtractions
+        ):
+            return mesh, edges
+        cutters = [
+            self._detail_subtraction_meshes.get(tuple(reference))
+            for reference in plate.detail_subtractions
+        ]
+        result = mesh
+        for reference, cutter in zip(plate.detail_subtractions, cutters):
+            if cutter is None:
+                continue
+            cut = _boolean_difference_mesh(result, cutter)
+            if cut is not None:
+                result = cut
+            else:
+                self._detail_subtraction_failures.add(("plate", plate.name, *reference))
+        edge_mesh = result.extract_feature_edges(
+            boundary_edges=True, feature_edges=True,
+            manifold_edges=False, non_manifold_edges=False, feature_angle=25.0,
+        )
+        return result, edge_mesh
+
+    def _build_detail_subtraction_meshes(self, model):
+        if not self._detailing_session_active or not self._solid_members_visible:
+            return {}
+        references = {
+            reference
+            for element in (*model.bars.values(), *model.plates.values())
+            for reference in element.detail_subtractions
+        }
+        meshes = {}
+        for kind, name in references:
+            if kind == "plate" and name in model.plates:
+                meshes[(kind, name)] = self._plate_meshes(
+                    model.plates[name], apply_subtractions=False,
+                )[0]
+            elif kind == "bar" and name in model.bars:
+                member = model.bars[name]
+                bare_member = replace(member, detail_subtractions=())
+                batch = self._member_renderer.build(
+                    SimpleNamespace(nodes=model.nodes, bars={name: bare_member}),
+                    self._marker_radius_current,
+                )
+                meshes[(kind, name)] = batch.faces
+        return meshes
+
+    def _detail_subtractions_by_target(self, model):
+        if not self._detailing_session_active or not self._solid_members_visible:
+            return {}
+        return {
+            ("bar", name): tuple(
+                (tuple(reference), mesh)
+                for reference in member.detail_subtractions
+                if reference[0] in {"bar", "plate"}
+                and (mesh := self._detail_subtraction_meshes.get(tuple(reference))) is not None
+            )
+            for name, member in model.bars.items()
+            if member.detail_subtractions
+        }
 
     def _detailed_plate_meshes(self, plate, points):
         """Build the detailing solid from independent, inclined contour faces."""
@@ -3319,6 +3424,77 @@ class StructureScene(QWidget):
         self._selected = self._selected_elements[-1] if self._selected_elements else None
         self._sync_highlights()
         self.plotter.render()
+
+    def set_detail_subtraction_previews(self, requests) -> None:
+        """Display the removed volumes requested by the detailing side panel."""
+        self._detail_subtraction_preview_requests = {
+            tuple(map(str, request)) for request in requests
+        }
+        self._sync_detail_subtraction_previews()
+        self.plotter.render()
+
+    def _sync_detail_subtraction_previews(self) -> None:
+        for face_actor, edge_actor in self._detail_subtraction_preview_actors.values():
+            self.plotter.remove_actor(face_actor, reset_camera=False, render=False)
+            self.plotter.remove_actor(edge_actor, reset_camera=False, render=False)
+        self._detail_subtraction_preview_actors.clear()
+        if (
+            not self._detail_subtraction_preview_requests
+            or not self._detailing_session_active or not self._solid_members_visible
+        ):
+            return
+
+        grouped: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for target_kind, target_name, cutter_kind, cutter_name in self._detail_subtraction_preview_requests:
+            grouped.setdefault((target_kind, target_name), set()).add((cutter_kind, cutter_name))
+        for target in grouped:
+            target_kind, target_name = target
+            element = (self._model.bars if target_kind == "bar" else self._model.plates).get(target_name)
+            if element is None:
+                continue
+            if target_kind == "plate":
+                remaining = self._plate_meshes(element, apply_subtractions=False)[0]
+            else:
+                bare_member = replace(element, detail_subtractions=())
+                batch = self._member_renderer.build(
+                    SimpleNamespace(nodes=self._model.nodes, bars={target_name: bare_member}),
+                    self._marker_radius_current,
+                )
+                remaining = batch.faces
+            for cutter_reference in element.detail_subtractions:
+                cutter = self._detail_subtraction_meshes.get(tuple(cutter_reference))
+                if cutter is None or remaining is None or not remaining.n_cells:
+                    continue
+                key = (*target, *tuple(cutter_reference))
+                removed = _boolean_intersection_mesh(remaining, cutter)
+                if removed is not None and key in self._detail_subtraction_preview_requests:
+                    face_actor = self.plotter.add_mesh(
+                        removed, color="#0969da", opacity=0.32, lighting=False,
+                        smooth_shading=False, pickable=False,
+                        reset_camera=False, render=False,
+                    )
+                    edges = removed.extract_feature_edges(
+                        boundary_edges=True, feature_edges=True,
+                        manifold_edges=False, non_manifold_edges=False,
+                        feature_angle=25.0,
+                    )
+                    edge_actor = self.plotter.add_mesh(
+                        edges, color="#0969da", line_width=2.0,
+                        render_lines_as_tubes=True, lighting=False, pickable=False,
+                        reset_camera=False, render=False,
+                    )
+                    self._detail_subtraction_preview_actors[key] = (face_actor, edge_actor)
+                remainder = _boolean_difference_mesh(remaining, cutter)
+                if remainder is not None:
+                    remaining = remainder
+                elif removed is not None:
+                    try:
+                        remaining_volume = float(remaining.volume)
+                        removed_volume = float(removed.volume)
+                        if abs(remaining_volume - removed_volume) <= max(remaining_volume * 1e-7, 1e-12):
+                            remaining = None
+                    except Exception:
+                        pass
 
     def set_verification_group_selection_active(self, active: bool) -> None:
         self._verification_group_selection_active = bool(active)
@@ -6136,6 +6312,7 @@ class StructureScene(QWidget):
             )
         self._apply_representation_visibility()
         self._configure_solid_picker()
+        self._sync_detail_subtraction_previews()
         self.plotter.render()
 
     def set_solid_positioning_enabled(self, enabled: bool) -> None:
@@ -6178,6 +6355,7 @@ class StructureScene(QWidget):
                 self._schedule_plate_intersections()
                 if self._plate_actors:
                     self.plotter.reset_camera_clipping_range()
+            self._sync_detail_subtraction_previews()
             self.plotter.render()
 
     def _rigid_bars_visible_for_session(self) -> bool:
@@ -7138,6 +7316,7 @@ class StructureScene(QWidget):
                 )
                 for member in model.bars.values()
             ),
+            tuple(model.plates.values()),
         )
 
     def _refresh_node_batch(self) -> None:
@@ -7226,7 +7405,13 @@ class StructureScene(QWidget):
 
     def _refresh_member_batch(self) -> None:
         """Rebuild member meshes and update their actors in place."""
-        batch = self._member_renderer.build(self._model, self._marker_radius_current)
+        self._detail_subtraction_meshes = self._build_detail_subtraction_meshes(self._model)
+        self._detail_subtraction_failures.clear()
+        batch = self._member_renderer.build(
+            self._model, self._marker_radius_current,
+            subtraction_meshes=self._detail_subtractions_by_target(self._model),
+            subtraction_failures=self._detail_subtraction_failures,
+        )
         self._member_batch = batch
         self._member_geometry_cache = batch
         self._member_geometry_cache_key = self._member_cache_key(self._model)
@@ -7883,6 +8068,7 @@ class StructureScene(QWidget):
         self._highlight_targets.clear()
         self._highlighted_node_colors.clear()
         self._highlight_state_key = None
+        self._detail_subtraction_preview_actors.clear()
         self._member_batch = None
         self._node_batch = None
         self._measurement_segments_cache = None
