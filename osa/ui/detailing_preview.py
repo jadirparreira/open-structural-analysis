@@ -83,7 +83,7 @@ class DetailingViewPreview(QFrame):
 
     @property
     def segments_2d(self) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
-        """Visible vector linework in model units, suitable for a DXF writer."""
+        """Visible vector linework in model units for drawing exports."""
         return (
             self._segments_2d
             if isinstance(self._segments_2d, tuple)
@@ -340,11 +340,15 @@ class DetailingViewPreview(QFrame):
 
     def _ensure_model_meshes(self, model) -> None:
         cache_owner = getattr(self, "_mesh_cache_owner", model)
-        cache_key = (id(cache_owner), getattr(model, "revision", None))
+        detail_scene = getattr(self, "_detail_scene", None)
+        cache_key = (
+            id(cache_owner), getattr(model, "revision", None),
+            id(detail_scene) if detail_scene is not None else None,
+        )
         if cache_key == self._model_cache_key:
             return
         shared = self._shared_model_meshes.get(cache_owner)
-        if shared is not None and shared[0] == cache_key[1]:
+        if shared is not None and shared[0] == cache_key:
             self._solid_meshes = shared[1]
             self._solid_shapes = shared[2]
             self._solid_transforms = shared[3]
@@ -352,6 +356,22 @@ class DetailingViewPreview(QFrame):
             self._solid_member_names = shared[5]
             self._solid_edge_meshes = None
             self._model_cache_key = cache_key
+            return
+
+        if detail_scene is not None:
+            solids = detail_scene.detailing_view_solid_meshes(model)
+            meshes = [mesh for _name, mesh in solids]
+            member_names = [name for name, _mesh in solids]
+            self._solid_meshes = meshes
+            self._solid_shapes = []
+            self._solid_transforms = []
+            self._solid_face_angles = []
+            self._solid_member_names = member_names
+            self._solid_edge_meshes = None
+            self._model_cache_key = cache_key
+            self._shared_model_meshes[cache_owner] = (
+                cache_key, meshes, [], [], [], member_names,
+            )
             return
 
         meshes: list[pv.PolyData] = []
@@ -427,7 +447,7 @@ class DetailingViewPreview(QFrame):
         self._solid_edge_meshes = None
         self._model_cache_key = cache_key
         self._shared_model_meshes[cache_owner] = (
-            cache_key[1], meshes, shapes, transforms, face_angles, member_names
+            cache_key, meshes, shapes, transforms, face_angles, member_names
         )
 
     def _ensure_model_edge_meshes(self, model) -> None:
@@ -435,33 +455,32 @@ class DetailingViewPreview(QFrame):
             return
         self._ensure_model_meshes(model)
         cache_owner = getattr(self, "_mesh_cache_owner", model)
-        revision = getattr(model, "revision", None)
+        cache_key = self._model_cache_key
         shared = self._shared_model_edge_meshes.get(cache_owner)
-        if shared is not None and shared[0] == revision:
+        if shared is not None and shared[0] == cache_key:
             self._solid_edge_meshes = shared[1]
             return
         edge_meshes: list[pv.PolyData] = []
-        for shape, transform, angles in zip(
-            self._solid_shapes, self._solid_transforms, self._solid_face_angles,
-        ):
-            edge_mesh = self._renderer._edge_mesh_for(shape).copy(deep=True)
-            edge_mesh.points = deform_extruded_points(
-                edge_mesh.points, float(np.linalg.norm(transform[:3, 0])), angles,
-            )
-            edge_mesh.transform(transform, inplace=True)
-            edge_meshes.append(edge_mesh)
+        for mesh in self._solid_meshes:
+            edge_meshes.append(mesh.extract_feature_edges(
+                boundary_edges=True,
+                feature_edges=True,
+                manifold_edges=False,
+                non_manifold_edges=True,
+                feature_angle=25.0,
+            ))
         self._solid_edge_meshes = edge_meshes
-        self._shared_model_edge_meshes[cache_owner] = (revision, edge_meshes)
+        self._shared_model_edge_meshes[cache_owner] = (cache_key, edge_meshes)
 
     def _ensure_model_surface_data(self, model):
         """Reuse triangulation, normals, and edge adjacency across isometric views."""
         cache_owner = getattr(self, "_mesh_cache_owner", model)
-        revision = getattr(model, "revision", None)
+        cache_key = self._model_cache_key
         shared = self._shared_model_surface_data.get(cache_owner)
-        if shared is not None and shared[0] == revision:
+        if shared is not None and shared[0] == cache_key:
             return shared[1]
         surface_data = tuple(prepare_surface_data(mesh) for mesh in self._solid_meshes)
-        self._shared_model_surface_data[cache_owner] = (revision, surface_data)
+        self._shared_model_surface_data[cache_owner] = (cache_key, surface_data)
         return surface_data
 
     @staticmethod

@@ -2016,6 +2016,55 @@ class StructureScene(QWidget):
             if member.detail_subtractions
         }
 
+    def detailing_view_solid_meshes(self, model):
+        """Return the detailing solids, including plate/member subtractions.
+
+        The view manager uses this same detailing geometry so its preview and
+        vector exports match the solids shown in the main scene.
+        """
+        old_model = self._model
+        old_detailing_session = self._detailing_session_active
+        old_solid_visibility = self._solid_members_visible
+        old_positioning = self._member_renderer.solid_positioning_enabled
+        old_cutters = self._detail_subtraction_meshes
+        old_failures = self._detail_subtraction_failures
+        try:
+            self._model = model
+            self._detailing_session_active = True
+            self._solid_members_visible = True
+            self._member_renderer.solid_positioning_enabled = True
+            self._detail_subtraction_failures = set()
+            self._detail_subtraction_meshes = self._build_detail_subtraction_meshes(model)
+            subtraction_meshes = self._detail_subtractions_by_target(model)
+            marker_radius = max(float(getattr(self, "_marker_radius_current", 0.05)), 1e-4)
+            batch = self._member_renderer.build(
+                model,
+                marker_radius,
+                subtraction_meshes=subtraction_meshes,
+                subtraction_failures=self._detail_subtraction_failures,
+            )
+            solids = []
+            for name, (start, end) in batch.face_cell_ranges.items():
+                cells = np.arange(start, end, dtype=np.int64)
+                if not len(cells):
+                    continue
+                mesh = batch.faces.extract_cells(cells).extract_surface().triangulate().clean()
+                if mesh.n_points and mesh.n_cells:
+                    solids.append((name, mesh))
+            for name, plate in model.plates.items():
+                mesh = self._plate_meshes(plate)[0]
+                mesh = mesh.extract_surface().triangulate().clean()
+                if mesh.n_points and mesh.n_cells:
+                    solids.append((f"plate:{name}", mesh))
+            return tuple(solids)
+        finally:
+            self._model = old_model
+            self._detailing_session_active = old_detailing_session
+            self._solid_members_visible = old_solid_visibility
+            self._member_renderer.solid_positioning_enabled = old_positioning
+            self._detail_subtraction_meshes = old_cutters
+            self._detail_subtraction_failures = old_failures
+
     def _detailed_plate_meshes(self, plate, points):
         """Build the detailing solid from independent, inclined contour faces."""
         points = np.asarray(points, dtype=float)

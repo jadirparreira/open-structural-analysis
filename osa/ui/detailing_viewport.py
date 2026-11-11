@@ -134,6 +134,7 @@ class DetailingViewViewport(QFrame):
     def _build_scene_meshes(self, model, plane: str, coordinate, settings):
         calculator = _ViewGeometryCalculator()
         calculator._mesh_cache_owner = model
+        calculator._detail_scene = self._detail_scene_for_model(model)
         DetailingViewPreview._ensure_model_meshes(calculator, model)
         if not calculator._solid_meshes:
             return None, None
@@ -363,6 +364,7 @@ class DetailingViewViewport(QFrame):
             return cached
         calculator = _ViewGeometryCalculator()
         calculator._mesh_cache_owner = model
+        calculator._detail_scene = self._detail_scene_for_model(model)
         DetailingViewPreview.set_view(
             calculator, model, plane, coordinate, **settings
         )
@@ -373,6 +375,13 @@ class DetailingViewViewport(QFrame):
             while len(self._dxf_cache) > self._dxf_cache_limit:
                 self._dxf_cache.popitem(last=False)
         return segments
+
+    def _detail_scene_for_model(self, model):
+        dialog = self.window()
+        host = dialog.parent() if dialog is not None else None
+        if getattr(host, "model", None) is not model:
+            return None
+        return getattr(host, "scene", None)
 
     def _clear_view(self) -> None:
         self._plotter.clear()

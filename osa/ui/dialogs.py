@@ -1766,7 +1766,7 @@ class DetailingViewsDialog(QDialog):
             from osa.exporters.view_dxf import export_view_to_dxf
 
             export_view_to_dxf(path, segments)
-        except (OSError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.warning(
                 self,
                 "Falha ao exportar DXF",
