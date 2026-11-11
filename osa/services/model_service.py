@@ -321,6 +321,11 @@ class ModelService:
     def update_member_solid_section_offsets(self, name: str, offsets: tuple[float, ...]):
         return self.model.update_member_solid_section_offsets(name, offsets)
 
+    def update_plate_positioning_displacement(self, name: str, displacement: float):
+        return self.model.update_plate(
+            name, positioning_displacement=displacement,
+        )
+
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 

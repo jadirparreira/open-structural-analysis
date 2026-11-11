@@ -107,6 +107,8 @@ class Plate:
     color: str = "#6e7781"
     thickness_mm: float = 100.0
     material: str = "Concreto Estrutural"
+    # Deslocamento visual em metros ao longo da normal global orientada do plano.
+    positioning_displacement: float = 0.0
 
 
 # Compatibilidade pública com o nome utilizado até agora.

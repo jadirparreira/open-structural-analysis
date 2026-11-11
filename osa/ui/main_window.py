@@ -154,6 +154,8 @@ class MainWindow(QMainWindow):
         self._member_placement_start_snap_member_name: str | None = None
         self._member_placement_start_snap_target: tuple[str, str] | None = None
         self._endpoint_alignment_source_bar: str | None = None
+        self._face_alignment_source: tuple[str, str] | None = None
+        self._face_alignment_source_hit = None
         self._connect_member_ends_first_bar: str | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
@@ -215,6 +217,7 @@ class MainWindow(QMainWindow):
         self.scene.element_clicked.connect(self.select_element)
         self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
+        self.scene.alignment_face_clicked.connect(self._align_element_face_to_reference)
         self.scene.empty_clicked.connect(self._empty_scene_clicked)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
@@ -701,6 +704,156 @@ class MainWindow(QMainWindow):
             "<span style='color:#57606a'>(Selecione a barra que terá uma extremidade alinhada; Esc cancela)</span>"
         )
         self.scene.plotter.setFocus()
+
+    def start_face_alignment(self) -> None:
+        """Start a two-step command to align one picked face with another."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._face_alignment_source = None
+        self._face_alignment_source_hit = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "face_alignment_source_selection"
+        self.scene.set_face_alignment_mode(True)
+        self.history.append(
+            "> <b>Alinhar faces</b> "
+            "<span style='color:#57606a'>(Selecione a face que será movida; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _align_element_face_to_reference(self, hit: object) -> None:
+        """Use two picked faces to translate a bar or plate onto its reference plane."""
+        try:
+            target_kind, target_name, _cell_id, target_point, target_normal = hit
+            target_point = np.asarray(target_point, dtype=float)
+            target_normal = np.asarray(target_normal, dtype=float)
+        except (TypeError, ValueError):
+            return
+        if self._command_mode == "face_alignment_source_selection":
+            if target_kind not in {"bar", "plate"}:
+                self.history.append(
+                    "> <b>Alinhar faces</b> "
+                    "<span style='color:#8c959f'>(Selecione uma face de barra ou placa)</span>"
+                )
+                return
+            self._face_alignment_source = (target_kind, target_name)
+            self._face_alignment_source_hit = (
+                target_kind, target_name, _cell_id, target_point.copy(), target_normal.copy(),
+            )
+            self._command_mode = "face_alignment_reference_selection"
+            self.scene.set_face_alignment_mode(True, self._face_alignment_source)
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#57606a'>(Selecione a face que servirá como referência; Esc cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        if self._command_mode != "face_alignment_reference_selection":
+            return
+        source = self._face_alignment_source
+        source_hit = self._face_alignment_source_hit
+        if source is None or source_hit is None:
+            return
+        source_kind, source_name = source
+        if (target_kind, target_name) == source:
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#8c959f'>(Escolha uma face de outro elemento como referência)</span>"
+            )
+            return
+        _source_kind, _source_name, _source_cell, source_point, source_normal = source_hit
+        source_point = np.asarray(source_point, dtype=float)
+        source_normal = np.asarray(source_normal, dtype=float)
+        normal_length = float(np.linalg.norm(target_normal))
+        source_normal_length = float(np.linalg.norm(source_normal))
+        if (
+            normal_length <= 1e-12 or source_normal_length <= 1e-12
+            or not np.isfinite(target_point).all() or not np.isfinite(source_point).all()
+        ):
+            return
+        target_normal /= normal_length
+        source_normal /= source_normal_length
+        if abs(float(np.dot(source_normal, target_normal))) < 1.0 - 1e-6:
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#8c959f'>(As faces selecionadas precisam ser paralelas)</span>"
+            )
+            return
+        gap = float(np.dot(target_normal, source_point - target_point))
+        translation = -gap * target_normal
+        source_names = (
+            self._detailing_group_member_names(source_name)
+            if source_kind == "bar" else (source_name,)
+        )
+        try:
+            if source_kind == "plate":
+                plate = self.model.plates[source_name]
+                points = np.asarray(plate.contour, dtype=float)
+                _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
+                plate_normal = basis[-1]
+                if plate_normal[np.argmax(np.abs(plate_normal))] < 0:
+                    plate_normal = -plate_normal
+                if abs(float(np.dot(plate_normal, target_normal))) < 1.0 - 1e-6:
+                    raise ValueError("A placa só pode ser movida perpendicularmente ao seu plano.")
+                displacement = plate.positioning_displacement + float(np.dot(translation, plate_normal))
+                self.model_service.update_plate_positioning_displacement(source_name, displacement)
+                self.scene.update_plate_rendering(source_name)
+                self.properties.update_positioning_status(source_name)
+            elif source_kind == "bar":
+                self._translate_bar_positioning(source_names, translation)
+                for name in source_names:
+                    self.refresh_member_positioning(name)
+                    self.properties.update_positioning_status(name)
+            else:
+                raise ValueError("Alinhar faces funciona com barras e placas.")
+        except (KeyError, ValueError) as error:
+            self.history.append(
+                f"> <b>Alinhar faces</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        distance_mm = abs(gap) * 1000.0
+        self._face_alignment_source = None
+        self._face_alignment_source_hit = None
+        self._command_mode = "face_alignment_source_selection"
+        self.scene.set_face_alignment_mode(True)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Alinhar faces</b> "
+            f"<span style='color:#57606a'>(Faces alinhadas; deslocamento de {distance_mm:.2f} mm. "
+            "Selecione outra face para continuar; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _translate_bar_positioning(self, names: tuple[str, ...], translation: np.ndarray) -> None:
+        for name in names:
+            bar = self.model.bars[name]
+            start_node = self.model.nodes[bar.start_node]
+            end_node = self.model.nodes[bar.end_node]
+            basis = LocalAxesRenderer.basis(start_node, end_node, rotation=bar.rotation)
+            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
+            if basis is None or base_basis is None:
+                raise ValueError(f"Não foi possível calcular os eixos locais da barra {name}.")
+            delta_x = float(np.dot(translation, basis[0]))
+            delta_y = float(np.dot(translation, base_basis[1]))
+            delta_z = float(np.dot(translation, base_basis[2]))
+            face_offsets = list(bar.solid_face_offsets)
+            face_offsets[0] -= delta_x
+            face_offsets[1] += delta_x
+            section_offsets = list(bar.solid_section_offsets)
+            section_offsets[0] += delta_y
+            section_offsets[1] += delta_z
+            self.model_service.update_member_solid_face_offsets(name, tuple(face_offsets))
+            self.model_service.update_member_solid_section_offsets(name, tuple(section_offsets))
 
     def _align_member_endpoint_to_face(self, hit: object) -> None:
         """Match a connected bar end face to the clicked solid face plane."""
@@ -1501,8 +1654,12 @@ class MainWindow(QMainWindow):
         self.properties.close_color_palette()
         self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_section_panel(self.properties._section_settings_button)
-        member_name = self.selected[1] if self.selected and self.selected[0] == "bar" else ""
-        self.displacement_panel.configure_for(member_name)
+        selected = self.selected
+        if selected is not None and selected[0] == "plate":
+            self.displacement_panel.configure_for_plate(selected[1])
+        else:
+            member_name = selected[1] if selected and selected[0] == "bar" else ""
+            self.displacement_panel.configure_for(member_name)
         self.displacement_panel.reposition()
         self.displacement_panel.show()
         self.displacement_panel.raise_()
@@ -3090,6 +3247,18 @@ class MainWindow(QMainWindow):
                 "<span style='color:#8c959f'>(Operação cancelada)</span>"
             )
             return
+        if self._command_mode in {
+            "face_alignment_source_selection", "face_alignment_reference_selection",
+        }:
+            self._command_mode = None
+            self._face_alignment_source = None
+            self._face_alignment_source_hit = None
+            self.scene.set_face_alignment_mode(False)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Alinhar faces</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode == "detail_plane_placement":
             self._command_mode = None
             self._detail_plane_points = []
@@ -3632,6 +3801,10 @@ class MainWindow(QMainWindow):
                         self.properties._calculation_properties_button.setChecked(True)
                     else:
                         self.close_calculation_properties_panel()
+            elif active_section == "Detalhamento" and self.selected[0] == "plate":
+                if self.displacement_panel.isVisible():
+                    self.displacement_panel.configure_for_plate(self.selected[1])
+                    self.properties._displacement_settings_button.setChecked(True)
             elif active_section == "Geometria":
                 self.close_section_panel()
                 self.close_displacement_panel()

@@ -69,7 +69,7 @@ class StructuralModel:
 
     def add_plate(
         self, contour, *, name: str | None = None, supports=(), color="#6e7781",
-        thickness_mm=100.0, material: str | None = None,
+        thickness_mm=100.0, material: str | None = None, positioning_displacement=0.0,
     ) -> Plate:
         from osa.services.plate_contour import plate_contour
 
@@ -99,12 +99,21 @@ class StructuralModel:
             )
         if not isinstance(material, str) or not material.strip():
             raise ValueError("A placa deve possuir um material válido.")
-        plate = Plate(name, ordered, supports, color.lower(), thickness_mm, material)
+        positioning_displacement = float(positioning_displacement)
+        if not math.isfinite(positioning_displacement):
+            raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        plate = Plate(
+            name, ordered, supports, color.lower(), thickness_mm, material,
+            positioning_displacement,
+        )
         self.plates[name] = plate
         self._touch()
         return plate
 
-    def update_plate(self, name: str, *, color=None, thickness_mm=None, material=None) -> None:
+    def update_plate(
+        self, name: str, *, color=None, thickness_mm=None, material=None,
+        positioning_displacement=None,
+    ) -> None:
         plate = self.plates[name]
         if color is None:
             color = plate.color
@@ -116,7 +125,16 @@ class StructuralModel:
         material = plate.material if material is None else str(material).strip()
         if not material:
             raise ValueError("A placa deve possuir um material válido.")
-        updated = replace(plate, color=color.lower(), thickness_mm=thickness, material=material)
+        displacement = (
+            plate.positioning_displacement if positioning_displacement is None
+            else float(positioning_displacement)
+        )
+        if not math.isfinite(displacement):
+            raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        updated = replace(
+            plate, color=color.lower(), thickness_mm=thickness, material=material,
+            positioning_displacement=displacement,
+        )
         if updated != plate:
             self.plates[name] = updated
             self._touch()

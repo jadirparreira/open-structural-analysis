@@ -210,6 +210,7 @@ class StructureScene(QWidget):
     element_clicked = Signal(str, str, object)
     analysis_point_clicked = Signal(str, str, object)
     solid_face_clicked = Signal(object)
+    alignment_face_clicked = Signal(object)
     empty_clicked = Signal()
     selection_changed = Signal(object)
     placement_point_clicked = Signal(object)
@@ -546,6 +547,10 @@ class StructureScene(QWidget):
         self._endpoint_alignment_target: str | None = None
         self._endpoint_alignment_face_hover: tuple[str, tuple[int, ...]] | None = None
         self._endpoint_alignment_highlight_actor = None
+        self._face_alignment_active = False
+        self._face_alignment_source: tuple[str, str] | None = None
+        self._face_alignment_face_hover = None
+        self._face_alignment_highlight_actor = None
         self._selected: tuple[str, str] | None = None
         self._selected_elements: tuple[tuple[str, str], ...] = ()
         self._plate_actors = {}
@@ -1822,17 +1827,8 @@ class StructureScene(QWidget):
                 reset_camera=False, render=False, name=f"plate-outline:{name}",
             )
             if plate_fe_mesh is not None:
-                connectivity = plate_fe_mesh.elements.get(name, ())
-                edge_pairs = set()
-                for quad in connectivity:
-                    for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0])):
-                        edge_pairs.add((min(start, end), max(start, end)))
-                if edge_pairs:
-                    lines = np.asarray(
-                        [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
-                        dtype=np.int64,
-                    )
-                    line_mesh = pv.PolyData(plate_fe_mesh.nodes, lines=lines)
+                line_mesh = self._plate_fe_wire_mesh(plate)
+                if line_mesh is not None:
                     self._plate_fe_mesh_actors[name] = self.plotter.add_mesh(
                         line_mesh, color="#57606a", line_width=1.0, pickable=False,
                         lighting=False, reset_camera=False, render=False, name=f"plate-fe-mesh:{name}",
@@ -1883,7 +1879,7 @@ class StructureScene(QWidget):
             actor.GetProperty().SetLineWidth(1.5)
 
     def _plate_meshes(self, plate):
-        points = np.asarray(plate.contour, dtype=float)
+        points = self._plate_display_contour(plate)
         count = len(points)
         face = np.asarray([count, *range(count)])
         if self._solid_members_visible:
@@ -1908,6 +1904,31 @@ class StructureScene(QWidget):
         edges.lines = np.asarray(lines)
         return mesh, edges
 
+    def _plate_fe_wire_mesh(self, plate):
+        plate_mesh = self._plate_fe_mesh_data
+        if plate_mesh is None:
+            return None
+        connectivity = plate_mesh.elements.get(plate.name, ())
+        edge_pairs = set()
+        node_indices = set()
+        for quad in connectivity:
+            node_indices.update(int(index) for index in quad)
+            for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0])):
+                edge_pairs.add((min(start, end), max(start, end)))
+        if not edge_pairs:
+            return None
+        lines = np.asarray(
+            [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
+            dtype=np.int64,
+        )
+        nodes = np.asarray(plate_mesh.nodes, dtype=float).copy()
+        displayed_contour = self._plate_display_contour(plate)
+        displacement = displayed_contour[0] - np.asarray(plate.contour[0], dtype=float)
+        if np.any(displacement):
+            indices = np.fromiter(sorted(node_indices), dtype=np.intp)
+            nodes[indices] += displacement
+        return pv.PolyData(nodes, lines=lines)
+
     def update_plate_rendering(self, name: str, *, render: bool = True) -> None:
         if name not in self._plate_actors or name not in self._model.plates:
             return
@@ -1918,6 +1939,11 @@ class StructureScene(QWidget):
         for actor, data in ((self._plate_actors[name], mesh), (self._plate_edge_actors[name], edges)):
             actor.GetMapper().SetInputData(data)
             actor.GetMapper().Modified()
+        fe_mesh = self._plate_fe_wire_mesh(plate)
+        fe_actor = self._plate_fe_mesh_actors.get(name)
+        if fe_mesh is not None and fe_actor is not None:
+            fe_actor.GetMapper().SetInputData(fe_mesh)
+            fe_actor.GetMapper().Modified()
         positions = np.asarray([
             self._plate_identifier_position(item) for item in self._model.plates.values()
         ], dtype=float).reshape(-1, 3)
@@ -1939,8 +1965,14 @@ class StructureScene(QWidget):
             return None
         if not self._plate_actors and len(self._member_batch.face_cell_ranges) < 2:
             return None
-        plates = tuple((plate.name, plate.contour, plate.thickness_mm)
-                       for plate in self._model.plates.values())
+        plates = tuple(
+            (
+                plate.name,
+                tuple(map(tuple, self._plate_display_contour(plate))),
+                plate.thickness_mm,
+            )
+            for plate in self._model.plates.values()
+        )
         return (id(faces), faces.GetPoints().GetMTime(), faces.GetPolys().GetMTime(), plates)
 
     def _schedule_plate_intersections(self) -> None:
@@ -2271,6 +2303,173 @@ class StructureScene(QWidget):
         if normal is None:
             return None
         return batch.names[element_index], cell_id, points[closest], normal
+
+    def _pick_alignment_face(self):
+        """Return the nearest visible bar or plate surface face under the pointer."""
+        if self._pointer_position is None:
+            return None
+        x, y = self._qt_to_vtk_position(
+            self._pointer_position,
+            (self.plotter.width(), self.plotter.height()),
+            tuple(self.plotter.render_window.GetSize()),
+        )
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        picker.PickFromListOn()
+        pickable_actors = []
+        member_actor = self._member_face_actor
+        if (
+            self._solid_members_visible and member_actor is not None
+            and member_actor.GetVisibility() and self._member_batch is not None
+        ):
+            was_pickable = bool(member_actor.GetPickable())
+            member_actor.SetPickable(True)
+            picker.AddPickList(member_actor)
+            pickable_actors.append((member_actor, was_pickable))
+        plate_actor_names = []
+        for name, actor in self._plate_actors.items():
+            if actor.GetVisibility():
+                was_pickable = bool(actor.GetPickable())
+                actor.SetPickable(True)
+                picker.AddPickList(actor)
+                pickable_actors.append((actor, was_pickable))
+                plate_actor_names.append((actor, name))
+        hit = picker.Pick(x, y, 0, self.plotter.renderer)
+        for actor, was_pickable in pickable_actors:
+            actor.SetPickable(was_pickable)
+        if not hit:
+            return None
+
+        actor = picker.GetActor()
+        cell_id = int(picker.GetCellId())
+        plate_name = next((name for candidate, name in plate_actor_names if actor == candidate), None)
+        if plate_name is not None:
+            kind, name = "plate", plate_name
+            polydata = actor.GetMapper().GetInput()
+        elif actor == member_actor:
+            batch = self._member_batch
+            if batch is None or cell_id < 0 or cell_id >= batch.faces.n_cells:
+                return None
+            element_index = int(batch.faces.cell_data["element_index"][cell_id])
+            if element_index < 0 or element_index >= len(batch.names):
+                return None
+            kind, name = "bar", batch.names[element_index]
+            polydata = batch.faces
+        else:
+            return None
+        if cell_id < 0 or cell_id >= polydata.GetNumberOfCells():
+            return None
+        cell = polydata.GetCell(cell_id)
+        vertices = np.asarray(
+            [cell.GetPoints().GetPoint(index) for index in range(cell.GetNumberOfPoints())],
+            dtype=float,
+        )
+        normal = None
+        for index in range(1, len(vertices) - 1):
+            candidate = np.cross(vertices[index] - vertices[0], vertices[index + 1] - vertices[0])
+            magnitude = float(np.linalg.norm(candidate))
+            if magnitude > 1e-12:
+                normal = candidate / magnitude
+                break
+        if normal is None:
+            return None
+        point = np.asarray(picker.GetPickPosition(), dtype=float)
+        return kind, name, cell_id, point, normal
+
+    def set_face_alignment_mode(
+        self, active: bool, source: tuple[str, str] | None = None,
+    ) -> None:
+        """Route successive clicks to the moving and reference faces."""
+        self._face_alignment_active = bool(active)
+        self._face_alignment_source = source if active else None
+        self._hovered = None
+        self._clear_face_alignment_highlight()
+        self._sync_highlights()
+        self.plotter.render()
+
+    def _clear_face_alignment_highlight(self) -> bool:
+        self._face_alignment_face_hover = None
+        actor = self._face_alignment_highlight_actor
+        self._face_alignment_highlight_actor = None
+        if actor is not None:
+            self.plotter.remove_actor(actor, reset_camera=False, render=False)
+        return actor is not None
+
+    def _pick_and_highlight_face_alignment_reference(self) -> bool:
+        hit = self._pick_alignment_face()
+        if hit is None or (
+            self._face_alignment_source is not None
+            and hit[:2] == self._face_alignment_source
+        ):
+            return self._clear_face_alignment_highlight()
+        kind, name, cell_id, point, normal = hit
+        key = kind, name, int(cell_id)
+        if key == self._face_alignment_face_hover:
+            return False
+        self._clear_face_alignment_highlight()
+        if kind == "bar":
+            mesh = self._member_batch.faces if self._member_batch is not None else None
+            if mesh is None or name not in self._member_batch.face_cell_ranges:
+                return False
+            start, end = self._member_batch.face_cell_ranges[name]
+            candidate_ids = range(start, end)
+        else:
+            actor = self._plate_actors.get(name)
+            if actor is None:
+                return False
+            mesh = pv.wrap(actor.GetMapper().GetInput())
+            candidate_ids = range(mesh.n_cells)
+        normal = np.asarray(normal, dtype=float)
+        normal_length = float(np.linalg.norm(normal))
+        if normal_length <= 1e-12:
+            return False
+        normal /= normal_length
+        bounds = np.asarray(mesh.bounds, dtype=float)
+        scale = max(1.0, float(np.linalg.norm(bounds[1::2] - bounds[::2])))
+        tolerance = max(1e-8, scale * 1e-8)
+        coplanar_cells = []
+        for candidate_id in candidate_ids:
+            cell = mesh.GetCell(int(candidate_id))
+            vertices = np.asarray(
+                [cell.GetPoints().GetPoint(index) for index in range(cell.GetNumberOfPoints())],
+                dtype=float,
+            )
+            if len(vertices) < 3:
+                continue
+            candidate_normal = None
+            for index in range(1, len(vertices) - 1):
+                cross = np.cross(vertices[index] - vertices[0], vertices[index + 1] - vertices[0])
+                magnitude = float(np.linalg.norm(cross))
+                if magnitude > 1e-12:
+                    candidate_normal = cross / magnitude
+                    break
+            if candidate_normal is None or abs(float(np.dot(candidate_normal, normal))) < 1.0 - 1e-6:
+                continue
+            if np.max(np.abs((vertices - point) @ normal)) > tolerance:
+                continue
+            coplanar_cells.append(int(candidate_id))
+        if not coplanar_cells:
+            coplanar_cells = [int(cell_id)]
+        surface = mesh.extract_cells(coplanar_cells).extract_surface(
+            algorithm="dataset_surface",
+        )
+        outline = surface.extract_feature_edges(
+            boundary_edges=True, feature_edges=False,
+            manifold_edges=False, non_manifold_edges=False,
+        )
+        if not outline.n_cells:
+            return False
+        actor = self.plotter.add_mesh(
+            outline,
+            color="#24292f",
+            line_width=self._solid_highlight_line_width,
+            render_lines_as_tubes=True, lighting=False, pickable=False,
+            reset_camera=False, render=False,
+        )
+        actor.SetObjectName("highlight:face-alignment-face")
+        self._face_alignment_face_hover = key
+        self._face_alignment_highlight_actor = actor
+        return True
 
     def set_endpoint_alignment_target(self, member_name: str | None) -> None:
         """Route hover and clicks to a single-face alignment pick when active."""
@@ -2651,6 +2850,9 @@ class StructureScene(QWidget):
             if self._endpoint_alignment_target is not None:
                 if self._clear_endpoint_alignment_face_highlight():
                     self.plotter.render()
+            if self._face_alignment_active:
+                if self._clear_face_alignment_highlight():
+                    self.plotter.render()
         if (
             watched is self.plotter
             and event.type() == QEvent.Type.KeyPress
@@ -2914,6 +3116,9 @@ class StructureScene(QWidget):
         if self._orientation_widget.is_pointer_over(x, y):
             if self._endpoint_alignment_target is not None:
                 if self._clear_endpoint_alignment_face_highlight():
+                    self.plotter.render()
+            if self._face_alignment_active:
+                if self._clear_face_alignment_highlight():
                     self.plotter.render()
             if self._hovered is not None:
                 self._hovered = None
@@ -4531,6 +4736,10 @@ class StructureScene(QWidget):
             if self._pick_and_highlight_endpoint_alignment_face():
                 self.plotter.render()
             return
+        if self._face_alignment_active:
+            if self._pick_and_highlight_face_alignment_reference():
+                self.plotter.render()
+            return
         picked = self._pick()
         if picked == self._hovered:
             return
@@ -4584,6 +4793,14 @@ class StructureScene(QWidget):
                 QTimer.singleShot(
                     0,
                     lambda selected_face=hit: self.solid_face_clicked.emit(selected_face),
+                )
+            return
+        if self._face_alignment_active:
+            hit = self._pick_alignment_face()
+            if hit is not None:
+                QTimer.singleShot(
+                    0,
+                    lambda selected_face=hit: self.alignment_face_clicked.emit(selected_face),
                 )
             return
         position = (int(x), int(y))
@@ -5796,11 +6013,19 @@ class StructureScene(QWidget):
 
     def set_detailing_session_active(self, enabled: bool) -> None:
         """Show rigid bars in detailing only while solid members are hidden."""
-        self._detailing_session_active = bool(enabled)
+        enabled = bool(enabled)
+        changed = enabled != self._detailing_session_active
+        self._detailing_session_active = enabled
         self._apply_rigid_bar_session_visibility()
         self._refresh_verification_group_edges()
         self._sync_verification_identifier_labels()
         if self._model is not None:
+            if changed:
+                for name in self._plate_actors:
+                    self.update_plate_rendering(name, render=False)
+                self._schedule_plate_intersections()
+                if self._plate_actors:
+                    self.plotter.reset_camera_clipping_range()
             self.plotter.render()
 
     def _rigid_bars_visible_for_session(self) -> bool:
@@ -5823,7 +6048,7 @@ class StructureScene(QWidget):
             self._label_overlay.set_group_visible(kind, visible)
 
     def _plate_identifier_position(self, plate) -> np.ndarray:
-        points = np.asarray(plate.contour, dtype=float)
+        points = self._plate_display_contour(plate)
         center = np.mean(points, axis=0)
         if not self._solid_members_visible:
             return center
@@ -5832,6 +6057,18 @@ class StructureScene(QWidget):
         if normal[np.argmax(np.abs(normal))] < 0:
             normal = -normal
         return center + normal * (plate.thickness_mm / 2000.0)
+
+    def _plate_display_contour(self, plate) -> np.ndarray:
+        """Return the analytical contour with its detailing-only normal offset."""
+        points = np.asarray(plate.contour, dtype=float)
+        displacement = float(getattr(plate, "positioning_displacement", 0.0))
+        if not self._detailing_session_active or abs(displacement) <= 1e-12:
+            return points
+        _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
+        normal = basis[-1]
+        if normal[np.argmax(np.abs(normal))] < 0:
+            normal = -normal
+        return points + normal * displacement
 
     def _bar_identifier_overlay_visible(self) -> bool:
         """Route verification bar IDs through element labels so groups stay unified."""

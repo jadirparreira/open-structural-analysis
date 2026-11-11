@@ -281,7 +281,8 @@ class ProjectSerializer:
             candidate.add_plate(item["contour"], name=item["name"], supports=supports,
                                 color=item.get("color", "#b7c6d5"),
                                 thickness_mm=item.get("thickness_mm", 100.0),
-                                material=item.get("material"))
+                                material=item.get("material"),
+                                positioning_displacement=item.get("positioning_displacement", 0.0))
 
         candidate.set_reference_axes({
             direction: tuple(

@@ -732,6 +732,23 @@ class DetailingTopPalette(QFrame):
         separator.setFixedHeight(18)
         separator.setStyleSheet("QFrame { color: #d0d7de; }")
         layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.align_faces_button = QToolButton(self)
+        self.align_faces_button.setFixedSize(30, 30)
+        self.align_faces_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "align-faces.svg"))
+        )
+        self.align_faces_button.setIconSize(QSize(21, 21))
+        self.align_faces_button.setToolTip("Alinhar faces")
+        self.align_faces_button.setProperty("paletteTooltip", "Alinhar faces")
+        self.align_faces_button.setAccessibleName("Alinhar faces")
+        self.align_faces_button.clicked.connect(window.start_face_alignment)
+        self.align_faces_button.installEventFilter(self)
+        self.align_faces_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.align_faces_button)
         self.additional_detailing_button = QToolButton(self)
         self.additional_detailing_button.setFixedSize(30, 30)
         self.additional_detailing_button.setIcon(
@@ -824,6 +841,7 @@ class DetailingTopPalette(QFrame):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched in (
             self.name_button,
+            self.align_faces_button,
             self.additional_detailing_button,
             self.connect_ends_button,
             self.manage_views_button,

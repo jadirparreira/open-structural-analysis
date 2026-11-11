@@ -457,6 +457,12 @@ class PropertyPanel(QFrame):
         self.kind_selector.setVisible(len(kinds) > 1 and not node_member_selection)
         self.kind_control.setVisible(len(kinds) > 1)
         self._clear_form()
+        self.verify_bar_button.setText("Verificar barra")
+        self.verify_bar_button.setAccessibleName("Verificar barra isoladamente")
+        self._calculation_properties_button.setEnabled(True)
+        self._calculation_properties_button.setToolTip("Propriedades de Cálculo")
+        if self._verification_memory_button is not None:
+            self._verification_memory_button.setEnabled(True)
         self.coordinates_title.hide()
         self.nodes_title.hide()
         self.solid_offsets_title.hide()
@@ -466,6 +472,8 @@ class PropertyPanel(QFrame):
         self._color_palette.hide()
         if kind == "plate":
             plate = self.window.model.plates[name]
+            verification_mode = section == "Memorial"
+            detailing_mode = section == "Detalhamento"
             self.kind_control.hide()
             self.title.setText("Placa")
             self.name.setText("Identidade")
@@ -473,17 +481,36 @@ class PropertyPanel(QFrame):
             self._identity_row.show()
             self.identity_value.setText(name)
             self._verification_name_row.hide()
-            self.verify_bar_container.hide()
+            self.verify_bar_button.setText("Verificar placa")
+            self.verify_bar_button.setAccessibleName("Verificar placa isoladamente")
+            self.verify_bar_button.setEnabled(False)
+            self.verify_bar_container.setVisible(verification_mode)
             self.member_color_button.setVisible(section == "Geometria")
             self.member_color_button.setToolTip("Definir cor da placa")
             self.member_color_button.setAccessibleName("Definir cor da placa")
             if section == "Geometria":
                 self._set_member_color_button(plate.color)
-            self._calculation_properties_button.hide()
+            self._calculation_properties_button.setVisible(verification_mode)
+            self._calculation_properties_button.setEnabled(False)
+            self._calculation_properties_button.setToolTip("Propriedades da placa indisponíveis")
             self.delete_button.hide()
             for row in self._verification_result_rows:
-                row.hide()
-            if section not in {"Ações", "Análise"}:
+                row.setVisible(verification_mode)
+            if verification_mode:
+                self.window.close_calculation_properties_panel(
+                    self._calculation_properties_button,
+                )
+                for value in self._verification_result_values.values():
+                    value.setText("Não implementado")
+                    value.setToolTip("A verificação de placas ainda não está implementada.")
+                if self._verification_memory_button is not None:
+                    self._verification_memory_button.setEnabled(False)
+                    self._verification_memory_button.setToolTip(
+                        "Memorial indisponível: verificação de placas não implementada"
+                    )
+            elif detailing_mode:
+                self._show_plate_positioning(plate)
+            elif section not in {"Ações", "Análise"}:
                 supports = ", ".join(bar for _, bar in plate.supports) or "Nenhuma"
                 for label, value in (("Barras", supports), ("Material", plate.material)):
                     title = QLabel(label)
@@ -1078,9 +1105,63 @@ class PropertyPanel(QFrame):
         self._solid_offsets_widget = offset_row
         self.layout.addWidget(offset_row)
 
+    def _show_plate_positioning(self, plate) -> None:
+        """Show the detailing-only normal displacement control for a plate."""
+        self.layout.addWidget(self.solid_offsets_title)
+        self.solid_offsets_title.setText("Posicionamento")
+        self.solid_offsets_title.show()
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        status = QLineEdit()
+        status.setReadOnly(True)
+        status.setObjectName("identityDisplay")
+        status.setText(self._plate_positioning_summary(plate))
+        status.setAccessibleName("Deslocamento perpendicular da placa")
+        row_layout.addWidget(status, 1)
+        configure_button = QToolButton()
+        configure_button.setFixedSize(34, 34)
+        configure_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "move.svg"))
+        )
+        configure_button.setIconSize(QSize(18, 18))
+        configure_button.setToolTip("Configurar deslocamento da placa")
+        configure_button.setAccessibleName("Configurar deslocamento da placa")
+        configure_button.setCheckable(True)
+        configure_button.clicked.connect(
+            lambda _checked=False, button=configure_button:
+            self.window.toggle_displacement_panel(button)
+        )
+        configure_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        row_layout.addWidget(configure_button)
+        self._displacement_settings_button = configure_button
+        self._positioning_status = status
+        self._solid_offsets_widget = row
+        self.layout.addWidget(row)
+
+    @classmethod
+    def _plate_positioning_summary(cls, plate) -> str:
+        value_mm = float(getattr(plate, "positioning_displacement", 0.0)) * 1000.0
+        if abs(value_mm) <= 1e-9:
+            return "X0"
+        sign = "+" if value_mm > 0 else "-"
+        return f"X{sign}{cls._format_positioning_value(abs(value_mm))}"
+
     def update_positioning_status(self, member_name: str) -> None:
         """Synchronize the compact positioning summary after an offset change."""
-        if self._selected is None or self._selected[0] != "bar" or self._positioning_status is None:
+        if self._selected is None or self._positioning_status is None:
+            return
+        if self._selected[0] == "plate":
+            if member_name == self._selected[1] and member_name in self.window.model.plates:
+                self._positioning_status.setText(
+                    self._plate_positioning_summary(self.window.model.plates[member_name])
+                )
+            return
+        if self._selected[0] != "bar":
             return
         names = self._selected_names("bar")
         if member_name not in names:
