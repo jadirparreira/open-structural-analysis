@@ -153,7 +153,7 @@ class MainWindow(QMainWindow):
         self._member_placement_start: tuple[float, float, float] | None = None
         self._member_placement_start_snap_member_name: str | None = None
         self._member_placement_start_snap_target: tuple[str, str] | None = None
-        self._endpoint_alignment_source_bar: str | None = None
+        self._endpoint_alignment_source: tuple[str, str] | None = None
         self._face_alignment_source: tuple[str, str] | None = None
         self._face_alignment_source_hit = None
         self._connect_member_ends_first_bar: str | None = None
@@ -682,12 +682,12 @@ class MainWindow(QMainWindow):
         return (member_name,) if member_name in self.model.bars else ()
 
     def start_member_endpoint_alignment(self) -> None:
-        """Start the two-step command for aligning a bar end to a connected face."""
+        """Start the two-step command for aligning a bar end or plate edge to a face."""
         if self._command_mode is not None:
             self.cancel_member_placement()
         self.command_session.cancel()
         self.scene.set_member_placement_mode(False)
-        self._endpoint_alignment_source_bar = None
+        self._endpoint_alignment_source = None
         if not self.scene._solid_members_visible:
             self._apply_mcp_view_change("solid_members_visible", True)
         self.clear_selection()
@@ -701,7 +701,7 @@ class MainWindow(QMainWindow):
         self.scene.set_endpoint_alignment_target(None)
         self.history.append(
             "> <b>Alinhar extremidade</b> "
-            "<span style='color:#57606a'>(Selecione a barra que terá uma extremidade alinhada; Esc cancela)</span>"
+            "<span style='color:#57606a'>(Selecione a barra ou placa que será ajustada; Esc cancela)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -770,7 +770,7 @@ class MainWindow(QMainWindow):
                 "<span style='color:#8c959f'>(Escolha uma face de outro elemento como referência)</span>"
             )
             return
-        _source_kind, _source_name, _source_cell, source_point, source_normal = source_hit
+        _source_kind, _source_name, source_cell, source_point, source_normal = source_hit
         source_point = np.asarray(source_point, dtype=float)
         source_normal = np.asarray(source_normal, dtype=float)
         normal_length = float(np.linalg.norm(target_normal))
@@ -782,6 +782,42 @@ class MainWindow(QMainWindow):
             return
         target_normal /= normal_length
         source_normal /= source_normal_length
+        if source_kind == "plate" and source_cell >= 2:
+            try:
+                edge_name, offset_mm, angle_degrees = self._plate_edge_alignment_values(
+                    self.model.plates[source_name], source_cell - 2,
+                    target_point, target_normal,
+                )
+                plate = self.model.plates[source_name]
+                saved = {
+                    name: (offset, angle)
+                    for name, offset, angle in plate.edge_positioning
+                }
+                saved[edge_name] = (offset_mm, angle_degrees)
+                edge_values = tuple(
+                    (name, *saved.get(name, (0.0, 0.0)))
+                    for _kind, name in plate.supports
+                )
+                self.model_service.update_plate_edge_positioning(source_name, edge_values)
+                self.scene.update_plate_rendering(source_name)
+            except (KeyError, ValueError) as error:
+                self.history.append(
+                    f"> <b>Alinhar faces</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+                )
+                return
+            self._face_alignment_source = None
+            self._face_alignment_source_hit = None
+            self._command_mode = "face_alignment_source_selection"
+            self.scene.set_face_alignment_mode(True)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                f"<span style='color:#57606a'>(Face da aresta {escape(edge_name)} alinhada por "
+                f"YZ = {offset_mm:.2f} mm e α = {angle_degrees:.2f}°. "
+                "Selecione outra face para continuar; Esc encerra)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
         if abs(float(np.dot(source_normal, target_normal))) < 1.0 - 1e-6:
             self.history.append(
                 "> <b>Alinhar faces</b> "
@@ -834,6 +870,188 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def _plate_support_for_edge(self, plate, edge_index: int) -> str | None:
+        points = np.asarray(plate.contour, dtype=float)
+        if edge_index < 0 or edge_index >= len(points):
+            return None
+        edge = points[[edge_index, (edge_index + 1) % len(points)]]
+        for kind, name in plate.supports:
+            member = (
+                self.model.bars.get(name) if kind == "bar"
+                else self.model.rigid_bars.get(name)
+            )
+            if member is None:
+                continue
+            start_node = self.model.nodes[member.start_node]
+            end_node = self.model.nodes[member.end_node]
+            endpoints = np.asarray((
+                (start_node.x, start_node.y, start_node.z),
+                (end_node.x, end_node.y, end_node.z),
+            ), dtype=float)
+            direct = max(np.linalg.norm(endpoints[0] - edge[0]),
+                         np.linalg.norm(endpoints[1] - edge[1]))
+            reverse = max(np.linalg.norm(endpoints[0] - edge[1]),
+                          np.linalg.norm(endpoints[1] - edge[0]))
+            if min(direct, reverse) <= 1e-7:
+                return name
+        return None
+
+    def _plate_edge_alignment_values(
+        self, plate, edge_index: int, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> tuple[str, float, float]:
+        """Solve the stored edge offset and inclination for a picked reference plane."""
+        points = np.asarray(plate.contour, dtype=float)
+        if edge_index < 0 or edge_index >= len(points):
+            raise ValueError("A face selecionada não corresponde a uma aresta da placa.")
+        edge = points[[edge_index, (edge_index + 1) % len(points)]]
+        edge_name = self._plate_support_for_edge(plate, edge_index)
+        if edge_name is None:
+            raise ValueError("Não foi encontrada a barra que define essa aresta da placa.")
+
+        centered = points - points[0]
+        _u, singular, basis = np.linalg.svd(centered, full_matrices=False)
+        if len(singular) < 2 or singular[1] <= 1e-12:
+            raise ValueError("Não foi possível calcular o plano da placa.")
+        normal = basis[-1]
+        if normal[np.argmax(np.abs(normal))] < 0:
+            normal = -normal
+        tangent = edge[1] - edge[0]
+        tangent_length = float(np.linalg.norm(tangent))
+        if tangent_length <= 1e-12:
+            raise ValueError("A aresta da placa possui comprimento nulo.")
+        tangent /= tangent_length
+        axis_u = points[1] - points[0]
+        axis_u /= max(float(np.linalg.norm(axis_u)), 1e-12)
+        axis_v = np.cross(normal, axis_u)
+        local = np.column_stack((centered @ axis_u, centered @ axis_v))
+        signed_area = 0.5 * float(np.sum(
+            local[:, 0] * np.roll(local[:, 1], -1)
+            - local[:, 1] * np.roll(local[:, 0], -1)
+        ))
+        winding = 1.0 if signed_area >= 0 else -1.0
+        inward = winding * np.cross(normal, tangent)
+        target_normal = target_normal / max(float(np.linalg.norm(target_normal)), 1e-12)
+        if abs(float(np.dot(target_normal, tangent))) > 1e-5:
+            raise ValueError("A face de referência precisa ser paralela à aresta da placa.")
+        if float(np.dot(target_normal, inward)) > 0:
+            target_normal = -target_normal
+        angle = math.degrees(math.atan2(
+            float(np.dot(target_normal, normal)),
+            -float(np.dot(target_normal, inward)),
+        ))
+        limit = self.solid_face_angle_limit_degrees
+        if abs(angle) > limit + 1e-9:
+            raise ValueError(f"A inclinação excede o limite de {limit:.1f}°.")
+        cosine = math.cos(math.radians(angle))
+        if abs(cosine) <= 1e-8:
+            raise ValueError("A inclinação da face é muito próxima de 90°.")
+        base_point = edge[0] + normal * float(plate.positioning_displacement)
+        geometric_offset = -float(
+            np.dot(target_normal, target_point - base_point)
+        ) / cosine
+        # The UI convention is positive outward, opposite the inward line offset.
+        offset_mm = -geometric_offset * 1000.0
+        return edge_name, offset_mm, angle
+
+    def _plate_edge_offset_to_face(
+        self, plate, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> tuple[str, float]:
+        """Find the nearest supported plate edge parallel to a picked face and solve YZ."""
+        points = np.asarray(plate.contour, dtype=float)
+        if len(points) < 3:
+            raise ValueError("A placa não possui arestas suficientes para alinhamento.")
+        centered = points - points[0]
+        _u, singular, basis = np.linalg.svd(centered, full_matrices=False)
+        if len(singular) < 2 or singular[1] <= 1e-12:
+            raise ValueError("Não foi possível calcular o plano da placa.")
+        plate_normal = basis[-1]
+        if plate_normal[np.argmax(np.abs(plate_normal))] < 0:
+            plate_normal = -plate_normal
+        axis_u = points[1] - points[0]
+        axis_u_length = float(np.linalg.norm(axis_u))
+        if axis_u_length <= 1e-12:
+            raise ValueError("A placa possui uma aresta de comprimento nulo.")
+        axis_u /= axis_u_length
+        axis_v = np.cross(plate_normal, axis_u)
+        local = np.column_stack((centered @ axis_u, centered @ axis_v))
+        signed_area = 0.5 * float(np.sum(
+            local[:, 0] * np.roll(local[:, 1], -1)
+            - local[:, 1] * np.roll(local[:, 0], -1)
+        ))
+        winding = 1.0 if signed_area >= 0 else -1.0
+        target_normal = np.asarray(target_normal, dtype=float)
+        target_length = float(np.linalg.norm(target_normal))
+        if target_length <= 1e-12:
+            raise ValueError("Não foi possível calcular a normal da face selecionada.")
+        target_normal = target_normal / target_length
+        target_point = np.asarray(target_point, dtype=float)
+        if not np.isfinite(target_point).all() or not np.isfinite(target_normal).all():
+            raise ValueError("A face selecionada possui uma geometria inválida.")
+
+        candidates = []
+        for edge_index in range(len(points)):
+            edge = points[[edge_index, (edge_index + 1) % len(points)]]
+            tangent = edge[1] - edge[0]
+            edge_length = float(np.linalg.norm(tangent))
+            if edge_length <= 1e-12 or abs(float(np.dot(target_normal, tangent / edge_length))) > 1e-5:
+                continue
+            edge_name = self._plate_support_for_edge(plate, edge_index)
+            if edge_name is None:
+                continue
+            inward = winding * np.cross(plate_normal, tangent / edge_length)
+            normal_component = float(np.dot(target_normal, inward))
+            if abs(normal_component) <= 1e-8:
+                continue
+            midpoint = 0.5 * (edge[0] + edge[1])
+            base_point = midpoint + plate_normal * float(plate.positioning_displacement)
+            signed_distance = float(np.dot(target_normal, base_point - target_point))
+            # The mesh applies inward * (-YZ), so solve the target plane using
+            # target_normal · (base - target) = YZ * target_normal · inward.
+            offset_mm = signed_distance / normal_component * 1000.0
+            candidates.append((abs(signed_distance), edge_index, edge_name, offset_mm))
+        if not candidates:
+            raise ValueError("A face selecionada não é paralela a uma aresta apoiada da placa.")
+        _distance, _edge_index, edge_name, offset_mm = min(candidates)
+        return edge_name, offset_mm
+
+    def _align_plate_endpoint_to_face(
+        self, plate_name: str, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> None:
+        plate = self.model.plates.get(plate_name)
+        if plate is None:
+            return
+        try:
+            edge_name, offset_mm = self._plate_edge_offset_to_face(
+                plate, target_point, target_normal,
+            )
+            saved = {
+                name: (float(offset), float(angle))
+                for name, offset, angle in plate.edge_positioning
+            }
+            old_angle = saved.get(edge_name, (0.0, 0.0))[1]
+            saved[edge_name] = (offset_mm, old_angle)
+            edge_values = tuple(
+                (name, *saved.get(name, (0.0, 0.0)))
+                for _kind, name in plate.supports
+            )
+            self.model_service.update_plate_edge_positioning(plate_name, edge_values)
+            self.scene.update_plate_rendering(plate_name)
+        except (KeyError, ValueError) as error:
+            self.history.append(
+                f"> <b>Alinhar extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._command_mode = "endpoint_alignment_bar_selection"
+        self._endpoint_alignment_source = None
+        self.scene.set_endpoint_alignment_target(None)
+        self.refresh_selected_property_panel(self.palette.active_group)
+        self.history.append(
+            "> <b>Alinhar extremidade</b> "
+            f"<span style='color:#57606a'>(Aresta {escape(edge_name)} alinhada; "
+            f"YZ = {offset_mm:.2f} mm. Selecione outra barra ou placa; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+
     def _translate_bar_positioning(self, names: tuple[str, ...], translation: np.ndarray) -> None:
         for name in names:
             bar = self.model.bars[name]
@@ -860,17 +1078,26 @@ class MainWindow(QMainWindow):
         if self._command_mode != "endpoint_alignment_face_selection":
             return
         try:
-            target_name, _cell_id, face_point, face_normal = hit
+            target_kind, target_name, target_cell_id, face_point, face_normal = hit
             face_point = np.asarray(face_point, dtype=float)
             face_normal = np.asarray(face_normal, dtype=float)
         except (TypeError, ValueError):
             return
-        source_name = self._endpoint_alignment_source_bar
-        target = self.model.bars.get(target_name)
-        if source_name is None or target is None:
+        source = self._endpoint_alignment_source
+        if source is None or target_kind not in {"bar", "plate"}:
+            return
+        source_kind, source_name = source
+        if source_kind == "plate":
+            if target_kind == "plate" and target_name == source_name:
+                self.history.append(
+                    "> <b>Alinhar extremidade</b> "
+                    "<span style='color:#8c959f'>(Selecione a face de outro elemento)</span>"
+                )
+                return
+            self._align_plate_endpoint_to_face(source_name, face_point, face_normal)
             return
         source_names = self._detailing_group_member_names(source_name)
-        if target_name in source_names:
+        if target_kind == "bar" and target_name in source_names:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
                 "<span style='color:#8c959f'>(Selecione uma face de outra barra conectada)</span>"
@@ -883,15 +1110,41 @@ class MainWindow(QMainWindow):
              else self.model.bars[member_name].end_node)
             for member_name, endpoint_index in outer_faces.values()
         }
-        target_group_names = self._detailing_group_member_names(target_name)
-        target_outer_nodes = {
-            (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
-             else self.model.bars[member_name].end_node)
-            for member_name, endpoint_index in group_endpoint_faces(
-                self.model, target_group_names,
-            ).values()
-        }
-        target_endpoints = (target.start_node, target.end_node)
+        if target_kind == "bar":
+            target_group_names = self._detailing_group_member_names(target_name)
+            target_outer_nodes = {
+                (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
+                 else self.model.bars[member_name].end_node)
+                for member_name, endpoint_index in group_endpoint_faces(
+                    self.model, target_group_names,
+                ).values()
+            }
+            target_members = [
+                ("bar", name, self.model.bars[name])
+                for name in target_group_names if name in self.model.bars
+            ]
+        else:
+            plate = self.model.plates.get(target_name)
+            if plate is None:
+                return
+            if target_cell_id >= 2:
+                edge_name = self._plate_support_for_edge(plate, target_cell_id - 2)
+                target_supports = tuple(
+                    (kind, name) for kind, name in plate.supports if name == edge_name
+                ) if edge_name is not None else ()
+            else:
+                target_supports = plate.supports
+            target_members = [
+                (kind, name, self.model.bars[name] if kind == "bar"
+                 else self.model.rigid_bars[name])
+                for kind, name in target_supports
+                if name in (self.model.bars if kind == "bar" else self.model.rigid_bars)
+            ]
+            target_outer_nodes = {
+                (name, node_name)
+                for _kind, name, member in target_members
+                for node_name in (member.start_node, member.end_node)
+            }
         candidates = []
         for candidate_name in source_names:
             source_candidate = self.model.bars.get(candidate_name)
@@ -901,29 +1154,34 @@ class MainWindow(QMainWindow):
             for source_node in endpoints:
                 if (candidate_name, source_node) not in outer_nodes:
                     continue
-                shared_nodes = set(endpoints).intersection(target_endpoints)
-                if (
-                    source_node in shared_nodes and len(shared_nodes) == 1
-                    and (target_name, source_node) in target_outer_nodes
-                ):
-                    candidates.append((source_candidate, (source_node, source_node)))
-                    continue
-                # A rigid bar connects distinct nodes at the ends of two bars.
-                for rigid in self.model.rigid_bars.values():
+                for target_bar_kind, target_bar_name, target_bar in target_members:
+                    if target_bar_kind == "bar" and target_bar_name in source_names:
+                        continue
+                    target_endpoints = (target_bar.start_node, target_bar.end_node)
+                    shared_nodes = set(endpoints).intersection(target_endpoints)
                     if (
-                        rigid.start_node == source_node and rigid.end_node in target_endpoints
-                        and (target_name, rigid.end_node) in target_outer_nodes
+                        source_node in shared_nodes and len(shared_nodes) == 1
+                        and (target_bar_name, source_node) in target_outer_nodes
                     ):
-                        candidates.append((source_candidate, (source_node, rigid.end_node)))
-                    elif (
-                        rigid.end_node == source_node and rigid.start_node in target_endpoints
-                        and (target_name, rigid.start_node) in target_outer_nodes
-                    ):
-                        candidates.append((source_candidate, (source_node, rigid.start_node)))
+                        candidates.append((source_candidate, (source_node, source_node)))
+                        continue
+                    # A rigid bar connects distinct nodes at the ends of two bars.
+                    for rigid in self.model.rigid_bars.values():
+                        if (
+                            rigid.start_node == source_node and rigid.end_node in target_endpoints
+                            and (target_bar_name, rigid.end_node) in target_outer_nodes
+                        ):
+                            candidates.append((source_candidate, (source_node, rigid.end_node)))
+                        elif (
+                            rigid.end_node == source_node and rigid.start_node in target_endpoints
+                            and (target_bar_name, rigid.start_node) in target_outer_nodes
+                        ):
+                            candidates.append((source_candidate, (source_node, rigid.start_node)))
         if len(candidates) != 1:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#8c959f'>(A face deve pertencer a uma barra ligada a uma extremidade externa do grupo)</span>"
+                "<span style='color:#8c959f'>(Selecione uma face de barra ou de uma placa apoiada "
+                "em uma barra ligada à extremidade externa do grupo)</span>"
             )
             return
         source, endpoint_pair = candidates[0]
@@ -998,7 +1256,7 @@ class MainWindow(QMainWindow):
             return
 
         self._command_mode = "endpoint_alignment_bar_selection"
-        self._endpoint_alignment_source_bar = None
+        self._endpoint_alignment_source = None
         self.scene.set_endpoint_alignment_target(None)
         self.refresh_member_positioning(source.name)
         self.properties.update_positioning_status(source.name)
@@ -1007,7 +1265,7 @@ class MainWindow(QMainWindow):
             "> <b>Alinhar extremidade</b> "
             f"<span style='color:#57606a'>(Extremidade {endpoint} alinhada; "
             f"{endpoint} = {offset_mm:.2f} mm; αY/αZ = {alpha_y:.2f}°/{alpha_z:.2f}°. "
-            "Selecione outra barra para continuar; Esc encerra)</span>"
+            "Selecione outra barra ou placa para continuar; Esc encerra)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -3239,7 +3497,7 @@ class MainWindow(QMainWindow):
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
         }:
             self._command_mode = None
-            self._endpoint_alignment_source_bar = None
+            self._endpoint_alignment_source = None
             self.scene.set_endpoint_alignment_target(None)
             self.clear_selection()
             self.history.append(
@@ -3590,20 +3848,20 @@ class MainWindow(QMainWindow):
                 self.clear_selection()
             return
         if self._command_mode == "endpoint_alignment_bar_selection":
-            if kind != "bar":
+            if kind not in {"bar", "plate"}:
                 self.history.append(
                     "> <b>Alinhar extremidade</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                    "<span style='color:#8c959f'>(Selecione uma barra ou placa)</span>"
                 )
                 self.clear_selection()
                 return
-            self._endpoint_alignment_source_bar = name
+            self._endpoint_alignment_source = (kind, name)
             self._command_mode = "endpoint_alignment_face_selection"
             self.clear_selection()
             self.scene.set_endpoint_alignment_target(name)
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#57606a'>(Selecione uma face de uma barra conectada; Esc cancela)</span>"
+                "<span style='color:#57606a'>(Selecione uma face de uma barra ou outra placa; Esc cancela)</span>"
             )
             self.scene.plotter.setFocus()
             return

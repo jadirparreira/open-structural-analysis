@@ -1,5 +1,7 @@
 """Render plate boundaries and depth crossings with antialiasing enabled."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import pyvista as pv
@@ -14,9 +16,14 @@ from osa.rendering.scene_batched import StructureScene
 class _PlateScene:
     _add_plates = StructureScene._add_plates
     _plate_meshes = StructureScene._plate_meshes
+    _detailed_plate_meshes = StructureScene._detailed_plate_meshes
+    _plate_display_contour = StructureScene._plate_display_contour
+    _plate_fe_wire_mesh = StructureScene._plate_fe_wire_mesh
+    _deformed_plate_names = StructureScene._deformed_plate_names
     _update_plate_edge_style = StructureScene._update_plate_edge_style
     _update_plate_antialiasing = StructureScene._update_plate_antialiasing
     _solid_highlight_line_width = 2.0
+    _detailing_session_active = False
 
 
 def test_older_renderer_without_oit_switch_remains_supported():
@@ -37,6 +44,46 @@ def test_original_transparency_mode_is_restored(previous):
         assert plotter.renderer.GetUseOIT() == previous
     finally:
         plotter.close()
+
+
+def test_plate_positioning_is_applied_only_to_detailing_solids():
+    from osa.analysis.pynite.plate_mesh import generate_plate_mesh
+
+    contour = ((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0))
+    model = StructuralModel()
+    for index, point in enumerate(contour, start=1):
+        model.add_node(f'N{index}', *point)
+    supports = []
+    for index in range(4):
+        name = f'B{index + 1}'
+        model.add_bar(name, f'N{index + 1}', f'N{(index + 1) % 4 + 1}')
+        supports.append(('bar', name))
+    plate = model.add_plate(
+        contour,
+        name='P1',
+        supports=supports,
+        positioning_displacement=.15,
+        edge_positioning=(('B1', -100, 0),),
+    )
+    scene = _PlateScene()
+    scene._model = model
+    scene._detailing_session_active = True
+    scene._solid_members_visible = False
+
+    analytical_mesh, _ = scene._plate_meshes(plate)
+    np.testing.assert_allclose(scene._plate_display_contour(plate), contour)
+    np.testing.assert_allclose(analytical_mesh.points, contour)
+    analysis_mesh = generate_plate_mesh({plate.name: plate})
+    base_analysis_mesh = generate_plate_mesh({
+        plate.name: replace(plate, positioning_displacement=0, edge_positioning=()),
+    })
+    np.testing.assert_allclose(analysis_mesh.nodes, base_analysis_mesh.nodes)
+
+    scene._solid_members_visible = True
+    detailed_mesh, _ = scene._plate_meshes(plate)
+    unadjusted_plate = replace(plate, edge_positioning=())
+    unadjusted_detail_mesh, _ = scene._plate_meshes(unadjusted_plate)
+    assert not np.allclose(detailed_mesh.bounds, unadjusted_detail_mesh.bounds)
 
 
 def _project(plotter, point, height):
@@ -96,6 +143,8 @@ def test_antialiased_adjacent_plates_have_no_bright_seam(direction, samples):
         scene._antialiasing_samples = samples
         scene._plate_antialiasing = PlateAntialiasing(plotter.renderer)
         scene._solid_members_visible = False
+        scene._analysis_visible = False
+        scene._active_result_type = ""
         scene._selected_elements = ()
         scene._hovered = None
         scene._add_plates()

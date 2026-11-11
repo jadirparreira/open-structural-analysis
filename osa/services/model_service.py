@@ -326,6 +326,9 @@ class ModelService:
             name, positioning_displacement=displacement,
         )
 
+    def update_plate_edge_positioning(self, name: str, edge_positioning):
+        return self.model.update_plate(name, edge_positioning=edge_positioning)
+
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 

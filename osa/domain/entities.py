@@ -109,6 +109,9 @@ class Plate:
     material: str = "Concreto Estrutural"
     # Deslocamento visual em metros ao longo da normal global orientada do plano.
     positioning_displacement: float = 0.0
+    # Só afetam a geometria exibida no detalhamento; a análise usa plate.contour.
+    # Itens: nome da barra de contorno, deslocamento (mm), inclinação (graus).
+    edge_positioning: tuple[tuple[str, float, float], ...] = ()
 
 
 # Compatibilidade pública com o nome utilizado até agora.

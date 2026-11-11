@@ -70,6 +70,7 @@ class StructuralModel:
     def add_plate(
         self, contour, *, name: str | None = None, supports=(), color="#6e7781",
         thickness_mm=100.0, material: str | None = None, positioning_displacement=0.0,
+        edge_positioning=(),
     ) -> Plate:
         from osa.services.plate_contour import plate_contour
 
@@ -102,9 +103,10 @@ class StructuralModel:
         positioning_displacement = float(positioning_displacement)
         if not math.isfinite(positioning_displacement):
             raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        edge_positioning = self._validated_plate_edge_positioning(edge_positioning, supports)
         plate = Plate(
             name, ordered, supports, color.lower(), thickness_mm, material,
-            positioning_displacement,
+            positioning_displacement, edge_positioning,
         )
         self.plates[name] = plate
         self._touch()
@@ -112,7 +114,7 @@ class StructuralModel:
 
     def update_plate(
         self, name: str, *, color=None, thickness_mm=None, material=None,
-        positioning_displacement=None,
+        positioning_displacement=None, edge_positioning=None,
     ) -> None:
         plate = self.plates[name]
         if color is None:
@@ -131,13 +133,35 @@ class StructuralModel:
         )
         if not math.isfinite(displacement):
             raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        edges = (
+            plate.edge_positioning if edge_positioning is None
+            else self._validated_plate_edge_positioning(edge_positioning, plate.supports)
+        )
         updated = replace(
             plate, color=color.lower(), thickness_mm=thickness, material=material,
-            positioning_displacement=displacement,
+            positioning_displacement=displacement, edge_positioning=edges,
         )
         if updated != plate:
             self.plates[name] = updated
             self._touch()
+
+    @staticmethod
+    def _validated_plate_edge_positioning(values, supports):
+        valid_names = {name for _kind, name in supports}
+        normalized = []
+        seen = set()
+        for item in values:
+            if len(item) != 3:
+                raise ValueError("Cada aresta deve ter nome, deslocamento e inclinação.")
+            edge_name, displacement, angle = item
+            if not isinstance(edge_name, str) or edge_name not in valid_names or edge_name in seen:
+                raise ValueError("A identificação da aresta da placa é inválida.")
+            displacement, angle = float(displacement), float(angle)
+            if not math.isfinite(displacement) or not math.isfinite(angle):
+                raise ValueError("Os parâmetros da aresta devem ser finitos.")
+            seen.add(edge_name)
+            normalized.append((edge_name, displacement, angle))
+        return tuple(normalized)
 
     def remove_plate(self, name: str) -> None:
         if name not in self.plates:

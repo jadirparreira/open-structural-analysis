@@ -1881,6 +1881,13 @@ class StructureScene(QWidget):
     def _plate_meshes(self, plate):
         points = self._plate_display_contour(plate)
         count = len(points)
+        detailing_solid = (
+            self._detailing_session_active and self._solid_members_visible
+        )
+        if detailing_solid and (plate.edge_positioning or plate.supports):
+            detailed = self._detailed_plate_meshes(plate, points)
+            if detailed is not None:
+                return detailed
         face = np.asarray([count, *range(count)])
         if self._solid_members_visible:
             _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
@@ -1902,6 +1909,136 @@ class StructureScene(QWidget):
         edges = pv.PolyData(edge_points)
         edges.verts = np.empty(0, dtype=np.int64)
         edges.lines = np.asarray(lines)
+        return mesh, edges
+
+    def _detailed_plate_meshes(self, plate, points):
+        """Build the detailing solid from independent, inclined contour faces."""
+        points = np.asarray(points, dtype=float)
+        if len(points) < 3:
+            return None
+        centered = points - points[0]
+        _u, singular, basis = np.linalg.svd(centered, full_matrices=False)
+        if len(singular) < 2 or singular[1] <= 1e-12:
+            return None
+        normal = basis[-1]
+        if normal[np.argmax(np.abs(normal))] < 0:
+            normal = -normal
+        axis_u = points[1] - points[0]
+        axis_u_length = float(np.linalg.norm(axis_u))
+        if axis_u_length <= 1e-12:
+            return None
+        axis_u /= axis_u_length
+        axis_v = np.cross(normal, axis_u)
+        axis_v /= max(float(np.linalg.norm(axis_v)), 1e-12)
+        local = np.column_stack((centered @ axis_u, centered @ axis_v))
+        edge_count = len(local)
+        tangents = np.roll(local, -1, axis=0) - local
+        lengths = np.linalg.norm(tangents, axis=1)
+        if np.any(lengths <= 1e-12):
+            return None
+        tangents /= lengths[:, None]
+        signed_area = 0.5 * float(np.sum(
+            local[:, 0] * np.roll(local[:, 1], -1)
+            - local[:, 1] * np.roll(local[:, 0], -1)
+        ))
+        winding = 1.0 if signed_area >= 0 else -1.0
+        inward = winding * np.column_stack((-tangents[:, 1], tangents[:, 0]))
+
+        edge_settings = {}
+        saved = {name: (float(offset), float(angle))
+                 for name, offset, angle in plate.edge_positioning}
+        for kind, name in plate.supports:
+            member = (
+                self._model.bars.get(name) if kind == "bar"
+                else self._model.rigid_bars.get(name)
+            )
+            if member is None:
+                continue
+            start_node = self._model.nodes[member.start_node]
+            end_node = self._model.nodes[member.end_node]
+            endpoints = np.asarray((
+                (start_node.x, start_node.y, start_node.z),
+                (end_node.x, end_node.y, end_node.z),
+            ), dtype=float)
+            for index in range(edge_count):
+                edge = np.asarray(plate.contour, dtype=float)[
+                    [index, (index + 1) % edge_count]
+                ]
+                direct = max(np.linalg.norm(endpoints[0] - edge[0]),
+                             np.linalg.norm(endpoints[1] - edge[1]))
+                reverse = max(np.linalg.norm(endpoints[0] - edge[1]),
+                              np.linalg.norm(endpoints[1] - edge[0]))
+                if min(direct, reverse) <= 1e-7:
+                    edge_settings[index] = saved.get(name, (0.0, 0.0))
+                    break
+
+        if not edge_settings:
+            return None
+        offsets = np.zeros(edge_count, dtype=float)
+        angles = np.zeros(edge_count, dtype=float)
+        for index, (offset_mm, angle_degrees) in edge_settings.items():
+            # Positive YZ values expand the plate; negative values shorten it.
+            offsets[index] = -offset_mm / 1000.0
+            angles[index] = np.clip(angle_degrees, -89.9, 89.9)
+        half_thickness = float(plate.thickness_mm) / 2000.0
+        angle_shift = half_thickness * np.tan(np.deg2rad(angles))
+
+        def offset_loop(edge_offsets):
+            shifted_starts = local + inward * edge_offsets[:, None]
+            vertices = np.empty_like(local)
+            for index in range(edge_count):
+                previous = (index - 1) % edge_count
+                direction_a = tangents[previous]
+                direction_b = tangents[index]
+                denominator = direction_a[0] * direction_b[1] - direction_a[1] * direction_b[0]
+                if abs(denominator) <= 1e-10:
+                    vertices[index] = local[index] + 0.5 * (
+                        inward[previous] * edge_offsets[previous]
+                        + inward[index] * edge_offsets[index]
+                    )
+                    continue
+                delta = shifted_starts[index] - shifted_starts[previous]
+                parameter = (delta[0] * direction_b[1] - delta[1] * direction_b[0]) / denominator
+                vertices[index] = shifted_starts[previous] + parameter * direction_a
+            return vertices
+
+        bottom_2d = offset_loop(offsets - angle_shift)
+        top_2d = offset_loop(offsets + angle_shift)
+        origin = points[0]
+
+        def to_world(loop, normal_offset):
+            return (
+                origin + loop[:, :1] * axis_u + loop[:, 1:] * axis_v
+                + normal * normal_offset
+            )
+
+        bottom = to_world(bottom_2d, -half_thickness)
+        top = to_world(top_2d, half_thickness)
+        vertices = np.vstack((bottom, top))
+        top_ids = list(range(edge_count, 2 * edge_count))
+        bottom_ids = list(range(edge_count))
+        if winding < 0:
+            top_ids.reverse()
+            bottom_ids.reverse()
+        faces = [edge_count, *top_ids, edge_count, *reversed(bottom_ids)]
+        for index in range(edge_count):
+            next_index = (index + 1) % edge_count
+            quad = [index, next_index, next_index + edge_count, index + edge_count]
+            if winding < 0:
+                quad.reverse()
+            faces.extend((4, *quad))
+        mesh = pv.PolyData(vertices, np.asarray(faces, dtype=np.int64)).compute_normals(
+            cell_normals=True, point_normals=False, consistent_normals=True,
+            auto_orient_normals=True, inplace=False,
+        )
+        edge_points = vertices
+        lines = [edge_count + 1, *range(edge_count), 0,
+                 edge_count + 1, *range(edge_count, 2 * edge_count), edge_count]
+        for index in range(edge_count):
+            lines.extend((2, index, index + edge_count))
+        edges = pv.PolyData(edge_points)
+        edges.verts = np.empty(0, dtype=np.int64)
+        edges.lines = np.asarray(lines, dtype=np.int64)
         return mesh, edges
 
     def _plate_fe_wire_mesh(self, plate):
@@ -1970,6 +2107,7 @@ class StructureScene(QWidget):
                 plate.name,
                 tuple(map(tuple, self._plate_display_contour(plate))),
                 plate.thickness_mm,
+                plate.edge_positioning,
             )
             for plate in self._model.plates.values()
         )
@@ -2490,24 +2628,38 @@ class StructureScene(QWidget):
     def _set_endpoint_alignment_face_highlight(self, hit) -> bool:
         if hit is None:
             return self._clear_endpoint_alignment_face_highlight()
-        member_name, cell_id, _point, hit_normal = hit
-        batch = self._member_batch
-        if batch is None or member_name not in batch.face_cell_ranges:
-            return self._clear_endpoint_alignment_face_highlight()
-        cell_start, cell_end = batch.face_cell_ranges[member_name]
-        normals = batch.faces.cell_data.get("Normals")
+        kind, target_name, cell_id, _point, hit_normal = hit
+        if kind == "plate":
+            actor = self._plate_actors.get(target_name)
+            if actor is None:
+                return self._clear_endpoint_alignment_face_highlight()
+            data = pv.wrap(actor.GetMapper().GetInput())
+            if cell_id < 0 or cell_id >= data.n_cells:
+                return self._clear_endpoint_alignment_face_highlight()
+            name = target_name
+            source = data
+            normals = data.cell_data.get("Normals")
+            cell_start, cell_end = cell_id, cell_id + 1
+        else:
+            batch = self._member_batch
+            if batch is None or target_name not in batch.face_cell_ranges:
+                return self._clear_endpoint_alignment_face_highlight()
+            cell_start, cell_end = batch.face_cell_ranges[target_name]
+            name = target_name
+            source = batch.faces
+            normals = source.cell_data.get("Normals")
         plane_point = np.asarray(
-            [batch.faces.GetCell(cell_id).GetPoints().GetPoint(index)
-             for index in range(batch.faces.GetCell(cell_id).GetNumberOfPoints())],
+            [source.GetCell(cell_id).GetPoints().GetPoint(index)
+             for index in range(source.GetCell(cell_id).GetNumberOfPoints())],
             dtype=float,
         ).mean(axis=0)
         plane_normal = np.asarray(hit_normal, dtype=float)
-        bounds = np.asarray(batch.faces.bounds, dtype=float)
+        bounds = np.asarray(source.bounds, dtype=float)
         scale = max(1.0, float(np.linalg.norm(bounds[1::2] - bounds[::2])))
         tolerance = max(1e-8, scale * 1e-8)
         coplanar_cells = []
         for candidate_id in range(cell_start, cell_end):
-            candidate = batch.faces.GetCell(candidate_id)
+            candidate = source.GetCell(candidate_id)
             candidate_points = np.asarray(
                 [candidate.GetPoints().GetPoint(index)
                  for index in range(candidate.GetNumberOfPoints())],
@@ -2529,12 +2681,12 @@ class StructureScene(QWidget):
             coplanar_cells.append(candidate_id)
         if not coplanar_cells:
             coplanar_cells = [cell_id]
-        key = member_name, tuple(coplanar_cells)
+        key = kind, name, tuple(coplanar_cells)
         if key == self._endpoint_alignment_face_hover:
             return False
         self._clear_endpoint_alignment_face_highlight()
         self._endpoint_alignment_face_hover = key
-        surface = batch.faces.extract_cells(coplanar_cells).extract_surface(
+        surface = source.extract_cells(coplanar_cells).extract_surface(
             algorithm="dataset_surface",
         )
         outline = surface.extract_feature_edges(
@@ -2546,7 +2698,7 @@ class StructureScene(QWidget):
         actor = self.plotter.add_mesh(
             outline,
             color="#24292f",
-            line_width=self._highlight_line_width("hover", "bar", member_name),
+            line_width=self._highlight_line_width("hover", kind, name),
             render_lines_as_tubes=True, lighting=False, pickable=False,
             reset_camera=False, render=False,
         )
@@ -2557,7 +2709,7 @@ class StructureScene(QWidget):
     def _pick_and_highlight_endpoint_alignment_face(self) -> bool:
         if self._endpoint_alignment_target is None:
             return self._clear_endpoint_alignment_face_highlight()
-        hit = self._pick_solid_face()
+        hit = self._pick_alignment_face()
         return self._set_endpoint_alignment_face_highlight(hit)
 
     @staticmethod
@@ -4788,7 +4940,7 @@ class StructureScene(QWidget):
             self.analysis_point_clicked.emit(kind, name, np.asarray(point, dtype=float))
             return
         if self._endpoint_alignment_target is not None:
-            hit = self._pick_solid_face()
+            hit = self._pick_alignment_face()
             if hit is not None:
                 QTimer.singleShot(
                     0,
@@ -6059,10 +6211,14 @@ class StructureScene(QWidget):
         return center + normal * (plate.thickness_mm / 2000.0)
 
     def _plate_display_contour(self, plate) -> np.ndarray:
-        """Return the analytical contour with its detailing-only normal offset."""
+        """Return the contour, applying positioning only to detailing solids."""
         points = np.asarray(plate.contour, dtype=float)
         displacement = float(getattr(plate, "positioning_displacement", 0.0))
-        if not self._detailing_session_active or abs(displacement) <= 1e-12:
+        if (
+            not self._detailing_session_active
+            or not self._solid_members_visible
+            or abs(displacement) <= 1e-12
+        ):
             return points
         _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
         normal = basis[-1]
