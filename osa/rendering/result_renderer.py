@@ -550,12 +550,16 @@ class ResultRenderer:
         if field is None:
             return None
         key, component = field
+        # Keep plate flexural signs consistent with the convention used for
+        # member Fletor Y/Z diagrams. PyNite's plate bending convention has
+        # the opposite polarity to the convention used by this application.
+        display_sign = -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0
         element_values = {}
         for name, element in plate_result.get("elements", {}).items():
             components = np.asarray(element.get(key, ()), dtype=float).reshape(-1)
             if len(components) <= component:
                 continue
-            element_values[name] = float(components[component])
+            element_values[name] = float(components[component]) * display_sign
         return (component, element_values) if element_values else None
 
     @classmethod
@@ -593,11 +597,15 @@ class ResultRenderer:
         if field is None:
             return None
         key, component = field
+        display_sign = -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0
         values_by_element = {}
         for name, element in plate_result.get("elements", {}).items():
             nodal = np.asarray(element.get(key, ()), dtype=float)
             if nodal.ndim != 2 or nodal.shape[0] != 4 or nodal.shape[1] <= component:
                 continue
+            if display_sign < 0.0:
+                nodal = nodal.copy()
+                nodal[:, component] *= display_sign
             values_by_element[name] = nodal
         return (component, values_by_element) if values_by_element else None
 
