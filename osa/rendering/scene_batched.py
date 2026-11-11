@@ -537,6 +537,7 @@ class StructureScene(QWidget):
         self._verification_identifier_modes = {"name": False, "utilization": False}
         self._verification_palette_visible = False
         self._utilization_thermometer_visible = False
+        self._solid_members_preference = False
         self._solid_members_visible = False
         self._member_releases_visible = True
         self._semirigid_links_visible = True
@@ -1773,12 +1774,19 @@ class StructureScene(QWidget):
                 target for target in candidates
                 if target[0] != "bar" or target[1] not in solid_names
             ]
-        solid = self._pick_solid_member(preview=preview)
+        plate_hit = self._pick_plate_world_hit()
+        candidates = [
+            target for target in candidates
+            if not self._target_hidden_by_plate(target)
+        ]
+        solid_hit = self._pick_solid_face(preview=preview)
+        solid = None
+        if solid_hit is not None and not self._world_point_hidden_by_plate(solid_hit[2]):
+            solid = ("bar", solid_hit[0])
         if solid is None:
             if not candidates:
-                plate = self._pick_plate()
-                if plate is not None:
-                    candidates.append(plate)
+                if plate_hit is not None:
+                    candidates.append(plate_hit[0])
             return candidates
         if solid in candidates:
             candidates.remove(solid)
@@ -2052,7 +2060,8 @@ class StructureScene(QWidget):
             self._plate_manual_actors.append(actor)
         self.plotter.render()
 
-    def _pick_plate(self):
+    def _pick_plate_world_hit(self, position: tuple[float, float] | None = None):
+        """Return the closest visible plate and the ray intersection point."""
         if self._analysis_visible:
             picker = vtk.vtkCellPicker()
             picker.SetTolerance(0.0005)
@@ -2065,26 +2074,105 @@ class StructureScene(QWidget):
             for actor in actors:
                 actor.SetPickable(True)
                 picker.AddPickList(actor)
-            x, y = self.plotter.iren.get_event_position()
+            x, y = position or self.plotter.iren.get_event_position()
             hit = bool(actors) and picker.Pick(x, y, 0, self.plotter.renderer)
             for actor in actors:
                 actor.SetPickable(False)
             if hit:
                 plate_name = str(picker.GetActor().GetObjectName()).removeprefix("result-plate:")
-                return "plate", plate_name
+                return ("plate", plate_name), np.asarray(picker.GetPickPosition(), dtype=float)
         if not self._plate_actors:
             return None
         picker = vtk.vtkCellPicker()
         picker.SetTolerance(0.0005)
         picker.PickFromListOn()
         for actor in self._plate_actors.values():
-            picker.AddPickList(actor)
-        x, y = self.plotter.iren.get_event_position()
+            if actor.GetVisibility():
+                picker.AddPickList(actor)
+        x, y = position or self.plotter.iren.get_event_position()
         if not picker.Pick(x, y, 0, self.plotter.renderer):
             return None
         picked = picker.GetActor()
-        return next((("plate", name) for name, actor in self._plate_actors.items()
-                     if actor == picked), None)
+        target = next((("plate", name) for name, actor in self._plate_actors.items()
+                       if actor == picked), None)
+        if target is None:
+            return None
+        return target, np.asarray(picker.GetPickPosition(), dtype=float)
+
+    def _pick_plate(self):
+        hit = self._pick_plate_world_hit()
+        return None if hit is None else hit[0]
+
+    def _world_pick_depth(self, point: object) -> float | None:
+        renderer = self.plotter.renderer
+        world = np.asarray(point, dtype=float).reshape(-1)
+        if world.size != 3 or not np.isfinite(world).all():
+            return None
+        renderer.SetWorldPoint(float(world[0]), float(world[1]), float(world[2]), 1.0)
+        renderer.WorldToDisplay()
+        display = renderer.GetDisplayPoint()
+        return float(display[2]) if display is not None else None
+
+    def _target_world_pick_point(self, target: tuple[str, str]) -> np.ndarray | None:
+        kind, name = target
+        if kind == "node":
+            node = self._model.nodes.get(name)
+            if node is None:
+                return None
+            point = np.asarray((node.x, node.y, node.z), dtype=float)
+            if self._analysis_visible:
+                point += self._displayed_node_displacements().get(name, np.zeros(3))
+            return point
+        if kind not in {"bar", "rigid_bar"} or self._pointer_position is None:
+            return None
+        elements = self._model.bars if kind == "bar" else self._model.rigid_bars
+        element = elements.get(name)
+        if element is None:
+            return None
+        first = self._model.nodes.get(element.start_node)
+        last = self._model.nodes.get(element.end_node)
+        if first is None or last is None:
+            return None
+        first_world = np.asarray((first.x, first.y, first.z), dtype=float)
+        last_world = np.asarray((last.x, last.y, last.z), dtype=float)
+        targets, starts, deltas = self._pick_projection_data()[3:6]
+        try:
+            index = targets.index(target)
+        except ValueError:
+            return None
+        delta = deltas[index]
+        length_squared = float(np.dot(delta, delta))
+        if length_squared <= 1e-12:
+            fraction = 0.0
+        else:
+            fraction = float(np.dot(np.asarray(self._pointer_position) - starts[index], delta) / length_squared)
+            fraction = min(1.0, max(0.0, fraction))
+        return first_world + fraction * (last_world - first_world)
+
+    def _target_hidden_by_plate(self, target: tuple[str, str]) -> bool:
+        point = self._target_world_pick_point(target)
+        return point is not None and self._world_point_hidden_by_plate(point)
+
+    def _world_point_hidden_by_plate(self, point: object) -> bool:
+        world = np.asarray(point, dtype=float).reshape(-1)
+        if world.size != 3 or not np.isfinite(world).all():
+            return False
+        target_depth = self._world_pick_depth(world)
+        if target_depth is None:
+            return False
+        renderer = self.plotter.renderer
+        renderer.SetWorldPoint(float(world[0]), float(world[1]), float(world[2]), 1.0)
+        renderer.WorldToDisplay()
+        display = renderer.GetDisplayPoint()
+        plate_hit = self._pick_plate_world_hit((float(display[0]), float(display[1])))
+        if plate_hit is None:
+            return False
+        plate_depth = self._world_pick_depth(plate_hit[1])
+        if plate_depth is None:
+            return False
+        # Smaller display depth is closer to the camera. The small allowance
+        # keeps nodes on a plate edge selectable when they share its surface.
+        return target_depth > plate_depth + 1e-4
 
     def _configure_solid_picker(self) -> None:
         self._solid_picker.InitializePickList()
@@ -2415,10 +2503,15 @@ class StructureScene(QWidget):
         """Return only a node candidate for the restricted Analysis hover."""
         if self._pointer_position is None:
             return None
-        return next(
+        target = next(
             (target for target in self._screen_pick_candidates() if target[0] == "node"),
             None,
         )
+        if target is None:
+            return None
+        if self._target_hidden_by_plate(target):
+            return None
+        return target
 
     def _cycle_hover(self) -> None:
         if self._camera_interacting or self._analysis_visible:
@@ -2994,7 +3087,7 @@ class StructureScene(QWidget):
             "plate_labels_visible": self._labels_visibility["plate"],
             "local_axes_visible": self._local_axes_visible,
             "nodes_visible": self._nodes_visible,
-            "solid_members_visible": self._solid_members_visible,
+            "solid_members_visible": self._solid_members_preference,
             "member_releases_visible": self._member_releases_visible,
             "semirigid_links_visible": self._semirigid_links_visible,
             "node_supports_visible": self._node_supports_visible,
@@ -5591,6 +5684,13 @@ class StructureScene(QWidget):
             self.render_model(self._model)
 
     def set_solid_members_visible(self, visible: bool) -> None:
+        """Store the user's choice and apply it when the active session allows it."""
+        self._solid_members_preference = bool(visible)
+        self._apply_solid_members_visibility(
+            self._solid_members_preference and not (self._actions_visible or self._analysis_visible),
+        )
+
+    def _apply_solid_members_visibility(self, visible: bool) -> None:
         visible = bool(visible)
         if visible == self._solid_members_visible:
             return
@@ -6123,6 +6223,9 @@ class StructureScene(QWidget):
         if visible == self._actions_visible:
             return
         self._actions_visible = visible
+        self._apply_solid_members_visibility(
+            self._solid_members_preference and not (self._actions_visible or self._analysis_visible),
+        )
         current_key = (
             id(self._model), self._model.revision, self._model.view_revision, self._active_load_case,
             tuple(sorted(self._action_visibility.items())),
@@ -6146,6 +6249,9 @@ class StructureScene(QWidget):
         if visible == self._analysis_visible:
             return
         self._analysis_visible = visible
+        self._apply_solid_members_visibility(
+            self._solid_members_preference and not (self._actions_visible or self._analysis_visible),
+        )
         if not visible:
             self.hide_analysis_point_result()
         if visible:

@@ -3854,7 +3854,7 @@ class MainWindow(QMainWindow):
         worker = ProjectLoadWorker(
             path,
             normalize_member_directions=self._member_direction_normalization_enabled,
-            solid_members_visible=self.scene._solid_members_visible,
+            solid_members_visible=self.scene._solid_members_preference,
             solid_positioning_enabled=self.palette.active_group == "Detalhamento",
             reference_plane=self.scene._reference_plane_mode,
             preferred_plane_level=self.scene._reference_plane_z,
