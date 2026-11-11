@@ -6377,7 +6377,10 @@ class StructureScene(QWidget):
         # Palette construction can select its initial session before the scene
         # has finished creating the actors required by a batch rebuild.
         if self._model is not None and hasattr(self, "_reveal_preview_line_actor"):
-            self._refresh_member_batch()
+            if self._detailing_session_active and self._solid_members_visible:
+                self._refresh_detail_subtraction_geometry()
+            else:
+                self._refresh_member_batch()
         else:
             return
         self._sync_highlights()
@@ -6399,13 +6402,26 @@ class StructureScene(QWidget):
         self._sync_verification_identifier_labels()
         if self._model is not None:
             if changed:
-                for name in self._plate_actors:
-                    self.update_plate_rendering(name, render=False)
+                if self._solid_members_visible:
+                    self._refresh_detail_subtraction_geometry()
+                else:
+                    self._detail_subtraction_meshes = {}
+                    self._refresh_member_batch()
+                    for name in self._plate_actors:
+                        self.update_plate_rendering(name, render=False)
                 self._schedule_plate_intersections()
                 if self._plate_actors:
                     self.plotter.reset_camera_clipping_range()
             self._sync_detail_subtraction_previews()
             self.plotter.render()
+
+    def _refresh_detail_subtraction_geometry(self) -> None:
+        """Rebuild cutters and every target that depends on them together."""
+        self._detail_subtraction_failures.clear()
+        self._detail_subtraction_meshes = self._build_detail_subtraction_meshes(self._model)
+        self._refresh_member_batch()
+        for name in self._plate_actors:
+            self.update_plate_rendering(name, render=False)
 
     def _rigid_bars_visible_for_session(self) -> bool:
         return not self._detailing_session_active or not self._solid_members_visible

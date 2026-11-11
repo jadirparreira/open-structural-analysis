@@ -329,8 +329,8 @@ class FloatingPalette(QFrame):
         if hasattr(self.window, "detailing_top_palette"):
             self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
         if hasattr(self.window, "scene"):
-            self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
             self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
+            self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
             if next_group == "Ações":
                 self.window.scene.set_actions_visible(True)
                 self.window.scene.set_analysis_visible(False)
