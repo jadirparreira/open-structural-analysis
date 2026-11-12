@@ -357,6 +357,12 @@ class DetailingViewViewport(QFrame):
 
     def generate_dxf_segments(self, model, plane: str, coordinate, **settings):
         """Run the exact vector hidden-line pipeline only when DXF is requested."""
+        return self.generate_dxf_segments_with_sources(
+            model, plane, coordinate, **settings,
+        )[0]
+
+    def generate_dxf_segments_with_sources(self, model, plane: str, coordinate, **settings):
+        """Return the projected linework and the model element owning each segment."""
         cache_key = self._view_key(model, plane, coordinate, settings)
         cached = self._dxf_cache.get(cache_key)
         if cached is not None:
@@ -369,12 +375,13 @@ class DetailingViewViewport(QFrame):
             calculator, model, plane, coordinate, **settings
         )
         segments = tuple(calculator._segments_2d)
+        sources = tuple(calculator._segment_sources)
         if segments:
-            self._dxf_cache[cache_key] = segments
+            self._dxf_cache[cache_key] = (segments, sources)
             self._dxf_cache.move_to_end(cache_key)
             while len(self._dxf_cache) > self._dxf_cache_limit:
                 self._dxf_cache.popitem(last=False)
-        return segments
+        return segments, sources
 
     def _detail_scene_for_model(self, model):
         dialog = self.window()

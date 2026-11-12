@@ -111,6 +111,8 @@ class ProjectSerializer:
         }
         if model.import_metadata:
             data["import_metadata"] = copy.deepcopy(model.import_metadata)
+        if model.detailing_data:
+            data["detailing_data"] = copy.deepcopy(model.detailing_data)
         if thumbnail:
             data["thumbnail"] = {"format": "png", "data": thumbnail}
         return data
@@ -462,4 +464,8 @@ class ProjectSerializer:
         model.view_revision += 1
         metadata = data.get("import_metadata", {})
         model.import_metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+        detailing_data = data.get("detailing_data", {})
+        model.detailing_data = (
+            copy.deepcopy(detailing_data) if isinstance(detailing_data, dict) else {}
+        )
         model.revision += 1

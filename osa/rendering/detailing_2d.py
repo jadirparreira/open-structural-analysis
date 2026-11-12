@@ -149,7 +149,9 @@ def visible_segments_from_meshes(
     ignored_interface_planes: Iterable[Iterable[tuple[np.ndarray, np.ndarray, float]]] | None = None,
     feature_edge_interface_planes: Iterable[Iterable[tuple[np.ndarray, np.ndarray, float]]] | None = None,
     surface_data: Iterable[_SurfaceData] | None = None,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    element_names: Iterable[str] | None = None,
+    return_sources: bool = False,
+) -> list[tuple[tuple[float, float], tuple[float, float]]] | tuple[list, list[str]]:
     """Create 2D visible edge segments from a set of clipped solid meshes.
 
     Coordinates are in model units in the drawing plane. Faces are used only
@@ -166,6 +168,7 @@ def visible_segments_from_meshes(
     ignored_interface_planes = tuple(ignored_interface_planes or ())
     feature_edge_interface_planes = tuple(feature_edge_interface_planes or ())
     surface_data = tuple(surface_data) if surface_data is not None else None
+    element_names = tuple(element_names or ())
     camera_direction = _unit(np.asarray(tuple(camera_direction), dtype=float))
     view_direction = -camera_direction
     base_up = _unit(np.asarray(tuple(view_up), dtype=float))
@@ -283,9 +286,9 @@ def visible_segments_from_meshes(
                 group_key = (start_key, end_key)
                 depth_layers = projected_edge_groups.setdefault(group_key, [])
                 if any(
-                    other_start_depth >= depth_start - 1e-7
-                    and other_end_depth >= depth_end - 1e-7
-                    for _, _, other_start_depth, other_end_depth in depth_layers
+                    layer[2] >= depth_start - 1e-7
+                    and layer[3] >= depth_end - 1e-7
+                    for layer in depth_layers
                 ):
                     continue
                 depth_layers[:] = [
@@ -296,7 +299,8 @@ def visible_segments_from_meshes(
                         and depth_end >= layer[3] - 1e-7
                     )
                 ]
-                depth_layers.append((start, end, depth_start, depth_end))
+                owner = element_names[mesh_number] if mesh_number < len(element_names) else str(mesh_number)
+                depth_layers.append((start, end, depth_start, depth_end, owner))
 
     for edge_number, edge_mesh in enumerate(feature_edge_meshes):
         interface_planes = (
@@ -335,9 +339,9 @@ def visible_segments_from_meshes(
                 group_key = (start_key, end_key)
                 depth_layers = projected_edge_groups.setdefault(group_key, [])
                 if any(
-                    other_start_depth >= depth_start - 1e-7
-                    and other_end_depth >= depth_end - 1e-7
-                    for _, _, other_start_depth, other_end_depth in depth_layers
+                    layer[2] >= depth_start - 1e-7
+                    and layer[3] >= depth_end - 1e-7
+                    for layer in depth_layers
                 ):
                     continue
                 depth_layers[:] = [
@@ -348,7 +352,8 @@ def visible_segments_from_meshes(
                         and depth_end >= layer[3] - 1e-7
                     )
                 ]
-                depth_layers.append((start, end, depth_start, depth_end))
+                owner = element_names[edge_number] if edge_number < len(element_names) else str(edge_number)
+                depth_layers.append((start, end, depth_start, depth_end, owner))
             offset += count + 1
 
     projected_edges = [
@@ -356,7 +361,7 @@ def visible_segments_from_meshes(
     ]
 
     if not triangle_batches or not projected_edges:
-        return []
+        return ([], []) if return_sources else []
     index = _TriangleGrid(
         triangle_batches,
         correct_crossing_intervals=use_feature_edges,
@@ -367,7 +372,7 @@ def visible_segments_from_meshes(
     edge_depth_ends = np.asarray([edge[3] for edge in projected_edges], dtype=float)
     candidates_by_edge = []
     candidate_counts = np.empty(len(projected_edges), dtype=np.int64)
-    for edge_number, (start, end, depth_start, depth_end) in enumerate(projected_edges):
+    for edge_number, (start, end, depth_start, depth_end, _owner) in enumerate(projected_edges):
         if edge_number % 64 == 0:
             sleep(0)
         candidates = np.asarray(
@@ -419,8 +424,9 @@ def visible_segments_from_meshes(
                 )
 
     visible_segments = []
+    visible_sources = []
     unique_projected: set[tuple[tuple[float, ...], tuple[float, ...]]] = set()
-    for edge_number, (start, end, depth_start, depth_end) in enumerate(projected_edges):
+    for edge_number, (start, end, depth_start, depth_end, owner) in enumerate(projected_edges):
         if edge_number % 256 == 0:
             sleep(0)
         intervals = _complement_intervals(blocked_by_edge[edge_number])
@@ -436,7 +442,8 @@ def visible_segments_from_meshes(
             if key_points[0] != key_points[1] and key not in unique_projected:
                 unique_projected.add(key)
                 visible_segments.append((key_points[0], key_points[1]))
-    return visible_segments
+                visible_sources.append(str(owner))
+    return (visible_segments, visible_sources) if return_sources else visible_segments
 
 
 def _edge_is_on_interface(

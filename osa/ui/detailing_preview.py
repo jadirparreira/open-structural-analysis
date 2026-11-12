@@ -68,6 +68,7 @@ class DetailingViewPreview(QFrame):
         self._solid_edge_meshes: list[pv.PolyData] | None = None
         self._view_cache: OrderedDict[tuple, tuple] = OrderedDict()
         self._segments_2d: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        self._segment_sources: list[str] = []
         self._line_path = QPainterPath()
         self._bounds_2d: tuple[float, float, float, float] | None = None
         self._zoom = 1.0
@@ -126,7 +127,7 @@ class DetailingViewPreview(QFrame):
         cached = self._view_cache.get(cache_key)
         if cached is not None:
             self._view_cache.move_to_end(cache_key)
-            segments, self._bounds_2d, self._line_path = cached
+            segments, self._bounds_2d, self._line_path, self._segment_sources = cached
             self._segments_2d = segments
             self._zoom = 1.0
             self._pan = QPointF()
@@ -224,6 +225,15 @@ class DetailingViewPreview(QFrame):
                     )
                 interfaces_by_member = transformed_interfaces
             line_interfaces = [interfaces_by_member.get(name, ()) for name in clipped_member_names]
+            source_member_names = (
+                self._solid_member_names if feature_edge_meshes is not None else clipped_member_names
+            )
+            source_tokens = [
+                f"bar:{name}" if name in model.bars else
+                f"plate:{name}" if name in model.plates else
+                f"rigid_bar:{name}" if name in model.rigid_bars else str(name)
+                for name in source_member_names
+            ]
             self._render_visible_lines(
                 clipped_meshes,
                 normal,
@@ -235,12 +245,14 @@ class DetailingViewPreview(QFrame):
                 [interfaces_by_member.get(name, ()) for name in self._solid_member_names]
                 if feature_edge_meshes is not None else None,
                 surface_data,
+                source_tokens,
             )
         except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
             return
         self._view_cache[cache_key] = (
-            tuple(self._segments_2d), self._bounds_2d, self._line_path
+            tuple(self._segments_2d), self._bounds_2d, self._line_path,
+            tuple(self._segment_sources),
         )
         self._view_cache.move_to_end(cache_key)
         while len(self._view_cache) > self._view_cache_limit:
@@ -276,7 +288,7 @@ class DetailingViewPreview(QFrame):
         cached = self._view_cache.get(cache_key)
         if cached is not None:
             self._view_cache.move_to_end(cache_key)
-            segments, self._bounds_2d, self._line_path = cached
+            segments, self._bounds_2d, self._line_path, self._segment_sources = cached
             self._segments_2d = segments
             self._render_pending = False
             self._zoom = 1.0
@@ -302,19 +314,23 @@ class DetailingViewPreview(QFrame):
             )
         )
 
-    @Slot(int, object, object, object, object)
+    @Slot(int, object, object, object, object, object)
     def _accept_render_result(
-        self, generation, cache_key, segments, bounds, line_path
+        self, generation, cache_key, segments, bounds, line_path, sources
     ) -> None:
         if generation != self._render_generation:
             return
         self._render_pending = False
         self._segments_2d = segments
+        self._segment_sources = sources
         self._bounds_2d = bounds
         self._line_path = line_path
         self._zoom = 1.0
         self._pan = QPointF()
-        self._view_cache[cache_key] = (self.segments_2d, self._bounds_2d, self._line_path)
+        self._view_cache[cache_key] = (
+            self.segments_2d, self._bounds_2d, self._line_path,
+            tuple(self._segment_sources),
+        )
         self._view_cache.move_to_end(cache_key)
         while len(self._view_cache) > self._view_cache_limit:
             self._view_cache.popitem(last=False)
@@ -323,6 +339,7 @@ class DetailingViewPreview(QFrame):
 
     def _clear_preview(self) -> None:
         self._segments_2d = []
+        self._segment_sources = []
         self._line_path = QPainterPath()
         self._bounds_2d = None
         self._zoom = 1.0
@@ -520,12 +537,13 @@ class DetailingViewPreview(QFrame):
         ignored_interface_planes=None,
         feature_edge_interface_planes=None,
         surface_data=None,
+        element_names=None,
     ) -> None:
         """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
         if orientation == "Inferior para superior":
             camera_direction = -camera_direction
-        self._segments_2d = visible_segments_from_meshes(
+        self._segments_2d, self._segment_sources = visible_segments_from_meshes(
             meshes,
             camera_direction,
             view_up,
@@ -534,6 +552,8 @@ class DetailingViewPreview(QFrame):
             ignored_interface_planes=ignored_interface_planes,
             feature_edge_interface_planes=feature_edge_interface_planes,
             surface_data=surface_data,
+            element_names=element_names,
+            return_sources=True,
         )
         if self._segments_2d:
             points_2d = np.asarray(
@@ -709,7 +729,7 @@ class DetailingViewPreview(QFrame):
 
 
 class _ViewRenderSignals(QObject):
-    finished = Signal(int, object, object, object, object)
+    finished = Signal(int, object, object, object, object, object)
 
 
 class _ModelSnapshot:
@@ -751,6 +771,7 @@ class _ViewGeometryCalculator:
         self._solid_face_angles = []
         self._solid_edge_meshes = None
         self._segments_2d = []
+        self._segment_sources = []
         self._bounds_2d = None
         self._line_path = QPainterPath()
         self._view_cache = OrderedDict()
@@ -787,9 +808,11 @@ class _ViewRenderTask(QRunnable):
                 **self.settings,
             )
             segments = tuple(calculator._segments_2d)
+            sources = tuple(calculator._segment_sources)
             bounds = calculator._bounds_2d
         except (IndexError, KeyError, OverflowError, RuntimeError, TypeError, ValueError):
             segments, bounds = (), None
+            sources = ()
         line_path = QPainterPath()
         for segment_number, (start, end) in enumerate(segments):
             if segment_number % 256 == 0:
@@ -797,5 +820,5 @@ class _ViewRenderTask(QRunnable):
             line_path.moveTo(start[0], start[1])
             line_path.lineTo(end[0], end[1])
         self.signals.finished.emit(
-            self.generation, self.cache_key, segments, bounds, line_path
+            self.generation, self.cache_key, segments, bounds, line_path, sources
         )

@@ -40,6 +40,8 @@ from .dialogs import (
     MemberSnapSplitDialog,
     PlateClosureDialog,
     ProgramSettingsDialog,
+    ProjectSheetSettingsDialog,
+    RemoveProjectSheetDialog,
     SelfweightDialog,
     SettingsDialog,
     UnsavedChangesDialog,
@@ -56,6 +58,8 @@ from .palettes import (
     ActionTopPalette,
     AnalysisTopPalette,
     DetailingTopPalette,
+    DetailingModePalette,
+    ProjectSheetsPalette,
     FloatingPalette,
     MemberPropertyCopyPanel,
     PaletteTooltip,
@@ -63,6 +67,7 @@ from .palettes import (
     VerificationTopPalette,
 )
 from .project_load_worker import ProjectLoadWorker
+from .project_sheet import ProjectSheetViewPanel, ProjectSheetWorkspace
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
@@ -147,6 +152,8 @@ class MainWindow(QMainWindow):
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
+        self._detailing_project_mode = False
+        self._detail_plane_return_to_project = False
         self._detailing_views_dialog_open = False
         self._detailing_views_dialog: DetailingViewsDialog | None = None
         self._reference_axis_placement_direction: str | None = None
@@ -204,11 +211,30 @@ class MainWindow(QMainWindow):
         self.view_stack = QStackedWidget(shell)
         self.view_stack.addWidget(self.home)
         self.view_stack.addWidget(self.scene)
+        self.project_sheet_workspace = ProjectSheetWorkspace(shell)
+        self.view_stack.addWidget(self.project_sheet_workspace)
         shell_layout.addWidget(self.title_bar)
         shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self._create_project_loading_overlay()
+        self.project_sheet_view_panel = ProjectSheetViewPanel(self)
+        self.project_sheet_workspace.selection_changed.connect(
+            self._project_sheet_view_selected
+        )
+        self.project_sheet_workspace.layout_changed.connect(self._store_detailing_state)
+        self.project_sheet_workspace.remove_view_requested.connect(
+            lambda index: self.project_sheets_palette.remove_view_from_active_sheet(index)
+        )
+        self.project_sheet_workspace.element_identification_requested.connect(
+            self._add_project_view_identification
+        )
+        self.project_sheet_workspace.identification_finished.connect(
+            self._finish_project_view_identification
+        )
+        self.project_sheet_view_panel.scale_edited.connect(
+            self._project_sheet_view_scale_edited
+        )
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
         self._plate_selection = []
@@ -257,6 +283,10 @@ class MainWindow(QMainWindow):
         self.analysis_top_palette.reposition()
         self.detailing_top_palette = DetailingTopPalette(self)
         self.detailing_top_palette.reposition()
+        self.detailing_mode_palette = DetailingModePalette(self)
+        self.detailing_mode_palette.reposition()
+        self.project_sheets_palette = ProjectSheetsPalette(self)
+        self.project_sheets_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -648,6 +678,536 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self.set_plate_result_display_mode(dialog.selected_plate_result_display_mode)
 
+    def set_detailing_project_mode(self, active: bool) -> None:
+        """Switch between the detailing model and its blank project sheet view."""
+        self._detailing_project_mode = bool(active)
+        if not self._detailing_project_mode and hasattr(self, "project_sheet_workspace"):
+            self.project_sheet_workspace.select_view(None)
+        if self.view_stack.currentWidget() is not self.home:
+            self.view_stack.setCurrentWidget(
+                self.project_sheet_workspace if self._detailing_project_mode else self.scene
+            )
+        model_navigation_controls = (
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+        )
+        for control in model_navigation_controls:
+            if self._detailing_project_mode:
+                control.hide()
+            elif self.view_stack.currentWidget() is not self.home:
+                control.show()
+        if not self._detailing_project_mode and self.view_stack.currentWidget() is not self.home:
+            self._reposition_navigation_button()
+        self.project_sheet_workspace.set_model_name(self.scene.model_name)
+        detailing_active = self.palette.active_group == "Detalhamento"
+        self.detailing_top_palette.set_detailing_visible(
+            detailing_active and not self._detailing_project_mode
+        )
+        if hasattr(self, "project_sheets_palette"):
+            self.project_sheets_palette.set_project_mode(
+                self._detailing_project_mode
+                and detailing_active
+                and self.view_stack.currentWidget() is not self.home
+            )
+
+    def _project_sheet_view_selected(self, view: dict | None) -> None:
+        panel = getattr(self, "project_sheet_view_panel", None)
+        if panel is not None:
+            panel.show_for(view)
+
+    def _project_sheet_view_scale_edited(self, text: str) -> None:
+        try:
+            denominator = float(text.strip().replace(",", "."))
+        except ValueError:
+            denominator = 0.0
+        if denominator <= 0:
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            self.project_sheet_view_panel.show_for(
+                views[selected] if selected is not None and selected < len(views) else None
+            )
+            return
+        self.project_sheet_workspace.set_selected_view_scale(denominator)
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        self.project_sheet_view_panel.show_for(
+            views[selected] if selected is not None and selected < len(views) else None
+        )
+
+    def start_project_view_identification(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self._command_mode = "project_sheet_identification"
+        self.project_sheet_workspace.set_identification_mode(True)
+        self.history.append(
+            "> <b>Identificar</b> <span style='color:#57606a'>"
+            "(Clique sobre um elemento da vista; clique nos próximos; Enter encerra; "
+            "Esc encerra preservando as identificações lançadas)</span>"
+        )
+
+    def _finish_project_view_identification(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_identification":
+            return
+        self._command_mode = None
+        self.project_sheet_workspace.set_identification_mode(False)
+        self._store_detailing_state()
+        message = (
+            "Lançamento cancelado; identificações preservadas"
+            if canceled else "Lançamento encerrado"
+        )
+        self.history.append(
+            f"> <b>Identificar</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
+    def _add_project_view_identification(self, view_index: int, name: str, projected_point) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, [])
+        if not 0 <= view_index < len(views):
+            return
+        try:
+            projected_point = tuple(float(value) for value in projected_point)
+        except (TypeError, ValueError):
+            return
+        if len(projected_point) != 2:
+            return
+        view = views[view_index]
+        if not name:
+            self.history.append(
+                "> <b>Identificar</b> <span style='color:#8c959f'>"
+                "(Esta vista é antiga; adicione-a novamente para habilitar a identificação)</span>"
+            )
+            return
+        source = str(name)
+        kind, separator, owner_name = source.partition(":")
+        group_members: tuple[str, ...] = ()
+        if kind == "bar_group" and separator:
+            group_members = tuple(member for member in owner_name.split("|") if member)
+            group = (
+                self.model.verification_group_for(group_members[0])
+                if group_members else None
+            )
+            if group is None or set(group.get("members", ())) != set(group_members):
+                return
+            owner_name = "|".join(group_members)
+            label = str(group.get("name", "")).strip() or ", ".join(group_members)
+        else:
+            group = None
+        if not separator or kind not in {"bar", "plate", "rigid_bar", "node"}:
+            if kind != "bar_group":
+                owner_name = source
+                kind = ""
+        if kind != "bar_group":
+            if kind == "bar":
+                custom_name = str(self.model.verification_element_names.get(owner_name, "")).strip()
+            elif kind == "plate":
+                custom_name = str(self.model.plate_display_names.get(owner_name, "")).strip()
+            elif kind == "node":
+                custom_name = str(self.model.node_display_names.get(owner_name, "")).strip()
+            else:
+                custom_name = ""
+            label = custom_name or owner_name
+        element_label = label
+        section_members = group_members if group_members else (
+            (owner_name,) if kind == "bar" else ()
+        )
+        section_labels = []
+        for member_name in section_members:
+            member = self.model.bars.get(member_name)
+            if member is None:
+                continue
+            section_name = (
+                member.profile
+                or self.section_profiles.get(member_name)
+                or member.section
+            )
+            section_name = str(section_name).strip()
+            if section_name and section_name not in section_labels:
+                section_labels.append(section_name)
+        section_label = " / ".join(section_labels)
+        if section_labels:
+            label = f"{element_label} {section_label}"
+        segments = view.get("segments", ())
+        owners = view.get("segment_owners", ())
+        group_source_owners = {f"bar:{member}" for member in group_members}
+        element_points = [
+            point
+            for segment, owner in zip(segments, owners)
+            if (
+                str(owner) in group_source_owners
+                if group_members else str(owner) == source
+            )
+            for point in segment
+        ]
+        if not element_points:
+            return
+        min_x = min(float(point[0]) for point in element_points)
+        max_x = max(float(point[0]) for point in element_points)
+        min_y = min(float(point[1]) for point in element_points)
+        max_y = max(float(point[1]) for point in element_points)
+        stacked_text = False
+        text_rotation = 0.0
+        axis_direction: tuple[float, float] | None = None
+        world_length = 0.0
+        projected_axis_length = 0.0
+        has_projection = isinstance(view.get("projection"), dict)
+        for member_name in section_members:
+            member = self.model.bars.get(member_name)
+            if member is None:
+                continue
+            start_node = self.model.nodes.get(member.start_node)
+            end_node = self.model.nodes.get(member.end_node)
+            if start_node is None or end_node is None:
+                continue
+            start_world = (start_node.x, start_node.y, start_node.z)
+            end_world = (end_node.x, end_node.y, end_node.z)
+            member_length = math.sqrt(sum(
+                (end_world[axis] - start_world[axis]) ** 2 for axis in range(3)
+            ))
+            world_length += member_length
+            if has_projection:
+                start_projected = self.project_sheet_workspace._project_world_point(
+                    view, start_world,
+                )
+                end_projected = self.project_sheet_workspace._project_world_point(
+                    view, end_world,
+                )
+                if start_projected is not None and end_projected is not None:
+                    projected_dx = end_projected[0] - start_projected[0]
+                    projected_dy = end_projected[1] - start_projected[1]
+                    projected_axis_length += math.hypot(projected_dx, projected_dy)
+                    if axis_direction is None:
+                        axis_direction = (projected_dx, projected_dy)
+        projected_span = projected_axis_length
+        if not has_projection:
+            # Older sheets do not store the view projection. Infer an in-plane
+            # bar direction from the principal axis of its owned 2D linework.
+            coordinates = np.asarray(element_points, dtype=float)
+            if coordinates.shape[0] >= 2:
+                centered = coordinates - coordinates.mean(axis=0)
+                covariance = centered.T @ centered
+                eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+                direction = eigenvectors[:, int(np.argmax(eigenvalues))]
+                axis_direction = (float(direction[0]), float(direction[1]))
+                projected_values = centered @ direction
+                projected_span = float(projected_values.max() - projected_values.min())
+        if axis_direction is not None and world_length > 1e-12:
+            if projected_span / world_length < math.sqrt(0.5):
+                stacked_text = True
+            else:
+                if math.hypot(*axis_direction) > 1e-12:
+                    text_rotation = math.degrees(math.atan2(-axis_direction[1], axis_direction[0]))
+                    if text_rotation > 90.0:
+                        text_rotation -= 180.0
+                    elif text_rotation < -90.0:
+                        text_rotation += 180.0
+        denominator = max(1.0, float(view.get("scale_denominator", 100.0)))
+        text_height_mm = float(
+            self.project_sheets_palette._project_settings.get("view_element_text_height_mm", 3.0)
+        )
+        gap_mm = 2.0
+        gap = (text_height_mm + gap_mm) * denominator / 1000.0
+        label_position = ((min_x + max_x) / 2.0, max_y + gap)
+        if not stacked_text and axis_direction is not None:
+            magnitude = math.hypot(*axis_direction)
+            if magnitude > 1e-12:
+                axis_x, axis_y = axis_direction[0] / magnitude, axis_direction[1] / magnitude
+                normal_x, normal_y = -axis_y, axis_x
+                if normal_y < 0.0 or (abs(normal_y) <= 1e-9 and normal_x > 0.0):
+                    normal_x, normal_y = -normal_x, -normal_y
+                projections = [
+                    float(point[0]) * normal_x + float(point[1]) * normal_y
+                    for point in element_points
+                ]
+                normal_center = (min(projections) + max(projections)) / 2.0
+                normal_offset = (max(projections) - min(projections)) / 2.0 + gap
+                axis_projections = [
+                    float(point[0]) * axis_x + float(point[1]) * axis_y
+                    for point in element_points
+                ]
+                axis_center = (min(axis_projections) + max(axis_projections)) / 2.0
+                label_position = (
+                    axis_center * axis_x + (normal_center + normal_offset) * normal_x,
+                    axis_center * axis_y + (normal_center + normal_offset) * normal_y,
+                )
+        view.setdefault("identifications", []).append({
+            "kind": kind,
+            "element": owner_name,
+            "text": label,
+            "text_lines": (
+                [element_label, section_label]
+                if stacked_text and section_label else [label]
+            ),
+            "text_runs": (
+                [
+                    [{"text": element_label, "role": "element"}],
+                    [{"text": section_label, "role": "section"}],
+                ]
+                if stacked_text and section_label else [
+                    [{"text": element_label, "role": "element"}]
+                    + ([{"text": f" {section_label}", "role": "section"}] if section_label else [])
+                ]
+            ),
+            "text_rotation_degrees": 0.0 if stacked_text else text_rotation,
+            "projected_point": label_position,
+            "layout_version": 3,
+        })
+        self.project_sheet_workspace.update()
+        self._store_detailing_state()
+        self.history.append(
+            "> <b>Identificar</b> <span style='color:#57606a'>"
+            f"({escape(label)} identificado; clique no próximo elemento ou pressione Enter)</span>"
+        )
+
+    def _detailing_state_snapshot(self) -> dict:
+        palette = self.project_sheets_palette
+        model_key = id(self.model)
+
+        def current_model_entries(attribute: str) -> dict:
+            values = getattr(self, attribute, {})
+            return {
+                str(key[1]): copy.deepcopy(value)
+                for key, value in values.items()
+                if isinstance(key, tuple) and len(key) == 2 and key[0] == model_key
+            }
+
+        preferred = getattr(self, "_detailing_preferred_view_key", None)
+        return {
+            "version": 1,
+            "sheets": {
+                "sheet_names": list(palette._sheet_names),
+                "active_sheet": palette.sheet_selector.currentText(),
+                "sheet_settings": copy.deepcopy(palette._sheet_settings),
+                "project_settings": copy.deepcopy(palette._project_settings),
+                "sheet_views": copy.deepcopy(palette._sheet_views),
+            },
+            "detail_views": {
+                "names": current_model_entries("_detailing_view_names"),
+                "settings": current_model_entries("_detailing_view_settings"),
+                "custom_planes": copy.deepcopy(
+                    getattr(self, "_detailing_custom_planes", {}).get(model_key, [])
+                ),
+                "preferred_view": (
+                    preferred[1]
+                    if isinstance(preferred, tuple) and len(preferred) == 2
+                    and preferred[0] == model_key else None
+                ),
+            },
+        }
+
+    def _store_detailing_state(self) -> None:
+        if not hasattr(self, "project_sheets_palette"):
+            return
+        state = self._detailing_state_snapshot()
+        if state != self.model.detailing_data:
+            self.model.detailing_data = state
+            self.model.view_revision += 1
+
+    def _restore_detailing_state(self) -> None:
+        state = self.model.detailing_data if isinstance(self.model.detailing_data, dict) else {}
+        self.project_sheets_palette.restore_detailing_state(state.get("sheets"))
+        detail_views = state.get("detail_views", {})
+        if not isinstance(detail_views, dict):
+            detail_views = {}
+        model_key = id(self.model)
+        self._detailing_view_names = {
+            (model_key, str(key)): str(value)
+            for key, value in detail_views.get("names", {}).items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        self._detailing_view_settings = {
+            (model_key, str(key)): dict(value)
+            for key, value in detail_views.get("settings", {}).items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
+        custom_planes = detail_views.get("custom_planes", [])
+        self._detailing_custom_planes = {
+            model_key: [dict(item) for item in custom_planes if isinstance(item, dict)]
+        }
+        preferred = detail_views.get("preferred_view")
+        self._detailing_preferred_view_key = (
+            (model_key, preferred) if isinstance(preferred, str) else None
+        )
+        if self._upgrade_project_identification_layouts():
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+
+    def _upgrade_project_identification_layouts(self) -> bool:
+        """Recompute label orientation for saved tags made before the layout rules."""
+        changed = False
+        for views in self.project_sheets_palette._sheet_views.values():
+            for view in views:
+                for identification in view.get("identifications", ()):
+                    if not isinstance(identification, dict) or identification.get("layout_version", 0) >= 3:
+                        continue
+                    kind = str(identification.get("kind", ""))
+                    element = str(identification.get("element", ""))
+                    members = (
+                        tuple(member for member in element.split("|") if member)
+                        if kind == "bar_group" else (element,) if kind == "bar" else ()
+                    )
+                    bars = [self.model.bars[name] for name in members if name in self.model.bars]
+                    if not bars:
+                        text = str(identification.get("text", ""))
+                        identification["text_runs"] = [[{"text": text, "role": "element"}]]
+                        identification["layout_version"] = 3
+                        changed = True
+                        continue
+                    if kind == "bar_group":
+                        group = self.model.verification_group_for(bars[0].name)
+                        element_label = (
+                            str(group.get("name", "")).strip() or ", ".join(members)
+                            if group else ", ".join(members)
+                        )
+                    else:
+                        element_label = str(
+                            self.model.verification_element_names.get(bars[0].name, "")
+                        ).strip() or bars[0].name
+                    section_labels = list(dict.fromkeys(
+                        str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                        for bar in bars
+                        if str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                    ))
+                    section_label = " / ".join(section_labels)
+                    owner_tokens = {f"bar:{bar.name}" for bar in bars}
+                    points = [
+                        point
+                        for segment, owner in zip(
+                            view.get("segments", ()), view.get("segment_owners", ()),
+                        )
+                        if str(owner) in owner_tokens
+                        for point in segment
+                    ]
+                    if len(points) < 2:
+                        text = str(identification.get("text", ""))
+                        identification["text_runs"] = [[{"text": text, "role": "element"}]]
+                        identification["layout_version"] = 3
+                        changed = True
+                        continue
+                    coordinates = np.asarray(points, dtype=float)
+                    minimum = coordinates.min(axis=0)
+                    maximum = coordinates.max(axis=0)
+                    axis_direction = None
+                    projected_length = 0.0
+                    world_length = 0.0
+                    has_projection = isinstance(view.get("projection"), dict)
+                    for bar in bars:
+                        start_node = self.model.nodes.get(bar.start_node)
+                        end_node = self.model.nodes.get(bar.end_node)
+                        if start_node is None or end_node is None:
+                            continue
+                        start = (start_node.x, start_node.y, start_node.z)
+                        end = (end_node.x, end_node.y, end_node.z)
+                        world_length += math.dist(start, end)
+                        if has_projection:
+                            start_2d = self.project_sheet_workspace._project_world_point(view, start)
+                            end_2d = self.project_sheet_workspace._project_world_point(view, end)
+                            if start_2d is not None and end_2d is not None:
+                                delta = (end_2d[0] - start_2d[0], end_2d[1] - start_2d[1])
+                                projected_length += math.hypot(*delta)
+                                if axis_direction is None:
+                                    axis_direction = delta
+                    if not has_projection:
+                        centered = coordinates - coordinates.mean(axis=0)
+                        _eigenvalues, eigenvectors = np.linalg.eigh(centered.T @ centered)
+                        direction = eigenvectors[:, -1]
+                        axis_direction = (float(direction[0]), float(direction[1]))
+                        projected = centered @ direction
+                        projected_length = float(projected.max() - projected.min())
+                    stacked = (
+                        world_length > 1e-12
+                        and projected_length / world_length < math.sqrt(0.5)
+                    )
+                    rotation = 0.0
+                    if axis_direction is not None and not stacked and math.hypot(*axis_direction) > 1e-12:
+                        rotation = math.degrees(math.atan2(-axis_direction[1], axis_direction[0]))
+                        if rotation > 90:
+                            rotation -= 180
+                        elif rotation < -90:
+                            rotation += 180
+                    label = f"{element_label} {section_label}".strip()
+                    identification["text"] = label
+                    identification["text_lines"] = (
+                        [element_label, section_label] if stacked and section_label else [label]
+                    )
+                    identification["text_runs"] = (
+                        [
+                            [{"text": element_label, "role": "element"}],
+                            [{"text": section_label, "role": "section"}],
+                        ]
+                        if stacked and section_label else [
+                            [{"text": element_label, "role": "element"}]
+                            + ([{"text": f" {section_label}", "role": "section"}] if section_label else [])
+                        ]
+                    )
+                    identification["text_rotation_degrees"] = 0.0 if stacked else rotation
+                    denominator = max(1.0, float(view.get("scale_denominator", 100.0)))
+                    text_height = float(
+                        self.project_sheets_palette._project_settings.get(
+                            "view_element_text_height_mm", 3.0,
+                        )
+                    )
+                    gap = (text_height + 2.0) * denominator / 1000.0
+                    point = ((minimum[0] + maximum[0]) / 2, maximum[1] + gap)
+                    if not stacked and axis_direction is not None and math.hypot(*axis_direction) > 1e-12:
+                        axis_length = math.hypot(*axis_direction)
+                        axis_x, axis_y = axis_direction[0] / axis_length, axis_direction[1] / axis_length
+                        normal_x, normal_y = -axis_y, axis_x
+                        if normal_y < 0 or (abs(normal_y) <= 1e-9 and normal_x > 0):
+                            normal_x, normal_y = -normal_x, -normal_y
+                        normal_values = coordinates @ np.asarray((normal_x, normal_y))
+                        axis_values = coordinates @ np.asarray((axis_x, axis_y))
+                        normal_center = (float(normal_values.min()) + float(normal_values.max())) / 2
+                        axis_center = (float(axis_values.min()) + float(axis_values.max())) / 2
+                        offset = (float(normal_values.max()) - float(normal_values.min())) / 2 + gap
+                        point = (
+                            axis_center * axis_x + (normal_center + offset) * normal_x,
+                            axis_center * axis_y + (normal_center + offset) * normal_y,
+                        )
+                    identification["projected_point"] = point
+                    identification["layout_version"] = 3
+                    changed = True
+        return changed
+
+    def _set_model_display_name(self, name: str) -> None:
+        self.scene.set_model_name(name)
+        if hasattr(self, "project_sheet_workspace"):
+            self.project_sheet_workspace.set_model_name(self.scene.model_name)
+
+    def confirm_remove_project_sheet(self, name: str) -> bool:
+        dialog = RemoveProjectSheetDialog(name, self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def open_project_sheet_settings(self) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        settings = self.project_sheets_palette._sheet_settings.get(sheet_name)
+        if not sheet_name or settings is None:
+            return
+        dialog = ProjectSheetSettingsDialog(
+            sheet_name,
+            settings,
+            self.project_sheets_palette._project_settings,
+            self.project_sheets_palette.sheet_selector.count(),
+            self,
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if (
+            dialog.exec() == QDialog.DialogCode.Accepted
+            and dialog.result_settings is not None
+            and dialog.result_project_settings is not None
+        ):
+            self.project_sheets_palette._sheet_settings[sheet_name] = dialog.result_settings
+            self.project_sheets_palette._project_settings = dialog.result_project_settings
+            self.project_sheets_palette.reorder_sheet(
+                sheet_name, dialog.result_settings.get("sheet_number", "01"),
+            )
+
     def open_detailing_views(self) -> None:
         if self._detailing_views_dialog_open:
             return
@@ -661,9 +1221,12 @@ class MainWindow(QMainWindow):
             dialog = DetailingViewsDialog(self)
             self._detailing_views_dialog = dialog
             dialog._add_plane_requested = False
+            dialog._add_view_requested = False
             dialog.move(self.geometry().center() - dialog.rect().center())
             dialog.exec()
             add_plane_requested = dialog._add_plane_requested
+            add_view_requested = dialog._add_view_requested
+            requested_sheet_view = dialog._requested_sheet_view
         finally:
             self._detailing_views_dialog_open = False
             self._detailing_views_dialog = None
@@ -672,7 +1235,13 @@ class MainWindow(QMainWindow):
                 dialog.deleteLater()
             if cancel_action is not None:
                 cancel_action.setEnabled(cancel_action_was_enabled)
-        if add_plane_requested:
+        self._store_detailing_state()
+        if add_view_requested and requested_sheet_view is not None:
+            self.project_sheets_palette.add_view_to_active_sheet(requested_sheet_view)
+        elif add_plane_requested:
+            self._detail_plane_return_to_project = self._detailing_project_mode
+            if self._detail_plane_return_to_project:
+                self.detailing_mode_palette._buttons[0].click()
             self._start_detail_plane_placement()
 
     def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
@@ -1625,6 +2194,7 @@ class MainWindow(QMainWindow):
         self.history.append(
             f"> <b>Adicionar plano</b> <span style='color:#57606a'>({record['name']} criado)</span>"
         )
+        self._store_detailing_state()
         QTimer.singleShot(0, self._finish_detail_plane_placement)
 
     def _finish_detail_plane_placement(self) -> None:
@@ -1633,7 +2203,15 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
         self.refresh_scene()
+        self._restore_project_mode_after_detail_plane()
         QTimer.singleShot(0, self.open_detailing_views)
+
+    def _restore_project_mode_after_detail_plane(self) -> None:
+        if not self._detail_plane_return_to_project:
+            return
+        self._detail_plane_return_to_project = False
+        if not self._detailing_project_mode:
+            self.detailing_mode_palette._buttons[1].click()
 
     def open_about(self) -> None:
         dialog = AboutDialog(self)
@@ -1893,6 +2471,12 @@ class MainWindow(QMainWindow):
             self.analysis_top_palette.reposition()
         if hasattr(self, "detailing_top_palette"):
             self.detailing_top_palette.reposition()
+        if hasattr(self, "detailing_mode_palette"):
+            self.detailing_mode_palette.reposition()
+        if hasattr(self, "project_sheets_palette") and self.project_sheets_palette.isVisible():
+            self.project_sheets_palette.reposition()
+        if hasattr(self, "project_sheet_view_panel") and self.project_sheet_view_panel.isVisible():
+            self.project_sheet_view_panel.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -2011,6 +2595,16 @@ class MainWindow(QMainWindow):
                 and self._command_mode == "plate_selection"
                 and not command_bar.input.text().strip()):
             self._confirm_command_selection()
+            return True
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "project_sheet_identification"
+        ):
+            self._finish_project_view_identification()
             return True
         if (
             scene is not None
@@ -3561,6 +4155,9 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "project_sheet_identification":
+            self._finish_project_view_identification(canceled=True)
+            return
         if self._command_mode in {"plate_selection", "plate_manual"}:
             self._command_mode = None
             self._restore_plate_snap()
@@ -3627,6 +4224,7 @@ class MainWindow(QMainWindow):
             self.history.append(
                 "> <b>Adicionar plano</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
             )
+            self._restore_project_mode_after_detail_plane()
             QTimer.singleShot(0, self.open_detailing_views)
             return
         if self._command_mode == "reference_axis_placement":
@@ -4264,10 +4862,17 @@ class MainWindow(QMainWindow):
 
     def delete_selected(self) -> None:
         """Delete selected elements, removing members before their endpoint nodes."""
-        if self.selected is None:
-            return
         focus = QApplication.focusWidget()
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
+            return
+        if self._detailing_project_mode:
+            if self.project_sheet_workspace.delete_selected_identification():
+                return
+            index = self.project_sheet_workspace._selected_view_index
+            if index is not None:
+                self.project_sheets_palette.remove_view_from_active_sheet(index)
+            return
+        if self.selected is None:
             return
         targets = self.selected_elements or [self.selected]
         ordered = sorted(targets, key=lambda item: item[0] == "node")
@@ -4346,7 +4951,8 @@ class MainWindow(QMainWindow):
         self.scene.set_selection_highlight(())
         self.clear_selection()
         self.current_path = None
-        self.scene.set_model_name("Novo modelo")
+        self._set_model_display_name("Novo modelo")
+        self._restore_detailing_state()
         self._import_save_path = None
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
@@ -4408,10 +5014,11 @@ class MainWindow(QMainWindow):
 
     def _save_model_to(self, path: str | Path) -> None:
         try:
+            self._store_detailing_state()
             thumbnail = ThumbnailService.generate(self.model)
             self.project_service.save(path, thumbnail=thumbnail)
             self.current_path = Path(path)
-            self.scene.set_model_name(self.current_path.stem)
+            self._set_model_display_name(self.current_path.stem)
             self._saved_revision = self.model.revision
             self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
@@ -4518,6 +5125,7 @@ class MainWindow(QMainWindow):
                 loaded_model.revision = self.model.revision + 1
                 loaded_model.view_revision = self.model.view_revision + 1
                 self.model.__dict__.update(loaded_model.__dict__)
+            self._restore_detailing_state()
             self.scene.set_scene_selection_mode(None, render=False)
             self.top_icon_palette.reload_scene_views()
             self.section_profiles = {
@@ -4544,10 +5152,10 @@ class MainWindow(QMainWindow):
             if importing:
                 original_name = path.name[:-4] if path.name.casefold().endswith(".zip") else path.name
                 self._import_save_path = path.with_name(Path(original_name).stem + ".osa")
-                self.scene.set_model_name(Path(original_name).stem)
+                self._set_model_display_name(Path(original_name).stem)
             else:
                 self._import_save_path = None
-                self.scene.set_model_name(path.stem)
+                self._set_model_display_name(path.stem)
                 self.home.store.add(path)
             self._saved_revision = self.model.revision - 1 if importing else self.model.revision
             self._saved_view_revision = self.model.view_revision
@@ -4694,6 +5302,8 @@ class MainWindow(QMainWindow):
 
     def show_home(self) -> None:
         """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
+        if self._detailing_project_mode:
+            self.detailing_mode_palette.set_detailing_visible(False)
         self.member_placement_editor.hide()
         self.reference_panel.hide()
         self.view_stack.setCurrentWidget(self.home)
@@ -4706,6 +5316,9 @@ class MainWindow(QMainWindow):
             self.verification_top_palette,
             self.action_top_palette,
             self.analysis_top_palette,
+            self.detailing_top_palette,
+            self.detailing_mode_palette,
+            self.project_sheets_palette,
             self.navigation_button,
             self.sloped_plane_button,
             self.sloped_plane_right_button,
@@ -4725,7 +5338,9 @@ class MainWindow(QMainWindow):
 
     def show_editor(self) -> None:
         """Retorna à cena 3D e restaura seus controles contextuais."""
-        self.view_stack.setCurrentWidget(self.scene)
+        self.view_stack.setCurrentWidget(
+            self.project_sheet_workspace if self._detailing_project_mode else self.scene
+        )
         self.title_bar.set_project_actions_enabled(True)
         for widget in (
             self.palette,
@@ -4739,7 +5354,26 @@ class MainWindow(QMainWindow):
             self.command_bar,
         ):
             widget.show()
+        if self._detailing_project_mode:
+            for control in (
+                self.navigation_button,
+                self.sloped_plane_button,
+                self.sloped_plane_right_button,
+                self.previous_plane_button,
+                self.plane_change_button,
+                self.next_plane_button,
+            ):
+                control.hide()
         self.top_icon_palette.set_geometry_visible(self.palette.active_group == "Geometria")
+        detailing_active = self.palette.active_group == "Detalhamento"
+        self.detailing_top_palette.set_detailing_visible(
+            detailing_active and not self._detailing_project_mode
+        )
+        self.detailing_mode_palette.set_detailing_visible(detailing_active)
+        if self._detailing_project_mode:
+            self.project_sheets_palette.set_project_mode(True)
+        else:
+            self.project_sheets_palette.set_project_mode(False)
         self.palette.reposition()
         self.top_icon_palette.reposition()
         self.command_bar.reposition()

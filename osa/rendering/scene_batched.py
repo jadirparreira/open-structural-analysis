@@ -2048,12 +2048,17 @@ class StructureScene(QWidget):
                 cells = np.arange(start, end, dtype=np.int64)
                 if not len(cells):
                     continue
-                mesh = batch.faces.extract_cells(cells).extract_surface().triangulate().clean()
+                mesh = (
+                    batch.faces.extract_cells(cells)
+                    .extract_surface(algorithm="dataset_surface")
+                    .triangulate()
+                    .clean()
+                )
                 if mesh.n_points and mesh.n_cells:
                     solids.append((name, mesh))
             for name, plate in model.plates.items():
                 mesh = self._plate_meshes(plate)[0]
-                mesh = mesh.extract_surface().triangulate().clean()
+                mesh = mesh.extract_surface(algorithm="dataset_surface").triangulate().clean()
                 if mesh.n_points and mesh.n_cells:
                     solids.append((f"plate:{name}", mesh))
             return tuple(solids)
@@ -8176,6 +8181,10 @@ class StructureScene(QWidget):
         self._model_info_overlay.move(20, 14)
         self._model_info_overlay.show()
         self._model_info_overlay.raise_()
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name_overlay.text()
 
     def _node_marker_radius(self) -> float:
         return self._marker_radius_current

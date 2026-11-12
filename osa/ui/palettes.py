@@ -1,4 +1,5 @@
 from .common import *
+from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
 
 
@@ -327,7 +328,17 @@ class FloatingPalette(QFrame):
                 self.window.prepare_analysis_palette()
             self.window.analysis_top_palette.set_analysis_visible(next_group == "Análise")
         if hasattr(self.window, "detailing_top_palette"):
-            self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
+            project_mode = getattr(self.window, "_detailing_project_mode", False)
+            self.window.detailing_top_palette.set_detailing_visible(
+                next_group == "Detalhamento" and not project_mode
+            )
+        if hasattr(self.window, "detailing_mode_palette"):
+            self.window.detailing_mode_palette.set_detailing_visible(next_group == "Detalhamento")
+        if hasattr(self.window, "project_sheets_palette"):
+            self.window.project_sheets_palette.set_project_mode(
+                next_group == "Detalhamento"
+                and getattr(self.window, "_detailing_project_mode", False)
+            )
         if hasattr(self.window, "scene"):
             self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
             self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
@@ -802,22 +813,6 @@ class DetailingTopPalette(QFrame):
             "QToolButton:pressed { background: #d0d7de; }"
         )
         layout.addWidget(self.subtract_button)
-        button = QToolButton(self)
-        button.setFixedSize(30, 30)
-        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
-        button.setIconSize(QSize(21, 21))
-        button.setToolTip("Gerenciar vistas")
-        button.setProperty("paletteTooltip", "Gerenciar vistas")
-        button.setAccessibleName("Gerenciar vistas")
-        button.installEventFilter(self)
-        button.clicked.connect(window.open_detailing_views)
-        button.setStyleSheet(
-            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
-            "QToolButton:hover { background: #eaeef2; }"
-            "QToolButton:pressed { background: #d0d7de; }"
-        )
-        layout.addWidget(button)
-        self.manage_views_button = button
         self.hide()
 
     def set_detailing_visible(self, visible: bool) -> None:
@@ -862,7 +857,6 @@ class DetailingTopPalette(QFrame):
             self.additional_detailing_button,
             self.connect_ends_button,
             self.subtract_button,
-            self.manage_views_button,
         ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
@@ -871,6 +865,396 @@ class DetailingTopPalette(QFrame):
             elif event.type() == QEvent.Type.ToolTip:
                 return True
         return super().eventFilter(watched, event)
+
+
+class DetailingModePalette(QFrame):
+    """Small mode switch centered below the detailing toolbar."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self._selected = 0
+        self.setObjectName("detailingModePalette")
+        self.setFixedSize(186, 30)
+        self.setStyleSheet(
+            "QFrame#detailingModePalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        self._indicator = QFrame(self)
+        self._indicator.setObjectName("detailingModeIndicator")
+        self._indicator.setStyleSheet(
+            "QFrame#detailingModeIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        self._buttons: list[QToolButton] = []
+        self._button_group = QButtonGroup(self)
+        self._button_group.setExclusive(True)
+        for index, label in enumerate(("Modelo", "Projeto")):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(88, 22)
+            button.setAccessibleName(label)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 11px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(index == self._selected)
+            button.clicked.connect(lambda _checked=False, choice=index: self._select(choice))
+            self._button_group.addButton(button)
+            layout.addWidget(button)
+            self._buttons.append(button)
+        self._indicator.setGeometry(self._indicator_geometry())
+        self._indicator.lower()
+        self._update_text()
+        self.hide()
+
+    def _indicator_geometry(self) -> QRect:
+        return QRect(4 + 88 * self._selected, 5, 86, 20)
+
+    def _update_text(self) -> None:
+        for index, button in enumerate(self._buttons):
+            color = "#ffffff" if index == self._selected else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _select(self, index: int) -> None:
+        if index == self._selected:
+            return
+        self._selected = index
+        animation = QPropertyAnimation(self._indicator, b"geometry", self)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(self._indicator.geometry())
+        animation.setEndValue(self._indicator_geometry())
+        animation.start()
+        self._indicator_animation = animation
+        self._update_text()
+        self._window.set_detailing_project_mode(index == 1)
+
+    def set_detailing_visible(self, visible: bool) -> None:
+        if not visible and self._selected == 1:
+            self._buttons[0].setChecked(True)
+            self._select(0)
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        self._window.detailing_top_palette.adjustSize()
+        self._window.detailing_top_palette.reposition()
+        top = self._window.detailing_top_palette
+        x = (self._window.width() - self.width()) // 2
+        y = top.y() + top.height() + 8
+        self.move(x, y)
+        self.raise_()
+
+
+class ProjectSheetsPalette(QFrame):
+    """Sheet selector and controls shown in project view mode."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self._sheet_names = ["01 - Folha Geral"]
+        self._project_settings = default_project_settings()
+        self._sheet_settings = {
+            self._sheet_names[0]: default_project_sheet_settings(self._sheet_names[0]),
+        }
+        self._sheet_views: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self.setObjectName("projectSheetsPalette")
+        self.setStyleSheet(
+            "QFrame#projectSheetsPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+            "QComboBox { min-width: 300px; min-height: 30px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QToolButton { min-width: 30px; min-height: 30px; border: 0; border-radius: 6px; "
+            "background: transparent; color: #24292f; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:disabled { color: #afb8c1; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+        self.sheet_selector = QComboBox(self)
+        self.sheet_selector.setToolTip("Folha de projeto")
+        self.sheet_selector.setAccessibleName("Folha de projeto")
+        self.sheet_selector.addItems(self._sheet_names)
+        self.sheet_selector.currentTextChanged.connect(self._on_sheet_selected)
+        layout.addWidget(self.sheet_selector)
+        self.rename_sheet_button = self._action_button(
+            "pencil.svg", "Renomear folha", self._rename_sheet,
+        )
+        layout.addWidget(self.rename_sheet_button)
+        self.add_sheet_button = self._action_button("plus.svg", "Adicionar folha", self._add_sheet)
+        layout.addWidget(self.add_sheet_button)
+        self.remove_sheet_button = self._action_button("minus.svg", "Remover folha", self._remove_sheet)
+        self.remove_sheet_button.setEnabled(True)
+        layout.addWidget(self.remove_sheet_button)
+        self.settings_button = self._action_button(
+            "settings.svg", "Configurar projeto", window.open_project_sheet_settings,
+        )
+        self.settings_button.setEnabled(True)
+        layout.addWidget(self.settings_button)
+        self.identify_button = self._action_button(
+            "tag.svg", "Identificar", window.start_project_view_identification,
+        )
+        self.identify_button.setEnabled(True)
+        self.manage_views_button = self._action_button(
+            "scan-square.svg", "Gerenciar vistas", window.open_detailing_views,
+        )
+        self.manage_views_button.setIconSize(QSize(21, 21))
+        layout.addWidget(self.manage_views_button)
+        layout.addWidget(self.identify_button)
+        self._on_sheet_selected(self.sheet_selector.currentText())
+        self.hide()
+
+    def _action_button(self, icon_filename: str, tooltip: str, callback) -> QToolButton:
+        button = QToolButton(self)
+        button.setFixedSize(30, 30)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+        button.setIconSize(QSize(17, 17))
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.clicked.connect(callback)
+        return button
+
+    def set_project_mode(self, active: bool) -> None:
+        self.setVisible(active)
+        if active:
+            self.reposition()
+
+    def restore_detailing_state(self, state: dict | None) -> None:
+        state = state if isinstance(state, dict) else {}
+        names = state.get("sheet_names", [])
+        names = [name for name in names if isinstance(name, str) and name.strip()]
+        if not names:
+            names = ["01 - Folha Geral"]
+        raw_settings = state.get("sheet_settings", {})
+        raw_views = state.get("sheet_views", {})
+        self._sheet_names = list(names)
+        self._sheet_settings = {}
+        self._sheet_views = {}
+        for name in names:
+            settings = default_project_sheet_settings(name)
+            if isinstance(raw_settings, dict) and isinstance(raw_settings.get(name), dict):
+                saved = raw_settings[name]
+                settings.update(saved)
+                settings["visible_fields"] = {
+                    **default_project_sheet_settings(name)["visible_fields"],
+                    **saved.get("visible_fields", {}),
+                }
+            self._sheet_settings[name] = settings
+            saved_views = raw_views.get(name, []) if isinstance(raw_views, dict) else []
+            self._sheet_views[name] = [
+                dict(view) for view in saved_views if isinstance(view, dict)
+            ] if isinstance(saved_views, list) else []
+        project_settings = default_project_settings()
+        saved_project_settings = state.get("project_settings", {})
+        if isinstance(saved_project_settings, dict):
+            project_settings.update(saved_project_settings)
+        self._project_settings = project_settings
+        self.sheet_selector.blockSignals(True)
+        self.sheet_selector.clear()
+        self.sheet_selector.addItems(self._sheet_names)
+        active_sheet = state.get("active_sheet")
+        active_index = self._sheet_names.index(active_sheet) if active_sheet in self._sheet_names else 0
+        self.sheet_selector.setCurrentIndex(active_index)
+        self.sheet_selector.blockSignals(False)
+        has_sheets = bool(self._sheet_names)
+        self.sheet_selector.setEnabled(has_sheets)
+        self.rename_sheet_button.setEnabled(has_sheets)
+        self.remove_sheet_button.setEnabled(has_sheets)
+        self.settings_button.setEnabled(has_sheets)
+        self._on_sheet_selected(self.sheet_selector.currentText())
+
+    def _on_sheet_selected(self, sheet_name: str) -> None:
+        settings = self._sheet_settings.get(sheet_name)
+        if settings is not None:
+            self._window.project_sheet_workspace.set_sheet_settings(
+                sheet_name, settings, self._project_settings, len(self._sheet_names),
+            )
+            self._window.project_sheet_workspace.set_sheet_views(
+                self._sheet_views.get(sheet_name, ()), clear_selection=True,
+            )
+        else:
+            self._window.project_sheet_workspace.set_sheet_settings(
+                "", default_project_sheet_settings(""), self._project_settings,
+                len(self._sheet_names),
+            )
+            self._window.project_sheet_workspace.set_sheet_views((), clear_selection=True)
+
+    def add_view_to_active_sheet(self, view: dict) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        if not sheet_name:
+            return
+        self._sheet_views.setdefault(sheet_name, []).append(view)
+        self._window.project_sheet_workspace.set_sheet_views(self._sheet_views[sheet_name])
+        self._window.project_sheet_workspace.select_view(len(self._sheet_views[sheet_name]) - 1)
+        self._window._store_detailing_state()
+
+    def remove_view_from_active_sheet(self, index: int) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        views = self._sheet_views.get(sheet_name, [])
+        if not 0 <= index < len(views):
+            return
+        views.pop(index)
+        self._window.project_sheet_workspace.set_sheet_views(views, clear_selection=True)
+        self._window._store_detailing_state()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        top = self._window.detailing_top_palette
+        top.adjustSize()
+        top.reposition()
+        self.setFixedHeight(top.height())
+        self.move((self._window.width() - self.width()) // 2, top.y())
+        self.raise_()
+
+    def _sheet_name_dialog(
+        self, title: str = "Adicionar folha", current_name: str = "",
+    ) -> tuple[bool, str]:
+        dialog = QInputDialog(self._window)
+        dialog.setWindowTitle(title)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setLabelText("Nome da folha:")
+        dialog.setTextValue(current_name)
+        dialog.setOkButtonText("Salvar" if current_name else "Adicionar")
+        dialog.setCancelButtonText("Cancelar")
+        dialog.setStyleSheet(
+            "QInputDialog { background: #ffffff; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLineEdit { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px; "
+            "padding: 2px 9px; background: #ffffff; }"
+            "QPushButton { min-height: 34px; padding: 4px 16px; border: 0; border-radius: 6px; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        for button in dialog.findChildren(QPushButton):
+            button.setIcon(QIcon())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        return accepted, dialog.textValue().strip()
+
+    def _add_sheet(self) -> None:
+        accepted, name = self._sheet_name_dialog()
+        if not accepted or not name:
+            return
+        if any(sheet.partition(" - ")[2] == name for sheet in self._sheet_names):
+            QMessageBox.warning(self._window, "Adicionar folha", "Já existe uma folha com esse nome.")
+            return
+        next_index = max(
+            (int(sheet[:2]) for sheet in self._sheet_names if sheet[:2].isdigit()),
+            default=0,
+        ) + 1
+        sheet_label = f"{next_index:02d} - {name}"
+        self._sheet_names.append(sheet_label)
+        self._sheet_settings[sheet_label] = default_project_sheet_settings(sheet_label)
+        self._sheet_views[sheet_label] = []
+        self.sheet_selector.addItem(sheet_label)
+        self.sheet_selector.setCurrentText(sheet_label)
+        self.sheet_selector.setEnabled(True)
+        self.rename_sheet_button.setEnabled(True)
+        self.remove_sheet_button.setEnabled(True)
+        self.settings_button.setEnabled(True)
+        self._window._store_detailing_state()
+
+    def _rename_sheet(self) -> None:
+        index = self.sheet_selector.currentIndex()
+        if index < 0:
+            return
+        old_label = self._sheet_names[index]
+        old_name = old_label.partition(" - ")[2]
+        accepted, name = self._sheet_name_dialog("Renomear folha", old_name)
+        if not accepted or not name or name == old_name:
+            return
+        if any(
+            index_other != index and sheet.partition(" - ")[2] == name
+            for index_other, sheet in enumerate(self._sheet_names)
+        ):
+            QMessageBox.warning(self._window, "Renomear folha", "Já existe uma folha com esse nome.")
+            return
+        index_label = old_label.partition(" - ")[0]
+        new_label = f"{index_label} - {name}"
+        settings = self._sheet_settings.pop(old_label)
+        settings["subject"] = name
+        self._sheet_settings[new_label] = settings
+        self._sheet_views[new_label] = self._sheet_views.pop(old_label, [])
+        self._sheet_names[index] = new_label
+        self.sheet_selector.setItemText(index, new_label)
+        self._on_sheet_selected(new_label)
+        self._window._store_detailing_state()
+
+    def reorder_sheet(self, sheet_label: str, requested_number: str) -> str:
+        if sheet_label not in self._sheet_names:
+            return sheet_label
+        old_index = self._sheet_names.index(sheet_label)
+        ordered = [
+            (
+                label.partition(" - ")[2],
+                self._sheet_settings[label],
+                self._sheet_views.get(label, []),
+            )
+            for label in self._sheet_names
+        ]
+        selected = ordered.pop(old_index)
+        new_index = max(0, min(int(requested_number) - 1, len(ordered)))
+        ordered.insert(new_index, selected)
+
+        self._sheet_names = []
+        self._sheet_settings = {}
+        self._sheet_views = {}
+        for index, (title, settings, views) in enumerate(ordered, start=1):
+            label = f"{index:02d} - {title}"
+            settings["sheet_number"] = f"{index:02d}"
+            self._sheet_names.append(label)
+            self._sheet_settings[label] = settings
+            self._sheet_views[label] = views
+
+        self.sheet_selector.blockSignals(True)
+        self.sheet_selector.clear()
+        self.sheet_selector.addItems(self._sheet_names)
+        self.sheet_selector.setCurrentIndex(new_index)
+        self.sheet_selector.blockSignals(False)
+        selected_label = self._sheet_names[new_index]
+        self._on_sheet_selected(selected_label)
+        self._window._store_detailing_state()
+        return selected_label
+
+    def _remove_sheet(self) -> None:
+        name = self.sheet_selector.currentText()
+        if not name:
+            return
+        if not self._window.confirm_remove_project_sheet(name):
+            return
+        index = self.sheet_selector.currentIndex()
+        self._sheet_names.pop(index)
+        self._sheet_settings.pop(name, None)
+        self._sheet_views.pop(name, None)
+        self.sheet_selector.removeItem(index)
+        has_sheets = bool(self._sheet_names)
+        self.sheet_selector.setEnabled(has_sheets)
+        self.rename_sheet_button.setEnabled(has_sheets)
+        self.remove_sheet_button.setEnabled(has_sheets)
+        self.settings_button.setEnabled(has_sheets)
+        if not has_sheets:
+            self._on_sheet_selected("")
+        else:
+            current_index = self.sheet_selector.currentIndex()
+            current_label = self._sheet_names[current_index]
+            self.reorder_sheet(current_label, f"{current_index + 1:02d}")
+        self._window._store_detailing_state()
 
 
 class TopIconPalette(QFrame):

@@ -1072,6 +1072,9 @@ class DetailingViewsDialog(QDialog):
             "QPushButton#detailViewExportDxfButton { min-height: 34px; padding: 4px 14px; "
             "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #ffffff; }"
             "QPushButton#detailViewExportDxfButton:hover { background: #eaeef2; }"
+            "QPushButton#detailViewAddViewButton { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #0969da; border-radius: 7px; color: #ffffff; background: #0969da; }"
+            "QPushButton#detailViewAddViewButton:hover { background: #0550ae; }"
         )
 
         outer = QVBoxLayout(self)
@@ -1123,6 +1126,8 @@ class DetailingViewsDialog(QDialog):
         self._pending_view_name_key = None
         self._pending_view_name = ""
         self._add_plane_requested = False
+        self._add_view_requested = False
+        self._requested_sheet_view = None
         view_keys = []
         for plane, direction in (("XY", "Z"), ("XZ", "Y"), ("YZ", "X")):
             ordered_axes = sorted(
@@ -1289,10 +1294,18 @@ class DetailingViewsDialog(QDialog):
         close_button.setAutoDefault(False)
         close_button.clicked.connect(self._commit_view_name_update)
         close_button.clicked.connect(self.accept)
+        add_view_button = QPushButton("Adicionar vista")
+        add_view_button.setObjectName("detailViewAddViewButton")
+        add_view_button.setAutoDefault(False)
+        add_view_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_view_button.setEnabled(False)
+        add_view_button.clicked.connect(self._add_selected_view_to_sheet)
+        self.add_view_button = add_view_button
         footer = QHBoxLayout()
         footer.addWidget(export_button)
         footer.addStretch()
         footer.addWidget(close_button)
+        footer.addWidget(add_view_button)
         preview_layout.addLayout(footer)
         content.addWidget(preview_area, 1)
         outer.addLayout(content, 1)
@@ -1479,10 +1492,59 @@ class DetailingViewsDialog(QDialog):
         self._view_is_custom[view_key] = is_custom
 
     def _add_detail_plane(self) -> None:
+        self._commit_view_name_update()
+        self._save_active_detail_view_settings()
         self._add_plane_requested = True
         parent = self.parent()
         if parent is not None:
             parent._detailing_preferred_view_key = self._active_view_key
+        self.done(QDialog.DialogCode.Rejected)
+
+    def _add_selected_view_to_sheet(self) -> None:
+        view_key = self._active_view_key
+        if view_key is None or self._preview._render_pending:
+            return
+        self._commit_view_name_update()
+        plane, coordinate = self._view_definitions[view_key]
+        parent = self.parent()
+        model = parent.model if parent is not None else None
+        if model is None:
+            return
+        try:
+            segments, segment_owners = self._preview.generate_dxf_segments_with_sources(
+                model,
+                plane,
+                coordinate,
+                upper_offset_cm=self.view_displacement_inputs["top"].value(),
+                lower_offset_cm=self.view_displacement_inputs["bottom"].value(),
+                orientation=self.view_direction_selector.currentText(),
+                rotation_degrees=self.view_rotation_input.value(),
+            )
+        except (IndexError, KeyError, RuntimeError, TypeError, ValueError) as error:
+            QMessageBox.warning(self, "Adicionar vista", f"Não foi possível gerar a vista:\n{error}")
+            return
+        if not segments:
+            QMessageBox.warning(
+                self,
+                "Vista sem geometria",
+                "Não foi possível gerar linhas para adicionar esta vista à folha.",
+            )
+            return
+        self._requested_sheet_view = {
+            "name": self._saved_view_names.get(view_key, "").strip()
+            or self._view_fallbacks[view_key],
+            "segments": tuple(segments),
+            "segment_owners": tuple(segment_owners),
+            "projection": {
+                "plane": plane,
+                "coordinate": coordinate,
+                "orientation": self.view_direction_selector.currentText(),
+                "rotation_degrees": self.view_rotation_input.value(),
+            },
+            "scale_denominator": 100.0,
+            "identifications": [],
+        }
+        self._add_view_requested = True
         self.done(QDialog.DialogCode.Rejected)
 
     def _remove_selected_detail_plane(self) -> None:
@@ -1641,6 +1703,7 @@ class DetailingViewsDialog(QDialog):
             self._refresh_selected_detail_preview()
         for key, button in self._view_buttons.items():
             button.setChecked(key == view_key)
+        self.add_view_button.setEnabled(True)
         self._view_list.setCurrentItem(self._view_items[view_key])
         user_name = self._saved_view_names.get(view_key, "").strip()
         self.view_name_input.setEnabled(True)
@@ -2299,6 +2362,442 @@ class ProgramSettingsDialog(QDialog):
         samples = (0, 2, 4, 8)[int(index)]
         self._set_antialiasing_label(samples)
         self.window.scene.set_antialiasing_samples(samples)
+
+
+class ProjectSheetSettingsDialog(QDialog):
+    """Page, identification, and title block settings for one project sheet."""
+
+    def __init__(
+        self, sheet_name: str, settings: dict, project_settings: dict,
+        sheet_count: int, parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Configurações do projeto")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.resize(760, 650)
+        self._settings = dict(settings)
+        self._settings["visible_fields"] = dict(settings.get("visible_fields", {}))
+        self._settings["visible_fields"].pop("phase", None)
+        self._project_settings = dict(project_settings)
+        self._project_settings.pop("phase", None)
+        self._sheet_count = sheet_count
+        self.result_settings: dict | None = None
+        self.result_project_settings: dict | None = None
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
+            "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
+            "QListWidget:focus { outline: none; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox { min-height: 32px; padding: 2px 9px; "
+            "border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #24292f; }"
+            "QComboBox#sheetFormatSelector::drop-down, QComboBox#sheetOrientationSelector::drop-down "
+            "{ width: 0; border: 0; }"
+            "QComboBox#sheetFormatSelector::down-arrow, QComboBox#sheetOrientationSelector::down-arrow "
+            "{ image: none; }"
+            "QCheckBox { color: #57606a; spacing: 8px; min-height: 28px; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #d0d7de; "
+            "border-radius: 4px; background: #ffffff; }"
+            "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+            "QPushButton#cancelSheetSettings, QPushButton#saveSheetSettings { min-height: 34px; "
+            "padding: 4px 14px; border: 1px solid #d0d7de; border-radius: 7px; "
+            "color: #24292f; background: #f6f8fa; }"
+            "QPushButton#cancelSheetSettings:hover { background: #eaeef2; }"
+            "QPushButton#saveSheetSettings { border: 0; background: #0969da; color: #ffffff; "
+            "font-weight: 600; }"
+            "QPushButton#saveSheetSettings:hover { background: #0550ae; }"
+            "QPushButton#attachIdentityButton { min-height: 34px; padding: 4px 12px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#attachIdentityButton:hover { background: #eaeef2; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame(self)
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        titlebar_layout = QHBoxLayout(titlebar)
+        titlebar_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Configurações do projeto", titlebar)
+        title.setObjectName("windowTitle")
+        titlebar_layout.addWidget(title)
+        titlebar_layout.addStretch(1)
+        outer.addWidget(titlebar)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        navigation = QListWidget(self)
+        navigation.setFixedWidth(170)
+        navigation.setSpacing(8)
+        navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia"))
+        pages = QStackedWidget(self)
+        pages.addWidget(self._build_project_data_settings())
+        pages.addWidget(self._build_sheet_settings())
+        pages.addWidget(self._build_title_block_settings())
+        pages.addWidget(self._build_view_settings())
+        navigation.currentRowChanged.connect(pages.setCurrentIndex)
+        navigation.setCurrentRow(0)
+        content.addWidget(navigation)
+        content.addWidget(pages, 1)
+        outer.addLayout(content, 1)
+
+        footer_widget = QWidget(self)
+        footer = QHBoxLayout(footer_widget)
+        footer.setContentsMargins(14, 8, 14, 10)
+        footer.addStretch(1)
+        cancel_button = QPushButton("Cancelar", footer_widget)
+        cancel_button.setObjectName("cancelSheetSettings")
+        cancel_button.setIcon(QIcon())
+        cancel_button.clicked.connect(self.reject)
+        save_button = QPushButton("Salvar", footer_widget)
+        save_button.setObjectName("saveSheetSettings")
+        save_button.setIcon(QIcon())
+        save_button.clicked.connect(self._save)
+        footer.addWidget(cancel_button)
+        footer.addWidget(save_button)
+        outer.addWidget(footer_widget)
+
+    def _build_project_data_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Dados do projeto")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Estas informações são compartilhadas por todas as folhas.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.client_edit = QLineEdit(str(self._project_settings.get("client", "")), page)
+        form.addRow("Cliente", self.client_edit)
+        self.work_edit = QLineEdit(str(self._project_settings.get("work", "")), page)
+        form.addRow("Obra", self.work_edit)
+        self.address_edit = QLineEdit(str(self._project_settings.get("address", "")), page)
+        form.addRow("Endereço", self.address_edit)
+        self.responsible_edit = QLineEdit(str(self._project_settings.get("responsible", "")), page)
+        form.addRow("Responsável", self.responsible_edit)
+        self.crea_edit = QLineEdit(str(self._project_settings.get("crea", "")), page)
+        form.addRow("CREA", self.crea_edit)
+        layout.addLayout(form)
+        identity_row = QHBoxLayout()
+        self.identity_path_label = QLabel(self._identity_file_label(), page)
+        self.identity_path_label.setWordWrap(True)
+        identity_row.addWidget(self.identity_path_label, 1)
+        attach_button = QPushButton("Anexar imagem", page)
+        attach_button.setObjectName("attachIdentityButton")
+        attach_button.setIcon(QIcon())
+        attach_button.clicked.connect(self._attach_identity_image)
+        identity_row.addWidget(attach_button)
+        layout.addWidget(QLabel("Identidade visual", page))
+        layout.addLayout(identity_row)
+        layout.addStretch(1)
+        return page
+
+    def _identity_file_label(self) -> str:
+        path = str(self._project_settings.get("visual_identity_path", ""))
+        return Path(path).name if path else "Nenhuma imagem anexada"
+
+    def _attach_identity_image(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Anexar identidade visual",
+            "",
+            "Imagens (*.png *.jpg *.jpeg *.bmp)",
+        )
+        if path:
+            self._project_settings["visual_identity_path"] = path
+            self.identity_path_label.setText(Path(path).name)
+
+    def _build_sheet_settings(self) -> QWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(12)
+        heading = QLabel("Dados da Folha")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Estas informações são exclusivas da folha de projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        dimensions = QGridLayout()
+        dimensions.setHorizontalSpacing(12)
+        dimensions.setVerticalSpacing(6)
+        self.subject_edit = QLineEdit(str(self._settings.get("subject", "Folha Geral")), page)
+        self.subject_edit.setReadOnly(True)
+        self._add_sheet_setting_field(dimensions, "Assunto", self.subject_edit, 0, 0, 2)
+        self.paper_size_combo = QComboBox(page)
+        self.paper_size_combo.setObjectName("sheetFormatSelector")
+        self.paper_size_combo.addItems(("A4", "A3", "A2", "A1", "A0", "Personalizado"))
+        self.paper_size_combo.setCurrentText(self._settings.get("paper_size", "A3"))
+        self.orientation_combo = QComboBox(page)
+        self.orientation_combo.setObjectName("sheetOrientationSelector")
+        self.orientation_combo.addItems(("Paisagem", "Retrato"))
+        self.orientation_combo.setCurrentText(self._settings.get("orientation", "Paisagem"))
+        self.custom_width_box, self.custom_width_spin = self._unit_input(
+            page, self._settings.get("custom_width_mm", 420), 50, 3000,
+        )
+        self.custom_height_box, self.custom_height_spin = self._unit_input(
+            page, self._settings.get("custom_height_mm", 297), 50, 3000,
+        )
+        self.paper_size_combo.currentTextChanged.connect(self._update_custom_size_enabled)
+        self.margin_top_box, self.margin_top_spin = self._unit_input(
+            page, self._settings.get("margin_top_mm", 10), 0, 100,
+        )
+        self.margin_bottom_box, self.margin_bottom_spin = self._unit_input(
+            page, self._settings.get("margin_bottom_mm", 10), 0, 100,
+        )
+        self.margin_left_box, self.margin_left_spin = self._unit_input(
+            page, self._settings.get("margin_left_mm", 25), 0, 100,
+        )
+        self.margin_right_box, self.margin_right_spin = self._unit_input(
+            page, self._settings.get("margin_right_mm", 10), 0, 100,
+        )
+        for label, widget, row, column in (
+            ("Formato", self.paper_size_combo, 0, 0),
+            ("Orientação", self.orientation_combo, 0, 1),
+            ("Largura", self.custom_width_box, 1, 0),
+            ("Altura", self.custom_height_box, 1, 1),
+            ("Margem superior", self.margin_top_box, 2, 0),
+            ("Margem inferior", self.margin_bottom_box, 2, 1),
+            ("Margem esquerda", self.margin_left_box, 3, 0),
+            ("Margem direita", self.margin_right_box, 3, 1),
+        ):
+            self._add_sheet_setting_field(dimensions, label, widget, (row + 1) * 2, column)
+        dimensions.setColumnStretch(0, 1)
+        dimensions.setColumnStretch(1, 1)
+        layout.addLayout(dimensions)
+
+        identification = QGridLayout()
+        identification.setHorizontalSpacing(12)
+        identification.setVerticalSpacing(6)
+        self.file_edit = QLineEdit(str(self._settings.get("file", "")), page)
+        self.date_edit = QLineEdit(str(self._settings.get("date", "")), page)
+        self.date_edit.setPlaceholderText("dd/mm/aaaa")
+        self.scale_edit = QLineEdit(str(self._settings.get("scale", "INDICADA")), page)
+        self.revision_edit = QLineEdit(str(self._settings.get("revision", "00")), page)
+        self.sheet_number_combo = QComboBox(page)
+        self.sheet_number_combo.addItems(
+            f"{number:02d}" for number in range(1, self._sheet_count + 1)
+        )
+        self.sheet_number_combo.setCurrentText(
+            str(self._settings.get("sheet_number", "01")).zfill(2)
+        )
+        self._add_sheet_setting_field(identification, "Folha", self.sheet_number_combo, 0, 0)
+        self._add_sheet_setting_field(identification, "Escala", self.scale_edit, 0, 1)
+        self._add_sheet_setting_field(identification, "Data", self.date_edit, 2, 0)
+        self._add_sheet_setting_field(identification, "Revisão", self.revision_edit, 2, 1)
+        self._add_sheet_setting_field(identification, "Arquivo", self.file_edit, 4, 0, 2)
+        identification.setColumnStretch(0, 1)
+        identification.setColumnStretch(1, 1)
+        layout.addLayout(identification)
+        layout.addStretch(1)
+        self._update_custom_size_enabled()
+        scroll.setWidget(page)
+        return scroll
+
+    def _unit_input(
+        self, parent: QWidget, value: float, minimum: float, maximum: float,
+        decimals: int = 0,
+    ) -> tuple[QFrame, QDoubleSpinBox]:
+        box = QFrame(parent)
+        box.setObjectName("unitValueBox")
+        box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 32px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox QDoubleSpinBox { border: 0; background: transparent; "
+            "color: #24292f; padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding-right: 9px; }"
+        )
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        control = QDoubleSpinBox(box)
+        control.setRange(minimum, maximum)
+        control.setDecimals(decimals)
+        control.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        control.setKeyboardTracking(False)
+        control.setValue(float(value))
+        row.addWidget(control, 1)
+        row.addWidget(QLabel("mm", box))
+        return box, control
+
+    @staticmethod
+    def _add_sheet_setting_field(
+        grid: QGridLayout, label: str, widget: QWidget,
+        row: int, column: int, column_span: int = 1,
+    ) -> None:
+        grid.addWidget(QLabel(label), row, column, 1, column_span)
+        grid.addWidget(widget, row + 1, column, 1, column_span)
+
+    def _update_custom_size_enabled(self, *_args) -> None:
+        enabled = self.paper_size_combo.currentText() == "Personalizado"
+        self.custom_width_spin.setEnabled(enabled)
+        self.custom_height_spin.setEnabled(enabled)
+
+    def _build_title_block_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Carimbo")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Estas alturas são aplicadas ao carimbo de todas as folhas do projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.property_text_height_box, self.property_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("title_block_property_text_height_mm", 2.5),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.value_text_height_box, self.value_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("title_block_value_text_height_mm", 4.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        form.addRow("Altura do texto da propriedade", self.property_text_height_box)
+        form.addRow("Altura do texto do valor", self.value_text_height_box)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
+    def _build_view_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Tipografia")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Estas alturas são aplicadas aos nomes, escalas e identificações dos elementos nas vistas do projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.view_name_text_height_box, self.view_name_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("view_name_text_height_mm", 4.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.view_scale_text_height_box, self.view_scale_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("view_scale_text_height_mm", 3.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.view_element_text_height_box, self.view_element_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("view_element_text_height_mm", 3.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.view_section_text_height_box, self.view_section_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("view_section_text_height_mm", 2.5),
+            0.5,
+            20,
+            decimals=1,
+        )
+        form.addRow("Tamanho do texto do nome da vista", self.view_name_text_height_box)
+        form.addRow("Tamanho do texto da escala", self.view_scale_text_height_box)
+        form.addRow("Tamanho do texto do elemento", self.view_element_text_height_box)
+        form.addRow("Tamanho do texto da seção", self.view_section_text_height_box)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
+    def _save(self) -> None:
+        self._settings.update({
+            "paper_size": self.paper_size_combo.currentText(),
+            "orientation": self.orientation_combo.currentText(),
+            "custom_width_mm": self.custom_width_spin.value(),
+            "custom_height_mm": self.custom_height_spin.value(),
+            "margin_left_mm": self.margin_left_spin.value(),
+            "margin_right_mm": self.margin_right_spin.value(),
+            "margin_top_mm": self.margin_top_spin.value(),
+            "margin_bottom_mm": self.margin_bottom_spin.value(),
+            "subject": self.subject_edit.text().strip(),
+            "file": self.file_edit.text().strip(),
+            "scale": self.scale_edit.text().strip(),
+            "sheet_number": self.sheet_number_combo.currentText(),
+            "revision": self.revision_edit.text().strip(),
+            "date": self.date_edit.text().strip(),
+        })
+        self._project_settings.update({
+            "client": self.client_edit.text().strip(),
+            "work": self.work_edit.text().strip(),
+            "address": self.address_edit.text().strip(),
+            "responsible": self.responsible_edit.text().strip(),
+            "crea": self.crea_edit.text().strip(),
+            "title_block_property_text_height_mm": self.property_text_height_spin.value(),
+            "title_block_value_text_height_mm": self.value_text_height_spin.value(),
+            "view_name_text_height_mm": self.view_name_text_height_spin.value(),
+            "view_scale_text_height_mm": self.view_scale_text_height_spin.value(),
+            "view_element_text_height_mm": self.view_element_text_height_spin.value(),
+            "view_section_text_height_mm": self.view_section_text_height_spin.value(),
+        })
+        self.result_settings = self._settings
+        self.result_project_settings = self._project_settings
+        self.accept()
+
+
+class RemoveProjectSheetDialog(QDialog):
+    """Standard confirmation modal for deleting a project sheet."""
+
+    def __init__(self, sheet_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Remover folha")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(390, 160)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QPushButton { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; "
+            "border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton:hover { background: #eaeef2; }"
+            "QPushButton#removeSheetButton { border: 0; background: #0969da; color: #ffffff; "
+            "font-weight: 600; }"
+            "QPushButton#removeSheetButton:hover { background: #0550ae; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+        title = QLabel("Remover folha")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        message = QLabel(f"Deseja remover a folha ‘{sheet_name}’?")
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_button = QPushButton("Cancelar")
+        cancel_button.setIcon(QIcon())
+        cancel_button.clicked.connect(self.reject)
+        remove_button = QPushButton("Remover")
+        remove_button.setObjectName("removeSheetButton")
+        remove_button.setIcon(QIcon())
+        remove_button.clicked.connect(self.accept)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(remove_button)
+        layout.addLayout(buttons)
 
 
 class ActionGroupDialog(QDialog):

@@ -58,6 +58,7 @@ class StructuralModel:
         self._restraint_lengths_cache = None
         # Proveniência e pendências de conversores externos, persistidas no .osa.
         self.import_metadata: dict = {}
+        self.detailing_data: dict = {}
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
         self.scene_view_hidden_rigid_bars: dict[str, set[str]] = {"Completo": set()}
@@ -1609,6 +1610,7 @@ class StructuralModel:
         self.plates.clear()
         self.references.clear()
         self.import_metadata.clear()
+        self.detailing_data.clear()
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()
