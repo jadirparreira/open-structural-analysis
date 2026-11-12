@@ -862,22 +862,32 @@ class StructuralModel:
             connected = expanded
         if len(connected) != len(names):
             raise ValueError("As barras devem formar uma sequência conectada na mesma reta.")
-        first = self.bars[names[0]]
-        a = self.nodes[first.start_node]
-        b = self.nodes[first.end_node]
-        origin = (a.x, a.y, a.z)
-        direction = (b.x - a.x, b.y - a.y, b.z - a.z)
+        points = [
+            (self.nodes[node_name].x, self.nodes[node_name].y, self.nodes[node_name].z)
+            for name in names
+            for node_name in (self.bars[name].start_node, self.bars[name].end_node)
+        ]
+        # Use the longest span across the selected chain as its reference axis.
+        # A short first segment can have a slightly different slope after its
+        # coordinates are rounded, even when the full chain follows one line.
+        origin, end = max(
+            ((first, second) for index, first in enumerate(points) for second in points[index + 1:]),
+            key=lambda pair: sum((right - left) ** 2 for left, right in zip(*pair)),
+        )
+        direction = tuple(right - left for left, right in zip(origin, end))
         length = math.sqrt(sum(v * v for v in direction))
         if length <= self.coordinate_tolerance:
             raise ValueError("As barras devem possuir comprimento positivo.")
-        for name in names:
-            bar = self.bars[name]
-            for node_name in (bar.start_node, bar.end_node):
-                point = self.nodes[node_name]
-                delta = (point.x - origin[0], point.y - origin[1], point.z - origin[2])
-                cross = (direction[1]*delta[2]-direction[2]*delta[1], direction[2]*delta[0]-direction[0]*delta[2], direction[0]*delta[1]-direction[1]*delta[0])
-                if math.sqrt(sum(v*v for v in cross)) > max(1e-9 * length * math.sqrt(sum(v*v for v in delta)), self.node_rounding_tolerance * length):
-                    raise ValueError("As barras devem estar alinhadas na mesma reta.")
+        for point in points:
+            delta = tuple(value - base for value, base in zip(point, origin))
+            cross = (
+                direction[1] * delta[2] - direction[2] * delta[1],
+                direction[2] * delta[0] - direction[0] * delta[2],
+                direction[0] * delta[1] - direction[1] * delta[0],
+            )
+            distance = math.sqrt(sum(value * value for value in cross)) / length
+            if distance > self.node_rounding_tolerance:
+                raise ValueError("As barras devem estar alinhadas na mesma reta.")
         group = {"members": names, "name": ""}
         self.verification_element_groups.append(group)
         self._touch_verification_group(names)

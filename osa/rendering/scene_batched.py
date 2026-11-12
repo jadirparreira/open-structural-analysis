@@ -547,6 +547,7 @@ class StructureScene(QWidget):
         self._utilization_thermometer_visible = False
         self._solid_members_preference = False
         self._solid_members_visible = False
+        self._face_intersection_edges_enabled = False
         self._member_releases_visible = True
         self._semirigid_links_visible = True
         self._node_supports_visible = True
@@ -1206,6 +1207,15 @@ class StructureScene(QWidget):
     def antialiasing_samples(self) -> int:
         """Return the active multisampling level used by the viewport."""
         return self._antialiasing_samples
+
+    def set_face_intersection_edges_enabled(self, enabled: bool) -> None:
+        """Enable or skip the generated lines where solid faces intersect."""
+        enabled = bool(enabled)
+        if enabled == self._face_intersection_edges_enabled:
+            return
+        self._face_intersection_edges_enabled = enabled
+        self._schedule_plate_intersections()
+        self.plotter.render()
 
     def set_antialiasing_samples(self, samples: int) -> None:
         """Apply a supported multisampling level without closing the app."""
@@ -2254,7 +2264,7 @@ class StructureScene(QWidget):
             self.plotter.render()
 
     def _plate_intersections_geometry_key(self):
-        if not self._solid_members_visible or self._member_batch is None:
+        if not self._face_intersection_edges_enabled or not self._solid_members_visible or self._member_batch is None:
             return None
         faces = self._member_batch.faces
         if not faces.n_cells:
@@ -6236,7 +6246,9 @@ class StructureScene(QWidget):
         for name, actor in self._plate_fe_mesh_actors.items():
             actor.SetVisibility(name not in hidden_plate_names and not self._solid_members_visible)
         show_plate_intersections = (
-            not deformation_active and self._plate_intersections_geometry_key() is not None
+            self._face_intersection_edges_enabled
+            and not deformation_active
+            and self._plate_intersections_geometry_key() is not None
         )
         if self._plate_intersection_actor is not None:
             self._plate_intersection_actor.SetVisibility(show_plate_intersections)

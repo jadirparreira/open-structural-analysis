@@ -173,6 +173,9 @@ class MainWindow(QMainWindow):
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        self._face_intersection_edges_enabled = self._program_settings.value(
+            "video/showFaceIntersectionEdges", False, type=bool,
+        )
         plate_closure = str(self._program_settings.value("plates/closure", "perguntar"))
         self._plate_closure_mode = plate_closure if plate_closure in {"perguntar", "automatico"} else "perguntar"
         plate_result_mode = str(self._program_settings.value(
@@ -206,6 +209,7 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
         self.scene = StructureScene(shell)
+        self.scene.set_face_intersection_edges_enabled(self._face_intersection_edges_enabled)
         self.scene.set_plate_result_display_mode(self._plate_result_display_mode)
         self.home = HomePage(shell)
         self.view_stack = QStackedWidget(shell)
@@ -2325,6 +2329,19 @@ class MainWindow(QMainWindow):
         self._plate_closure_mode = mode
         self._program_settings.setValue("plates/closure", mode)
         self._program_settings.sync()
+
+    @property
+    def face_intersection_edges_enabled(self) -> bool:
+        return self._face_intersection_edges_enabled
+
+    def set_face_intersection_edges_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._face_intersection_edges_enabled:
+            return
+        self._face_intersection_edges_enabled = enabled
+        self._program_settings.setValue("video/showFaceIntersectionEdges", enabled)
+        self._program_settings.sync()
+        self.scene.set_face_intersection_edges_enabled(enabled)
 
     @property
     def plate_result_display_mode(self) -> str:

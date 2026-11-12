@@ -2236,6 +2236,24 @@ class ProgramSettingsDialog(QDialog):
         video_layout.addWidget(video_hint)
         video_layout.addSpacing(10)
 
+        self._face_intersection_edges_checkbox = QCheckBox(
+            "Mostrar arestas nas interseções das faces"
+        )
+        self._face_intersection_edges_checkbox.setAccessibleName(
+            "Mostrar arestas nas interseções das faces"
+        )
+        self._face_intersection_edges_checkbox.setToolTip(
+            "Desative para reduzir o processamento em modelos grandes."
+        )
+        self._face_intersection_edges_checkbox.setChecked(
+            self.window.face_intersection_edges_enabled
+        )
+        self._face_intersection_edges_checkbox.toggled.connect(
+            self.window.set_face_intersection_edges_enabled
+        )
+        video_layout.addWidget(self._face_intersection_edges_checkbox)
+        video_layout.addSpacing(8)
+
         antialiasing_header = QHBoxLayout()
         antialiasing_label = QLabel("Qualidade do antialiasing")
         antialiasing_label.setObjectName("propertySection")
