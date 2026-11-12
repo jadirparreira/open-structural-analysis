@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 from PySide6.QtCore import QPointF, Signal
-from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPen
+from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 from .common import (
-    QColor, QCheckBox, QFrame, QHBoxLayout, QLineEdit, QPainter, QRectF, QLabel, Qt,
+    QColor, QCheckBox, QFrame, QHBoxLayout, QIcon, QLineEdit, QPainter, QRectF, QLabel, Qt,
+    QSize, QToolButton,
     QVBoxLayout, QWidget,
 )
 from .property_panel import MixedCheckBox
@@ -27,6 +30,7 @@ class ProjectSheetViewPanel(QFrame):
     """Inspector for the selected drawing view on a project sheet."""
 
     scale_edited = Signal(str)
+    axes_visibility_edited = Signal(bool)
 
     def __init__(self, window) -> None:
         super().__init__(window)
@@ -74,6 +78,29 @@ class ProjectSheetViewPanel(QFrame):
         )
         scale_box_layout.addWidget(self.scale_input, 1)
         layout.addWidget(scale_box)
+        axes_row = QHBoxLayout()
+        axes_row.setContentsMargins(0, 0, 0, 0)
+        axes_label = QLabel("Eixos", self)
+        axes_label.setObjectName("propertySection")
+        axes_row.addWidget(axes_label, 1)
+        self.axes_button = QToolButton(self)
+        self.axes_button.setFixedSize(30, 30)
+        self.axes_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"
+        )))
+        self.axes_button.setIconSize(QSize(20, 20))
+        self.axes_button.setCheckable(True)
+        self.axes_button.setToolTip("Exibir eixos da vista")
+        self.axes_button.setAccessibleName("Exibir eixos da vista")
+        self.axes_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:checked { background: #d0d7de; }"
+            "QToolButton:pressed { background: #afb8c1; }"
+        )
+        self.axes_button.toggled.connect(self.axes_visibility_edited)
+        axes_row.addWidget(self.axes_button)
+        layout.addLayout(axes_row)
         self.hide()
 
     def show_for(self, view: dict | None) -> None:
@@ -83,6 +110,13 @@ class ProjectSheetViewPanel(QFrame):
         self.name_input.setText(str(view.get("name", "Vista")))
         denominator = float(view.get("scale_denominator", 100.0))
         self.scale_input.setText(f"{denominator:g}")
+        self.axes_button.blockSignals(True)
+        self.axes_button.setChecked(bool(view.get("axes_visible", False)))
+        projection = view.get("projection", {})
+        self.axes_button.setEnabled(
+            isinstance(projection, dict) and projection.get("plane") in {"XY", "XZ", "YZ"}
+        )
+        self.axes_button.blockSignals(False)
         self.layout().activate()
         self.setMinimumHeight(0)
         self.adjustSize()
@@ -235,6 +269,12 @@ def default_project_settings() -> dict:
         "view_scale_text_height_mm": 3.0,
         "view_element_text_height_mm": 3.0,
         "view_section_text_height_mm": 2.5,
+        "dimension_text_height_mm": 3.0,
+        "dimension_terminator_height_mm": 3.0,
+        "dimension_extension_gap_mm": 1.0,
+        "dimension_line_extension_mm": 3.0,
+        "dimension_extension_overrun_mm": 3.0,
+        "dimension_text_position": "superior",
     }
 
 
@@ -247,6 +287,8 @@ class ProjectSheetWorkspace(QWidget):
     layout_changed = Signal()
     element_identification_requested = Signal(int, str, object)
     identification_finished = Signal(bool)
+    dimension_finished = Signal(bool)
+    dimension_step_changed = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -275,12 +317,31 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_count = 1
         self._sheet_views: tuple[dict, ...] = ()
         self._selected_view_index: int | None = None
+        self._selected_view_title_index: int | None = None
+        self._selected_axis_endpoints: set[tuple[int, str]] = set()
         self._selected_identification_index: int | None = None
         self._selected_identification_indices: set[int] = set()
         self._view_hit_rects: dict[int, QRectF] = {}
+        self._view_title_hit_rects: dict[int, QRectF] = {}
         self._identification_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._view_draw_data: dict[int, tuple[float, float, float, float, float]] = {}
+        self._axis_endpoint_hit_rects: dict[tuple[int, str], QRectF] = {}
+        self._axis_endpoint_drag_data: dict[tuple[int, str], tuple[float, float, float]] = {}
+        self._axis_dimension_snap_segments: dict[int, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+        self._drag_axis_endpoints: tuple[tuple[int, str], ...] = ()
+        self._dimension_snap_cache: dict[tuple[int, tuple[str, ...]], tuple] = {}
+        self._dimension_text_hit_rects: dict[tuple[int, int], QRectF] = {}
+        self._selected_dimension: tuple[int, int] | None = None
         self._identification_mode = False
+        self._dimension_mode = False
+        self._dimension_points: list[tuple[float, float]] = []
+        self._dimension_view_index: int | None = None
+        self._dimension_hover_view_index: int | None = None
+        self._dimension_hover_point: QPointF | None = None
+        self._dimension_hover_projected: tuple[float, float] | None = None
+        self._dimension_preview: dict | None = None
+        self._dimension_snap_screen: QPointF | None = None
+        self._dimension_snap_kind: str | None = None
         self._hover_owners: set[tuple[int, str]] = set()
         self._hover_raw_target: tuple[int, str] | None = None
         self._identification_pick_member = False
@@ -288,12 +349,16 @@ class ProjectSheetWorkspace(QWidget):
         self._drawing_area = QRectF()
         self._stamp_rect = QRectF()
         self._drag_position: QPointF | None = None
+        self._drag_view_title_index: int | None = None
         self._drag_identification_index: int | None = None
         self._drag_identification_indices: tuple[int, ...] = ()
+        self._drag_dimension_index: tuple[int, int] | None = None
         self._zoom_factor = 1.0
+        self._sheet_pixels_per_mm = 1.0
         self._pan_offset = QPointF()
         self._pan_anchor: QPointF | None = None
         self._pan_origin = QPointF()
+        self._snap_symbol_pixmaps = self._make_snap_symbol_pixmaps()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -316,7 +381,14 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_views(self, views, *, clear_selection: bool = False) -> None:
+        if self._dimension_mode:
+            self.set_dimension_mode(False)
+            self.dimension_finished.emit(True)
         self._sheet_views = tuple(views)
+        self._dimension_snap_cache.clear()
+        self._selected_dimension = None
+        self._selected_view_title_index = None
+        self._selected_axis_endpoints.clear()
         if clear_selection or (
             self._selected_view_index is not None
             and self._selected_view_index >= len(self._sheet_views)
@@ -337,6 +409,10 @@ class ProjectSheetWorkspace(QWidget):
     def select_view(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self._sheet_views):
             index = None
+        if index != self._selected_view_index:
+            self._selected_dimension = None
+            self._selected_view_title_index = None
+            self._selected_axis_endpoints.clear()
         self._selected_view_index = index
         self._selected_identification_index = None
         self._selected_identification_indices.clear()
@@ -345,6 +421,32 @@ class ProjectSheetWorkspace(QWidget):
             self._sheet_views[index] if index is not None else None
         )
         self.update()
+
+    @staticmethod
+    def _make_snap_symbol_pixmaps() -> dict[str, QPixmap]:
+        icon_root = Path(__file__).parents[1] / "resources" / "icons"
+        filenames = {
+            "intersection": "x.svg",
+            "endpoint": "square.svg",
+            "center": "triangle.svg",
+            "perpendicular": "perpendicular.svg",
+        }
+        pixmaps = {}
+        for kind, filename in filenames.items():
+            source = QPixmap(24, 24)
+            source.fill(Qt.GlobalColor.transparent)
+            renderer = QSvgRenderer(str(icon_root / filename))
+            source_painter = QPainter(source)
+            renderer.render(source_painter, QRectF(1.0, 1.0, 22.0, 22.0))
+            source_painter.end()
+            colored = QPixmap(24, 24)
+            colored.fill(QColor("#0969da"))
+            painter = QPainter(colored)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+            painter.drawPixmap(0, 0, source)
+            painter.end()
+            pixmaps[kind] = colored
+        return pixmaps
 
     def _emit_identification_selection(self, identifications=None) -> None:
         if identifications is None:
@@ -389,11 +491,49 @@ class ProjectSheetWorkspace(QWidget):
         self.layout_changed.emit()
         return True
 
+    def delete_selected_dimension(self) -> bool:
+        selected = self._selected_dimension
+        if selected is None:
+            return False
+        view_index, dimension_index = selected
+        if not 0 <= view_index < len(self._sheet_views):
+            self._selected_dimension = None
+            return False
+        dimensions = self._sheet_views[view_index].get("dimensions", [])
+        if not 0 <= dimension_index < len(dimensions):
+            self._selected_dimension = None
+            return False
+        dimensions.pop(dimension_index)
+        self._selected_dimension = None
+        self.update()
+        self.layout_changed.emit()
+        return True
+
     def set_identification_mode(self, active: bool, view_index: int | None = None) -> None:
+        self._dimension_mode = False
         self._identification_mode = bool(active)
         self._hover_owners.clear()
         self._hover_raw_target = None
         self._identification_pick_member = False
+        self.setCursor(QCursor(
+            Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor
+        ))
+        if active:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.update()
+
+    def set_dimension_mode(self, active: bool) -> None:
+        self._dimension_mode = bool(active)
+        self._dimension_points.clear()
+        self._dimension_view_index = None
+        self._dimension_hover_view_index = None
+        self._dimension_hover_point = None
+        self._dimension_hover_projected = None
+        self._dimension_preview = None
+        self._dimension_snap_screen = None
+        self._dimension_snap_kind = None
+        self._identification_mode = False
+        self._hover_owners.clear()
         self.setCursor(QCursor(
             Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor
         ))
@@ -424,6 +564,7 @@ class ProjectSheetWorkspace(QWidget):
             if paper_width and paper_height else 0.0
         )
         scale = base_scale * self._zoom_factor
+        self._sheet_pixels_per_mm = scale
         sheet_width = paper_width * scale
         sheet_height = paper_height * scale
         center = QPointF(self.width() / 2, self.height() / 2) + self._pan_offset
@@ -454,7 +595,12 @@ class ProjectSheetWorkspace(QWidget):
     def _draw_sheet_views(self, painter: QPainter, inner: QRectF, scale: float) -> None:
         if not self._sheet_views:
             self._view_hit_rects = {}
+            self._view_title_hit_rects = {}
             self._identification_hit_rects = {}
+            self._axis_endpoint_hit_rects = {}
+            self._axis_endpoint_drag_data = {}
+            self._axis_dimension_snap_segments = {}
+            self._dimension_text_hit_rects = {}
             self._view_draw_data = {}
             self._drawing_area = inner
             self._stamp_rect = self._title_block_rect(inner, scale)
@@ -465,8 +611,13 @@ class ProjectSheetWorkspace(QWidget):
         if drawing_area.width() <= 0 or drawing_area.height() <= 0:
             return
         self._view_hit_rects = {}
+        self._view_title_hit_rects = {}
         self._identification_hit_rects = {}
+        self._dimension_text_hit_rects = {}
         self._view_draw_data = {}
+        self._axis_endpoint_hit_rects = {}
+        self._axis_endpoint_drag_data = {}
+        self._axis_dimension_snap_segments = {}
         painter.save()
         painter.setClipRect(inner)
         pen = painter.pen()
@@ -519,17 +670,9 @@ class ProjectSheetWorkspace(QWidget):
             scale_metrics = QFontMetrics(scale_font)
             view_name = str(view.get("name", "Vista"))
             view_scale_label = f"Escala 1:{float(view.get('scale_denominator', 100.0)):g}"
-            label_top = frame.bottom() + 2.0 * scale
             name_width = name_metrics.horizontalAdvance(view_name)
             scale_width = scale_metrics.horizontalAdvance(view_scale_label)
-            name_label_rect = QRectF(
-                frame.left(), label_top, name_width, name_metrics.height(),
-            )
-            scale_label_rect = QRectF(
-                frame.left(), label_top + name_metrics.height(),
-                scale_width, scale_metrics.height(),
-            )
-            view_bounds = frame.united(name_label_rect).united(scale_label_rect)
+            view_bounds = QRectF(frame)
             self._view_draw_data[index] = (
                 center_x, center_y, target_x, target_y, model_to_pixels,
             )
@@ -603,15 +746,6 @@ class ProjectSheetWorkspace(QWidget):
                     -4.0, -3.0, 4.0, 3.0,
                 )
                 view_bounds = view_bounds.united(label_rect)
-            view_bounds = view_bounds.adjusted(-5.0, -5.0, 5.0, 5.0).intersected(inner)
-            self._view_hit_rects[index] = view_bounds
-            if index == self._selected_view_index:
-                selection_pen = QPen(QColor("#0969da"), 2.0)
-                selection_pen.setCosmetic(True)
-                painter.setPen(selection_pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(view_bounds)
-                painter.setPen(pen)
             owners = view.get("segment_owners", ())
             for segment_index, (start, end) in enumerate(segments):
                 start_screen = QPointF(
@@ -636,6 +770,60 @@ class ProjectSheetWorkspace(QWidget):
                     painter.setPen(hover_pen)
                     painter.drawLine(start_screen, end_screen)
                     painter.setPen(pen)
+            if view.get("axes_visible", False):
+                axes_bounds = self._draw_view_axes(painter, view, index, scale)
+                if axes_bounds is not None:
+                    view_bounds = view_bounds.united(axes_bounds)
+            for dimension_index, dimension in enumerate(view.get("dimensions", ())):
+                dimension_bounds = self._draw_dimension(
+                    painter, index, dimension, dimension_index,
+                )
+                if dimension_bounds is not None:
+                    view_bounds = view_bounds.united(dimension_bounds)
+            label_offset = view.get("label_offset_mm", (0.0, 0.0))
+            try:
+                label_offset_x, label_offset_y = (float(value) for value in label_offset)
+            except (TypeError, ValueError):
+                label_offset_x = label_offset_y = 0.0
+            label_left = frame.left() + label_offset_x * scale
+            label_top = view_bounds.bottom() + 2.0 * scale + label_offset_y * scale
+            name_label_rect = QRectF(
+                label_left, label_top, name_width, name_metrics.height(),
+            )
+            scale_label_rect = QRectF(
+                label_left, label_top + name_metrics.height(),
+                scale_width, scale_metrics.height(),
+            )
+            self._view_title_hit_rects[index] = name_label_rect.united(scale_label_rect).adjusted(
+                -4.0, -3.0, 4.0, 3.0,
+            )
+            view_bounds = view_bounds.united(name_label_rect).united(scale_label_rect)
+            if self._dimension_mode and index == self._dimension_hover_view_index:
+                preview = None
+                if (
+                    len(self._dimension_points) == 1
+                    and self._dimension_hover_projected is not None
+                ):
+                    preview = {
+                        "start": self._dimension_points[0],
+                        "end": self._dimension_hover_projected,
+                        "offset": (0.0, 0.0),
+                    }
+                elif len(self._dimension_points) == 2:
+                    preview = self._dimension_preview
+                if preview is not None:
+                    painter.save()
+                    painter.setOpacity(0.58)
+                    self._draw_dimension(painter, index, preview)
+                    painter.restore()
+                if self._dimension_snap_screen is not None:
+                    symbol = self._snap_symbol_pixmaps.get(self._dimension_snap_kind)
+                    if symbol is not None:
+                        painter.drawPixmap(
+                            round(self._dimension_snap_screen.x() - symbol.width() / 2),
+                            round(self._dimension_snap_screen.y() - symbol.height() / 2),
+                            symbol,
+                        )
             painter.setPen(QColor("#000000"))
             painter.setFont(name_font)
             painter.drawText(
@@ -647,6 +835,16 @@ class ProjectSheetWorkspace(QWidget):
                 QPointF(scale_label_rect.left(), scale_label_rect.top() + scale_metrics.ascent()),
                 view_scale_label,
             )
+            if self._selected_view_title_index == index:
+                painter.save()
+                title_selection_pen = QPen(QColor("#0969da"), 1.5)
+                title_selection_pen.setCosmetic(True)
+                painter.setPen(title_selection_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(name_label_rect.united(scale_label_rect).adjusted(
+                    -3.0, -2.0, 3.0, 2.0,
+                ))
+                painter.restore()
             for identification_index, anchor, lines, text_width, label_rect, rotation in identification_rects:
                 if (
                     index == self._selected_view_index
@@ -670,9 +868,210 @@ class ProjectSheetWorkspace(QWidget):
                         run_x += run_metrics.horizontalAdvance(run_text)
                     baseline_offset += line_height
                 painter.restore()
+            view_bounds = view_bounds.adjusted(-5.0, -5.0, 5.0, 5.0).intersected(inner)
+            self._view_hit_rects[index] = view_bounds
+            if index == self._selected_view_index:
+                selection_pen = QPen(QColor("#0969da"), 2.0)
+                selection_pen.setCosmetic(True)
+                painter.setPen(selection_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(view_bounds)
+                painter.setPen(pen)
             painter.setFont(base_font)
             painter.setPen(pen)
         painter.restore()
+
+    def _draw_view_axes(
+        self, painter: QPainter, view: dict, view_index: int, scale: float,
+    ) -> QRectF | None:
+        projection = view.get("projection", {})
+        plane = projection.get("plane") if isinstance(projection, dict) else None
+        axes_by_plane = {
+            "XY": (("X", 0, 1), ("Y", 1, 0)),
+            "XZ": (("X", 0, 2), ("Z", 2, 0)),
+            "YZ": (("Y", 1, 2), ("Z", 2, 1)),
+        }
+        specs = axes_by_plane.get(plane)
+        if specs is None:
+            return None
+        main_window = self.window()
+        model = getattr(main_window, "model", None)
+        if model is None:
+            return None
+        axes = getattr(model, "axes", {})
+        nodes = tuple(getattr(model, "nodes", {}).values())
+        if not nodes:
+            return None
+        draw_data = self._view_draw_data.get(view_index)
+        if draw_data is None:
+            return None
+        center_x, center_y, target_x, target_y, model_to_pixels = draw_data
+        coordinate = projection.get("coordinate", 0.0)
+        try:
+            section_coordinate = float(coordinate)
+        except (TypeError, ValueError):
+            return None
+        fixed_index = {"XY": 2, "XZ": 1, "YZ": 0}[plane]
+        node_coordinates = [(node.x, node.y, node.z) for node in nodes]
+        geometry_points = [
+            (float(point[0]), float(point[1]))
+            for segment in view.get("segments", ()) for point in segment
+        ]
+        if not geometry_points:
+            return None
+        pen = QPen(QColor("#57606a"), 1.0)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        pen.setDashPattern([
+            6.0 * scale, 2.0 * scale, 1.0 * scale, 2.0 * scale,
+        ])
+        painter.save()
+        painter.setPen(pen)
+        axis_font = QFont(painter.font())
+        axis_font.setPixelSize(max(1, round(2.5 * scale)))
+        painter.setFont(axis_font)
+        axes_bounds = QRectF()
+        has_axes_bounds = False
+        for direction, axis_index, varying_index in specs:
+            minimum = min(point[varying_index] for point in node_coordinates)
+            maximum = max(point[varying_index] for point in node_coordinates)
+            for axis in axes.get(direction, ()):
+                axis_key = f"{direction}:{axis.label}:{float(axis.value):.6f}"
+                start = [0.0, 0.0, 0.0]
+                end = [0.0, 0.0, 0.0]
+                start[fixed_index] = end[fixed_index] = section_coordinate
+                start[axis_index] = end[axis_index] = float(axis.value)
+                start[varying_index], end[varying_index] = minimum, maximum
+                projected_start = self._project_world_point(view, start)
+                projected_end = self._project_world_point(view, end)
+                if projected_start is None or projected_end is None:
+                    continue
+                axis_dx = projected_end[0] - projected_start[0]
+                axis_dy = projected_end[1] - projected_start[1]
+                axis_length = math.hypot(axis_dx, axis_dy)
+                if axis_length <= 1e-9:
+                    continue
+                axis_direction = (axis_dx / axis_length, axis_dy / axis_length)
+                line_tolerance = 1e-5
+                intersects_visible_element = False
+                for segment in view.get("segments", ()):
+                    first, second = segment
+                    first_distance = (
+                        axis_direction[0] * (float(first[1]) - projected_start[1])
+                        - axis_direction[1] * (float(first[0]) - projected_start[0])
+                    )
+                    second_distance = (
+                        axis_direction[0] * (float(second[1]) - projected_start[1])
+                        - axis_direction[1] * (float(second[0]) - projected_start[0])
+                    )
+                    if (
+                        abs(first_distance) <= line_tolerance
+                        or abs(second_distance) <= line_tolerance
+                        or first_distance * second_distance < 0.0
+                    ):
+                        intersects_visible_element = True
+                        break
+                if not intersects_visible_element:
+                    continue
+                visible_coordinates = [
+                    point[0] * axis_direction[0] + point[1] * axis_direction[1]
+                    for point in geometry_points
+                ]
+                axis_start_coordinate = min(visible_coordinates) - 2.0
+                axis_end_coordinate = max(visible_coordinates) + 2.0
+                anchor_coordinate = (
+                    projected_start[0] * axis_direction[0]
+                    + projected_start[1] * axis_direction[1]
+                )
+                projected_start = (
+                    projected_start[0] + axis_direction[0] * (axis_start_coordinate - anchor_coordinate),
+                    projected_start[1] + axis_direction[1] * (axis_start_coordinate - anchor_coordinate),
+                )
+                projected_end = (
+                    projected_start[0] + axis_direction[0] * (axis_end_coordinate - axis_start_coordinate),
+                    projected_start[1] + axis_direction[1] * (axis_end_coordinate - axis_start_coordinate),
+                )
+                start_screen = QPointF(
+                    target_x + (projected_start[0] - center_x) * model_to_pixels,
+                    target_y - (projected_start[1] - center_y) * model_to_pixels,
+                )
+                end_screen = QPointF(
+                    target_x + (projected_end[0] - center_x) * model_to_pixels,
+                    target_y - (projected_end[1] - center_y) * model_to_pixels,
+                )
+                base_dx = end_screen.x() - start_screen.x()
+                base_dy = end_screen.y() - start_screen.y()
+                base_length = math.hypot(base_dx, base_dy)
+                base_direction = (
+                    (base_dx / base_length, base_dy / base_length)
+                    if base_length > 1e-9 else (0.0, 0.0)
+                )
+                positions = view.setdefault("axis_label_positions", {})
+                if not isinstance(positions, dict):
+                    positions = view["axis_label_positions"] = {}
+                endpoints = []
+                projected_endpoints = []
+                for end_name, default_fraction in (("start", 0.0), ("end", 1.0)):
+                    try:
+                        fraction = float(positions.get(f"{axis_key}:{end_name}", default_fraction))
+                    except (TypeError, ValueError):
+                        fraction = default_fraction
+                    projected = (
+                        projected_start[0] + (projected_end[0] - projected_start[0]) * fraction,
+                        projected_start[1] + (projected_end[1] - projected_start[1]) * fraction,
+                    )
+                    projected_endpoints.append(projected)
+                    endpoints.append(QPointF(
+                        target_x + (projected[0] - center_x) * model_to_pixels,
+                        target_y - (projected[1] - center_y) * model_to_pixels,
+                    ))
+                self._axis_dimension_snap_segments.setdefault(view_index, []).append(
+                    (projected_endpoints[0], projected_endpoints[1])
+                )
+                start_screen, end_screen = endpoints
+                painter.drawLine(start_screen, end_screen)
+                label = str(axis.label)
+                badge_diameter = max(1.0, 8.0 * scale)
+                badge_radius = badge_diameter / 2.0
+                badge_font = QFont(axis_font)
+                badge_font.setPixelSize(max(1, round(3.0 * scale)))
+                painter.setFont(badge_font)
+                badge_pen = QPen(QColor("#57606a"), 1.0)
+                badge_pen.setCosmetic(True)
+                painter.setPen(badge_pen)
+                painter.setBrush(QColor("#ffffff"))
+                for end_name, endpoint in zip(("start", "end"), endpoints):
+                    badge_rect = QRectF(
+                        endpoint.x() - badge_radius, endpoint.y() - badge_radius,
+                        badge_diameter, badge_diameter,
+                    )
+                    painter.drawEllipse(badge_rect)
+                    painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, label)
+                    endpoint_selection_key = (view_index, f"{axis_key}:{end_name}")
+                    if endpoint_selection_key in self._selected_axis_endpoints:
+                        painter.save()
+                        selection_pen = QPen(QColor("#0969da"), 1.5)
+                        selection_pen.setCosmetic(True)
+                        painter.setPen(selection_pen)
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
+                        painter.drawRect(badge_rect.adjusted(-3.0, -3.0, 3.0, 3.0))
+                        painter.restore()
+                    axes_bounds = (
+                        axes_bounds.united(badge_rect)
+                        if has_axes_bounds else QRectF(badge_rect)
+                    )
+                    has_axes_bounds = True
+                    self._axis_endpoint_hit_rects[(view_index, f"{axis_key}:{end_name}")] = (
+                        badge_rect.adjusted(-2.0, -2.0, 2.0, 2.0)
+                    )
+                    self._axis_endpoint_drag_data[(view_index, f"{axis_key}:{end_name}")] = (
+                        base_direction[0], base_direction[1], base_length,
+                    )
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setFont(axis_font)
+                painter.setPen(pen)
+        painter.restore()
+        return axes_bounds if has_axes_bounds else None
 
     @staticmethod
     def _rotated_text_rect(
@@ -808,6 +1207,437 @@ class ProjectSheetWorkspace(QWidget):
         nearest_x, nearest_y = start.x() + fraction * dx, start.y() + fraction * dy
         return math.hypot(point.x() - nearest_x, point.y() - nearest_y), fraction
 
+    @staticmethod
+    def _segment_intersection(first, second):
+        (ax, ay), (bx, by) = first
+        (cx, cy), (dx, dy) = second
+        rx, ry = bx - ax, by - ay
+        sx, sy = dx - cx, dy - cy
+        denominator = rx * sy - ry * sx
+        if abs(denominator) <= 1e-12:
+            return None
+        qx, qy = cx - ax, cy - ay
+        t = (qx * sy - qy * sx) / denominator
+        u = (qx * ry - qy * rx) / denominator
+        if -1e-9 <= t <= 1.0 + 1e-9 and -1e-9 <= u <= 1.0 + 1e-9:
+            return ax + t * rx, ay + t * ry
+        return None
+
+    def _screen_point(self, view_index: int, point) -> QPointF | None:
+        draw_data = self._view_draw_data.get(view_index)
+        if draw_data is None:
+            return None
+        center_x, center_y, target_x, target_y, model_to_pixels = draw_data
+        return QPointF(
+            target_x + (float(point[0]) - center_x) * model_to_pixels,
+            target_y - (float(point[1]) - center_y) * model_to_pixels,
+        )
+
+    def _projected_point_at(self, view_index: int, position: QPointF):
+        draw_data = self._view_draw_data.get(view_index)
+        if draw_data is None or abs(draw_data[4]) <= 1e-12:
+            return None
+        center_x, center_y, target_x, target_y, model_to_pixels = draw_data
+        return (
+            center_x + (position.x() - target_x) / model_to_pixels,
+            center_y - (position.y() - target_y) / model_to_pixels,
+        )
+
+    def _dimension_snap_at(
+        self, position: QPointF, view_index: int | None = None,
+        perpendicular_origin: tuple[float, float] | None = None,
+    ):
+        best = None
+        enabled = self._enabled_dimension_snap_types()
+        indices = (view_index,) if view_index is not None else range(len(self._sheet_views))
+        for index in indices:
+            if index is None or not 0 <= index < len(self._sheet_views):
+                continue
+            view = self._sheet_views[index]
+            segments = view.get("segments", ())
+            cache_key = (index, tuple(sorted(enabled)))
+            candidates = self._dimension_snap_cache.get(cache_key)
+            if candidates is None:
+                normalized_segments = [
+                    ((float(start[0]), float(start[1])),
+                     (float(end[0]), float(end[1])))
+                    for start, end in segments
+                ]
+                candidates = []
+                collinear_intervals: dict[tuple[float, float, float], list[tuple[float, float]]] = {}
+                for first, second in normalized_segments:
+                    if "endpoint" in enabled:
+                        candidates.extend(((first, "endpoint"), (second, "endpoint")))
+                    if "center" in enabled:
+                        candidates.append((
+                            ((first[0] + second[0]) / 2.0,
+                             (first[1] + second[1]) / 2.0),
+                            "center",
+                        ))
+                        dx, dy = second[0] - first[0], second[1] - first[1]
+                        length = math.hypot(dx, dy)
+                        if length > 1e-12:
+                            ux, uy = dx / length, dy / length
+                            if ux < 0.0 or (abs(ux) <= 1e-12 and uy < 0.0):
+                                ux, uy = -ux, -uy
+                            nx, ny = -uy, ux
+                            line_offset = nx * first[0] + ny * first[1]
+                            key = (round(ux, 7), round(uy, 7), round(line_offset, 7))
+                            interval = sorted((
+                                ux * first[0] + uy * first[1],
+                                ux * second[0] + uy * second[1],
+                            ))
+                            collinear_intervals.setdefault(key, []).append(interval)
+                if "center" in enabled:
+                    for (ux, uy, line_offset), intervals in collinear_intervals.items():
+                        intervals.sort()
+                        merged_start, merged_end = intervals[0]
+                        for interval_start, interval_end in intervals[1:]:
+                            if interval_start <= merged_end + 1e-7:
+                                merged_end = max(merged_end, interval_end)
+                                continue
+                            midpoint = (merged_start + merged_end) / 2.0
+                            candidates.append((
+                                (ux * midpoint - uy * line_offset,
+                                 uy * midpoint + ux * line_offset),
+                                "center",
+                            ))
+                            merged_start, merged_end = interval_start, interval_end
+                        midpoint = (merged_start + merged_end) / 2.0
+                        candidates.append((
+                            (ux * midpoint - uy * line_offset,
+                             uy * midpoint + ux * line_offset),
+                            "center",
+                        ))
+                if "intersection" in enabled:
+                    for first_index, first_segment in enumerate(normalized_segments):
+                        for second_segment in normalized_segments[first_index + 1:]:
+                            crossing = self._segment_intersection(first_segment, second_segment)
+                            if crossing is not None:
+                                candidates.append((crossing, "intersection"))
+                candidates = tuple(candidates)
+                self._dimension_snap_cache[cache_key] = candidates
+            for candidate, kind in candidates:
+                screen = self._screen_point(index, candidate)
+                if screen is None:
+                    continue
+                distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
+                if best is None or distance < best[0]:
+                    best = (distance, index, candidate, screen, kind)
+            axis_segments = self._axis_dimension_snap_segments.get(index, ())
+            if "intersection" in enabled and axis_segments:
+                for first_index, first_segment in enumerate(axis_segments):
+                    for second_segment in axis_segments[first_index + 1:]:
+                        crossing = self._segment_intersection(first_segment, second_segment)
+                        if crossing is None:
+                            continue
+                        screen = self._screen_point(index, crossing)
+                        if screen is None:
+                            continue
+                        distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
+                        if best is None or distance < best[0]:
+                            best = (distance, index, crossing, screen, "intersection")
+            if perpendicular_origin is not None:
+                all_segments = [
+                    ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
+                    for start, end in segments
+                ]
+                all_segments.extend(axis_segments)
+                origin_x, origin_y = perpendicular_origin
+                for start, end in all_segments:
+                    dx, dy = end[0] - start[0], end[1] - start[1]
+                    length_squared = dx * dx + dy * dy
+                    if length_squared <= 1e-12:
+                        continue
+                    fraction = (
+                        (origin_x - start[0]) * dx + (origin_y - start[1]) * dy
+                    ) / length_squared
+                    if not 0.0 <= fraction <= 1.0:
+                        continue
+                    perpendicular = (start[0] + fraction * dx, start[1] + fraction * dy)
+                    screen = self._screen_point(index, perpendicular)
+                    if screen is None:
+                        continue
+                    distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
+                    if best is None or distance < best[0]:
+                        best = (distance, index, perpendicular, screen, "perpendicular")
+        if best is None or best[0] > 12.0:
+            return None
+        return best
+
+    def _enabled_dimension_snap_types(self) -> set[str]:
+        window = self.window()
+        scene = getattr(window, "scene", None)
+        if scene is None:
+            return {"intersection", "endpoint", "center"}
+        return {
+            kind for kind in ("intersection", "endpoint", "center")
+            if scene.snap_type_enabled(kind)
+        }
+
+    def _dimension_from_screen_point(self, view_index: int, position: QPointF):
+        if len(self._dimension_points) != 2:
+            return None
+        third = self._projected_point_at(view_index, position)
+        if third is None:
+            return None
+        first, second = self._dimension_points
+        dx, dy = second[0] - first[0], second[1] - first[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-12:
+            return None
+        normal = (-dy / length, dx / length)
+        offset_amount = (third[0] - first[0]) * normal[0] + (third[1] - first[1]) * normal[1]
+        return {
+            "start": first,
+            "end": second,
+            "offset": (normal[0] * offset_amount, normal[1] * offset_amount),
+        }
+
+    def _align_dimension_to_existing(
+        self, view_index: int, dimension: dict, tolerance: float = 4.0,
+    ) -> dict:
+        """Snap a dimension line to a nearby parallel dimension in the same view."""
+        draw_data = self._view_draw_data.get(view_index)
+        if draw_data is None or draw_data[4] <= 0:
+            return dimension
+        model_to_pixels = draw_data[4]
+        start = tuple(float(value) for value in dimension["start"])
+        end = tuple(float(value) for value in dimension["end"])
+        offset = tuple(float(value) for value in dimension["offset"])
+        source = self._screen_point(view_index, start)
+        moving_start = self._screen_point(
+            view_index, (start[0] + offset[0], start[1] + offset[1]),
+        )
+        moving_end = self._screen_point(
+            view_index, (end[0] + offset[0], end[1] + offset[1]),
+        )
+        if None in (source, moving_start, moving_end):
+            return dimension
+        moving_dx = moving_end.x() - moving_start.x()
+        moving_dy = moving_end.y() - moving_start.y()
+        moving_length = math.hypot(moving_dx, moving_dy)
+        if moving_length <= 1e-9:
+            return dimension
+        moving_axis = (moving_dx / moving_length, moving_dy / moving_length)
+        moving_normal = (-moving_axis[1], moving_axis[0])
+        current_distance = (
+            (moving_start.x() - source.x()) * moving_normal[0]
+            + (moving_start.y() - source.y()) * moving_normal[1]
+        )
+        best = None
+        for other in self._sheet_views[view_index].get("dimensions", ()):
+            if other is dimension:
+                continue
+            try:
+                other_start = tuple(float(value) for value in other["start"])
+                other_end = tuple(float(value) for value in other["end"])
+                other_offset = tuple(float(value) for value in other["offset"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            other_line_start = self._screen_point(
+                view_index,
+                (other_start[0] + other_offset[0], other_start[1] + other_offset[1]),
+            )
+            other_line_end = self._screen_point(
+                view_index,
+                (other_end[0] + other_offset[0], other_end[1] + other_offset[1]),
+            )
+            if other_line_start is None or other_line_end is None:
+                continue
+            other_dx = other_line_end.x() - other_line_start.x()
+            other_dy = other_line_end.y() - other_line_start.y()
+            other_length = math.hypot(other_dx, other_dy)
+            if other_length <= 1e-9:
+                continue
+            other_axis = (other_dx / other_length, other_dy / other_length)
+            if abs(moving_axis[0] * other_axis[0] + moving_axis[1] * other_axis[1]) < 0.999999:
+                continue
+            target_distance = (
+                (other_line_start.x() - source.x()) * moving_normal[0]
+                + (other_line_start.y() - source.y()) * moving_normal[1]
+            )
+            delta = target_distance - current_distance
+            if abs(delta) > tolerance:
+                continue
+            if best is None or abs(delta) < best[0]:
+                best = (abs(delta), target_distance)
+        if best is None:
+            return dimension
+        target_distance = best[1]
+        aligned = dict(dimension)
+        aligned["offset"] = (
+            moving_normal[0] * target_distance / model_to_pixels,
+            -moving_normal[1] * target_distance / model_to_pixels,
+        )
+        return aligned
+
+    def _draw_dimension(
+        self, painter: QPainter, view_index: int, dimension: dict,
+        dimension_index: int | None = None,
+    ) -> QRectF | None:
+        try:
+            first = tuple(float(value) for value in dimension["start"])
+            second = tuple(float(value) for value in dimension["end"])
+            offset = tuple(float(value) for value in dimension["offset"])
+            if len(first) != 2 or len(second) != 2 or len(offset) != 2:
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        first_screen = self._screen_point(view_index, first)
+        second_screen = self._screen_point(view_index, second)
+        dim_first = self._screen_point(view_index, (first[0] + offset[0], first[1] + offset[1]))
+        dim_second = self._screen_point(view_index, (second[0] + offset[0], second[1] + offset[1]))
+        if None in (first_screen, second_screen, dim_first, dim_second):
+            return None
+        dx, dy = dim_second.x() - dim_first.x(), dim_second.y() - dim_first.y()
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return None
+        axis = (dx / length, dy / length)
+        normal = (-axis[1], axis[0])
+        pen = QPen(QColor("#24292f"), 1.0)
+        pen.setCosmetic(True)
+        painter.save()
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        line_extension = max(
+            0.0,
+            float(self._project_settings.get("dimension_line_extension_mm", 3.0))
+            * self._sheet_pixels_per_mm,
+        )
+        line_start = QPointF(
+            dim_first.x() - axis[0] * line_extension,
+            dim_first.y() - axis[1] * line_extension,
+        )
+        line_end = QPointF(
+            dim_second.x() + axis[0] * line_extension,
+            dim_second.y() + axis[1] * line_extension,
+        )
+        dimension_bounds = QRectF(line_start, line_end).normalized()
+        # Witness lines extend slightly beyond the dimension line and leave a small gap
+        # at the measured point, as in the architectural reference.
+        for source, target in ((first_screen, dim_first), (second_screen, dim_second)):
+            vx, vy = target.x() - source.x(), target.y() - source.y()
+            magnitude = math.hypot(vx, vy)
+            if magnitude > 1e-9:
+                unit = (vx / magnitude, vy / magnitude)
+                extension_gap = max(
+                    0.0,
+                    float(self._project_settings.get("dimension_extension_gap_mm", 1.0))
+                    * self._sheet_pixels_per_mm,
+                )
+                extension_overrun = max(
+                    0.0,
+                    float(self._project_settings.get("dimension_extension_overrun_mm", 3.0))
+                    * self._sheet_pixels_per_mm,
+                )
+                witness_start = QPointF(
+                    source.x() + unit[0] * extension_gap,
+                    source.y() + unit[1] * extension_gap,
+                )
+                witness_end = QPointF(
+                    target.x() + unit[0] * extension_overrun,
+                    target.y() + unit[1] * extension_overrun,
+                )
+                painter.drawLine(
+                    witness_start,
+                    witness_end,
+                )
+                dimension_bounds = dimension_bounds.united(
+                    QRectF(witness_start, witness_end).normalized(),
+                )
+        painter.drawLine(line_start, line_end)
+        tick = (
+            float(self._project_settings.get("dimension_terminator_height_mm", 3.0))
+            * self._sheet_pixels_per_mm / 2.0
+        )
+        tick_direction = ((normal[0] + axis[0]) / math.sqrt(2.0),
+                          (normal[1] + axis[1]) / math.sqrt(2.0))
+        for point in (dim_first, dim_second):
+            tick_start = QPointF(
+                point.x() - tick_direction[0] * tick,
+                point.y() - tick_direction[1] * tick,
+            )
+            tick_end = QPointF(
+                point.x() + tick_direction[0] * tick,
+                point.y() + tick_direction[1] * tick,
+            )
+            painter.drawLine(
+                tick_start,
+                tick_end,
+            )
+            dimension_bounds = dimension_bounds.united(
+                QRectF(tick_start, tick_end).normalized(),
+            )
+        numeric_value = math.hypot(second[0] - first[0], second[1] - first[1])
+        text = f"{numeric_value:.2f}"
+        font = QFont(painter.font())
+        height_mm = float(self._project_settings.get("dimension_text_height_mm", 3.0))
+        font.setPixelSize(max(1, round(height_mm * self._sheet_pixels_per_mm)))
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        text_width = metrics.horizontalAdvance(text)
+        midpoint = QPointF((dim_first.x() + dim_second.x()) / 2.0,
+                           (dim_first.y() + dim_second.y()) / 2.0)
+        text_position = str(self._project_settings.get("dimension_text_position", "superior"))
+        rotation = math.degrees(math.atan2(axis[1], axis[0]))
+        if rotation > 90.0:
+            rotation -= 180.0
+        elif rotation < -90.0:
+            rotation += 180.0
+        text_width_with_padding = text_width + 6.0 * self._sheet_pixels_per_mm
+        text_height_with_padding = metrics.height() + 2.0 * self._sheet_pixels_per_mm
+        text_gap = self._sheet_pixels_per_mm
+        if text_position == "superior":
+            text_top = -text_height_with_padding - text_gap
+        elif text_position == "inferior":
+            text_top = text_gap
+        else:
+            text_top = -text_height_with_padding / 2.0
+        text_rect = QRectF(
+            -text_width_with_padding / 2.0,
+            text_top,
+            text_width_with_padding,
+            text_height_with_padding,
+        )
+        rotated_text_bounds = self._rotated_text_rect(
+            midpoint,
+            text_rect.width(),
+            text_rect.top(),
+            text_rect.bottom(),
+            rotation,
+        )
+        dimension_bounds = dimension_bounds.united(rotated_text_bounds)
+        painter.save()
+        painter.translate(midpoint)
+        painter.rotate(rotation)
+        painter.setPen(QColor("#24292f"))
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
+        if dimension_index is not None:
+            selection_padding_x = 3.0 * self._sheet_pixels_per_mm
+            selection_padding_y = 2.0 * self._sheet_pixels_per_mm
+            self._dimension_text_hit_rects[(view_index, dimension_index)] = rotated_text_bounds.adjusted(
+                -selection_padding_x,
+                -selection_padding_y,
+                selection_padding_x,
+                selection_padding_y,
+            )
+            if self._selected_dimension == (view_index, dimension_index):
+                selection_pen = QPen(QColor("#0969da"), 1.25)
+                selection_pen.setCosmetic(True)
+                painter.setPen(selection_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(text_rect.adjusted(
+                    -selection_padding_x,
+                    -selection_padding_y,
+                    selection_padding_x,
+                    selection_padding_y,
+                ))
+        painter.restore()
+        painter.restore()
+        return dimension_bounds.adjusted(-2.0, -2.0, 2.0, 2.0)
+
     def _element_at(self, position: QPointF):
         if self._stamp_rect.contains(position):
             return None
@@ -869,7 +1699,7 @@ class ProjectSheetWorkspace(QWidget):
             event.ignore()
             return
         old_zoom = self._zoom_factor
-        new_zoom = max(0.25, min(8.0, old_zoom * (1.15 ** (delta / 120.0))))
+        new_zoom = max(0.25, min(128.0, old_zoom * (1.15 ** (delta / 120.0))))
         if new_zoom == old_zoom:
             event.accept()
             return
@@ -890,7 +1720,121 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._dimension_mode:
+                if len(self._dimension_points) < 2:
+                    snap = self._dimension_snap_at(
+                        event.position(), self._dimension_view_index,
+                        perpendicular_origin=(
+                            self._dimension_points[0] if self._dimension_points else None
+                        ),
+                    )
+                    if snap is None:
+                        event.accept()
+                        return
+                    _distance, view_index, projected, _screen, _kind = snap
+                    if self._dimension_view_index is None:
+                        self._dimension_view_index = view_index
+                        self.select_view(view_index)
+                    elif math.hypot(
+                        projected[0] - self._dimension_points[0][0],
+                        projected[1] - self._dimension_points[0][1],
+                    ) <= 1e-9:
+                        event.accept()
+                        return
+                    self._dimension_points.append(projected)
+                    self._dimension_snap_screen = None
+                    self._dimension_hover_projected = None
+                    self._dimension_hover_view_index = view_index
+                    self._dimension_preview = None
+                    if len(self._dimension_points) == 1:
+                        self.dimension_step_changed.emit(1)
+                    else:
+                        self.dimension_step_changed.emit(2)
+                    self.update()
+                    event.accept()
+                    return
+                dimension = self._dimension_from_screen_point(
+                    self._dimension_view_index, event.position(),
+                )
+                if dimension is not None:
+                    dimension = self._align_dimension_to_existing(
+                        self._dimension_view_index, dimension,
+                    )
+                    view = self._sheet_views[self._dimension_view_index]
+                    view.setdefault("dimensions", []).append(dimension)
+                    self.update()
+                    self.layout_changed.emit()
+                    self.set_dimension_mode(True)
+                    self.dimension_step_changed.emit(0)
+                event.accept()
+                return
+            selected_view = self._selected_view_index
+            axis_hit = next((
+                key for key, rect in reversed(tuple(self._axis_endpoint_hit_rects.items()))
+                if key[0] == selected_view and rect.contains(event.position())
+            ), None)
+            if axis_hit is not None:
+                self.select_view(axis_hit[0])
+                self._selected_dimension = None
+                self._selected_view_title_index = None
+                if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    if axis_hit in self._selected_axis_endpoints:
+                        self._selected_axis_endpoints.remove(axis_hit)
+                    else:
+                        self._selected_axis_endpoints.add(axis_hit)
+                    self._drag_axis_endpoints = ()
+                    self._drag_position = None
+                    self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+                    self.update()
+                    event.accept()
+                    return
+                if axis_hit not in self._selected_axis_endpoints or len(self._selected_axis_endpoints) < 2:
+                    self._selected_axis_endpoints = {axis_hit}
+                self._drag_axis_endpoints = tuple(sorted(self._selected_axis_endpoints))
+                self._drag_position = event.position()
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                event.accept()
+                return
+            title_hit = next((
+                index for index, rect in reversed(tuple(self._view_title_hit_rects.items()))
+                if rect.contains(event.position())
+            ), None)
+            if title_hit is not None:
+                self.select_view(title_hit)
+                self._selected_dimension = None
+                self._selected_axis_endpoints.clear()
+                self._selected_view_title_index = title_hit
+                self._drag_view_title_index = title_hit
+                self._drag_position = event.position()
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                event.accept()
+                return
+            hit_dimension = None if self._identification_mode else next((
+                key for key, rect in reversed(tuple(self._dimension_text_hit_rects.items()))
+                if rect.contains(event.position())
+            ), None)
+            if hit_dimension is not None:
+                self._selected_view_title_index = None
+                self._selected_axis_endpoints.clear()
+                self.select_view(None)
+                self._selected_dimension = hit_dimension
+                self._drag_dimension_index = hit_dimension
+                self._drag_position = event.position()
+                self._selected_identification_index = None
+                self._selected_identification_indices.clear()
+                self.identification_selection_changed.emit(None)
+                self.update()
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                event.accept()
+                return
+            self._selected_dimension = None
+            self._drag_dimension_index = None
             if self._identification_mode:
+                self._selected_view_title_index = None
+                self._selected_axis_endpoints.clear()
                 self._last_identification_position = event.position()
                 self._identify_element_at(event.position())
                 event.accept()
@@ -905,6 +1849,8 @@ class ProjectSheetWorkspace(QWidget):
                     if view_index == selected_index and rect.contains(event.position())
                 ), None)
                 if label_index is not None:
+                    self._selected_view_title_index = None
+                    self._selected_axis_endpoints.clear()
                     if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                         if label_index in self._selected_identification_indices:
                             self._selected_identification_indices.remove(label_index)
@@ -934,6 +1880,8 @@ class ProjectSheetWorkspace(QWidget):
                     event.accept()
                     return
             if self._stamp_rect.contains(event.position()):
+                self._selected_view_title_index = None
+                self._selected_axis_endpoints.clear()
                 self.select_view(None)
                 super().mousePressEvent(event)
                 return
@@ -944,6 +1892,8 @@ class ProjectSheetWorkspace(QWidget):
                 ),
                 None,
             )
+            self._selected_view_title_index = None
+            self._selected_axis_endpoints.clear()
             self.select_view(selected)
             if selected is not None:
                 self._drag_position = event.position()
@@ -954,6 +1904,136 @@ class ProjectSheetWorkspace(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._pan_anchor is not None and event.buttons() & Qt.MouseButton.MiddleButton:
+            self._pan_offset = self._pan_origin + (event.position() - self._pan_anchor)
+            self.update()
+            event.accept()
+            return
+        if self._dimension_mode:
+            if len(self._dimension_points) < 2:
+                snap = self._dimension_snap_at(
+                    event.position(), self._dimension_view_index,
+                    perpendicular_origin=(
+                        self._dimension_points[0] if self._dimension_points else None
+                    ),
+                )
+                self._dimension_snap_screen = snap[3] if snap is not None else None
+                self._dimension_hover_view_index = snap[1] if snap is not None else None
+                self._dimension_hover_projected = snap[2] if snap is not None else None
+                self._dimension_snap_kind = snap[4] if snap is not None else None
+                self._dimension_preview = None
+                self.setCursor(QCursor(
+                    Qt.CursorShape.PointingHandCursor if snap is not None
+                    else Qt.CursorShape.CrossCursor
+                ))
+            else:
+                self._dimension_hover_point = event.position()
+                self._dimension_hover_projected = None
+                self._dimension_snap_screen = None
+                raw_preview = self._dimension_from_screen_point(
+                    self._dimension_view_index, event.position(),
+                )
+                if raw_preview is not None:
+                    self._dimension_preview = self._align_dimension_to_existing(
+                        self._dimension_view_index, raw_preview,
+                    )
+                else:
+                    self._dimension_preview = None
+            self.update()
+            event.accept()
+            return
+        if self._drag_axis_endpoints and event.buttons() & Qt.MouseButton.LeftButton:
+            delta = event.position() - self._drag_position
+            for view_index, endpoint_key in self._drag_axis_endpoints:
+                draw_data = self._view_draw_data.get(view_index)
+                direction = self._axis_endpoint_drag_data.get((view_index, endpoint_key))
+                if (
+                    draw_data is None or direction is None
+                    or draw_data[4] <= 1e-12 or direction[2] <= 1e-9
+                ):
+                    continue
+                along = delta.x() * direction[0] + delta.y() * direction[1]
+                positions = self._sheet_views[view_index].setdefault("axis_label_positions", {})
+                default_fraction = 0.0 if endpoint_key.endswith(":start") else 1.0
+                fraction = float(positions.get(endpoint_key, default_fraction))
+                positions[endpoint_key] = fraction + along / direction[2]
+            self._drag_position = event.position()
+            self.update()
+            event.accept()
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            hovered_movable_label = any(
+                key[0] == self._selected_view_index and rect.contains(event.position())
+                for key, rect in self._axis_endpoint_hit_rects.items()
+            )
+            hovered_title = any(
+                rect.contains(event.position())
+                for rect in self._view_title_hit_rects.values()
+            )
+            if hovered_movable_label or hovered_title:
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+            elif not self._drag_axis_endpoints and self._drag_dimension_index is None:
+                self.unsetCursor()
+        if self._drag_view_title_index is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            view = self._sheet_views[self._drag_view_title_index]
+            offset = view.get("label_offset_mm", (0.0, 0.0))
+            try:
+                offset_x, offset_y = (float(value) for value in offset)
+            except (TypeError, ValueError):
+                offset_x = offset_y = 0.0
+            pixels_per_mm = max(self._sheet_pixels_per_mm, 1e-12)
+            delta = event.position() - self._drag_position
+            view["label_offset_mm"] = (
+                offset_x + delta.x() / pixels_per_mm,
+                offset_y + delta.y() / pixels_per_mm,
+            )
+            self._drag_position = event.position()
+            self.update()
+            event.accept()
+            return
+        if self._drag_dimension_index is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            view_index, dimension_index = self._drag_dimension_index
+            if 0 <= view_index < len(self._sheet_views):
+                dimensions = self._sheet_views[view_index].get("dimensions", [])
+                draw_data = self._view_draw_data.get(view_index)
+                if (
+                    0 <= dimension_index < len(dimensions)
+                    and draw_data is not None
+                    and draw_data[4] > 0
+                ):
+                    dimension = dimensions[dimension_index]
+                    first = tuple(float(value) for value in dimension["start"])
+                    second = tuple(float(value) for value in dimension["end"])
+                    offset = tuple(float(value) for value in dimension["offset"])
+                    line_first = self._screen_point(
+                        view_index, (first[0] + offset[0], first[1] + offset[1]),
+                    )
+                    line_second = self._screen_point(
+                        view_index, (second[0] + offset[0], second[1] + offset[1]),
+                    )
+                    if line_first is not None and line_second is not None:
+                        dx = line_second.x() - line_first.x()
+                        dy = line_second.y() - line_first.y()
+                        length = math.hypot(dx, dy)
+                        if length > 1e-9:
+                            axis = (dx / length, dy / length)
+                            normal = (-axis[1], axis[0])
+                            delta = event.position() - self._drag_position
+                            self._drag_position = event.position()
+                            normal_delta = delta.x() * normal[0] + delta.y() * normal[1]
+                            model_delta = (
+                                normal[0] * normal_delta / draw_data[4],
+                                -normal[1] * normal_delta / draw_data[4],
+                            )
+                            dimension["offset"] = (
+                                offset[0] + model_delta[0],
+                                offset[1] + model_delta[1],
+                            )
+                            aligned = self._align_dimension_to_existing(view_index, dimension)
+                            dimension["offset"] = aligned["offset"]
+                            self.update()
+            event.accept()
+            return
         if self._identification_mode:
             self._last_identification_position = event.position()
             target = self._element_at(event.position())
@@ -1007,11 +2087,6 @@ class ProjectSheetWorkspace(QWidget):
                 self.update()
             event.accept()
             return
-        if self._pan_anchor is not None and event.buttons() & Qt.MouseButton.MiddleButton:
-            self._pan_offset = self._pan_origin + (event.position() - self._pan_anchor)
-            self.update()
-            event.accept()
-            return
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:
@@ -1022,6 +2097,30 @@ class ProjectSheetWorkspace(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_view_title_index is not None:
+            self._drag_view_title_index = None
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_axis_endpoints:
+            self._drag_axis_endpoints = ()
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_dimension_index is not None:
+            self._drag_dimension_index = None
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_position is not None:
             self._drag_position = None
             moved_identification = self._drag_identification_index is not None
@@ -1036,7 +2135,10 @@ class ProjectSheetWorkspace(QWidget):
             return
         if event.button() == Qt.MouseButton.MiddleButton and self._pan_anchor is not None:
             self._pan_anchor = None
-            self.unsetCursor()
+            if self._dimension_mode:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                self.unsetCursor()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1046,13 +2148,23 @@ class ProjectSheetWorkspace(QWidget):
             self._pan_anchor = None
             self._zoom_factor = 1.0
             self._pan_offset = QPointF()
-            self.unsetCursor()
+            if self._dimension_mode:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                self.unsetCursor()
             self.update()
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if self._dimension_mode and event.key() in (
+            Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
+        ):
+            self.set_dimension_mode(False)
+            self.dimension_finished.emit(event.key() == Qt.Key.Key_Escape)
+            event.accept()
+            return
         if self._identification_mode and event.key() == Qt.Key.Key_Tab:
             if self._hover_raw_target is not None:
                 self._identification_pick_member = not self._identification_pick_member
@@ -1068,6 +2180,10 @@ class ProjectSheetWorkspace(QWidget):
             self.identification_finished.emit(event.key() == Qt.Key.Key_Escape)
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Delete:
+            if self.delete_selected_dimension():
+                event.accept()
+                return
         if event.key() == Qt.Key.Key_Delete and self._selected_view_index is not None:
             if not self.delete_selected_identification():
                 self.remove_view_requested.emit(self._selected_view_index)

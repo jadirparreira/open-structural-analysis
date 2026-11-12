@@ -1008,12 +1008,17 @@ class ProjectSheetsPalette(QFrame):
             "tag.svg", "Identificar", window.start_project_view_identification,
         )
         self.identify_button.setEnabled(True)
+        self.dimension_button = self._action_button(
+            "dimension.svg", "Inserir cota", window.start_project_view_dimension,
+        )
+        self.dimension_button.setIconSize(QSize(21, 21))
         self.manage_views_button = self._action_button(
             "scan-square.svg", "Gerenciar vistas", window.open_detailing_views,
         )
         self.manage_views_button.setIconSize(QSize(21, 21))
         layout.addWidget(self.manage_views_button)
         layout.addWidget(self.identify_button)
+        layout.addWidget(self.dimension_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 

@@ -245,8 +245,17 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.identification_finished.connect(
             self._finish_project_view_identification
         )
+        self.project_sheet_workspace.dimension_finished.connect(
+            self._finish_project_view_dimension
+        )
+        self.project_sheet_workspace.dimension_step_changed.connect(
+            self._project_view_dimension_step_changed
+        )
         self.project_sheet_view_panel.scale_edited.connect(
             self._project_sheet_view_scale_edited
+        )
+        self.project_sheet_view_panel.axes_visibility_edited.connect(
+            self._project_sheet_view_axes_visibility_edited
         )
         self.project_sheet_identification_panel.property_toggled.connect(
             self._project_sheet_identification_property_toggled
@@ -789,6 +798,85 @@ class MainWindow(QMainWindow):
                 self.project_sheet_workspace.set_sheet_views(views)
             self._store_detailing_state()
 
+    def _sync_project_sheet_view_settings(
+        self,
+        view_settings: dict,
+        view_definitions: dict,
+        view_names: dict,
+        view_fallbacks: dict,
+    ) -> None:
+        """Refresh sheet instances linked to definitions changed in the view manager."""
+        palette = getattr(self, "project_sheets_palette", None)
+        if palette is None:
+            return
+        model_key = id(self.model)
+        default_settings = {"top": 50.0, "bottom": 50.0, "orientation": 0, "rotation": 0.0}
+        changed_sheets: set[str] = set()
+        orientation_names = ("Superior para inferior", "Inferior para superior")
+
+        def coordinates_match(first, second) -> bool:
+            try:
+                first_array = np.asarray(first, dtype=float)
+                second_array = np.asarray(second, dtype=float)
+            except (TypeError, ValueError):
+                return False
+            return (
+                first_array.shape == second_array.shape
+                and bool(np.allclose(first_array, second_array, rtol=0.0, atol=1e-9))
+            )
+
+        for sheet_name, views in palette._sheet_views.items():
+            for view in views:
+                projection = view.get("projection")
+                if not isinstance(projection, dict):
+                    continue
+                for view_key, definition in view_definitions.items():
+                    if not isinstance(view_key, tuple) or len(view_key) != 2 or view_key[0] != model_key:
+                        continue
+                    plane, coordinate = definition
+                    stable_key = str(view_key[1])
+                    linked = view.get("detail_view_key") == stable_key
+                    same_definition = (
+                        projection.get("plane") == plane
+                        and coordinates_match(projection.get("coordinate"), coordinate)
+                    )
+                    if not linked and not same_definition:
+                        continue
+                    settings = view_settings.get(view_key, default_settings)
+                    orientation_index = min(
+                        len(orientation_names) - 1,
+                        max(0, int(settings.get("orientation", 0))),
+                    )
+                    updated_projection = {
+                        "upper_offset_cm": float(settings.get("top", 50.0)),
+                        "lower_offset_cm": float(settings.get("bottom", 50.0)),
+                        "orientation": orientation_names[orientation_index],
+                        "rotation_degrees": float(settings.get("rotation", 0.0)),
+                    }
+                    view_name = str(view_names.get(view_key, "")).strip()
+                    updated_name = view_name or str(
+                        view_fallbacks.get(view_key, view.get("name", "Vista"))
+                    )
+                    instance_changed = (
+                        any(projection.get(key) != value for key, value in updated_projection.items())
+                        or view.get("detail_view_key") != stable_key
+                        or view.get("name") != updated_name
+                    )
+                    if not instance_changed:
+                        break
+                    projection.update(updated_projection)
+                    view["detail_view_key"] = stable_key
+                    view["name"] = updated_name
+                    view["model_revision"] = None
+                    changed_sheets.add(sheet_name)
+                    break
+
+        if not changed_sheets:
+            return
+        for sheet_name in changed_sheets:
+            self.refresh_project_sheet_views(sheet_name)
+        self._store_detailing_state()
+
     def _refresh_project_view_identifications(self, view: dict) -> bool:
         """Refresh label text from current element names and bar sections."""
         changed = False
@@ -1002,6 +1090,15 @@ class MainWindow(QMainWindow):
             views[selected] if selected is not None and selected < len(views) else None
         )
 
+    def _project_sheet_view_axes_visibility_edited(self, visible: bool) -> None:
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if selected is None or selected >= len(views):
+            return
+        views[selected]["axes_visible"] = bool(visible)
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+
     def start_project_view_identification(self) -> None:
         if not self._detailing_project_mode:
             return
@@ -1014,6 +1111,38 @@ class MainWindow(QMainWindow):
             "(Clique sobre um elemento da vista; clique nos próximos; Enter encerra; "
             "Esc encerra preservando as identificações lançadas)</span>"
         )
+
+    def start_project_view_dimension(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_dimension"
+        self.project_sheet_workspace.set_identification_mode(False)
+        self.project_sheet_workspace.set_dimension_mode(True)
+        self.history.append(
+            "> <b>Cota</b> <span style='color:#57606a'>"
+            "(Selecione o ponto inicial da cota)</span>"
+        )
+
+    def _project_view_dimension_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_dimension":
+            return
+        prompt = {
+            0: "Selecione o ponto inicial da próxima cota",
+            1: "Selecione o ponto final da cota",
+            2: "Clique na posição da linha de cota",
+        }.get(step, "Selecione o ponto inicial da cota")
+        self.history.append(f"> <b>Cota</b> <span style='color:#57606a'>({prompt})</span>")
+
+    def _finish_project_view_dimension(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_dimension":
+            return
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento cancelado" if canceled else "Cota lançada"
+        self.history.append(f"> <b>Cota</b> <span style='color:#8c959f'>({message})</span>")
 
     def _finish_project_view_identification(self, canceled: bool = False) -> None:
         if self._command_mode != "project_sheet_identification":
@@ -1495,6 +1624,12 @@ class MainWindow(QMainWindow):
             self.project_sheets_palette._sheet_settings.update(dialog.result_sheet_settings or {})
             self.project_sheets_palette._project_settings = dialog.result_project_settings
             sheet_name = dialog._active_sheet_label
+            self.project_sheet_workspace.set_sheet_settings(
+                sheet_name,
+                self.project_sheets_palette._sheet_settings[sheet_name],
+                self.project_sheets_palette._project_settings,
+                len(self.project_sheets_palette._sheet_names),
+            )
             self.project_sheets_palette.reorder_sheet(
                 sheet_name, dialog.result_settings.get("sheet_number", "01"),
             )
@@ -1504,6 +1639,10 @@ class MainWindow(QMainWindow):
             return
         self._detailing_views_dialog_open = True
         dialog = None
+        updated_view_settings = {}
+        updated_view_definitions = {}
+        updated_view_names = {}
+        updated_view_fallbacks = {}
         cancel_action = getattr(self, "_cancel_placement_action", None)
         cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
         try:
@@ -1518,6 +1657,10 @@ class MainWindow(QMainWindow):
             add_plane_requested = dialog._add_plane_requested
             add_view_requested = dialog._add_view_requested
             requested_sheet_view = dialog._requested_sheet_view
+            updated_view_settings = copy.deepcopy(dialog._saved_view_settings)
+            updated_view_definitions = dict(dialog._view_definitions)
+            updated_view_names = dict(dialog._saved_view_names)
+            updated_view_fallbacks = dict(dialog._view_fallbacks)
         finally:
             self._detailing_views_dialog_open = False
             self._detailing_views_dialog = None
@@ -1526,6 +1669,12 @@ class MainWindow(QMainWindow):
                 dialog.deleteLater()
             if cancel_action is not None:
                 cancel_action.setEnabled(cancel_action_was_enabled)
+        self._sync_project_sheet_view_settings(
+            updated_view_settings,
+            updated_view_definitions,
+            updated_view_names,
+            updated_view_fallbacks,
+        )
         self._store_detailing_state()
         if add_view_requested and requested_sheet_view is not None:
             self.project_sheets_palette.add_view_to_active_sheet(requested_sheet_view)
@@ -4464,6 +4613,10 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "project_sheet_dimension":
+            self.project_sheet_workspace.set_dimension_mode(False)
+            self._finish_project_view_dimension(canceled=True)
+            return
         if self._command_mode == "project_sheet_identification":
             self._finish_project_view_identification(canceled=True)
             return
@@ -5172,6 +5325,11 @@ class MainWindow(QMainWindow):
     def delete_selected(self) -> None:
         """Delete selected elements, removing members before their endpoint nodes."""
         focus = QApplication.focusWidget()
+        if (
+            self._detailing_project_mode
+            and self.project_sheet_workspace.delete_selected_dimension()
+        ):
+            return
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
             return
         if self._detailing_project_mode:

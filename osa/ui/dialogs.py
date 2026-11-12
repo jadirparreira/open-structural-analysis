@@ -1533,6 +1533,7 @@ class DetailingViewsDialog(QDialog):
         self._requested_sheet_view = {
             "name": self._saved_view_names.get(view_key, "").strip()
             or self._view_fallbacks[view_key],
+            "detail_view_key": str(view_key[1]),
             "model_revision": model.revision,
             "segments": tuple(segments),
             "segment_owners": tuple(segment_owners),
@@ -1659,6 +1660,7 @@ class DetailingViewsDialog(QDialog):
         super().hideEvent(event)
 
     def done(self, result: int) -> None:
+        self._save_active_detail_view_settings()
         self._close_view_settings_panel()
         super().done(result)
 
@@ -2472,12 +2474,13 @@ class ProjectSheetSettingsDialog(QDialog):
         navigation.setFixedWidth(170)
         navigation.setSpacing(8)
         navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia"))
+        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota"))
         pages = QStackedWidget(self)
         pages.addWidget(self._build_project_data_settings())
         pages.addWidget(self._build_sheet_settings())
         pages.addWidget(self._build_title_block_settings())
         pages.addWidget(self._build_view_settings())
+        pages.addWidget(self._build_dimension_settings())
         navigation.currentRowChanged.connect(pages.setCurrentIndex)
         navigation.setCurrentRow(0)
         content.addWidget(navigation)
@@ -2893,6 +2896,71 @@ class ProjectSheetSettingsDialog(QDialog):
         layout.addStretch(1)
         return page
 
+    def _build_dimension_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Cota")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Defina a aparência das cotas em todas as folhas do projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.dimension_text_height_box, self.dimension_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("dimension_text_height_mm", 3.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.dimension_terminator_height_box, self.dimension_terminator_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("dimension_terminator_height_mm", 3.0),
+            0.5,
+            20,
+            decimals=1,
+        )
+        self.dimension_extension_gap_box, self.dimension_extension_gap_spin = self._unit_input(
+            page,
+            self._project_settings.get("dimension_extension_gap_mm", 1.0),
+            0.0,
+            20,
+            decimals=1,
+        )
+        self.dimension_line_extension_box, self.dimension_line_extension_spin = self._unit_input(
+            page,
+            self._project_settings.get("dimension_line_extension_mm", 3.0),
+            0.0,
+            20,
+            decimals=1,
+        )
+        self.dimension_extension_overrun_box, self.dimension_extension_overrun_spin = self._unit_input(
+            page,
+            self._project_settings.get("dimension_extension_overrun_mm", 3.0),
+            0.0,
+            20,
+            decimals=1,
+        )
+        self.dimension_text_position_combo = QComboBox(page)
+        self.dimension_text_position_combo.addItem("Centro", "centro")
+        self.dimension_text_position_combo.addItem("Superior", "superior")
+        self.dimension_text_position_combo.addItem("Inferior", "inferior")
+        position_index = self.dimension_text_position_combo.findData(
+            self._project_settings.get("dimension_text_position", "superior")
+        )
+        self.dimension_text_position_combo.setCurrentIndex(max(0, position_index))
+        form.addRow("Altura do valor da cota", self.dimension_text_height_box)
+        form.addRow("Altura do terminador (tick)", self.dimension_terminator_height_box)
+        form.addRow("Distância da linha de extensão", self.dimension_extension_gap_box)
+        form.addRow("Comprimento excedente na linha de cota", self.dimension_line_extension_box)
+        form.addRow("Comprimento excedente na linha de extensão", self.dimension_extension_overrun_box)
+        form.addRow("Posição do valor da cota", self.dimension_text_position_combo)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
     def _save(self) -> None:
         self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
         self.result_sheet_settings = self._sheet_settings_by_name
@@ -2908,6 +2976,12 @@ class ProjectSheetSettingsDialog(QDialog):
             "view_scale_text_height_mm": self.view_scale_text_height_spin.value(),
             "view_element_text_height_mm": self.view_element_text_height_spin.value(),
             "view_section_text_height_mm": self.view_section_text_height_spin.value(),
+            "dimension_text_height_mm": self.dimension_text_height_spin.value(),
+            "dimension_terminator_height_mm": self.dimension_terminator_height_spin.value(),
+            "dimension_extension_gap_mm": self.dimension_extension_gap_spin.value(),
+            "dimension_line_extension_mm": self.dimension_line_extension_spin.value(),
+            "dimension_extension_overrun_mm": self.dimension_extension_overrun_spin.value(),
+            "dimension_text_position": self.dimension_text_position_combo.currentData(),
         })
         self.result_settings = self._sheet_settings_by_name[self._active_sheet_label]
         self.result_project_settings = self._project_settings
