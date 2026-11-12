@@ -7,9 +7,10 @@ from PySide6.QtCore import QPointF, Signal
 from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPen
 
 from .common import (
-    QColor, QFrame, QHBoxLayout, QLineEdit, QPainter, QRectF, QLabel, Qt,
+    QColor, QCheckBox, QFrame, QHBoxLayout, QLineEdit, QPainter, QRectF, QLabel, Qt,
     QVBoxLayout, QWidget,
 )
+from .property_panel import MixedCheckBox
 from .window_frame import WindowFrame
 
 
@@ -97,6 +98,91 @@ class ProjectSheetViewPanel(QFrame):
         self.raise_()
 
 
+class ProjectSheetIdentificationPanel(QFrame):
+    """Read-only inspector for one element identifier on a project sheet."""
+
+    property_toggled = Signal(str, int)
+
+    def __init__(self, window) -> None:
+        super().__init__(window)
+        self._window = window
+        self.setObjectName("propertyPanel")
+        self.setFixedWidth(300)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(7)
+        title = QLabel("Identificador", self)
+        title.setObjectName("propertyTitle")
+        layout.addWidget(title)
+        self.values: dict[str, QLineEdit] = {}
+        self.checkboxes: dict[str, QCheckBox] = {}
+        checkbox_style = (
+            "QCheckBox { spacing: 0; min-height: 22px; }"
+            "QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #d0d7de; "
+            "border-radius: 5px; background: #ffffff; }"
+            "QCheckBox::indicator:hover { border-color: #d0d7de; }"
+            "QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover { "
+            "background: #0969da; border-color: #0969da; }"
+            "QCheckBox::indicator:indeterminate { background: #ffffff; border-color: #0969da; }"
+        )
+        for key, label in (
+            ("identity", "Identidade"),
+            ("name", "Nome"),
+            ("section", "Seção"),
+        ):
+            property_row = QHBoxLayout()
+            property_row.setContentsMargins(0, 0, 0, 0)
+            property_row.setSpacing(6)
+            property_label = QLabel(label, self)
+            property_label.setObjectName("propertySection")
+            property_row.addWidget(property_label, 1)
+            checkbox = MixedCheckBox(self)
+            checkbox.setTristate(True)
+            checkbox.setStyleSheet(checkbox_style)
+            checkbox.setAccessibleName(f"Exibir {label.lower()} no identificador")
+            checkbox.stateChanged.connect(
+                lambda state, property_key=key: self.property_toggled.emit(property_key, state)
+            )
+            self.checkboxes[key] = checkbox
+            property_row.addWidget(checkbox)
+            layout.addLayout(property_row)
+            value = QLineEdit(self)
+            value.setObjectName("identityDisplay")
+            value.setReadOnly(True)
+            value.setAccessibleName(label)
+            self.values[key] = value
+            layout.addWidget(value)
+        self.hide()
+
+    def show_for(self, properties: dict | None) -> None:
+        if properties is None:
+            self.hide()
+            return
+        for key, field in self.values.items():
+            field.setText(str(properties.get(key, "—") or "—"))
+            checkbox = self.checkboxes[key]
+            checkbox.blockSignals(True)
+            state = properties.get(f"show_{key}", False)
+            if isinstance(state, bool):
+                state = Qt.CheckState.Checked if state else Qt.CheckState.Unchecked
+            checkbox.setCheckState(Qt.CheckState(state))
+            checkbox.setEnabled(not properties.get(f"disabled_{key}", False))
+            checkbox.blockSignals(False)
+        self.layout().activate()
+        self.setMinimumHeight(0)
+        self.adjustSize()
+        self.resize(self.width(), self.sizeHint().height())
+        self.show()
+        self.raise_()
+        self.reposition()
+
+    def reposition(self) -> None:
+        margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
+        self.move(self._window.width() - margin - self.width() - 24,
+                  (self._window.height() - self.height()) // 2)
+        self.raise_()
+
+
 def default_project_sheet_settings(sheet_name: str) -> dict:
     sheet_number, separator, title = sheet_name.partition(" - ")
     if not separator:
@@ -156,6 +242,7 @@ class ProjectSheetWorkspace(QWidget):
     """A clean drawing surface with a centered landscape sheet."""
 
     selection_changed = Signal(object)
+    identification_selection_changed = Signal(object)
     remove_view_requested = Signal(int)
     layout_changed = Signal()
     element_identification_requested = Signal(int, str, object)
@@ -189,6 +276,7 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_views: tuple[dict, ...] = ()
         self._selected_view_index: int | None = None
         self._selected_identification_index: int | None = None
+        self._selected_identification_indices: set[int] = set()
         self._view_hit_rects: dict[int, QRectF] = {}
         self._identification_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._view_draw_data: dict[int, tuple[float, float, float, float, float]] = {}
@@ -201,6 +289,7 @@ class ProjectSheetWorkspace(QWidget):
         self._stamp_rect = QRectF()
         self._drag_position: QPointF | None = None
         self._drag_identification_index: int | None = None
+        self._drag_identification_indices: tuple[int, ...] = ()
         self._zoom_factor = 1.0
         self._pan_offset = QPointF()
         self._pan_anchor: QPointF | None = None
@@ -233,7 +322,16 @@ class ProjectSheetWorkspace(QWidget):
             and self._selected_view_index >= len(self._sheet_views)
         ):
             self._selected_view_index = None
+            self._selected_identification_index = None
+            self._selected_identification_indices.clear()
+            self.identification_selection_changed.emit(None)
             self.selection_changed.emit(None)
+        elif (
+            self._selected_view_index is not None
+            and self._selected_identification_indices
+        ):
+            identifications = self._sheet_views[self._selected_view_index].get("identifications", ())
+            self._emit_identification_selection(identifications)
         self.update()
 
     def select_view(self, index: int | None) -> None:
@@ -241,10 +339,26 @@ class ProjectSheetWorkspace(QWidget):
             index = None
         self._selected_view_index = index
         self._selected_identification_index = None
+        self._selected_identification_indices.clear()
+        self.identification_selection_changed.emit(None)
         self.selection_changed.emit(
             self._sheet_views[index] if index is not None else None
         )
         self.update()
+
+    def _emit_identification_selection(self, identifications=None) -> None:
+        if identifications is None:
+            index = self._selected_view_index
+            identifications = (
+                self._sheet_views[index].get("identifications", ())
+                if index is not None and index < len(self._sheet_views) else ()
+            )
+        selected = [
+            identifications[index]
+            for index in sorted(self._selected_identification_indices)
+            if 0 <= index < len(identifications)
+        ]
+        self.identification_selection_changed.emit(selected or None)
 
     def set_selected_view_scale(self, scale_denominator: float) -> None:
         index = self._selected_view_index
@@ -264,9 +378,13 @@ class ProjectSheetWorkspace(QWidget):
         identifications = self._sheet_views[index].get("identifications", [])
         if not 0 <= label_index < len(identifications):
             self._selected_identification_index = None
+            self._selected_identification_indices.clear()
+            self.identification_selection_changed.emit(None)
             return False
         identifications.pop(label_index)
         self._selected_identification_index = None
+        self._selected_identification_indices.clear()
+        self.identification_selection_changed.emit(None)
         self.update()
         self.layout_changed.emit()
         return True
@@ -532,7 +650,7 @@ class ProjectSheetWorkspace(QWidget):
             for identification_index, anchor, lines, text_width, label_rect, rotation in identification_rects:
                 if (
                     index == self._selected_view_index
-                    and identification_index == self._selected_identification_index
+                    and identification_index in self._selected_identification_indices
                 ):
                     selection_pen = QPen(QColor("#0969da"), 1.5)
                     selection_pen.setCosmetic(True)
@@ -787,10 +905,30 @@ class ProjectSheetWorkspace(QWidget):
                     if view_index == selected_index and rect.contains(event.position())
                 ), None)
                 if label_index is not None:
-                    self._selected_identification_index = label_index
-                    self._drag_identification_index = label_index
-                    self._drag_position = event.position()
-                    self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                    if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                        if label_index in self._selected_identification_indices:
+                            self._selected_identification_indices.remove(label_index)
+                        else:
+                            self._selected_identification_indices.add(label_index)
+                        self._selected_identification_index = (
+                            max(self._selected_identification_indices)
+                            if self._selected_identification_indices else None
+                        )
+                        self._drag_identification_index = None
+                        self._drag_identification_indices = ()
+                        self._drag_position = None
+                        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+                    else:
+                        if label_index not in self._selected_identification_indices:
+                            self._selected_identification_indices = {label_index}
+                        self._selected_identification_index = label_index
+                        self._drag_identification_index = label_index
+                        self._drag_identification_indices = tuple(
+                            sorted(self._selected_identification_indices)
+                        )
+                        self._drag_position = event.position()
+                        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                    self._emit_identification_selection()
                     self.setFocus(Qt.FocusReason.MouseFocusReason)
                     self.update()
                     event.accept()
@@ -841,8 +979,9 @@ class ProjectSheetWorkspace(QWidget):
                 if draw_data is not None and draw_data[4] > 0:
                     view = self._sheet_views[index]
                     identifications = view.get("identifications", [])
-                    label_index = self._drag_identification_index
-                    if 0 <= label_index < len(identifications):
+                    for label_index in self._drag_identification_indices:
+                        if not 0 <= label_index < len(identifications):
+                            continue
                         identification = identifications[label_index]
                         point = identification.get("projected_point")
                         if point is None:
@@ -854,7 +993,7 @@ class ProjectSheetWorkspace(QWidget):
                                 float(point[0]) + delta.x() / draw_data[4],
                                 float(point[1]) - delta.y() / draw_data[4],
                             )
-                            self.update()
+                    self.update()
                 event.accept()
                 return
             index = self._selected_view_index
@@ -887,6 +1026,7 @@ class ProjectSheetWorkspace(QWidget):
             self._drag_position = None
             moved_identification = self._drag_identification_index is not None
             self._drag_identification_index = None
+            self._drag_identification_indices = ()
             self.unsetCursor()
             if moved_identification:
                 self.layout_changed.emit()

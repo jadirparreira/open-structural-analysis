@@ -847,6 +847,22 @@ class StructuralModel:
             raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
         if any(set(names).intersection(group["members"]) for group in self.verification_element_groups):
             raise ValueError("Uma ou mais barras já pertencem a um grupo de elementos.")
+        first_bar = self.bars[names[0]]
+        section_signature = (
+            first_bar.section,
+            first_bar.profile,
+            tuple(sorted(first_bar.geometry_dict().items())),
+            first_bar.section_mirrored,
+        )
+        for name in names[1:]:
+            bar = self.bars[name]
+            if (
+                bar.section,
+                bar.profile,
+                tuple(sorted(bar.geometry_dict().items())),
+                bar.section_mirrored,
+            ) != section_signature:
+                raise ValueError("As barras devem possuir a mesma seção para serem agrupadas.")
         connected = {names[0]}
         while True:
             endpoints = {

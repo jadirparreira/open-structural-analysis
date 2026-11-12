@@ -1533,6 +1533,7 @@ class DetailingViewsDialog(QDialog):
         self._requested_sheet_view = {
             "name": self._saved_view_names.get(view_key, "").strip()
             or self._view_fallbacks[view_key],
+            "model_revision": model.revision,
             "segments": tuple(segments),
             "segment_owners": tuple(segment_owners),
             "projection": {
@@ -1540,6 +1541,8 @@ class DetailingViewsDialog(QDialog):
                 "coordinate": coordinate,
                 "orientation": self.view_direction_selector.currentText(),
                 "rotation_degrees": self.view_rotation_input.value(),
+                "upper_offset_cm": self.view_displacement_inputs["top"].value(),
+                "lower_offset_cm": self.view_displacement_inputs["bottom"].value(),
             },
             "scale_denominator": 100.0,
             "identifications": [],
@@ -2387,7 +2390,8 @@ class ProjectSheetSettingsDialog(QDialog):
 
     def __init__(
         self, sheet_name: str, settings: dict, project_settings: dict,
-        sheet_count: int, parent=None,
+        sheet_count: int, parent=None, rename_sheet_callback=None,
+        sheet_settings: dict | None = None, sheet_names: list[str] | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Configurações do projeto")
@@ -2399,8 +2403,20 @@ class ProjectSheetSettingsDialog(QDialog):
         self._project_settings = dict(project_settings)
         self._project_settings.pop("phase", None)
         self._sheet_count = sheet_count
+        self._rename_sheet_callback = rename_sheet_callback
+        self._sheet_names = list(sheet_names or (sheet_name,))
+        self._active_sheet_label = sheet_name
+        self._sheet_settings_by_name = {}
+        for label, values in (sheet_settings or {sheet_name: settings}).items():
+            cloned = dict(values)
+            cloned["visible_fields"] = dict(values.get("visible_fields", {}))
+            cloned["visible_fields"].pop("phase", None)
+            self._sheet_settings_by_name[label] = cloned
+        self._sheet_settings_by_name.setdefault(sheet_name, dict(settings))
+        self._loading_sheet_settings = False
         self.result_settings: dict | None = None
         self.result_project_settings: dict | None = None
+        self.result_sheet_settings: dict | None = None
         self.setStyleSheet(
             "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0; }"
             "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
@@ -2417,6 +2433,10 @@ class ProjectSheetSettingsDialog(QDialog):
             "{ width: 0; border: 0; }"
             "QComboBox#sheetFormatSelector::down-arrow, QComboBox#sheetOrientationSelector::down-arrow "
             "{ image: none; }"
+            "QComboBox#sheetSubjectSelector::drop-down { width: 0; border: 0; }"
+            "QComboBox#sheetSubjectSelector::down-arrow { image: none; }"
+            "QComboBox#sheetNumberSelector::drop-down { width: 0; border: 0; }"
+            "QComboBox#sheetNumberSelector::down-arrow { image: none; }"
             "QCheckBox { color: #57606a; spacing: 8px; min-height: 28px; }"
             "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #d0d7de; "
             "border-radius: 4px; background: #ffffff; }"
@@ -2549,9 +2569,33 @@ class ProjectSheetSettingsDialog(QDialog):
         dimensions = QGridLayout()
         dimensions.setHorizontalSpacing(12)
         dimensions.setVerticalSpacing(6)
-        self.subject_edit = QLineEdit(str(self._settings.get("subject", "Folha Geral")), page)
-        self.subject_edit.setReadOnly(True)
-        self._add_sheet_setting_field(dimensions, "Assunto", self.subject_edit, 0, 0, 2)
+        self.subject_edit = QComboBox(page)
+        self.subject_edit.setObjectName("sheetSubjectSelector")
+        for label in self._sheet_names:
+            self.subject_edit.addItem(label, label)
+        self.subject_edit.setCurrentIndex(
+            max(0, self.subject_edit.findData(self._active_sheet_label))
+        )
+        self.subject_edit.setToolTip("Assunto desta folha")
+        subject_row = QWidget(page)
+        subject_layout = QHBoxLayout(subject_row)
+        subject_layout.setContentsMargins(0, 0, 0, 0)
+        subject_layout.setSpacing(6)
+        subject_layout.addWidget(self.subject_edit, 1)
+        self.rename_subject_button = QToolButton(subject_row)
+        icons_path = Path(__file__).parents[1] / "resources" / "icons"
+        self.rename_subject_button.setIcon(QIcon(str(icons_path / "pencil.svg")))
+        self.rename_subject_button.setIconSize(QSize(18, 18))
+        self.rename_subject_button.setFixedSize(34, 34)
+        self.rename_subject_button.setToolTip("Renomear folha")
+        self.rename_subject_button.setAccessibleName("Renomear folha")
+        self.rename_subject_button.setStyleSheet(
+            "QToolButton { border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }"
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        self.rename_subject_button.clicked.connect(self._rename_sheet_from_settings)
+        subject_layout.addWidget(self.rename_subject_button)
+        self._add_sheet_setting_field(dimensions, "Assunto", subject_row, 0, 0, 2)
         self.paper_size_combo = QComboBox(page)
         self.paper_size_combo.setObjectName("sheetFormatSelector")
         self.paper_size_combo.addItems(("A4", "A3", "A2", "A1", "A0", "Personalizado"))
@@ -2566,7 +2610,11 @@ class ProjectSheetSettingsDialog(QDialog):
         self.custom_height_box, self.custom_height_spin = self._unit_input(
             page, self._settings.get("custom_height_mm", 297), 50, 3000,
         )
-        self.paper_size_combo.currentTextChanged.connect(self._update_custom_size_enabled)
+        self._updating_sheet_dimensions = False
+        self.paper_size_combo.currentTextChanged.connect(self._update_paper_dimensions)
+        self.orientation_combo.currentTextChanged.connect(self._update_paper_dimensions)
+        self.custom_width_spin.valueChanged.connect(self._custom_dimensions_changed)
+        self.custom_height_spin.valueChanged.connect(self._custom_dimensions_changed)
         self.margin_top_box, self.margin_top_spin = self._unit_input(
             page, self._settings.get("margin_top_mm", 10), 0, 100,
         )
@@ -2603,6 +2651,7 @@ class ProjectSheetSettingsDialog(QDialog):
         self.scale_edit = QLineEdit(str(self._settings.get("scale", "INDICADA")), page)
         self.revision_edit = QLineEdit(str(self._settings.get("revision", "00")), page)
         self.sheet_number_combo = QComboBox(page)
+        self.sheet_number_combo.setObjectName("sheetNumberSelector")
         self.sheet_number_combo.addItems(
             f"{number:02d}" for number in range(1, self._sheet_count + 1)
         )
@@ -2618,7 +2667,8 @@ class ProjectSheetSettingsDialog(QDialog):
         identification.setColumnStretch(1, 1)
         layout.addLayout(identification)
         layout.addStretch(1)
-        self._update_custom_size_enabled()
+        self._update_paper_dimensions()
+        self.subject_edit.currentIndexChanged.connect(self._sheet_selection_changed)
         scroll.setWidget(page)
         return scroll
 
@@ -2656,10 +2706,112 @@ class ProjectSheetSettingsDialog(QDialog):
         grid.addWidget(QLabel(label), row, column, 1, column_span)
         grid.addWidget(widget, row + 1, column, 1, column_span)
 
-    def _update_custom_size_enabled(self, *_args) -> None:
-        enabled = self.paper_size_combo.currentText() == "Personalizado"
-        self.custom_width_spin.setEnabled(enabled)
-        self.custom_height_spin.setEnabled(enabled)
+    def _rename_sheet_from_settings(self) -> None:
+        if self._rename_sheet_callback is None:
+            return
+        self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
+        old_label = self._active_sheet_label
+        new_label = self._rename_sheet_callback(old_label)
+        if not new_label:
+            return
+        self._sheet_settings_by_name[new_label] = self._sheet_settings_by_name.pop(old_label)
+        self._sheet_settings_by_name[new_label]["subject"] = str(new_label).partition(" - ")[2]
+        self._sheet_names = [new_label if label == old_label else label for label in self._sheet_names]
+        index = self.subject_edit.findData(old_label)
+        if index >= 0:
+            self.subject_edit.setItemText(index, new_label)
+            self.subject_edit.setItemData(index, new_label)
+        self._active_sheet_label = new_label
+        self._settings = self._sheet_settings_by_name[new_label]
+
+    def _sheet_selection_changed(self, _index: int) -> None:
+        if self._loading_sheet_settings:
+            return
+        new_label = str(self.subject_edit.currentData() or "")
+        if not new_label or new_label == self._active_sheet_label:
+            return
+        self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
+        self._active_sheet_label = new_label
+        self._load_sheet_settings(self._sheet_settings_by_name.get(new_label, {}))
+
+    def _load_sheet_settings(self, settings: dict) -> None:
+        self._loading_sheet_settings = True
+        self._settings = dict(settings)
+        self._settings["visible_fields"] = dict(settings.get("visible_fields", {}))
+        self._settings["visible_fields"].pop("phase", None)
+        self._updating_sheet_dimensions = True
+        self.paper_size_combo.setCurrentText(str(settings.get("paper_size", "A3")))
+        self.orientation_combo.setCurrentText(str(settings.get("orientation", "Paisagem")))
+        self.custom_width_spin.setValue(float(settings.get("custom_width_mm", 420)))
+        self.custom_height_spin.setValue(float(settings.get("custom_height_mm", 297)))
+        self.margin_top_spin.setValue(float(settings.get("margin_top_mm", 10)))
+        self.margin_bottom_spin.setValue(float(settings.get("margin_bottom_mm", 10)))
+        self.margin_left_spin.setValue(float(settings.get("margin_left_mm", 25)))
+        self.margin_right_spin.setValue(float(settings.get("margin_right_mm", 10)))
+        self.file_edit.setText(str(settings.get("file", "")))
+        self.date_edit.setText(str(settings.get("date", "")))
+        self.scale_edit.setText(str(settings.get("scale", "INDICADA")))
+        self.revision_edit.setText(str(settings.get("revision", "00")))
+        self.sheet_number_combo.setCurrentText(str(settings.get("sheet_number", "01")).zfill(2))
+        self._updating_sheet_dimensions = False
+        self._loading_sheet_settings = False
+        self._update_paper_dimensions()
+
+    def _collect_sheet_settings(self) -> dict:
+        self._settings.update({
+            "paper_size": self.paper_size_combo.currentText(),
+            "orientation": self.orientation_combo.currentText(),
+            "custom_width_mm": self.custom_width_spin.value(),
+            "custom_height_mm": self.custom_height_spin.value(),
+            "margin_left_mm": self.margin_left_spin.value(),
+            "margin_right_mm": self.margin_right_spin.value(),
+            "margin_top_mm": self.margin_top_spin.value(),
+            "margin_bottom_mm": self.margin_bottom_spin.value(),
+            "subject": self._active_sheet_label.partition(" - ")[2],
+            "file": self.file_edit.text().strip(),
+            "scale": self.scale_edit.text().strip(),
+            "sheet_number": self.sheet_number_combo.currentText(),
+            "revision": self.revision_edit.text().strip(),
+            "date": self.date_edit.text().strip(),
+        })
+        return self._settings
+
+    def _custom_dimensions_changed(self, *_args) -> None:
+        if self._updating_sheet_dimensions or self.paper_size_combo.currentText() != "Personalizado":
+            return
+        width = self.custom_width_spin.value()
+        height = self.custom_height_spin.value()
+        self._updating_sheet_dimensions = True
+        self.orientation_combo.setCurrentText("Paisagem" if width >= height else "Retrato")
+        self._updating_sheet_dimensions = False
+
+    def _update_paper_dimensions(self, *_args) -> None:
+        if self._updating_sheet_dimensions:
+            return
+        custom = self.paper_size_combo.currentText() == "Personalizado"
+        self.custom_width_spin.setEnabled(custom)
+        self.custom_height_spin.setEnabled(custom)
+        self.orientation_combo.setEnabled(not custom)
+        if custom:
+            self._custom_dimensions_changed()
+            return
+        sizes = {
+            "A4": (297.0, 210.0),
+            "A3": (420.0, 297.0),
+            "A2": (594.0, 420.0),
+            "A1": (841.0, 594.0),
+            "A0": (1189.0, 841.0),
+        }
+        size = sizes.get(self.paper_size_combo.currentText())
+        if size is None:
+            return
+        width, height = size
+        if self.orientation_combo.currentText() == "Retrato":
+            width, height = height, width
+        self._updating_sheet_dimensions = True
+        self.custom_width_spin.setValue(width)
+        self.custom_height_spin.setValue(height)
+        self._updating_sheet_dimensions = False
 
     def _build_title_block_settings(self) -> QWidget:
         page = QWidget(self)
@@ -2742,22 +2894,8 @@ class ProjectSheetSettingsDialog(QDialog):
         return page
 
     def _save(self) -> None:
-        self._settings.update({
-            "paper_size": self.paper_size_combo.currentText(),
-            "orientation": self.orientation_combo.currentText(),
-            "custom_width_mm": self.custom_width_spin.value(),
-            "custom_height_mm": self.custom_height_spin.value(),
-            "margin_left_mm": self.margin_left_spin.value(),
-            "margin_right_mm": self.margin_right_spin.value(),
-            "margin_top_mm": self.margin_top_spin.value(),
-            "margin_bottom_mm": self.margin_bottom_spin.value(),
-            "subject": self.subject_edit.text().strip(),
-            "file": self.file_edit.text().strip(),
-            "scale": self.scale_edit.text().strip(),
-            "sheet_number": self.sheet_number_combo.currentText(),
-            "revision": self.revision_edit.text().strip(),
-            "date": self.date_edit.text().strip(),
-        })
+        self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
+        self.result_sheet_settings = self._sheet_settings_by_name
         self._project_settings.update({
             "client": self.client_edit.text().strip(),
             "work": self.work_edit.text().strip(),
@@ -2771,7 +2909,7 @@ class ProjectSheetSettingsDialog(QDialog):
             "view_element_text_height_mm": self.view_element_text_height_spin.value(),
             "view_section_text_height_mm": self.view_section_text_height_spin.value(),
         })
-        self.result_settings = self._settings
+        self.result_settings = self._sheet_settings_by_name[self._active_sheet_label]
         self.result_project_settings = self._project_settings
         self.accept()
 

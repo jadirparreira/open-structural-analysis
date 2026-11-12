@@ -994,10 +994,6 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.addItems(self._sheet_names)
         self.sheet_selector.currentTextChanged.connect(self._on_sheet_selected)
         layout.addWidget(self.sheet_selector)
-        self.rename_sheet_button = self._action_button(
-            "pencil.svg", "Renomear folha", self._rename_sheet,
-        )
-        layout.addWidget(self.rename_sheet_button)
         self.add_sheet_button = self._action_button("plus.svg", "Adicionar folha", self._add_sheet)
         layout.addWidget(self.add_sheet_button)
         self.remove_sheet_button = self._action_button("minus.svg", "Remover folha", self._remove_sheet)
@@ -1075,12 +1071,12 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.blockSignals(False)
         has_sheets = bool(self._sheet_names)
         self.sheet_selector.setEnabled(has_sheets)
-        self.rename_sheet_button.setEnabled(has_sheets)
         self.remove_sheet_button.setEnabled(has_sheets)
         self.settings_button.setEnabled(has_sheets)
         self._on_sheet_selected(self.sheet_selector.currentText())
 
     def _on_sheet_selected(self, sheet_name: str) -> None:
+        self._window.refresh_project_sheet_views(sheet_name)
         settings = self._sheet_settings.get(sheet_name)
         if settings is not None:
             self._window.project_sheet_workspace.set_sheet_settings(
@@ -1165,26 +1161,29 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.addItem(sheet_label)
         self.sheet_selector.setCurrentText(sheet_label)
         self.sheet_selector.setEnabled(True)
-        self.rename_sheet_button.setEnabled(True)
         self.remove_sheet_button.setEnabled(True)
         self.settings_button.setEnabled(True)
         self._window._store_detailing_state()
 
-    def _rename_sheet(self) -> None:
-        index = self.sheet_selector.currentIndex()
-        if index < 0:
-            return
+    def _rename_sheet(self, sheet_label: str | None = None) -> str | None:
+        index = (
+            self._sheet_names.index(sheet_label)
+            if sheet_label in self._sheet_names
+            else self.sheet_selector.currentIndex()
+        )
+        if index < 0 or index >= len(self._sheet_names):
+            return None
         old_label = self._sheet_names[index]
         old_name = old_label.partition(" - ")[2]
         accepted, name = self._sheet_name_dialog("Renomear folha", old_name)
         if not accepted or not name or name == old_name:
-            return
+            return None
         if any(
             index_other != index and sheet.partition(" - ")[2] == name
             for index_other, sheet in enumerate(self._sheet_names)
         ):
             QMessageBox.warning(self._window, "Renomear folha", "Já existe uma folha com esse nome.")
-            return
+            return None
         index_label = old_label.partition(" - ")[0]
         new_label = f"{index_label} - {name}"
         settings = self._sheet_settings.pop(old_label)
@@ -1193,8 +1192,10 @@ class ProjectSheetsPalette(QFrame):
         self._sheet_views[new_label] = self._sheet_views.pop(old_label, [])
         self._sheet_names[index] = new_label
         self.sheet_selector.setItemText(index, new_label)
-        self._on_sheet_selected(new_label)
+        if self.sheet_selector.currentIndex() == index:
+            self._on_sheet_selected(new_label)
         self._window._store_detailing_state()
+        return new_label
 
     def reorder_sheet(self, sheet_label: str, requested_number: str) -> str:
         if sheet_label not in self._sheet_names:
@@ -1245,7 +1246,6 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.removeItem(index)
         has_sheets = bool(self._sheet_names)
         self.sheet_selector.setEnabled(has_sheets)
-        self.rename_sheet_button.setEnabled(has_sheets)
         self.remove_sheet_button.setEnabled(has_sheets)
         self.settings_button.setEnabled(has_sheets)
         if not has_sheets:

@@ -47,6 +47,7 @@ from .dialogs import (
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
+from .detailing_preview import DetailingViewPreview, _ViewGeometryCalculator
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
 from .import_dialogs import ImportReportDialog, PrjImportDialog
@@ -67,7 +68,11 @@ from .palettes import (
     VerificationTopPalette,
 )
 from .project_load_worker import ProjectLoadWorker
-from .project_sheet import ProjectSheetViewPanel, ProjectSheetWorkspace
+from .project_sheet import (
+    ProjectSheetIdentificationPanel,
+    ProjectSheetViewPanel,
+    ProjectSheetWorkspace,
+)
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
@@ -223,8 +228,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.window_frame)
         self._create_project_loading_overlay()
         self.project_sheet_view_panel = ProjectSheetViewPanel(self)
+        self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
         self.project_sheet_workspace.selection_changed.connect(
             self._project_sheet_view_selected
+        )
+        self.project_sheet_workspace.identification_selection_changed.connect(
+            self._project_sheet_identification_selected
         )
         self.project_sheet_workspace.layout_changed.connect(self._store_detailing_state)
         self.project_sheet_workspace.remove_view_requested.connect(
@@ -238,6 +247,9 @@ class MainWindow(QMainWindow):
         )
         self.project_sheet_view_panel.scale_edited.connect(
             self._project_sheet_view_scale_edited
+        )
+        self.project_sheet_identification_panel.property_toggled.connect(
+            self._project_sheet_identification_property_toggled
         )
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
@@ -685,6 +697,10 @@ class MainWindow(QMainWindow):
     def set_detailing_project_mode(self, active: bool) -> None:
         """Switch between the detailing model and its blank project sheet view."""
         self._detailing_project_mode = bool(active)
+        if self._detailing_project_mode and hasattr(self, "project_sheets_palette"):
+            self.refresh_project_sheet_views(
+                self.project_sheets_palette.sheet_selector.currentText(),
+            )
         if not self._detailing_project_mode and hasattr(self, "project_sheet_workspace"):
             self.project_sheet_workspace.select_view(None)
         if self.view_stack.currentWidget() is not self.home:
@@ -718,10 +734,254 @@ class MainWindow(QMainWindow):
                 and self.view_stack.currentWidget() is not self.home
             )
 
+    def refresh_project_sheet_views(self, sheet_name: str | None = None) -> None:
+        """Regenerate saved sheet linework from the current model on sheet open."""
+        palette = getattr(self, "project_sheets_palette", None)
+        if palette is None:
+            return
+        sheet_name = sheet_name or palette.sheet_selector.currentText()
+        views = palette._sheet_views.get(sheet_name)
+        if views is None:
+            return
+
+        state_changed = False
+        for view in views:
+            if self._refresh_project_view_identifications(view):
+                state_changed = True
+            if view.get("model_revision") == self.model.revision:
+                continue
+            projection = view.get("projection")
+            if not isinstance(projection, dict):
+                continue
+            plane = projection.get("plane")
+            if not isinstance(plane, str) or "coordinate" not in projection:
+                continue
+            calculator = _ViewGeometryCalculator()
+            calculator._mesh_cache_owner = self.model
+            calculator._detail_scene = self.scene
+            try:
+                DetailingViewPreview.set_view(
+                    calculator,
+                    self.model,
+                    plane,
+                    projection["coordinate"],
+                    upper_offset_cm=float(projection.get("upper_offset_cm", 50.0)),
+                    lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
+                    orientation=str(projection.get("orientation", "Superior para inferior")),
+                    rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
+                )
+            except (IndexError, KeyError, OverflowError, RuntimeError, TypeError, ValueError):
+                continue
+            segments = tuple(calculator._segments_2d)
+            owners = tuple(calculator._segment_sources)
+            if (
+                segments != tuple(view.get("segments", ()))
+                or owners != tuple(view.get("segment_owners", ()))
+            ):
+                view["segments"] = segments
+                view["segment_owners"] = owners
+                state_changed = True
+            view["model_revision"] = self.model.revision
+            state_changed = True
+
+        if state_changed:
+            if palette.sheet_selector.currentText() == sheet_name:
+                self.project_sheet_workspace.set_sheet_views(views)
+            self._store_detailing_state()
+
+    def _refresh_project_view_identifications(self, view: dict) -> bool:
+        """Refresh label text from current element names and bar sections."""
+        changed = False
+        for identification in view.get("identifications", ()):
+            if not isinstance(identification, dict):
+                continue
+            before = (
+                identification.get("text"),
+                identification.get("text_lines"),
+                identification.get("text_runs"),
+                identification.get("show_identity"),
+                identification.get("show_name"),
+                identification.get("show_section"),
+            )
+            self._update_project_identification_text(identification)
+            after = (
+                identification.get("text"),
+                identification.get("text_lines"),
+                identification.get("text_runs"),
+                identification.get("show_identity"),
+                identification.get("show_name"),
+                identification.get("show_section"),
+            )
+            if before != after:
+                changed = True
+        return changed
+
     def _project_sheet_view_selected(self, view: dict | None) -> None:
+        identification_panel = getattr(self, "project_sheet_identification_panel", None)
+        if identification_panel is not None:
+            identification_panel.hide()
         panel = getattr(self, "project_sheet_view_panel", None)
         if panel is not None:
             panel.show_for(view)
+
+    def _project_sheet_identification_selected(self, identification: dict | None) -> None:
+        panel = getattr(self, "project_sheet_identification_panel", None)
+        if panel is None:
+            return
+        if identification is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        identifications = identification if isinstance(identification, (list, tuple)) else [identification]
+        properties = [
+            self._project_sheet_identification_properties(item)
+            for item in identifications if isinstance(item, dict)
+        ]
+        if not properties:
+            panel.hide()
+            return
+        aggregated = {}
+        for key in ("identity", "name", "section"):
+            values = [item[key] for item in properties]
+            aggregated[key] = values[0] if all(value == values[0] for value in values) else "Variado"
+            states = [item[f"show_{key}"] for item in properties]
+            aggregated[f"show_{key}"] = (
+                Qt.CheckState.PartiallyChecked
+                if any(state != states[0] for state in states)
+                else Qt.CheckState.Checked if states[0] else Qt.CheckState.Unchecked
+            )
+            aggregated[f"disabled_{key}"] = all(item[f"disabled_{key}"] for item in properties)
+        panel.show_for(aggregated)
+
+    def _project_sheet_identification_properties(self, identification: dict) -> dict:
+        """Resolve read-only identifier properties from the current model."""
+        kind = str(identification.get("kind", ""))
+        element = str(identification.get("element", ""))
+        identity = element.replace("|", ", ")
+        name = ""
+        section = ""
+
+        if kind in {"bar", "bar_group"}:
+            member_names = tuple(
+                member for member in element.split("|") if member
+            ) if kind == "bar_group" else (element,)
+            bars = [self.model.bars[member] for member in member_names if member in self.model.bars]
+            if kind == "bar_group" and member_names:
+                group = self.model.verification_group_for(member_names[0])
+                if group is not None:
+                    name = str(group.get("name", "")).strip()
+            elif bars:
+                name = str(self.model.verification_element_names.get(bars[0].name, "")).strip()
+            section_names = list(dict.fromkeys(
+                str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                for bar in bars
+                if str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+            ))
+            section = " / ".join(section_names)
+        elif kind == "plate":
+            name = str(self.model.plate_display_names.get(element, "")).strip()
+        elif kind == "node":
+            name = str(self.model.node_display_names.get(element, "")).strip()
+
+        if (
+            not identification.get("visibility_customized")
+            and "show_identity" not in identification
+            and "show_name" not in identification
+        ):
+            identification["show_name"] = bool(name)
+            identification["show_identity"] = not bool(name)
+            identification["show_section"] = bool(section)
+        else:
+            identification.setdefault("show_section", bool(section))
+        return {
+            "identity": identity,
+            "name": name,
+            "section": section,
+            "show_identity": identification.get("show_identity", False),
+            "show_name": identification.get("show_name", False),
+            "show_section": identification.get("show_section", False),
+            "disabled_identity": False,
+            "disabled_name": not bool(name),
+            "disabled_section": not bool(section),
+        }
+
+    def _project_sheet_identification_property_toggled(self, key: str, state: int) -> None:
+        workspace = self.project_sheet_workspace
+        view_index = workspace._selected_view_index
+        if view_index is None or not 0 <= view_index < len(workspace._sheet_views):
+            return
+        identifications = workspace._sheet_views[view_index].get("identifications", [])
+        selected = [
+            identifications[index]
+            for index in workspace._selected_identification_indices
+            if 0 <= index < len(identifications)
+        ]
+        if not selected:
+            return
+        checked = state != Qt.CheckState.Unchecked.value
+        for identification in selected:
+            properties = self._project_sheet_identification_properties(identification)
+            if key in {"identity", "name"}:
+                name_available = bool(properties["name"])
+                if key == "name" and not name_available:
+                    continue
+                other = "name" if key == "identity" else "identity"
+                if checked:
+                    identification[f"show_{key}"] = True
+                    identification[f"show_{other}"] = False
+                elif (
+                    not identification.get("show_section")
+                    and not identification.get(f"show_{other}")
+                ):
+                    # Keep the last visible property enabled.
+                    continue
+                else:
+                    identification[f"show_{key}"] = False
+            elif key == "section":
+                if (
+                    not checked
+                    and not identification.get("show_identity")
+                    and not identification.get("show_name")
+                ):
+                    continue
+                identification["show_section"] = checked
+            identification["visibility_customized"] = True
+            self._update_project_identification_text(identification)
+        self.project_sheet_workspace.update()
+        workspace._emit_identification_selection()
+        self._store_detailing_state()
+
+    def _update_project_identification_text(self, identification: dict) -> None:
+        properties = self._project_sheet_identification_properties(identification)
+        primary = (
+            properties["name"] if identification.get("show_name")
+            else properties["identity"] if identification.get("show_identity")
+            else ""
+        )
+        section = properties["section"] if identification.get("show_section") else ""
+        has_section = bool(section)
+        if "stacked_text" not in identification:
+            identification["stacked_text"] = (
+                len(identification.get("text_runs", ())) > 1
+                or len(identification.get("text_lines", ())) > 1
+            )
+        stacked = bool(identification.get("stacked_text")) and has_section and bool(primary)
+        text = f"{primary} {section}".strip()
+        identification["text"] = text
+        identification["text_lines"] = [primary, section] if stacked else [text]
+        identification["text_runs"] = (
+            [
+                [{"text": primary, "role": "element"}],
+                [{"text": section, "role": "section"}],
+            ] if stacked else [
+                ([{"text": primary, "role": "element"}] if primary else [])
+                + ([{"text": f" {section}", "role": "section"}] if has_section else [])
+            ]
+        )
 
     def _project_sheet_view_scale_edited(self, text: str) -> None:
         try:
@@ -790,6 +1050,7 @@ class MainWindow(QMainWindow):
         source = str(name)
         kind, separator, owner_name = source.partition(":")
         group_members: tuple[str, ...] = ()
+        custom_name = ""
         if kind == "bar_group" and separator:
             group_members = tuple(member for member in owner_name.split("|") if member)
             group = (
@@ -799,13 +1060,29 @@ class MainWindow(QMainWindow):
             if group is None or set(group.get("members", ())) != set(group_members):
                 return
             owner_name = "|".join(group_members)
-            label = str(group.get("name", "")).strip() or ", ".join(group_members)
+            custom_name = str(group.get("name", "")).strip()
+            label = custom_name or ", ".join(group_members)
         else:
             group = None
         if not separator or kind not in {"bar", "plate", "rigid_bar", "node"}:
             if kind != "bar_group":
                 owner_name = source
                 kind = ""
+        if kind in {"bar", "bar_group", "plate", "rigid_bar", "node"}:
+            for existing in view.get("identifications", ()):
+                if not isinstance(existing, dict) or existing.get("kind") != kind:
+                    continue
+                existing_element = str(existing.get("element", ""))
+                same_element = (
+                    set(existing_element.split("|")) == set(group_members)
+                    if kind == "bar_group" else existing_element == owner_name
+                )
+                if same_element:
+                    self.history.append(
+                        "> <b>Identificar</b> <span style='color:#8c959f'>"
+                        "(Este elemento já possui uma etiqueta nesta vista)</span>"
+                    )
+                    return
         if kind != "bar_group":
             if kind == "bar":
                 custom_name = str(self.model.verification_element_names.get(owner_name, "")).strip()
@@ -939,7 +1216,7 @@ class MainWindow(QMainWindow):
                     axis_center * axis_x + (normal_center + normal_offset) * normal_x,
                     axis_center * axis_y + (normal_center + normal_offset) * normal_y,
                 )
-        view.setdefault("identifications", []).append({
+        identification = {
             "kind": kind,
             "element": owner_name,
             "text": label,
@@ -960,7 +1237,13 @@ class MainWindow(QMainWindow):
             "text_rotation_degrees": 0.0 if stacked_text else text_rotation,
             "projected_point": label_position,
             "layout_version": 3,
-        })
+            "stacked_text": stacked_text,
+            "show_identity": not bool(custom_name),
+            "show_name": bool(custom_name),
+            "show_section": bool(section_label),
+        }
+        view.setdefault("identifications", []).append(identification)
+        self._update_project_identification_text(identification)
         self.project_sheet_workspace.update()
         self._store_detailing_state()
         self.history.append(
@@ -1199,6 +1482,9 @@ class MainWindow(QMainWindow):
             self.project_sheets_palette._project_settings,
             self.project_sheets_palette.sheet_selector.count(),
             self,
+            rename_sheet_callback=self.project_sheets_palette._rename_sheet,
+            sheet_settings=self.project_sheets_palette._sheet_settings,
+            sheet_names=self.project_sheets_palette._sheet_names,
         )
         dialog.move(self.geometry().center() - dialog.rect().center())
         if (
@@ -1206,8 +1492,9 @@ class MainWindow(QMainWindow):
             and dialog.result_settings is not None
             and dialog.result_project_settings is not None
         ):
-            self.project_sheets_palette._sheet_settings[sheet_name] = dialog.result_settings
+            self.project_sheets_palette._sheet_settings.update(dialog.result_sheet_settings or {})
             self.project_sheets_palette._project_settings = dialog.result_project_settings
+            sheet_name = dialog._active_sheet_label
             self.project_sheets_palette.reorder_sheet(
                 sheet_name, dialog.result_settings.get("sheet_number", "01"),
             )
@@ -2494,6 +2781,11 @@ class MainWindow(QMainWindow):
             self.project_sheets_palette.reposition()
         if hasattr(self, "project_sheet_view_panel") and self.project_sheet_view_panel.isVisible():
             self.project_sheet_view_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_identification_panel")
+            and self.project_sheet_identification_panel.isVisible()
+        ):
+            self.project_sheet_identification_panel.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
