@@ -18,6 +18,7 @@ from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
 from .detailing_viewport import DetailingViewViewport
+from .detailing_preview import DETAILING_LINEWORK_VERSION
 from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
 from .property_panel import CompactDoubleSpinBox
@@ -1535,6 +1536,7 @@ class DetailingViewsDialog(QDialog):
             or self._view_fallbacks[view_key],
             "detail_view_key": str(view_key[1]),
             "model_revision": model.revision,
+            "linework_version": DETAILING_LINEWORK_VERSION,
             "segments": tuple(segments),
             "segment_owners": tuple(segment_owners),
             "projection": {
@@ -1708,7 +1710,7 @@ class DetailingViewsDialog(QDialog):
             self._refresh_selected_detail_preview()
         for key, button in self._view_buttons.items():
             button.setChecked(key == view_key)
-        self.add_view_button.setEnabled(True)
+        self.add_view_button.setEnabled(not self._preview._render_pending)
         self._view_list.setCurrentItem(self._view_items[view_key])
         user_name = self._saved_view_names.get(view_key, "").strip()
         self.view_name_input.setEnabled(True)
@@ -1778,6 +1780,8 @@ class DetailingViewsDialog(QDialog):
 
     def _export_dxf_button_ready(self, ready: bool) -> None:
         self.export_dxf_button.setEnabled(ready)
+        if hasattr(self, "add_view_button"):
+            self.add_view_button.setEnabled(ready)
 
     def _export_selected_view_dxf(self) -> None:
         if self._preview._render_pending:

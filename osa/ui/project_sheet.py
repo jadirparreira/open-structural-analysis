@@ -4,8 +4,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, Signal
-from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QTimer, Signal
+from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPicture, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from .common import (
@@ -311,11 +311,18 @@ class ProjectSheetWorkspace(QWidget):
         self._model_info = info
         self._model_info.move(20, 14)
         self._model_info.adjustSize()
+        self._linework_update_label = QLabel("Atualizando vistas da folha…", self)
+        self._linework_update_label.setStyleSheet(
+            "background: #ffffff; color: #57606a; border: 1px solid #d0d7de; padding: 6px;"
+        )
+        self._linework_update_label.hide()
         self._sheet_name = "01 - Folha Geral"
         self._settings = default_project_sheet_settings(self._sheet_name)
         self._project_settings = default_project_settings()
         self._sheet_count = 1
         self._sheet_views: tuple[dict, ...] = ()
+        self._view_linework: dict[int, tuple] = {}
+        self._view_axis_geometry: dict[int, tuple] = {}
         self._selected_view_index: int | None = None
         self._selected_view_title_index: int | None = None
         self._selected_axis_endpoints: set[tuple[int, str]] = set()
@@ -358,6 +365,22 @@ class ProjectSheetWorkspace(QWidget):
         self._pan_offset = QPointF()
         self._pan_anchor: QPointF | None = None
         self._pan_origin = QPointF()
+        self._navigation_picture: QPicture | None = None
+        self._navigation_pixmap: QPixmap | None = None
+        self._navigation_picture_dirty = True
+        self._navigation_picture_size = QSize()
+        self._navigation_picture_dpr = 0.0
+        self._navigation_picture_model_key = None
+        self._navigation_picture_zoom = 1.0
+        self._navigation_picture_pan = QPointF()
+        self._navigation_pixmap_zoom = 1.0
+        self._navigation_pixmap_pan = QPointF()
+        self._navigation_cache_margin = QPointF()
+        self._navigating = False
+        self._navigation_timer = QTimer(self)
+        self._navigation_timer.setSingleShot(True)
+        self._navigation_timer.setInterval(100)
+        self._navigation_timer.timeout.connect(self._finish_navigation)
         self._snap_symbol_pixmaps = self._make_snap_symbol_pixmaps()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -367,6 +390,19 @@ class ProjectSheetWorkspace(QWidget):
         self._model_info.adjustSize()
         self._model_info.move(20, 14)
         self._model_info.raise_()
+
+    def set_linework_updating(self, updating: bool) -> None:
+        self._linework_update_label.adjustSize()
+        self._linework_update_label.move(max(0, self.width() - self._linework_update_label.width() - 20), 14)
+        self._linework_update_label.setVisible(updating)
+        if updating:
+            self._linework_update_label.raise_()
+
+    def update(self, *args) -> None:
+        # An explicit update accompanies changes to sheet content or selection.
+        # Window exposure alone can reuse the previously recorded drawing.
+        self._navigation_picture_dirty = True
+        super().update(*args)
 
     def set_sheet_settings(
         self, sheet_name: str, settings: dict, project_settings: dict | None = None,
@@ -385,6 +421,8 @@ class ProjectSheetWorkspace(QWidget):
             self.set_dimension_mode(False)
             self.dimension_finished.emit(True)
         self._sheet_views = tuple(views)
+        self._view_linework.clear()
+        self._view_axis_geometry.clear()
         self._dimension_snap_cache.clear()
         self._selected_dimension = None
         self._selected_view_title_index = None
@@ -409,6 +447,11 @@ class ProjectSheetWorkspace(QWidget):
     def select_view(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self._sheet_views):
             index = None
+        appearance_changed = (
+            index != self._selected_view_index
+            or bool(self._selected_identification_indices)
+            or self._selected_identification_index is not None
+        )
         if index != self._selected_view_index:
             self._selected_dimension = None
             self._selected_view_title_index = None
@@ -420,7 +463,8 @@ class ProjectSheetWorkspace(QWidget):
         self.selection_changed.emit(
             self._sheet_views[index] if index is not None else None
         )
-        self.update()
+        if appearance_changed:
+            self.update()
 
     @staticmethod
     def _make_snap_symbol_pixmaps() -> dict[str, QPixmap]:
@@ -543,6 +587,62 @@ class ProjectSheetWorkspace(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        model = getattr(self.window(), "model", None)
+        model_key = (
+            id(model), getattr(model, "revision", None),
+            tuple((id(view), id(view.get("segments"))) for view in self._sheet_views),
+        )
+        if model_key != self._navigation_picture_model_key:
+            self._navigation_picture_dirty = True
+        direct_zoom = (
+            self._navigating and self._navigation_picture is not None
+            and self._zoom_factor != self._navigation_picture_zoom
+        )
+        if (not direct_zoom and self._navigating and self._navigation_picture is not None and self._navigation_pixmap is not None
+                and self._navigation_picture_size == self.size()
+                and not self._navigation_picture_dirty
+                and self._navigation_picture_dpr == self.devicePixelRatioF()):
+            painter = QPainter(self)
+            ratio = self._zoom_factor / self._navigation_pixmap_zoom
+            center = QPointF(self.width() / 2, self.height() / 2)
+            offset = center + self._pan_offset - (center + self._navigation_pixmap_pan) * ratio
+            margin = self._navigation_cache_margin
+            target = QRectF(
+                offset.x() - margin.x() * ratio, offset.y() - margin.y() * ratio,
+                (self.width() + 2 * margin.x()) * ratio,
+                (self.height() + 2 * margin.y()) * ratio,
+            )
+            if not target.contains(QRectF(self.rect())):
+                # Refill the overscan cache from the vector recording when a
+                # long pan or zoom reaches its edge, so it remains complete.
+                pixmap = QPixmap(self._navigation_pixmap.size())
+                pixmap.setDevicePixelRatio(self.devicePixelRatioF())
+                pixmap.fill(Qt.GlobalColor.transparent)
+                cache_painter = QPainter(pixmap)
+                cache_painter.translate(margin)
+                picture_ratio = self._zoom_factor / self._navigation_picture_zoom
+                picture_offset = center + self._pan_offset - (center + self._navigation_picture_pan) * picture_ratio
+                cache_painter.translate(picture_offset)
+                cache_painter.scale(picture_ratio, picture_ratio)
+                cache_painter.drawPicture(QPointF(), self._navigation_picture)
+                cache_painter.end()
+                self._navigation_pixmap = pixmap
+                self._navigation_pixmap_zoom = self._zoom_factor
+                self._navigation_pixmap_pan = QPointF(self._pan_offset)
+                painter.drawPixmap(-margin, pixmap)
+            else:
+                if ratio != 1.0:
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                painter.drawPixmap(target, self._navigation_pixmap, QRectF(self._navigation_pixmap.rect()))
+            return
+        if (not direct_zoom and not self._navigation_picture_dirty and self._navigation_pixmap is not None
+                and self._navigation_picture_size == self.size()
+                and self._navigation_picture_dpr == self.devicePixelRatioF()
+                and self._navigation_picture_zoom == self._zoom_factor
+                and self._navigation_picture_pan == self._pan_offset):
+            painter = QPainter(self)
+            painter.drawPixmap(-self._navigation_cache_margin, self._navigation_pixmap)
+            return
         paper_size = self._settings.get("paper_size", "A3")
         if paper_size == "Personalizado":
             paper_width, paper_height = (
@@ -574,7 +674,10 @@ class ProjectSheetWorkspace(QWidget):
             sheet_width,
             sheet_height,
         )
-        painter = QPainter(self)
+        picture = None if direct_zoom else QPicture()
+        painter = QPainter(self if direct_zoom else picture)
+        if not direct_zoom:
+            painter.setFont(self.font())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(sheet.translated(0, 3), QColor("#d8dee4"))
         painter.fillRect(sheet, QColor("#ffffff"))
@@ -591,6 +694,59 @@ class ProjectSheetWorkspace(QWidget):
         self._draw_sheet_views(painter, inner, scale)
         if self._settings.get("title_block_visible", True):
             self._draw_title_block(painter, inner, scale)
+        painter.end()
+        if direct_zoom:
+            return
+        self._navigation_picture = picture
+        self._navigation_picture_model_key = model_key
+        self._navigation_picture_size = self.size()
+        self._navigation_picture_zoom = self._zoom_factor
+        self._navigation_picture_pan = QPointF(self._pan_offset)
+        self._navigation_pixmap_zoom = self._zoom_factor
+        self._navigation_pixmap_pan = QPointF(self._pan_offset)
+        dpr = self.devicePixelRatioF()
+        self._navigation_picture_dpr = dpr
+        # Keep some offscreen content ready for pan/zoom, while bounding the
+        # extra raster allocation on high-DPI or very large displays.
+        pixel_count = max(1.0, self.width() * self.height() * dpr * dpr)
+        cache_scale = max(1.0, min(1.5, math.sqrt((64 * 1024 * 1024 / 4) / pixel_count)))
+        margin = QPointF(self.width() * (cache_scale - 1) / 2, self.height() * (cache_scale - 1) / 2)
+        self._navigation_cache_margin = margin
+        pixmap = QPixmap(round((self.width() + 2 * margin.x()) * dpr),
+                         round((self.height() + 2 * margin.y()) * dpr))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        cache_painter = QPainter(pixmap)
+        cache_painter.translate(margin)
+        cache_painter.drawPicture(QPointF(), picture)
+        cache_painter.end()
+        self._navigation_pixmap = pixmap
+        self._navigation_picture_dirty = False
+        display_painter = QPainter(self)
+        display_painter.drawPixmap(-margin, pixmap)
+
+    def _finish_navigation(self) -> None:
+        self._navigation_timer.stop()
+        if self._navigating:
+            self._navigating = False
+            self._navigation_picture_dirty = True
+            super().update()
+
+    def _begin_navigation(self) -> None:
+        if (self._navigation_picture is not None and self._navigation_picture_size == self.size()
+                and self._navigation_picture_dpr == self.devicePixelRatioF()
+                and not self._navigation_picture_dirty):
+            self._navigating = True
+            self._navigation_timer.start()
+
+    def _ensure_navigation_geometry(self) -> None:
+        if self._navigating:
+            self._finish_navigation()
+        if (self._navigation_picture is not None
+                and (self._navigation_picture_zoom != self._zoom_factor
+                     or self._navigation_picture_pan != self._pan_offset
+                     or self._navigation_picture_size != self.size())):
+            self.repaint()
 
     def _draw_sheet_views(self, painter: QPainter, inner: QRectF, scale: float) -> None:
         if not self._sheet_views:
@@ -630,11 +786,25 @@ class ProjectSheetWorkspace(QWidget):
             segments = view.get("segments", ())
             if not segments:
                 continue
-            points = [point for segment in segments for point in segment]
-            min_x = min(float(point[0]) for point in points)
-            max_x = max(float(point[0]) for point in points)
-            min_y = min(float(point[1]) for point in points)
-            max_y = max(float(point[1]) for point in points)
+            cached = self._view_linework.get(index)
+            if cached is None or cached[0] is not segments:
+                path = QPainterPath()
+                points = []
+                min_x = min_y = math.inf
+                max_x = max_y = -math.inf
+                for start, end in segments:
+                    x1, y1 = float(start[0]), float(start[1])
+                    x2, y2 = float(end[0]), float(end[1])
+                    min_x, max_x = min(min_x, x1, x2), max(max_x, x1, x2)
+                    min_y, max_y = min(min_y, y1, y2), max(max_y, y1, y2)
+                    if x1 == x2 and y1 == y2:
+                        points.append(QPointF(x1, y1))
+                    else:
+                        path.moveTo(x1, y1)
+                        path.lineTo(x2, y2)
+                cached = (segments, path, points, (min_x, max_x, min_y, max_y))
+                self._view_linework[index] = cached
+            _, path, points, (min_x, max_x, min_y, max_y) = cached
             center_x = (min_x + max_x) / 2.0
             center_y = (min_y + max_y) / 2.0
             position = view.get("position")
@@ -747,24 +917,26 @@ class ProjectSheetWorkspace(QWidget):
                 )
                 view_bounds = view_bounds.united(label_rect)
             owners = view.get("segment_owners", ())
-            for segment_index, (start, end) in enumerate(segments):
-                start_screen = QPointF(
-                    target_x + (float(start[0]) - center_x) * model_to_pixels,
-                    target_y - (float(start[1]) - center_y) * model_to_pixels,
-                )
-                end_screen = QPointF(
-                    target_x + (float(end[0]) - center_x) * model_to_pixels,
-                    target_y - (float(end[1]) - center_y) * model_to_pixels,
-                )
-                painter.drawLine(
-                    start_screen,
-                    end_screen,
-                )
-                if (
-                    self._identification_mode
-                    and len(owners) == len(segments)
-                    and (index, str(owners[segment_index])) in self._hover_owners
-                ):
+            painter.save()
+            painter.translate(target_x, target_y)
+            painter.scale(model_to_pixels, -model_to_pixels)
+            painter.translate(-center_x, -center_y)
+            painter.drawPath(path)
+            if points:
+                painter.drawPoints(points)
+            painter.restore()
+            if self._identification_mode and self._hover_owners and len(owners) == len(segments):
+                for segment_index, (start, end) in enumerate(segments):
+                    if (index, str(owners[segment_index])) not in self._hover_owners:
+                        continue
+                    start_screen = QPointF(
+                        target_x + (float(start[0]) - center_x) * model_to_pixels,
+                        target_y - (float(start[1]) - center_y) * model_to_pixels,
+                    )
+                    end_screen = QPointF(
+                        target_x + (float(end[0]) - center_x) * model_to_pixels,
+                        target_y - (float(end[1]) - center_y) * model_to_pixels,
+                    )
                     hover_pen = QPen(QColor("#0969da"), 2.5)
                     hover_pen.setCosmetic(True)
                     painter.setPen(hover_pen)
@@ -912,12 +1084,70 @@ class ProjectSheetWorkspace(QWidget):
         except (TypeError, ValueError):
             return None
         fixed_index = {"XY": 2, "XZ": 1, "YZ": 0}[plane]
-        node_coordinates = [(node.x, node.y, node.z) for node in nodes]
-        geometry_points = [
-            (float(point[0]), float(point[1]))
-            for segment in view.get("segments", ()) for point in segment
-        ]
-        if not geometry_points:
+        segments = view.get("segments", ())
+        cache_key = (
+            id(model), getattr(model, "revision", None), id(segments), plane,
+            section_coordinate, projection.get("orientation"), projection.get("rotation_degrees"),
+        )
+        cached = self._view_axis_geometry.get(view_index)
+        if cached is None or cached[0] != cache_key:
+            node_coordinates = [(node.x, node.y, node.z) for node in nodes]
+            geometry_points = [
+                (float(point[0]), float(point[1]))
+                for segment in segments for point in segment
+            ]
+            axis_geometry = []
+            if geometry_points:
+                for direction, axis_index, varying_index in specs:
+                    minimum = min(point[varying_index] for point in node_coordinates)
+                    maximum = max(point[varying_index] for point in node_coordinates)
+                    for axis in axes.get(direction, ()):
+                        axis_key = f"{direction}:{axis.label}:{float(axis.value):.6f}"
+                        start = [0.0, 0.0, 0.0]
+                        end = [0.0, 0.0, 0.0]
+                        start[fixed_index] = end[fixed_index] = section_coordinate
+                        start[axis_index] = end[axis_index] = float(axis.value)
+                        start[varying_index], end[varying_index] = minimum, maximum
+                        projected_start = self._project_world_point(view, start)
+                        projected_end = self._project_world_point(view, end)
+                        if projected_start is None or projected_end is None:
+                            continue
+                        axis_dx = projected_end[0] - projected_start[0]
+                        axis_dy = projected_end[1] - projected_start[1]
+                        axis_length = math.hypot(axis_dx, axis_dy)
+                        if axis_length <= 1e-9:
+                            continue
+                        axis_direction = (axis_dx / axis_length, axis_dy / axis_length)
+                        intersects = False
+                        for first, second in segments:
+                            first_distance = (axis_direction[0] * (float(first[1]) - projected_start[1])
+                                              - axis_direction[1] * (float(first[0]) - projected_start[0]))
+                            second_distance = (axis_direction[0] * (float(second[1]) - projected_start[1])
+                                               - axis_direction[1] * (float(second[0]) - projected_start[0]))
+                            if (abs(first_distance) <= 1e-5 or abs(second_distance) <= 1e-5
+                                    or first_distance * second_distance < 0.0):
+                                intersects = True
+                                break
+                        if not intersects:
+                            continue
+                        coordinates = [point[0] * axis_direction[0] + point[1] * axis_direction[1]
+                                       for point in geometry_points]
+                        axis_start = min(coordinates) - 2.0
+                        axis_end = max(coordinates) + 2.0
+                        anchor = projected_start[0] * axis_direction[0] + projected_start[1] * axis_direction[1]
+                        projected_start = (
+                            projected_start[0] + axis_direction[0] * (axis_start - anchor),
+                            projected_start[1] + axis_direction[1] * (axis_start - anchor),
+                        )
+                        projected_end = (
+                            projected_start[0] + axis_direction[0] * (axis_end - axis_start),
+                            projected_start[1] + axis_direction[1] * (axis_end - axis_start),
+                        )
+                        axis_geometry.append((axis_key, str(axis.label), projected_start, projected_end))
+            cached = (cache_key, axis_geometry)
+            self._view_axis_geometry[view_index] = cached
+        axis_geometry = cached[1]
+        if not axis_geometry:
             return None
         pen = QPen(QColor("#57606a"), 1.0)
         pen.setCosmetic(True)
@@ -932,144 +1162,85 @@ class ProjectSheetWorkspace(QWidget):
         painter.setFont(axis_font)
         axes_bounds = QRectF()
         has_axes_bounds = False
-        for direction, axis_index, varying_index in specs:
-            minimum = min(point[varying_index] for point in node_coordinates)
-            maximum = max(point[varying_index] for point in node_coordinates)
-            for axis in axes.get(direction, ()):
-                axis_key = f"{direction}:{axis.label}:{float(axis.value):.6f}"
-                start = [0.0, 0.0, 0.0]
-                end = [0.0, 0.0, 0.0]
-                start[fixed_index] = end[fixed_index] = section_coordinate
-                start[axis_index] = end[axis_index] = float(axis.value)
-                start[varying_index], end[varying_index] = minimum, maximum
-                projected_start = self._project_world_point(view, start)
-                projected_end = self._project_world_point(view, end)
-                if projected_start is None or projected_end is None:
-                    continue
-                axis_dx = projected_end[0] - projected_start[0]
-                axis_dy = projected_end[1] - projected_start[1]
-                axis_length = math.hypot(axis_dx, axis_dy)
-                if axis_length <= 1e-9:
-                    continue
-                axis_direction = (axis_dx / axis_length, axis_dy / axis_length)
-                line_tolerance = 1e-5
-                intersects_visible_element = False
-                for segment in view.get("segments", ()):
-                    first, second = segment
-                    first_distance = (
-                        axis_direction[0] * (float(first[1]) - projected_start[1])
-                        - axis_direction[1] * (float(first[0]) - projected_start[0])
-                    )
-                    second_distance = (
-                        axis_direction[0] * (float(second[1]) - projected_start[1])
-                        - axis_direction[1] * (float(second[0]) - projected_start[0])
-                    )
-                    if (
-                        abs(first_distance) <= line_tolerance
-                        or abs(second_distance) <= line_tolerance
-                        or first_distance * second_distance < 0.0
-                    ):
-                        intersects_visible_element = True
-                        break
-                if not intersects_visible_element:
-                    continue
-                visible_coordinates = [
-                    point[0] * axis_direction[0] + point[1] * axis_direction[1]
-                    for point in geometry_points
-                ]
-                axis_start_coordinate = min(visible_coordinates) - 2.0
-                axis_end_coordinate = max(visible_coordinates) + 2.0
-                anchor_coordinate = (
-                    projected_start[0] * axis_direction[0]
-                    + projected_start[1] * axis_direction[1]
+        for axis_key, label, projected_start, projected_end in axis_geometry:
+            start_screen = QPointF(
+                target_x + (projected_start[0] - center_x) * model_to_pixels,
+                target_y - (projected_start[1] - center_y) * model_to_pixels,
+            )
+            end_screen = QPointF(
+                target_x + (projected_end[0] - center_x) * model_to_pixels,
+                target_y - (projected_end[1] - center_y) * model_to_pixels,
+            )
+            base_dx = end_screen.x() - start_screen.x()
+            base_dy = end_screen.y() - start_screen.y()
+            base_length = math.hypot(base_dx, base_dy)
+            base_direction = (
+                (base_dx / base_length, base_dy / base_length)
+                if base_length > 1e-9 else (0.0, 0.0)
+            )
+            positions = view.setdefault("axis_label_positions", {})
+            if not isinstance(positions, dict):
+                positions = view["axis_label_positions"] = {}
+            endpoints = []
+            projected_endpoints = []
+            for end_name, default_fraction in (("start", 0.0), ("end", 1.0)):
+                try:
+                    fraction = float(positions.get(f"{axis_key}:{end_name}", default_fraction))
+                except (TypeError, ValueError):
+                    fraction = default_fraction
+                projected = (
+                    projected_start[0] + (projected_end[0] - projected_start[0]) * fraction,
+                    projected_start[1] + (projected_end[1] - projected_start[1]) * fraction,
                 )
-                projected_start = (
-                    projected_start[0] + axis_direction[0] * (axis_start_coordinate - anchor_coordinate),
-                    projected_start[1] + axis_direction[1] * (axis_start_coordinate - anchor_coordinate),
+                projected_endpoints.append(projected)
+                endpoints.append(QPointF(
+                    target_x + (projected[0] - center_x) * model_to_pixels,
+                    target_y - (projected[1] - center_y) * model_to_pixels,
+                ))
+            self._axis_dimension_snap_segments.setdefault(view_index, []).append(
+                (projected_endpoints[0], projected_endpoints[1])
+            )
+            start_screen, end_screen = endpoints
+            painter.drawLine(start_screen, end_screen)
+            badge_diameter = max(1.0, 8.0 * scale)
+            badge_radius = badge_diameter / 2.0
+            badge_font = QFont(axis_font)
+            badge_font.setPixelSize(max(1, round(3.0 * scale)))
+            painter.setFont(badge_font)
+            badge_pen = QPen(QColor("#57606a"), 1.0)
+            badge_pen.setCosmetic(True)
+            painter.setPen(badge_pen)
+            painter.setBrush(QColor("#ffffff"))
+            for end_name, endpoint in zip(("start", "end"), endpoints):
+                badge_rect = QRectF(
+                    endpoint.x() - badge_radius, endpoint.y() - badge_radius,
+                    badge_diameter, badge_diameter,
                 )
-                projected_end = (
-                    projected_start[0] + axis_direction[0] * (axis_end_coordinate - axis_start_coordinate),
-                    projected_start[1] + axis_direction[1] * (axis_end_coordinate - axis_start_coordinate),
+                painter.drawEllipse(badge_rect)
+                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, label)
+                endpoint_selection_key = (view_index, f"{axis_key}:{end_name}")
+                if endpoint_selection_key in self._selected_axis_endpoints:
+                    painter.save()
+                    selection_pen = QPen(QColor("#0969da"), 1.5)
+                    selection_pen.setCosmetic(True)
+                    painter.setPen(selection_pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(badge_rect.adjusted(-3.0, -3.0, 3.0, 3.0))
+                    painter.restore()
+                axes_bounds = (
+                    axes_bounds.united(badge_rect)
+                    if has_axes_bounds else QRectF(badge_rect)
                 )
-                start_screen = QPointF(
-                    target_x + (projected_start[0] - center_x) * model_to_pixels,
-                    target_y - (projected_start[1] - center_y) * model_to_pixels,
+                has_axes_bounds = True
+                self._axis_endpoint_hit_rects[(view_index, f"{axis_key}:{end_name}")] = (
+                    badge_rect.adjusted(-2.0, -2.0, 2.0, 2.0)
                 )
-                end_screen = QPointF(
-                    target_x + (projected_end[0] - center_x) * model_to_pixels,
-                    target_y - (projected_end[1] - center_y) * model_to_pixels,
+                self._axis_endpoint_drag_data[(view_index, f"{axis_key}:{end_name}")] = (
+                    base_direction[0], base_direction[1], base_length,
                 )
-                base_dx = end_screen.x() - start_screen.x()
-                base_dy = end_screen.y() - start_screen.y()
-                base_length = math.hypot(base_dx, base_dy)
-                base_direction = (
-                    (base_dx / base_length, base_dy / base_length)
-                    if base_length > 1e-9 else (0.0, 0.0)
-                )
-                positions = view.setdefault("axis_label_positions", {})
-                if not isinstance(positions, dict):
-                    positions = view["axis_label_positions"] = {}
-                endpoints = []
-                projected_endpoints = []
-                for end_name, default_fraction in (("start", 0.0), ("end", 1.0)):
-                    try:
-                        fraction = float(positions.get(f"{axis_key}:{end_name}", default_fraction))
-                    except (TypeError, ValueError):
-                        fraction = default_fraction
-                    projected = (
-                        projected_start[0] + (projected_end[0] - projected_start[0]) * fraction,
-                        projected_start[1] + (projected_end[1] - projected_start[1]) * fraction,
-                    )
-                    projected_endpoints.append(projected)
-                    endpoints.append(QPointF(
-                        target_x + (projected[0] - center_x) * model_to_pixels,
-                        target_y - (projected[1] - center_y) * model_to_pixels,
-                    ))
-                self._axis_dimension_snap_segments.setdefault(view_index, []).append(
-                    (projected_endpoints[0], projected_endpoints[1])
-                )
-                start_screen, end_screen = endpoints
-                painter.drawLine(start_screen, end_screen)
-                label = str(axis.label)
-                badge_diameter = max(1.0, 8.0 * scale)
-                badge_radius = badge_diameter / 2.0
-                badge_font = QFont(axis_font)
-                badge_font.setPixelSize(max(1, round(3.0 * scale)))
-                painter.setFont(badge_font)
-                badge_pen = QPen(QColor("#57606a"), 1.0)
-                badge_pen.setCosmetic(True)
-                painter.setPen(badge_pen)
-                painter.setBrush(QColor("#ffffff"))
-                for end_name, endpoint in zip(("start", "end"), endpoints):
-                    badge_rect = QRectF(
-                        endpoint.x() - badge_radius, endpoint.y() - badge_radius,
-                        badge_diameter, badge_diameter,
-                    )
-                    painter.drawEllipse(badge_rect)
-                    painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, label)
-                    endpoint_selection_key = (view_index, f"{axis_key}:{end_name}")
-                    if endpoint_selection_key in self._selected_axis_endpoints:
-                        painter.save()
-                        selection_pen = QPen(QColor("#0969da"), 1.5)
-                        selection_pen.setCosmetic(True)
-                        painter.setPen(selection_pen)
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                        painter.drawRect(badge_rect.adjusted(-3.0, -3.0, 3.0, 3.0))
-                        painter.restore()
-                    axes_bounds = (
-                        axes_bounds.united(badge_rect)
-                        if has_axes_bounds else QRectF(badge_rect)
-                    )
-                    has_axes_bounds = True
-                    self._axis_endpoint_hit_rects[(view_index, f"{axis_key}:{end_name}")] = (
-                        badge_rect.adjusted(-2.0, -2.0, 2.0, 2.0)
-                    )
-                    self._axis_endpoint_drag_data[(view_index, f"{axis_key}:{end_name}")] = (
-                        base_direction[0], base_direction[1], base_length,
-                    )
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setFont(axis_font)
-                painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setFont(axis_font)
+            painter.setPen(pen)
         painter.restore()
         return axes_bounds if has_axes_bounds else None
 
@@ -1709,10 +1880,13 @@ class ProjectSheetWorkspace(QWidget):
         relative_pointer = pointer - center
         self._pan_offset = relative_pointer - (relative_pointer - self._pan_offset) * ratio
         self._zoom_factor = new_zoom
-        self.update()
+        self._begin_navigation()
+        super().update()
         event.accept()
 
     def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.MouseButton.MiddleButton:
+            self._ensure_navigation_geometry()
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_anchor = event.position()
             self._pan_origin = QPointF(self._pan_offset)
@@ -1906,9 +2080,12 @@ class ProjectSheetWorkspace(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if self._pan_anchor is not None and event.buttons() & Qt.MouseButton.MiddleButton:
             self._pan_offset = self._pan_origin + (event.position() - self._pan_anchor)
-            self.update()
+            self._begin_navigation()
+            super().update()
             event.accept()
             return
+        if self._dimension_mode or self._identification_mode:
+            self._ensure_navigation_geometry()
         if self._dimension_mode:
             if len(self._dimension_points) < 2:
                 snap = self._dimension_snap_at(
@@ -2135,6 +2312,7 @@ class ProjectSheetWorkspace(QWidget):
             return
         if event.button() == Qt.MouseButton.MiddleButton and self._pan_anchor is not None:
             self._pan_anchor = None
+            self._finish_navigation()
             if self._dimension_mode:
                 self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
             else:
@@ -2146,6 +2324,7 @@ class ProjectSheetWorkspace(QWidget):
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan_anchor = None
+            self._finish_navigation()
             self._zoom_factor = 1.0
             self._pan_offset = QPointF()
             if self._dimension_mode:

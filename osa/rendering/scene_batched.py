@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPainte
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
+from vtk.util.numpy_support import vtk_to_numpy
 
 from osa.model import StructuralModel
 from osa.verification import verification_elements
@@ -459,6 +461,9 @@ class StructureScene(QWidget):
         self._member_geometry_cache: MemberBatch | None = None
         self._scene_member_source_key: tuple[object, ...] | None = None
         self._scene_member_source: MemberBatch | None = None
+        self._filtered_member_batches: OrderedDict[frozenset[str], tuple[MemberBatch, int]] = OrderedDict()
+        self._filtered_member_batches_source_key: tuple[object, ...] | None = None
+        self._filtered_member_batches_size = 0
         self._pending_member_geometry_names: set[str] = set()
         self._pending_member_full_names: set[str] = set()
         self._silhouette_source_batch: MemberBatch | None = None
@@ -852,6 +857,15 @@ class StructureScene(QWidget):
         # advances it, even though member geometry is unchanged. Keep each
         # rendered batch keyed by the domain data it actually consumes.
         source_key = self._member_cache_key(model)
+        if source_key != self._filtered_member_batches_source_key:
+            self._filtered_member_batches.clear()
+            self._filtered_member_batches_size = 0
+            self._filtered_member_batches_source_key = source_key
+        if prepared_geometry is not None:
+            for visible_key, cached_batch in prepared_geometry.filtered_member_batches.items():
+                if visible_key not in self._filtered_member_batches:
+                    self._filtered_member_batches[visible_key] = cached_batch
+                    self._filtered_member_batches_size += cached_batch[1]
         member_key = prepared_geometry.member_key if prepared_geometry is not None else (
             *source_key[:2],
             tuple(item for item in source_key[2] if item[0].name in visible_bars),
@@ -876,9 +890,25 @@ class StructureScene(QWidget):
                     subtraction_failures=self._detail_subtraction_failures,
                 )
                 self._scene_member_source_key = source_key
-            self._member_geometry_cache = self._member_renderer.filter_members(
-                self._scene_member_source, set(visible_bars),
-            )
+            visible_key = frozenset(visible_bars)
+            cached_batch = self._filtered_member_batches.pop(visible_key, None)
+            if cached_batch is not None:
+                self._member_geometry_cache, cached_size = cached_batch
+                self._filtered_member_batches[visible_key] = (self._member_geometry_cache, cached_size)
+            else:
+                self._member_geometry_cache = self._member_renderer.filter_members(
+                    self._scene_member_source, set(visible_bars),
+                )
+                if hidden_members:
+                    cached_size = self._member_batch_memory_bytes(self._member_geometry_cache)
+                    if cached_size <= 40 * 1024 * 1024:
+                        self._filtered_member_batches[visible_key] = (
+                            self._member_geometry_cache, cached_size,
+                        )
+                        self._filtered_member_batches_size += cached_size
+                        while self._filtered_member_batches_size > 40 * 1024 * 1024:
+                            _, (_, evicted_size) = self._filtered_member_batches.popitem(last=False)
+                            self._filtered_member_batches_size -= evicted_size
             self._member_geometry_cache_key = member_key
         self._member_batch = self._member_geometry_cache
         if not hidden_members:
@@ -2050,20 +2080,34 @@ class StructureScene(QWidget):
             batch = self._member_renderer.build(
                 model,
                 marker_radius,
+                yield_control=getattr(self, "_detail_view_yield", None),
                 subtraction_meshes=subtraction_meshes,
                 subtraction_failures=self._detail_subtraction_failures,
             )
             solids = []
+            face_points = np.asarray(batch.faces.points)
+            packed_faces = np.asarray(batch.faces.faces, dtype=np.int64)
+            offsets = vtk_to_numpy(batch.faces.GetPolys().GetOffsetsArray())
             for name, (start, end) in batch.face_cell_ranges.items():
-                cells = np.arange(start, end, dtype=np.int64)
-                if not len(cells):
+                yield_control = getattr(self, "_detail_view_yield", None)
+                if yield_control is not None:
+                    yield_control()
+                if start == end:
                     continue
-                mesh = (
-                    batch.faces.extract_cells(cells)
-                    .extract_surface(algorithm="dataset_surface")
-                    .triangulate()
-                    .clean()
-                )
+                point_start, point_end = batch.face_point_ranges[name]
+                # Each member occupies contiguous ranges in the batched mesh.
+                # Slice those ranges directly rather than running a whole-mesh
+                # VTK extraction (and copying all metadata) for every member.
+                first = int(offsets[start]) + start
+                last = int(offsets[end]) + end
+                faces = _offset_cells(packed_faces[first:last], -point_start)
+                source = pv.PolyData(face_points[point_start:point_end].copy(), faces)
+                triangles = vtk.vtkTriangleFilter()
+                triangles.SetInputData(source)
+                cleaner = vtk.vtkCleanPolyData()
+                cleaner.SetInputConnection(triangles.GetOutputPort())
+                cleaner.Update()
+                mesh = pv.wrap(cleaner.GetOutput())
                 if mesh.n_points and mesh.n_cells:
                     solids.append((name, mesh))
             for name, plate in model.plates.items():
@@ -6308,7 +6352,9 @@ class StructureScene(QWidget):
         source_key = self._member_cache_key(self._model)
         hidden = self._scene_hidden_members()
         member_key = (
-            *source_key[:2], tuple(item for item in source_key[2] if item[0].name not in hidden),
+            *source_key[:2],
+            tuple(item for item in source_key[2] if item[0].name not in hidden),
+            *source_key[3:],
         )
         current = (
             self._member_batch is not None
@@ -6319,6 +6365,10 @@ class StructureScene(QWidget):
             and not self._support_update_timer.isActive()
         )
         self._solid_members_visible = visible
+        # Filtered batches also contain section-offset indicators. Their
+        # geometry and cache identity must be rebuilt for the new mode.
+        self._filtered_member_batches.clear()
+        self._filtered_member_batches_size = 0
         self._update_plate_antialiasing()
         self._member_renderer.position_indicators_with_section = visible
         self._elastic_support_overlay.follow_section = visible
@@ -6340,13 +6390,13 @@ class StructureScene(QWidget):
         # Only their visibility and the displaced indicators need to change.
         batch = self._member_batch
         self._member_renderer.set_indicators_with_section(batch, visible)
-        self._member_geometry_cache_key = (member_key[0], visible, member_key[2])
+        self._member_geometry_cache_key = (member_key[0], visible, *member_key[2:])
         if not hidden:
             self._scene_member_source = batch
             self._scene_member_source_key = source_key
         if self._scene_member_source_key == source_key and self._scene_member_source is not None:
             self._member_renderer.set_indicators_with_section(self._scene_member_source, visible)
-            self._scene_member_source_key = (source_key[0], visible, source_key[2])
+            self._scene_member_source_key = (source_key[0], visible, *source_key[2:])
         else:
             self._scene_member_source = None
             self._scene_member_source_key = None
@@ -6719,31 +6769,50 @@ class StructureScene(QWidget):
             return
 
         connectivity = np.asarray(mesh.lines, dtype=np.int64)
-        cursor = 0
-        cell = 0
-        while cursor < len(connectivity):
-            count = int(connectivity[cursor])
-            point_ids = connectivity[cursor + 1:cursor + count + 1]
-            if cell_members[cell] in interfaces and count == 2:
-                points = np.asarray(mesh.points[point_ids], dtype=float)
-                for point, direction, tolerance in interfaces[int(cell_members[cell])]:
-                    if np.all(np.abs((points - point) @ direction) <= tolerance):
-                        keep[cell] = False
-                        break
-            cursor += count + 1
-            cell += 1
+        mesh_points = np.asarray(mesh.points)
+        # Batched member edges normally consist entirely of two-point lines.
+        # Test all edges of a member at once instead of repeatedly converting
+        # the PyVista points array for every individual line.
+        line_cells = None
+        if len(connectivity) == mesh.n_cells * 3 and np.all(connectivity[::3] == 2):
+            line_cells = connectivity.reshape(-1, 3)
+            for member_index, member_interfaces in interfaces.items():
+                cells = np.flatnonzero(cell_members == member_index)
+                if not len(cells):
+                    continue
+                points = mesh_points[line_cells[cells, 1:]]
+                for point, direction, tolerance in member_interfaces:
+                    on_interface = np.all(np.abs((points - point) @ direction) <= tolerance, axis=1)
+                    keep[cells[on_interface]] = False
+        else:
+            cursor = 0
+            cell = 0
+            while cursor < len(connectivity):
+                count = int(connectivity[cursor])
+                point_ids = connectivity[cursor + 1:cursor + count + 1]
+                if cell_members[cell] in interfaces and count == 2:
+                    points = mesh_points[point_ids]
+                    for point, direction, tolerance in interfaces[int(cell_members[cell])]:
+                        if np.all(np.abs((points - point) @ direction) <= tolerance):
+                            keep[cell] = False
+                            break
+                cursor += count + 1
+                cell += 1
         if np.all(keep):
             restore_base_edges()
             return
 
-        lines = []
-        cursor = 0
-        for selected in keep:
-            count = int(connectivity[cursor])
-            if selected:
-                lines.extend(connectivity[cursor:cursor + count + 1])
-            cursor += count + 1
-        filtered = pv.PolyData(np.asarray(mesh.points), lines=np.asarray(lines, dtype=np.int64))
+        if line_cells is not None:
+            lines = line_cells[keep].ravel()
+        else:
+            lines = []
+            cursor = 0
+            for selected in keep:
+                count = int(connectivity[cursor])
+                if selected:
+                    lines.extend(connectivity[cursor:cursor + count + 1])
+                cursor += count + 1
+        filtered = pv.PolyData(mesh_points, lines=np.asarray(lines, dtype=np.int64))
         for name, values in mesh.cell_data.items():
             filtered.cell_data[name] = np.asarray(values)[keep]
         if self._verification_group_edge_actor is not None:
@@ -7400,6 +7469,28 @@ class StructureScene(QWidget):
             ),
             tuple(model.plates.values()),
         )
+
+    @staticmethod
+    def _member_batch_memory_bytes(batch: MemberBatch) -> int:
+        """Estimate the NumPy-backed storage held by a filtered member batch."""
+        meshes = (
+            batch.lines, batch.fallback_lines, batch.faces, batch.edges,
+            *batch.axes, batch.releases, *batch.silhouette_faces_by_color.values(),
+        )
+        total = 0
+        seen: set[int] = set()
+        for mesh in meshes:
+            identity = id(mesh)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            total += np.asarray(mesh.points).nbytes
+            for cells in (mesh.lines, mesh.faces, mesh.verts, mesh.strips):
+                if len(cells):
+                    total += np.asarray(cells).nbytes
+            for attributes in (mesh.point_data, mesh.cell_data, mesh.field_data):
+                total += sum(np.asarray(values).nbytes for values in attributes.values())
+        return total
 
     def _refresh_node_batch(self) -> None:
         """Rebuild only node markers and supports after node removal."""

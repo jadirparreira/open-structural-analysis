@@ -304,6 +304,7 @@ class PreparedSceneGeometry:
     source_member_batch: MemberBatch
     source_member_key: tuple[object, ...]
     solid_positioning_enabled: bool
+    filtered_member_batches: dict[frozenset[str], tuple[MemberBatch, int]]
 
 
 def prepare_scene_geometry(
@@ -350,6 +351,27 @@ def prepare_scene_geometry(
         progress("Preparando a geometria das barras…")
     source_member_batch = member_renderer.build(model, marker_radius, yield_control=yield_control)
     member_batch = member_renderer.filter_members(source_member_batch, set(visible_bars))
+    # Most scene-view switches are cold immediately after opening a project.
+    # Build these CPU-only batches alongside the initial geometry so the first
+    # switch does not stall the UI. Keep the same memory ceiling as the live
+    # scene cache; views beyond the budget will still be generated on demand.
+    filtered_member_batches: dict[frozenset[str], tuple[MemberBatch, int]] = {}
+    filtered_member_batches_size = 0
+    if progress is not None and len(model.scene_views) > 1:
+        progress("Preparando as vistas salvas…")
+    for view_name, hidden in model.scene_views.items():
+        if view_name == model.active_scene_view:
+            continue
+        visible_key = frozenset(set(model.bars).difference(hidden))
+        if visible_key in filtered_member_batches:
+            continue
+        if yield_control is not None:
+            yield_control()
+        filtered_batch = member_renderer.filter_members(source_member_batch, set(visible_key))
+        cached_size = _member_batch_memory_bytes(filtered_batch)
+        if cached_size <= 40 * 1024 * 1024 and filtered_member_batches_size + cached_size <= 40 * 1024 * 1024:
+            filtered_member_batches[visible_key] = (filtered_batch, cached_size)
+            filtered_member_batches_size += cached_size
     if progress is not None:
         progress("Preparando os nós e apoios…")
     node_batch = BatchedNodeRenderer(glyphs=True).build(SimpleNamespace(nodes=visible_nodes), marker_radius)
@@ -395,7 +417,30 @@ def prepare_scene_geometry(
         member_batch, node_batch, rigid_names, rigid_mesh,
         member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,
         source_member_batch, source_member_key, solid_positioning_enabled,
+        filtered_member_batches,
     )
+
+
+def _member_batch_memory_bytes(batch: MemberBatch) -> int:
+    """Estimate NumPy-backed storage for a filtered member batch."""
+    meshes = (
+        batch.lines, batch.fallback_lines, batch.faces, batch.edges,
+        *batch.axes, batch.releases, *batch.silhouette_faces_by_color.values(),
+    )
+    total = 0
+    seen: set[int] = set()
+    for mesh in meshes:
+        identity = id(mesh)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += np.asarray(mesh.points).nbytes
+        for cells in (mesh.lines, mesh.faces, mesh.verts, mesh.strips):
+            if len(cells):
+                total += np.asarray(cells).nbytes
+        for attributes in (mesh.point_data, mesh.cell_data, mesh.field_data):
+            total += sum(np.asarray(values).nbytes for values in attributes.values())
+    return total
 
 
 class BatchedRigidBarRenderer:

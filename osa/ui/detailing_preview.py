@@ -23,9 +23,12 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame
 
 from osa.rendering.detailing_2d import prepare_surface_data, visible_segments_from_meshes
+from osa.rendering.batched_renderer import _transformed_points
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from osa.sections import section_shape
+
+DETAILING_LINEWORK_VERSION = 1
 
 
 class DetailingViewPreview(QFrame):
@@ -36,6 +39,7 @@ class DetailingViewPreview(QFrame):
     _shared_model_meshes: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
     _shared_model_edge_meshes: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
     _shared_model_surface_data: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
+    _shared_model_curve_edges: ClassVar[WeakKeyDictionary] = WeakKeyDictionary()
     _view_cache_limit: ClassVar[int] = 24
 
     _plane_data: ClassVar[dict] = {
@@ -193,6 +197,7 @@ class DetailingViewPreview(QFrame):
             upper, lower = lower, upper
 
         clipped_member_names: list[str] = []
+        extra_edges = None
         if isometric:
             clipped_meshes = list(solid_meshes)
             clipped_member_names = list(self._solid_member_names)
@@ -207,6 +212,16 @@ class DetailingViewPreview(QFrame):
                 if clipped is not None and clipped.n_points and clipped.n_cells:
                     clipped_meshes.append(clipped)
                     clipped_member_names.append(member_name)
+            curves = self._ensure_model_curve_edges(model, clipped_member_names)
+            extra_edges = []
+            for name in clipped_member_names:
+                curve = curves.get(name)
+                if curve is not None and plane == "custom":
+                    curve = curve.copy(deep=True)
+                    curve.transform(transform, inplace=True)
+                extra_edges.append(
+                    self._clip_curve_edges(curve, normal_axis, lower, upper) if curve is not None else None
+                )
 
         if not clipped_meshes:
             self._clear_preview()
@@ -243,9 +258,10 @@ class DetailingViewPreview(QFrame):
                 feature_edge_meshes,
                 line_interfaces,
                 [interfaces_by_member.get(name, ()) for name in self._solid_member_names]
-                if feature_edge_meshes is not None else None,
+                if feature_edge_meshes is not None else line_interfaces,
                 surface_data,
                 source_tokens,
+                extra_edges,
             )
         except (IndexError, RuntimeError, TypeError, ValueError):
             self._clear_preview()
@@ -477,17 +493,97 @@ class DetailingViewPreview(QFrame):
         if shared is not None and shared[0] == cache_key:
             self._solid_edge_meshes = shared[1]
             return
+        curve_edges = self._ensure_model_curve_edges(model)
         edge_meshes: list[pv.PolyData] = []
-        for mesh in self._solid_meshes:
-            edge_meshes.append(mesh.extract_feature_edges(
+        for name, mesh in zip(self._solid_member_names, self._solid_meshes):
+            edges = mesh.extract_feature_edges(
                 boundary_edges=True,
                 feature_edges=True,
                 manifold_edges=False,
                 non_manifold_edges=True,
                 feature_angle=25.0,
-            ))
+            )
+            transition = curve_edges.get(name)
+            edge_meshes.append(pv.merge((edges, transition), merge_points=False) if transition is not None else edges)
         self._solid_edge_meshes = edge_meshes
         self._shared_model_edge_meshes[cache_owner] = (cache_key, edge_meshes)
+
+    def _ensure_model_curve_edges(self, model, member_names=None) -> dict[str, pv.PolyData]:
+        """Build the same longitudinal curve transitions used by the 3D scene."""
+        cache_owner = getattr(self, "_mesh_cache_owner", model)
+        cached = self._shared_model_curve_edges.get(cache_owner)
+        if cached is not None and cached[0] == self._model_cache_key:
+            transitions, processed = cached[1], cached[2]
+        else:
+            transitions, processed = {}, set()
+        profiles = {}
+        names = self._solid_member_names if member_names is None else member_names
+        for index, name in enumerate(names):
+            if name in processed:
+                continue
+            processed.add(name)
+            if index % 16 == 0 and getattr(getattr(self, "_detail_scene", None), "_yield_geometry", False):
+                sleep(0.001)
+            member = model.bars.get(name)
+            if member is None or getattr(member, "detail_subtractions", ()):
+                continue
+            start, end = model.nodes.get(member.start_node), model.nodes.get(member.end_node)
+            if start is None or end is None:
+                continue
+            key = (member.section, member.section_geometry, member.section_mirrored)
+            if key not in profiles:
+                try:
+                    shape = section_shape(member.section, member.geometry_dict(),
+                                          arc_steps=self._renderer._arc_steps, mirror_z=member.section_mirrored)
+                    profiles[key] = self._renderer._build_curve_transition_mesh(shape) if shape is not None else None
+                except (KeyError, TypeError, ValueError):
+                    profiles[key] = None
+            source = profiles[key]
+            if source is None or not source.n_lines:
+                continue
+            basis = LocalAxesRenderer.basis(start, end, rotation=member.rotation)
+            if basis is None:
+                continue
+            start_point = np.asarray((start.x, start.y, start.z), dtype=float)
+            end_point = np.asarray((end.x, end.y, end.z), dtype=float)
+            offsets = getattr(member, "solid_face_offsets", (0.0, 0.0))
+            if len(offsets) == 2:
+                candidate_start = start_point - basis[0] * float(offsets[0])
+                candidate_end = end_point + basis[0] * float(offsets[1])
+                if float(np.dot(candidate_end - candidate_start, basis[0])) > 1e-9:
+                    start_point, end_point = candidate_start, candidate_end
+            origin = start_point + LocalAxesRenderer.section_offset(member, start, end)
+            points = _transformed_points(np.asarray(source.points), origin, end_point - start_point,
+                                         basis[1], basis[2], getattr(member, "solid_face_angles", (0.,) * 4))
+            transitions[name] = pv.PolyData(points, lines=np.asarray(source.lines).copy())
+        self._shared_model_curve_edges[cache_owner] = (self._model_cache_key, transitions, processed)
+        return transitions
+
+    @staticmethod
+    def _clip_curve_edges(mesh: pv.PolyData | None, normal_axis: int, lower: float, upper: float):
+        if mesh is None or not mesh.n_lines:
+            return pv.PolyData()
+        points = np.asarray(mesh.points)
+        lines = np.asarray(mesh.lines, dtype=np.int64).reshape(-1, 3)
+        clipped_points = []
+        for _, first, second in lines:
+            start, end = points[first], points[second]
+            delta = float(end[normal_axis] - start[normal_axis])
+            if abs(delta) < 1e-12:
+                if not lower <= start[normal_axis] <= upper:
+                    continue
+                t0, t1 = 0.0, 1.0
+            else:
+                t0, t1 = sorted(((lower - start[normal_axis]) / delta, (upper - start[normal_axis]) / delta))
+                t0, t1 = max(0.0, t0), min(1.0, t1)
+                if t1 - t0 <= 1e-12:
+                    continue
+            clipped_points.extend((start + (end - start) * t0, start + (end - start) * t1))
+        if not clipped_points:
+            return pv.PolyData()
+        indices = np.arange(len(clipped_points), dtype=np.int64).reshape(-1, 2)
+        cells = np.column_stack((np.full(len(indices), 2, dtype=np.int64), indices)).ravel()
+        return pv.PolyData(np.asarray(clipped_points), lines=cells)
 
     def _ensure_model_surface_data(self, model):
         """Reuse triangulation, normals, and edge adjacency across isometric views."""
@@ -508,6 +604,14 @@ class DetailingViewPreview(QFrame):
         lower: float,
         upper: float,
     ) -> pv.PolyData | None:
+        if all(float(component) == (1.0 if axis == normal_axis else 0.0)
+               for axis, component in enumerate(normal)):
+            bounds = mesh.bounds
+            minimum, maximum = bounds[2 * normal_axis], bounds[2 * normal_axis + 1]
+            if maximum < lower or minimum > upper:
+                return None
+            if minimum > lower and maximum < upper:
+                return mesh
         planes = vtk.vtkPlaneCollection()
         for value, sign in ((lower, 1.0), (upper, -1.0)):
             plane = vtk.vtkPlane()
@@ -538,6 +642,7 @@ class DetailingViewPreview(QFrame):
         feature_edge_interface_planes=None,
         surface_data=None,
         element_names=None,
+        extra_feature_edge_meshes=None,
     ) -> None:
         """Resolve solid-face occlusion, then retain only the 2D vector lines."""
         camera_direction = np.asarray(normal, dtype=float)
@@ -553,6 +658,7 @@ class DetailingViewPreview(QFrame):
             feature_edge_interface_planes=feature_edge_interface_planes,
             surface_data=surface_data,
             element_names=element_names,
+            extra_feature_edge_meshes=extra_feature_edge_meshes,
             return_sources=True,
         )
         if self._segments_2d:
@@ -737,6 +843,8 @@ class _ModelSnapshot:
         self.revision = getattr(model, "revision", None)
         self.nodes = dict(model.nodes)
         self.bars = dict(model.bars)
+        self.rigid_bars = dict(getattr(model, "rigid_bars", {}))
+        self.plates = dict(getattr(model, "plates", {}))
         self.verification_element_groups = tuple(
             {"members": tuple(group.get("members", ()))}
             for group in getattr(model, "verification_element_groups", ())
@@ -751,9 +859,12 @@ class _ViewGeometryCalculator:
     _shared_model_meshes = DetailingViewPreview._shared_model_meshes
     _shared_model_edge_meshes = DetailingViewPreview._shared_model_edge_meshes
     _shared_model_surface_data = DetailingViewPreview._shared_model_surface_data
+    _shared_model_curve_edges = DetailingViewPreview._shared_model_curve_edges
     _view_cache_limit = DetailingViewPreview._view_cache_limit
     _ensure_model_meshes = DetailingViewPreview._ensure_model_meshes
     _ensure_model_edge_meshes = DetailingViewPreview._ensure_model_edge_meshes
+    _ensure_model_curve_edges = DetailingViewPreview._ensure_model_curve_edges
+    _clip_curve_edges = staticmethod(DetailingViewPreview._clip_curve_edges)
     _ensure_model_surface_data = DetailingViewPreview._ensure_model_surface_data
     _group_interface_planes = staticmethod(DetailingViewPreview._group_interface_planes)
     _clip_to_depth_range = staticmethod(DetailingViewPreview._clip_to_depth_range)

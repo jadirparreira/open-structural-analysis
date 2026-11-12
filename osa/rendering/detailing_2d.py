@@ -150,6 +150,7 @@ def visible_segments_from_meshes(
     feature_edge_interface_planes: Iterable[Iterable[tuple[np.ndarray, np.ndarray, float]]] | None = None,
     surface_data: Iterable[_SurfaceData] | None = None,
     element_names: Iterable[str] | None = None,
+    extra_feature_edge_meshes: Iterable[pv.PolyData | None] | None = None,
     return_sources: bool = False,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]] | tuple[list, list[str]]:
     """Create 2D visible edge segments from a set of clipped solid meshes.
@@ -164,7 +165,7 @@ def visible_segments_from_meshes(
     if not meshes:
         return []
     use_feature_edges = feature_edge_meshes is not None
-    feature_edge_meshes = tuple(feature_edge_meshes or ())
+    feature_edge_meshes = tuple(feature_edge_meshes or extra_feature_edge_meshes or ())
     ignored_interface_planes = tuple(ignored_interface_planes or ())
     feature_edge_interface_planes = tuple(feature_edge_interface_planes or ())
     surface_data = tuple(surface_data) if surface_data is not None else None
@@ -303,6 +304,8 @@ def visible_segments_from_meshes(
                 depth_layers.append((start, end, depth_start, depth_end, owner))
 
     for edge_number, edge_mesh in enumerate(feature_edge_meshes):
+        if edge_mesh is None:
+            continue
         interface_planes = (
             feature_edge_interface_planes[edge_number]
             if edge_number < len(feature_edge_interface_planes) else ()

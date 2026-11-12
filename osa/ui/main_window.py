@@ -5,7 +5,7 @@ import threading
 import uuid
 
 import numpy as np
-from PySide6.QtCore import QSettings, QThread, Signal, Slot
+from PySide6.QtCore import QSettings, QThread, QThreadPool, Signal, Slot
 
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
@@ -47,7 +47,10 @@ from .dialogs import (
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
-from .detailing_preview import DetailingViewPreview, _ViewGeometryCalculator
+from .detailing_preview import (
+    DETAILING_LINEWORK_VERSION, DetailingViewPreview, _ModelSnapshot, _ViewGeometryCalculator,
+)
+from .detailing_viewport import _DetachedDetailingScene
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
 from .import_dialogs import ImportReportDialog, PrjImportDialog
@@ -73,6 +76,7 @@ from .project_sheet import (
     ProjectSheetViewPanel,
     ProjectSheetWorkspace,
 )
+from .project_sheet_refresh import SheetLineworkSignals, SheetLineworkTask
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
@@ -754,10 +758,16 @@ class MainWindow(QMainWindow):
             return
 
         state_changed = False
+        upgrade_jobs = []
         for view in views:
             if self._refresh_project_view_identifications(view):
                 state_changed = True
             if view.get("model_revision") == self.model.revision:
+                projection = view.get("projection")
+                if (view.get("linework_version") != DETAILING_LINEWORK_VERSION
+                        and isinstance(projection, dict) and isinstance(projection.get("plane"), str)
+                        and "coordinate" in projection):
+                    upgrade_jobs.append((sheet_name, view, copy.deepcopy(projection), bool(view.get("segments"))))
                 continue
             projection = view.get("projection")
             if not isinstance(projection, dict):
@@ -791,12 +801,57 @@ class MainWindow(QMainWindow):
                 view["segment_owners"] = owners
                 state_changed = True
             view["model_revision"] = self.model.revision
+            view["linework_version"] = DETAILING_LINEWORK_VERSION
             state_changed = True
 
         if state_changed:
             if palette.sheet_selector.currentText() == sheet_name:
                 self.project_sheet_workspace.set_sheet_views(views)
             self._store_detailing_state()
+        if upgrade_jobs:
+            self._queue_sheet_linework_upgrade(upgrade_jobs)
+
+    def _queue_sheet_linework_upgrade(self, jobs) -> None:
+        revision = self.model.revision
+        group_revision = self.model.verification_group_revision
+        if not hasattr(self, "_sheet_linework_pending"):
+            self._sheet_linework_pending = set()
+            self._sheet_linework_cancel = threading.Event()
+            self._sheet_linework_signals = SheetLineworkSignals()
+            self._sheet_linework_signals.finished.connect(self._sheet_linework_upgraded)
+        pending = self._sheet_linework_pending
+        fresh = [job for job in jobs if (id(job[1]), revision, group_revision) not in pending]
+        if not fresh:
+            return
+        pending.update((id(job[1]), revision, group_revision) for job in fresh)
+        self.project_sheet_workspace.set_linework_updating(True)
+        snapshot = _ModelSnapshot(self.model)
+        source = _DetachedDetailingScene(self.scene)
+        QThreadPool.globalInstance().start(SheetLineworkTask(
+            self._sheet_linework_signals, snapshot, source, revision, group_revision, fresh,
+            self._sheet_linework_cancel,
+        ))
+
+    @Slot(object, object, int, object, object, object, object, bool)
+    def _sheet_linework_upgraded(self, sheet_name, view, revision, group_revision,
+                                 projection, segments, owners, success) -> None:
+        pending = self._sheet_linework_pending
+        pending.discard((id(view), revision, group_revision))
+        self.project_sheet_workspace.set_linework_updating(bool(pending))
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
+        if (not success or revision != self.model.revision
+                or group_revision != self.model.verification_group_revision
+                or not any(item is view for item in views) or view.get("projection") != projection
+                or view.get("model_revision") != revision
+                or view.get("linework_version") == DETAILING_LINEWORK_VERSION):
+            return
+        view["segments"] = segments
+        view["segment_owners"] = owners
+        view["linework_version"] = DETAILING_LINEWORK_VERSION
+        if self.project_sheets_palette.sheet_selector.currentText() == sheet_name:
+            self.project_sheet_workspace._dimension_snap_cache.clear()
+            self.project_sheet_workspace.update()
+        self._store_detailing_state()
 
     def _sync_project_sheet_view_settings(
         self,
@@ -5749,6 +5804,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self._confirm_pending_changes():
+            cancel_linework = getattr(self, "_sheet_linework_cancel", None)
+            if cancel_linework is not None:
+                cancel_linework.set()
             self._mcp_dispatcher.suspend()
             self._mcp_server.stop()
             event.accept()
