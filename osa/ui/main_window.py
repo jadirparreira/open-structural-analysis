@@ -1297,24 +1297,22 @@ class MainWindow(QMainWindow):
         section_label = " / ".join(section_labels)
         if section_labels:
             label = f"{element_label} {section_label}"
-        segments = view.get("segments", ())
-        owners = view.get("segment_owners", ())
-        group_source_owners = {f"bar:{member}" for member in group_members}
-        element_points = [
-            point
-            for segment, owner in zip(segments, owners)
-            if (
-                str(owner) in group_source_owners
-                if group_members else str(owner) == source
-            )
-            for point in segment
-        ]
-        if not element_points:
+        source_owners = (
+            tuple(f"bar:{member}" for member in group_members)
+            if group_members else (source,)
+        )
+        element_coordinates = np.asarray(
+            self.project_sheet_workspace.projected_points_for_owners(
+                view_index, source_owners,
+            ),
+            dtype=float,
+        )
+        if element_coordinates.size == 0:
             return
-        min_x = min(float(point[0]) for point in element_points)
-        max_x = max(float(point[0]) for point in element_points)
-        min_y = min(float(point[1]) for point in element_points)
-        max_y = max(float(point[1]) for point in element_points)
+        min_x = float(element_coordinates[:, 0].min())
+        max_x = float(element_coordinates[:, 0].max())
+        min_y = float(element_coordinates[:, 1].min())
+        max_y = float(element_coordinates[:, 1].max())
         stacked_text = False
         text_rotation = 0.0
         axis_direction: tuple[float, float] | None = None
@@ -1352,7 +1350,7 @@ class MainWindow(QMainWindow):
         if not has_projection:
             # Older sheets do not store the view projection. Infer an in-plane
             # bar direction from the principal axis of its owned 2D linework.
-            coordinates = np.asarray(element_points, dtype=float)
+            coordinates = element_coordinates
             if coordinates.shape[0] >= 2:
                 centered = coordinates - coordinates.mean(axis=0)
                 covariance = centered.T @ centered
@@ -1385,17 +1383,15 @@ class MainWindow(QMainWindow):
                 normal_x, normal_y = -axis_y, axis_x
                 if normal_y < 0.0 or (abs(normal_y) <= 1e-9 and normal_x > 0.0):
                     normal_x, normal_y = -normal_x, -normal_y
-                projections = [
-                    float(point[0]) * normal_x + float(point[1]) * normal_y
-                    for point in element_points
-                ]
-                normal_center = (min(projections) + max(projections)) / 2.0
-                normal_offset = (max(projections) - min(projections)) / 2.0 + gap
-                axis_projections = [
-                    float(point[0]) * axis_x + float(point[1]) * axis_y
-                    for point in element_points
-                ]
-                axis_center = (min(axis_projections) + max(axis_projections)) / 2.0
+                normal_projections = element_coordinates @ np.asarray((normal_x, normal_y))
+                normal_min = float(normal_projections.min())
+                normal_max = float(normal_projections.max())
+                normal_center = (normal_min + normal_max) / 2.0
+                normal_offset = (normal_max - normal_min) / 2.0 + gap
+                axis_projections = element_coordinates @ np.asarray((axis_x, axis_y))
+                axis_center = (
+                    float(axis_projections.min()) + float(axis_projections.max())
+                ) / 2.0
                 label_position = (
                     axis_center * axis_x + (normal_center + normal_offset) * normal_x,
                     axis_center * axis_y + (normal_center + normal_offset) * normal_y,
@@ -1448,6 +1444,23 @@ class MainWindow(QMainWindow):
             }
 
         preferred = getattr(self, "_detailing_preferred_view_key", None)
+        # Generated linework is replaced as a whole when a view is refreshed;
+        # its segment and owner buffers are read-only between refreshes. Share
+        # those large buffers with the stored state and copy the small mutable
+        # annotations/settings, instead of deep-copying tens of thousands of
+        # line segments every time a dimension or identifier is added.
+        sheet_views = {
+            sheet_name: [
+                {
+                    key: value if key in {"segments", "segment_owners"}
+                    else copy.deepcopy(value)
+                    for key, value in view.items()
+                }
+                if isinstance(view, dict) else copy.deepcopy(view)
+                for view in views
+            ]
+            for sheet_name, views in palette._sheet_views.items()
+        }
         return {
             "version": 1,
             "sheets": {
@@ -1455,7 +1468,7 @@ class MainWindow(QMainWindow):
                 "active_sheet": palette.sheet_selector.currentText(),
                 "sheet_settings": copy.deepcopy(palette._sheet_settings),
                 "project_settings": copy.deepcopy(palette._project_settings),
-                "sheet_views": copy.deepcopy(palette._sheet_views),
+                "sheet_views": sheet_views,
             },
             "detail_views": {
                 "names": current_model_entries("_detailing_view_names"),

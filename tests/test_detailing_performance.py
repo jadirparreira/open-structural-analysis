@@ -259,6 +259,37 @@ def test_sheet_linework_upgrade_keeps_annotation_and_rejects_stale_results():
     assert view["segments"] == segments
 
 
+def test_detailing_state_snapshot_shares_read_only_linework_but_copies_annotations():
+    from osa.ui.main_window import MainWindow
+
+    segments = tuple(((float(index), 0.0), (float(index + 1), 0.0)) for index in range(1000))
+    owners = tuple("bar:B1" for _ in segments)
+    identification = {"text": "B1", "properties": {"show_name": True}}
+    view = {
+        "segments": segments,
+        "segment_owners": owners,
+        "identifications": [identification],
+        "dimensions": [{"start": (0.0, 0.0), "end": (1.0, 0.0)}],
+    }
+    palette = SimpleNamespace(
+        _sheet_names=["01"],
+        sheet_selector=SimpleNamespace(currentText=lambda: "01"),
+        _sheet_settings={"01": {}},
+        _project_settings={},
+        _sheet_views={"01": [view]},
+    )
+    context = SimpleNamespace(model=StructuralModel(), project_sheets_palette=palette)
+
+    snapshot = MainWindow._detailing_state_snapshot(context)["sheets"]["sheet_views"]["01"][0]
+
+    assert snapshot["segments"] is segments
+    assert snapshot["segment_owners"] is owners
+    assert snapshot["identifications"] is not view["identifications"]
+    assert snapshot["dimensions"] is not view["dimensions"]
+    identification["properties"]["show_name"] = False
+    assert snapshot["identifications"][0]["properties"]["show_name"] is True
+
+
 def test_viewport_scene_includes_curved_profile_transitions(monkeypatch):
     from osa.ui.detailing_preview import _ViewGeometryCalculator
 

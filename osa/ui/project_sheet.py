@@ -5,17 +5,26 @@ import math
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QTimer, Signal
-from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPicture, QPixmap
+from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPicture, QPixmap, QRegion
 from PySide6.QtSvg import QSvgRenderer
 
 from .common import (
-    QColor, QCheckBox, QFrame, QHBoxLayout, QIcon, QLineEdit, QPainter, QRectF, QLabel, Qt,
-    QSize, QToolButton,
-    QVBoxLayout, QWidget,
+    QCheckBox,
+    QColor,
+    QFrame,
+    QHBoxLayout,
+    QIcon,
+    QLabel,
+    QLineEdit,
+    QRectF,
+    QSize,
+    Qt,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 from .property_panel import MixedCheckBox
 from .window_frame import WindowFrame
-
 
 PAPER_SIZES_MM = {
     "A4": (297.0, 210.0),
@@ -24,6 +33,88 @@ PAPER_SIZES_MM = {
     "A1": (841.0, 594.0),
     "A0": (1189.0, 841.0),
 }
+PROJECT_AXIS_DASH_PATTERN = (6.0, 2.0, 1.0, 2.0)
+
+
+class _SegmentSpatialGrid:
+    """Small uniform-grid broad phase for projected sheet linework."""
+
+    def __init__(self, segments, owners=()) -> None:
+        normalized = tuple(
+            ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
+            for start, end in segments
+        )
+        self.segments = normalized
+        self.cell_size = 1.0
+        self._cells: dict[tuple[int, int], list[int]] = {}
+        self._overflow: list[int] = []
+        self.owner_points: dict[str, list[tuple[float, float]]] = {}
+        owner_values = owners if len(owners) == len(normalized) else ()
+        if owner_values:
+            for (start, end), owner in zip(normalized, owner_values):
+                name = str(owner)
+                if name:
+                    points = self.owner_points.setdefault(name, [])
+                    points.extend((start, end))
+        if not normalized:
+            return
+        min_x = min(min(start[0], end[0]) for start, end in normalized)
+        max_x = max(max(start[0], end[0]) for start, end in normalized)
+        min_y = min(min(start[1], end[1]) for start, end in normalized)
+        max_y = max(max(start[1], end[1]) for start, end in normalized)
+        span = max(max_x - min_x, max_y - min_y, 1e-6)
+        divisions = max(8, min(128, round(math.sqrt(len(normalized)))))
+        self.cell_size = span / divisions
+        for index, (start, end) in enumerate(normalized):
+            x0 = self._cell(min(start[0], end[0]))
+            x1 = self._cell(max(start[0], end[0]))
+            y0 = self._cell(min(start[1], end[1]))
+            y1 = self._cell(max(start[1], end[1]))
+            cell_count = (x1 - x0 + 1) * (y1 - y0 + 1)
+            if cell_count > 4096:
+                self._overflow.append(index)
+                continue
+            for grid_x in range(x0, x1 + 1):
+                for grid_y in range(y0, y1 + 1):
+                    self._cells.setdefault((grid_x, grid_y), []).append(index)
+
+    def _cell(self, coordinate: float) -> int:
+        return math.floor(coordinate / self.cell_size)
+
+    def query(self, x: float, y: float, radius: float) -> tuple[int, ...]:
+        radius = max(0.0, float(radius))
+        x0, x1 = self._cell(x - radius), self._cell(x + radius)
+        y0, y1 = self._cell(y - radius), self._cell(y + radius)
+        found = set(self._overflow)
+        for grid_x in range(x0, x1 + 1):
+            for grid_y in range(y0, y1 + 1):
+                found.update(self._cells.get((grid_x, grid_y), ()))
+        return tuple(sorted(found))
+
+
+class _DimensionSnapIndex:
+    """Cached point candidates plus a spatial broad phase for intersections."""
+
+    def __init__(self, points, segment_grid: _SegmentSpatialGrid) -> None:
+        self.points = tuple(dict.fromkeys(points))
+        self.segment_grid = segment_grid
+        self.point_cells: dict[tuple[int, int], list[int]] = {}
+        for index, (point, _kind) in enumerate(self.points):
+            cell = (
+                segment_grid._cell(point[0]),
+                segment_grid._cell(point[1]),
+            )
+            self.point_cells.setdefault(cell, []).append(index)
+
+    def nearby_points(self, x: float, y: float, radius: float) -> tuple:
+        cell = self.segment_grid._cell
+        x0, x1 = cell(x - radius), cell(x + radius)
+        y0, y1 = cell(y - radius), cell(y + radius)
+        found = set()
+        for grid_x in range(x0, x1 + 1):
+            for grid_y in range(y0, y1 + 1):
+                found.update(self.point_cells.get((grid_x, grid_y), ()))
+        return tuple(self.points[index] for index in sorted(found))
 
 
 class ProjectSheetViewPanel(QFrame):
@@ -322,6 +413,7 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_count = 1
         self._sheet_views: tuple[dict, ...] = ()
         self._view_linework: dict[int, tuple] = {}
+        self._view_segment_grids: dict[int, tuple[object, object, _SegmentSpatialGrid]] = {}
         self._view_axis_geometry: dict[int, tuple] = {}
         self._selected_view_index: int | None = None
         self._selected_view_title_index: int | None = None
@@ -329,15 +421,26 @@ class ProjectSheetWorkspace(QWidget):
         self._selected_identification_index: int | None = None
         self._selected_identification_indices: set[int] = set()
         self._view_hit_rects: dict[int, QRectF] = {}
+        self._view_geometry_bounds: dict[int, QRectF] = {}
+        self._view_content_bounds: dict[int, QRectF] = {}
         self._view_title_hit_rects: dict[int, QRectF] = {}
+        self._axis_line_bounds: dict[tuple[int, str], QRectF] = {}
+        self._view_dimension_bounds: dict[tuple[int, int], QRectF] = {}
         self._identification_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._view_draw_data: dict[int, tuple[float, float, float, float, float]] = {}
         self._axis_endpoint_hit_rects: dict[tuple[int, str], QRectF] = {}
         self._axis_endpoint_drag_data: dict[tuple[int, str], tuple[float, float, float]] = {}
         self._axis_dimension_snap_segments: dict[int, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
         self._drag_axis_endpoints: tuple[tuple[int, str], ...] = ()
-        self._dimension_snap_cache: dict[tuple[int, tuple[str, ...]], tuple] = {}
+        self._drag_axis_current_bounds: dict[tuple[int, str], QRectF] = {}
+        self._drag_axis_painted_bounds: dict[tuple[int, str], QRectF] = {}
+        self._drag_axis_frame_current_bounds: dict[int, QRectF] = {}
+        self._drag_axis_frame_painted_bounds: dict[int, QRectF] = {}
+        self._dimension_snap_cache: dict[
+            tuple[int, tuple[str, ...]], _DimensionSnapIndex,
+        ] = {}
         self._dimension_text_hit_rects: dict[tuple[int, int], QRectF] = {}
+        self._dimension_bounds: dict[tuple[int, int], QRectF] = {}
         self._selected_dimension: tuple[int, int] | None = None
         self._identification_mode = False
         self._dimension_mode = False
@@ -347,6 +450,7 @@ class ProjectSheetWorkspace(QWidget):
         self._dimension_hover_point: QPointF | None = None
         self._dimension_hover_projected: tuple[float, float] | None = None
         self._dimension_preview: dict | None = None
+        self._dimension_preview_bounds: QRectF | None = None
         self._dimension_snap_screen: QPointF | None = None
         self._dimension_snap_kind: str | None = None
         self._hover_owners: set[tuple[int, str]] = set()
@@ -357,9 +461,21 @@ class ProjectSheetWorkspace(QWidget):
         self._stamp_rect = QRectF()
         self._drag_position: QPointF | None = None
         self._drag_view_title_index: int | None = None
+        self._drag_view_index: int | None = None
+        self._drag_view_current_bounds: QRectF | None = None
+        self._drag_view_painted_bounds: QRectF | None = None
+        self._drag_title_current_bounds: QRectF | None = None
+        self._drag_title_painted_bounds: QRectF | None = None
+        self._drag_title_frame_current_bounds: QRectF | None = None
+        self._drag_title_frame_painted_bounds: QRectF | None = None
         self._drag_identification_index: int | None = None
         self._drag_identification_indices: tuple[int, ...] = ()
         self._drag_dimension_index: tuple[int, int] | None = None
+        self._drag_dimension_current_bounds: QRectF | None = None
+        self._drag_dimension_painted_bounds: QRectF | None = None
+        self._drag_dimension_content_current_bounds: QRectF | None = None
+        self._drag_identification_current_bounds: dict[int, QRectF] = {}
+        self._drag_identification_painted_bounds: dict[int, QRectF] = {}
         self._zoom_factor = 1.0
         self._sheet_pixels_per_mm = 1.0
         self._pan_offset = QPointF()
@@ -377,6 +493,7 @@ class ProjectSheetWorkspace(QWidget):
         self._navigation_pixmap_pan = QPointF()
         self._navigation_cache_margin = QPointF()
         self._navigating = False
+        self._annotation_partial_repaint = False
         self._navigation_timer = QTimer(self)
         self._navigation_timer.setSingleShot(True)
         self._navigation_timer.setInterval(100)
@@ -402,6 +519,7 @@ class ProjectSheetWorkspace(QWidget):
         # An explicit update accompanies changes to sheet content or selection.
         # Window exposure alone can reuse the previously recorded drawing.
         self._navigation_picture_dirty = True
+        self._annotation_partial_repaint = False
         super().update(*args)
 
     def set_sheet_settings(
@@ -422,6 +540,7 @@ class ProjectSheetWorkspace(QWidget):
             self.dimension_finished.emit(True)
         self._sheet_views = tuple(views)
         self._view_linework.clear()
+        self._view_segment_grids.clear()
         self._view_axis_geometry.clear()
         self._dimension_snap_cache.clear()
         self._selected_dimension = None
@@ -574,6 +693,7 @@ class ProjectSheetWorkspace(QWidget):
         self._dimension_hover_point = None
         self._dimension_hover_projected = None
         self._dimension_preview = None
+        self._dimension_preview_bounds = None
         self._dimension_snap_screen = None
         self._dimension_snap_kind = None
         self._identification_mode = False
@@ -587,6 +707,8 @@ class ProjectSheetWorkspace(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        partial_annotation = self._annotation_partial_repaint
+        self._annotation_partial_repaint = False
         model = getattr(self.window(), "model", None)
         model_key = (
             id(model), getattr(model, "revision", None),
@@ -595,10 +717,11 @@ class ProjectSheetWorkspace(QWidget):
         if model_key != self._navigation_picture_model_key:
             self._navigation_picture_dirty = True
         direct_zoom = (
-            self._navigating and self._navigation_picture is not None
+            not partial_annotation and self._navigating
+            and self._navigation_picture is not None
             and self._zoom_factor != self._navigation_picture_zoom
         )
-        if (not direct_zoom and self._navigating and self._navigation_picture is not None and self._navigation_pixmap is not None
+        if (not partial_annotation and not direct_zoom and self._navigating and self._navigation_picture is not None and self._navigation_pixmap is not None
                 and self._navigation_picture_size == self.size()
                 and not self._navigation_picture_dirty
                 and self._navigation_picture_dpr == self.devicePixelRatioF()):
@@ -635,7 +758,7 @@ class ProjectSheetWorkspace(QWidget):
                     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 painter.drawPixmap(target, self._navigation_pixmap, QRectF(self._navigation_pixmap.rect()))
             return
-        if (not direct_zoom and not self._navigation_picture_dirty and self._navigation_pixmap is not None
+        if (not partial_annotation and not direct_zoom and not self._navigation_picture_dirty and self._navigation_pixmap is not None
                 and self._navigation_picture_size == self.size()
                 and self._navigation_picture_dpr == self.devicePixelRatioF()
                 and self._navigation_picture_zoom == self._zoom_factor
@@ -674,8 +797,8 @@ class ProjectSheetWorkspace(QWidget):
             sheet_width,
             sheet_height,
         )
-        picture = None if direct_zoom else QPicture()
-        painter = QPainter(self if direct_zoom else picture)
+        picture = None if direct_zoom or partial_annotation else QPicture()
+        painter = QPainter(self if picture is None else picture)
         if not direct_zoom:
             painter.setFont(self.font())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -695,7 +818,8 @@ class ProjectSheetWorkspace(QWidget):
         if self._settings.get("title_block_visible", True):
             self._draw_title_block(painter, inner, scale)
         painter.end()
-        if direct_zoom:
+        self._refresh_dragged_item_bounds()
+        if direct_zoom or partial_annotation:
             return
         self._navigation_picture = picture
         self._navigation_picture_model_key = model_key
@@ -725,12 +849,193 @@ class ProjectSheetWorkspace(QWidget):
         display_painter = QPainter(self)
         display_painter.drawPixmap(-margin, pixmap)
 
+    def _refresh_dragged_item_bounds(self) -> None:
+        """Keep invalidation origins aligned with the last frame actually painted."""
+        if self._drag_dimension_index is not None:
+            bounds = self._dimension_bounds.get(self._drag_dimension_index)
+            if bounds is not None:
+                self._drag_dimension_current_bounds = QRectF(bounds)
+                self._drag_dimension_painted_bounds = QRectF(bounds)
+            content_bounds = self._view_dimension_bounds.get(self._drag_dimension_index)
+            if content_bounds is not None:
+                self._drag_dimension_content_current_bounds = QRectF(content_bounds)
+        if self._drag_identification_index is not None:
+            index = self._selected_view_index
+            if index is None:
+                return
+            for label_index in self._drag_identification_indices:
+                bounds = self._identification_hit_rects.get((index, label_index))
+                if bounds is not None:
+                    self._drag_identification_current_bounds[label_index] = QRectF(bounds)
+                    self._drag_identification_painted_bounds[label_index] = QRectF(bounds)
+        if self._drag_view_index is not None:
+            bounds = self._view_hit_rects.get(self._drag_view_index)
+            if bounds is not None:
+                self._drag_view_current_bounds = QRectF(bounds)
+                self._drag_view_painted_bounds = QRectF(bounds)
+        if self._drag_view_title_index is not None:
+            bounds = self._view_title_hit_rects.get(self._drag_view_title_index)
+            if bounds is not None:
+                self._drag_title_current_bounds = QRectF(bounds)
+                self._drag_title_painted_bounds = QRectF(bounds)
+            frame = self._view_hit_rects.get(self._drag_view_title_index)
+            if frame is not None:
+                self._drag_title_frame_current_bounds = QRectF(frame)
+                self._drag_title_frame_painted_bounds = QRectF(frame)
+        for view_index, endpoint_key in self._drag_axis_endpoints:
+            axis_key = endpoint_key.rsplit(":", 1)[0]
+            bounds = self._axis_line_bounds.get((view_index, axis_key))
+            if bounds is not None:
+                self._drag_axis_current_bounds[(view_index, axis_key)] = QRectF(bounds)
+                self._drag_axis_painted_bounds[(view_index, axis_key)] = QRectF(bounds)
+            frame = self._view_hit_rects.get(view_index)
+            if frame is not None:
+                self._drag_axis_frame_current_bounds[view_index] = QRectF(frame)
+                self._drag_axis_frame_painted_bounds[view_index] = QRectF(frame)
+
     def _finish_navigation(self) -> None:
         self._navigation_timer.stop()
         if self._navigating:
             self._navigating = False
             self._navigation_picture_dirty = True
             super().update()
+
+    def _update_annotation_regions(self, *regions: QRectF | QRegion | None) -> None:
+        """Repaint only the old/new annotation area during pointer movement."""
+        dirty = QRegion()
+        for region in regions:
+            if region is None:
+                continue
+            if isinstance(region, QRegion):
+                dirty = dirty.united(region)
+                continue
+            if region.isNull():
+                continue
+            bounds = region.adjusted(-5.0, -5.0, 5.0, 5.0).intersected(QRectF(self.rect()))
+            if not bounds.isEmpty():
+                dirty = dirty.united(QRegion(bounds.toAlignedRect()))
+        dirty = dirty.intersected(QRegion(self.rect()))
+        if dirty.isEmpty():
+            self.update()
+            return
+        # Keep disconnected old/new annotation and selection-frame edges as
+        # separate dirty rectangles instead of repainting the large area
+        # between them. Paint redraws vector content clipped to this region.
+        self._annotation_partial_repaint = True
+        super().update(dirty)
+
+    def _view_frame_geometry(
+        self,
+        view_index: int,
+        *,
+        title_hit_rect: QRectF | None = None,
+        axis_bounds_override: dict[str, QRectF] | None = None,
+        identification_bounds_override: dict[int, QRectF] | None = None,
+        dimension_bounds_override: dict[int, QRectF] | None = None,
+    ) -> tuple[QRectF, QRectF, QRectF] | None:
+        """Predict content, auto-positioned title, and outline after a drag."""
+        geometry = self._view_geometry_bounds.get(view_index)
+        if geometry is None:
+            return None
+        content = QRectF(geometry)
+        id_overrides = identification_bounds_override or {}
+        for (label_view_index, label_index), hit_bounds in self._identification_hit_rects.items():
+            if label_view_index == view_index:
+                label_bounds = id_overrides.get(label_index, hit_bounds)
+                content = content.united(label_bounds.adjusted(4.0, 3.0, -4.0, -3.0))
+        dim_overrides = dimension_bounds_override or {}
+        for (dimension_view_index, dimension_index), dimension_bounds in self._view_dimension_bounds.items():
+            if dimension_view_index == view_index:
+                content = content.united(dim_overrides.get(dimension_index, dimension_bounds))
+        overrides = axis_bounds_override or {}
+        for (axis_view_index, axis_key), axis_bounds in self._axis_line_bounds.items():
+            if axis_view_index == view_index:
+                content = content.united(overrides.get(axis_key, axis_bounds))
+        for axis_key, axis_bounds in overrides.items():
+            if (view_index, axis_key) not in self._axis_line_bounds:
+                content = content.united(axis_bounds)
+        painted_content = self._view_content_bounds.get(view_index, content)
+        if title_hit_rect is None:
+            painted_title = self._view_title_hit_rects.get(view_index)
+            title_hit_rect = (
+                painted_title.translated(0.0, content.bottom() - painted_content.bottom())
+                if painted_title is not None else None
+            )
+        if title_hit_rect is not None:
+            outer = content.united(title_hit_rect.adjusted(4.0, 3.0, -4.0, -3.0))
+        else:
+            outer = QRectF(content)
+        frame = outer.adjusted(-5.0, -5.0, 5.0, 5.0).intersected(self._drawing_area)
+        title_bounds = QRectF(title_hit_rect) if title_hit_rect is not None else QRectF()
+        return content, title_bounds, frame
+
+    @staticmethod
+    def _frame_outline_regions(bounds: QRectF | None) -> tuple[QRectF, ...]:
+        """Return thin strips covering the four sides of a selection frame."""
+        if bounds is None or bounds.isNull() or bounds.isEmpty():
+            return ()
+        thickness = 8.0
+        horizontal = min(thickness, bounds.height())
+        vertical = min(thickness, bounds.width())
+        return (
+            QRectF(bounds.left(), bounds.top(), bounds.width(), horizontal),
+            QRectF(bounds.left(), bounds.bottom() - horizontal, bounds.width(), horizontal),
+            QRectF(bounds.left(), bounds.top(), vertical, bounds.height()),
+            QRectF(bounds.right() - vertical, bounds.top(), vertical, bounds.height()),
+        )
+
+    def _dimension_screen_bounds(self, view_index: int, dimension: dict) -> QRectF | None:
+        """Cheap conservative bounds for invalidating a moving dimension."""
+        try:
+            first = tuple(float(value) for value in dimension["start"])
+            second = tuple(float(value) for value in dimension["end"])
+            offset = tuple(float(value) for value in dimension["offset"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        points = (
+            self._screen_point(view_index, first),
+            self._screen_point(view_index, second),
+            self._screen_point(view_index, (first[0] + offset[0], first[1] + offset[1])),
+            self._screen_point(view_index, (second[0] + offset[0], second[1] + offset[1])),
+        )
+        if any(point is None for point in points):
+            return None
+        bounds = QRectF(points[0], points[1]).normalized()
+        for point in points[2:]:
+            bounds = bounds.united(QRectF(point, point).adjusted(-1.0, -1.0, 1.0, 1.0))
+        text_height = float(self._project_settings.get("dimension_text_height_mm", 3.0))
+        padding = max(32.0, text_height * self._sheet_pixels_per_mm * 4.0 + 12.0)
+        return bounds.adjusted(-padding, -padding, padding, padding)
+
+    def _axis_bounds_at_positions(self, view_index: int, axis_key: str) -> QRectF | None:
+        cached = self._view_axis_geometry.get(view_index)
+        draw_data = self._view_draw_data.get(view_index)
+        if cached is None or draw_data is None:
+            return self._axis_line_bounds.get((view_index, axis_key))
+        axis = next((item for item in cached[1] if item[0] == axis_key), None)
+        if axis is None:
+            return None
+        _key, _label, start, end = axis
+        center_x, center_y, target_x, target_y, model_to_pixels = draw_data
+        positions = self._sheet_views[view_index].get("axis_label_positions", {})
+        endpoints = []
+        for end_name, default_fraction in (("start", 0.0), ("end", 1.0)):
+            try:
+                fraction = float(positions.get(f"{axis_key}:{end_name}", default_fraction))
+            except (TypeError, ValueError):
+                fraction = default_fraction
+            point = (
+                start[0] + (end[0] - start[0]) * fraction,
+                start[1] + (end[1] - start[1]) * fraction,
+            )
+            endpoints.append(QPointF(
+                target_x + (point[0] - center_x) * model_to_pixels,
+                target_y - (point[1] - center_y) * model_to_pixels,
+            ))
+        radius = max(0.5, 4.0 * self._sheet_pixels_per_mm) + 3.0
+        return QRectF(endpoints[0], endpoints[1]).normalized().adjusted(
+            -radius, -radius, radius, radius,
+        )
 
     def _begin_navigation(self) -> None:
         if (self._navigation_picture is not None and self._navigation_picture_size == self.size()
@@ -751,12 +1056,17 @@ class ProjectSheetWorkspace(QWidget):
     def _draw_sheet_views(self, painter: QPainter, inner: QRectF, scale: float) -> None:
         if not self._sheet_views:
             self._view_hit_rects = {}
+            self._view_geometry_bounds = {}
+            self._view_content_bounds = {}
+            self._view_dimension_bounds = {}
             self._view_title_hit_rects = {}
             self._identification_hit_rects = {}
             self._axis_endpoint_hit_rects = {}
+            self._axis_line_bounds = {}
             self._axis_endpoint_drag_data = {}
             self._axis_dimension_snap_segments = {}
             self._dimension_text_hit_rects = {}
+            self._dimension_bounds = {}
             self._view_draw_data = {}
             self._drawing_area = inner
             self._stamp_rect = self._title_block_rect(inner, scale)
@@ -767,11 +1077,16 @@ class ProjectSheetWorkspace(QWidget):
         if drawing_area.width() <= 0 or drawing_area.height() <= 0:
             return
         self._view_hit_rects = {}
+        self._view_geometry_bounds = {}
+        self._view_content_bounds = {}
+        self._view_dimension_bounds = {}
         self._view_title_hit_rects = {}
         self._identification_hit_rects = {}
         self._dimension_text_hit_rects = {}
+        self._dimension_bounds = {}
         self._view_draw_data = {}
         self._axis_endpoint_hit_rects = {}
+        self._axis_line_bounds = {}
         self._axis_endpoint_drag_data = {}
         self._axis_dimension_snap_segments = {}
         painter.save()
@@ -826,6 +1141,7 @@ class ProjectSheetWorkspace(QWidget):
                 max(2.0, (max_x - min_x) * model_to_pixels),
                 max(2.0, (max_y - min_y) * model_to_pixels),
             )
+            self._view_geometry_bounds[index] = QRectF(frame)
             name_font = QFont(painter.font())
             name_font.setPixelSize(max(
                 1,
@@ -952,6 +1268,8 @@ class ProjectSheetWorkspace(QWidget):
                 )
                 if dimension_bounds is not None:
                     view_bounds = view_bounds.united(dimension_bounds)
+                    self._view_dimension_bounds[(index, dimension_index)] = QRectF(dimension_bounds)
+            self._view_content_bounds[index] = QRectF(view_bounds)
             label_offset = view.get("label_offset_mm", (0.0, 0.0))
             try:
                 label_offset_x, label_offset_y = (float(value) for value in label_offset)
@@ -1152,9 +1470,10 @@ class ProjectSheetWorkspace(QWidget):
         pen = QPen(QColor("#57606a"), 1.0)
         pen.setCosmetic(True)
         pen.setStyle(Qt.PenStyle.SolidLine)
-        pen.setDashPattern([
-            6.0 * scale, 2.0 * scale, 1.0 * scale, 2.0 * scale,
-        ])
+        # The axis stroke is cosmetic, so its pattern must stay in screen
+        # pixels as well. Scaling the dash lengths with sheet zoom caused the
+        # dash-dot rhythm to change and visibly crawl along the axis.
+        pen.setDashPattern(PROJECT_AXIS_DASH_PATTERN)
         painter.save()
         painter.setPen(pen)
         axis_font = QFont(painter.font())
@@ -1238,6 +1557,15 @@ class ProjectSheetWorkspace(QWidget):
                 self._axis_endpoint_drag_data[(view_index, f"{axis_key}:{end_name}")] = (
                     base_direction[0], base_direction[1], base_length,
                 )
+            axis_bounds = QRectF(start_screen, end_screen).normalized().adjusted(
+                -badge_radius - 3.0, -badge_radius - 3.0,
+                badge_radius + 3.0, badge_radius + 3.0,
+            )
+            self._axis_line_bounds[(view_index, axis_key)] = axis_bounds
+            axes_bounds = (
+                axes_bounds.united(axis_bounds) if has_axes_bounds else QRectF(axis_bounds)
+            )
+            has_axes_bounds = True
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setFont(axis_font)
             painter.setPen(pen)
@@ -1414,6 +1742,27 @@ class ProjectSheetWorkspace(QWidget):
             center_y - (position.y() - target_y) / model_to_pixels,
         )
 
+    def _segment_grid_for_view(self, view_index: int) -> _SegmentSpatialGrid:
+        view = self._sheet_views[view_index]
+        segments = view.get("segments", ())
+        owners = view.get("segment_owners", ())
+        cached = self._view_segment_grids.get(view_index)
+        if cached is None or cached[0] is not segments or cached[1] is not owners:
+            grid = _SegmentSpatialGrid(segments, owners)
+            self._view_segment_grids[view_index] = (segments, owners, grid)
+            return grid
+        return cached[2]
+
+    def projected_points_for_owners(self, view_index: int, owners) -> tuple[tuple[float, float], ...]:
+        if not 0 <= view_index < len(self._sheet_views):
+            return ()
+        grid = self._segment_grid_for_view(view_index)
+        return tuple(
+            point
+            for owner in owners
+            for point in grid.owner_points.get(str(owner), ())
+        )
+
     def _dimension_snap_at(
         self, position: QPointF, view_index: int | None = None,
         perpendicular_origin: tuple[float, float] | None = None,
@@ -1424,16 +1773,20 @@ class ProjectSheetWorkspace(QWidget):
         for index in indices:
             if index is None or not 0 <= index < len(self._sheet_views):
                 continue
-            view = self._sheet_views[index]
-            segments = view.get("segments", ())
+            draw_data = self._view_draw_data.get(index)
+            if draw_data is None or draw_data[4] <= 1e-12:
+                continue
+            center_x, center_y, target_x, target_y, model_to_pixels = draw_data
+            projected_cursor = (
+                center_x + (position.x() - target_x) / model_to_pixels,
+                center_y - (position.y() - target_y) / model_to_pixels,
+            )
+            search_radius = 12.0 / model_to_pixels
+            segment_grid = self._segment_grid_for_view(index)
+            normalized_segments = segment_grid.segments
             cache_key = (index, tuple(sorted(enabled)))
-            candidates = self._dimension_snap_cache.get(cache_key)
-            if candidates is None:
-                normalized_segments = [
-                    ((float(start[0]), float(start[1])),
-                     (float(end[0]), float(end[1])))
-                    for start, end in segments
-                ]
+            snap_index = self._dimension_snap_cache.get(cache_key)
+            if snap_index is None:
                 candidates = []
                 collinear_intervals: dict[tuple[float, float, float], list[tuple[float, float]]] = {}
                 for first, second in normalized_segments:
@@ -1480,25 +1833,45 @@ class ProjectSheetWorkspace(QWidget):
                              uy * midpoint + ux * line_offset),
                             "center",
                         ))
-                if "intersection" in enabled:
-                    for first_index, first_segment in enumerate(normalized_segments):
-                        for second_segment in normalized_segments[first_index + 1:]:
-                            crossing = self._segment_intersection(first_segment, second_segment)
-                            if crossing is not None:
-                                candidates.append((crossing, "intersection"))
-                candidates = tuple(candidates)
-                self._dimension_snap_cache[cache_key] = candidates
-            for candidate, kind in candidates:
+                snap_index = _DimensionSnapIndex(candidates, segment_grid)
+                self._dimension_snap_cache[cache_key] = snap_index
+            for candidate, kind in snap_index.nearby_points(
+                projected_cursor[0], projected_cursor[1], search_radius,
+            ):
                 screen = self._screen_point(index, candidate)
                 if screen is None:
                     continue
                 distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
                 if best is None or distance < best[0]:
                     best = (distance, index, candidate, screen, kind)
+            nearby_segments = segment_grid.query(
+                projected_cursor[0], projected_cursor[1], search_radius,
+            )
+            if "intersection" in enabled:
+                for offset, first_index in enumerate(nearby_segments):
+                    first_segment = normalized_segments[first_index]
+                    for second_index in nearby_segments[offset + 1:]:
+                        crossing = self._segment_intersection(
+                            first_segment, normalized_segments[second_index],
+                        )
+                        if crossing is None:
+                            continue
+                        screen = self._screen_point(index, crossing)
+                        if screen is None:
+                            continue
+                        distance = math.hypot(screen.x() - position.x(), screen.y() - position.y())
+                        if best is None or distance < best[0]:
+                            best = (distance, index, crossing, screen, "intersection")
             axis_segments = self._axis_dimension_snap_segments.get(index, ())
             if "intersection" in enabled and axis_segments:
-                for first_index, first_segment in enumerate(axis_segments):
-                    for second_segment in axis_segments[first_index + 1:]:
+                axis_grid = _SegmentSpatialGrid(axis_segments)
+                nearby_axis_segments = axis_grid.query(
+                    projected_cursor[0], projected_cursor[1], search_radius,
+                )
+                for offset, first_index in enumerate(nearby_axis_segments):
+                    first_segment = axis_grid.segments[first_index]
+                    for second_index in nearby_axis_segments[offset + 1:]:
+                        second_segment = axis_grid.segments[second_index]
                         crossing = self._segment_intersection(first_segment, second_segment)
                         if crossing is None:
                             continue
@@ -1510,8 +1883,8 @@ class ProjectSheetWorkspace(QWidget):
                             best = (distance, index, crossing, screen, "intersection")
             if perpendicular_origin is not None:
                 all_segments = [
-                    ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
-                    for start, end in segments
+                    normalized_segments[segment_index]
+                    for segment_index in nearby_segments
                 ]
                 all_segments.extend(axis_segments)
                 origin_x, origin_y = perpendicular_origin
@@ -1780,6 +2153,17 @@ class ProjectSheetWorkspace(QWidget):
             rotation,
         )
         dimension_bounds = dimension_bounds.united(rotated_text_bounds)
+        if dimension_index is not None:
+            selection_padding_x = 3.0 * self._sheet_pixels_per_mm
+            selection_padding_y = 2.0 * self._sheet_pixels_per_mm
+            if self._selected_dimension == (view_index, dimension_index):
+                dimension_bounds = dimension_bounds.united(rotated_text_bounds.adjusted(
+                    -selection_padding_x, -selection_padding_y,
+                    selection_padding_x, selection_padding_y,
+                ))
+            self._dimension_bounds[(view_index, dimension_index)] = dimension_bounds.adjusted(
+                -2.0, -2.0, 2.0, 2.0,
+            )
         painter.save()
         painter.translate(midpoint)
         painter.rotate(rotation)
@@ -1818,9 +2202,20 @@ class ProjectSheetWorkspace(QWidget):
             if draw_data is None:
                 continue
             center_x, center_y, target_x, target_y, model_to_pixels = draw_data
-            segments = view.get("segments", ())
+            grid = self._segment_grid_for_view(view_index)
+            segments = grid.segments
             owners = view.get("segment_owners", ())
-            for segment_index, (start, end) in enumerate(segments):
+            if model_to_pixels <= 1e-12:
+                continue
+            projected_cursor = (
+                center_x + (position.x() - target_x) / model_to_pixels,
+                center_y - (position.y() - target_y) / model_to_pixels,
+            )
+            candidate_indices = grid.query(
+                projected_cursor[0], projected_cursor[1], 12.0 / model_to_pixels,
+            )
+            for segment_index in candidate_indices:
+                start, end = segments[segment_index]
                 start_screen = QPointF(
                     target_x + (float(start[0]) - center_x) * model_to_pixels,
                     target_y - (float(start[1]) - center_y) * model_to_pixels,
@@ -1920,6 +2315,7 @@ class ProjectSheetWorkspace(QWidget):
                     self._dimension_hover_projected = None
                     self._dimension_hover_view_index = view_index
                     self._dimension_preview = None
+                    self._dimension_preview_bounds = None
                     if len(self._dimension_points) == 1:
                         self.dimension_step_changed.emit(1)
                     else:
@@ -1965,6 +2361,20 @@ class ProjectSheetWorkspace(QWidget):
                 if axis_hit not in self._selected_axis_endpoints or len(self._selected_axis_endpoints) < 2:
                     self._selected_axis_endpoints = {axis_hit}
                 self._drag_axis_endpoints = tuple(sorted(self._selected_axis_endpoints))
+                self._drag_axis_current_bounds.clear()
+                self._drag_axis_painted_bounds.clear()
+                self._drag_axis_frame_current_bounds.clear()
+                self._drag_axis_frame_painted_bounds.clear()
+                for view_index, endpoint_key in self._drag_axis_endpoints:
+                    axis_key = endpoint_key.rsplit(":", 1)[0]
+                    bounds = self._axis_bounds_at_positions(view_index, axis_key)
+                    if bounds is not None:
+                        self._drag_axis_current_bounds[(view_index, axis_key)] = QRectF(bounds)
+                        self._drag_axis_painted_bounds[(view_index, axis_key)] = QRectF(bounds)
+                    frame = self._view_hit_rects.get(view_index)
+                    if frame is not None:
+                        self._drag_axis_frame_current_bounds[view_index] = QRectF(frame)
+                        self._drag_axis_frame_painted_bounds[view_index] = QRectF(frame)
                 self._drag_position = event.position()
                 self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -1980,6 +2390,20 @@ class ProjectSheetWorkspace(QWidget):
                 self._selected_axis_endpoints.clear()
                 self._selected_view_title_index = title_hit
                 self._drag_view_title_index = title_hit
+                title_bounds = self._view_title_hit_rects.get(title_hit)
+                self._drag_title_current_bounds = (
+                    QRectF(title_bounds) if title_bounds is not None else None
+                )
+                self._drag_title_painted_bounds = (
+                    QRectF(title_bounds) if title_bounds is not None else None
+                )
+                title_frame = self._view_hit_rects.get(title_hit)
+                self._drag_title_frame_current_bounds = (
+                    QRectF(title_frame) if title_frame is not None else None
+                )
+                self._drag_title_frame_painted_bounds = (
+                    QRectF(title_frame) if title_frame is not None else None
+                )
                 self._drag_position = event.position()
                 self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -1990,11 +2414,34 @@ class ProjectSheetWorkspace(QWidget):
                 if rect.contains(event.position())
             ), None)
             if hit_dimension is not None:
+                if self._selected_view_index != hit_dimension[0]:
+                    self._selected_view_title_index = None
+                    self._selected_axis_endpoints.clear()
+                    self._drag_dimension_index = None
+                    self.select_view(hit_dimension[0])
+                    event.accept()
+                    return
                 self._selected_view_title_index = None
                 self._selected_axis_endpoints.clear()
-                self.select_view(None)
                 self._selected_dimension = hit_dimension
                 self._drag_dimension_index = hit_dimension
+                initial_bounds = self._dimension_bounds.get(hit_dimension)
+                if initial_bounds is not None:
+                    selection_padding = max(3.0, 3.0 * self._sheet_pixels_per_mm)
+                    initial_bounds = initial_bounds.adjusted(
+                        -selection_padding, -selection_padding,
+                        selection_padding, selection_padding,
+                    )
+                self._drag_dimension_current_bounds = (
+                    QRectF(initial_bounds) if initial_bounds is not None else None
+                )
+                self._drag_dimension_painted_bounds = (
+                    QRectF(initial_bounds) if initial_bounds is not None else None
+                )
+                content_bounds = self._view_dimension_bounds.get(hit_dimension)
+                self._drag_dimension_content_current_bounds = (
+                    QRectF(content_bounds) if content_bounds is not None else None
+                )
                 self._drag_position = event.position()
                 self._selected_identification_index = None
                 self._selected_identification_indices.clear()
@@ -2046,6 +2493,15 @@ class ProjectSheetWorkspace(QWidget):
                         self._drag_identification_indices = tuple(
                             sorted(self._selected_identification_indices)
                         )
+                        self._drag_identification_current_bounds = {
+                            index: QRectF(bounds)
+                            for index in self._drag_identification_indices
+                            if (bounds := self._identification_hit_rects.get((selected_index, index))) is not None
+                        }
+                        self._drag_identification_painted_bounds = {
+                            index: QRectF(bounds)
+                            for index, bounds in self._drag_identification_current_bounds.items()
+                        }
                         self._drag_position = event.position()
                         self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
                     self._emit_identification_selection()
@@ -2071,6 +2527,16 @@ class ProjectSheetWorkspace(QWidget):
             self.select_view(selected)
             if selected is not None:
                 self._drag_position = event.position()
+                view_bounds = self._view_hit_rects.get(selected)
+                if view_bounds is not None:
+                    view_bounds = view_bounds.adjusted(-3.0, -3.0, 3.0, 3.0)
+                self._drag_view_index = selected
+                self._drag_view_current_bounds = (
+                    QRectF(view_bounds) if view_bounds is not None else None
+                )
+                self._drag_view_painted_bounds = (
+                    QRectF(view_bounds) if view_bounds is not None else None
+                )
                 self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
             event.accept()
@@ -2087,6 +2553,9 @@ class ProjectSheetWorkspace(QWidget):
         if self._dimension_mode or self._identification_mode:
             self._ensure_navigation_geometry()
         if self._dimension_mode:
+            old_preview_bounds = self._dimension_preview_bounds
+            old_snap_screen = self._dimension_snap_screen
+            old_snap_kind = self._dimension_snap_kind
             if len(self._dimension_points) < 2:
                 snap = self._dimension_snap_at(
                     event.position(), self._dimension_view_index,
@@ -2103,6 +2572,18 @@ class ProjectSheetWorkspace(QWidget):
                     Qt.CursorShape.PointingHandCursor if snap is not None
                     else Qt.CursorShape.CrossCursor
                 ))
+                new_preview = None
+                if len(self._dimension_points) == 1 and self._dimension_hover_projected is not None:
+                    new_preview = {
+                        "start": self._dimension_points[0],
+                        "end": self._dimension_hover_projected,
+                        "offset": (0.0, 0.0),
+                    }
+                self._dimension_preview_bounds = (
+                    self._dimension_screen_bounds(self._dimension_hover_view_index, new_preview)
+                    if new_preview is not None and self._dimension_hover_view_index is not None
+                    else None
+                )
             else:
                 self._dimension_hover_point = event.position()
                 self._dimension_hover_projected = None
@@ -2116,7 +2597,31 @@ class ProjectSheetWorkspace(QWidget):
                     )
                 else:
                     self._dimension_preview = None
-            self.update()
+                self._dimension_preview_bounds = (
+                    self._dimension_screen_bounds(
+                        self._dimension_view_index, self._dimension_preview,
+                    )
+                    if self._dimension_preview is not None
+                    else None
+                )
+            snap_changed = (
+                old_snap_screen != self._dimension_snap_screen
+                or old_snap_kind != self._dimension_snap_kind
+            )
+            if (
+                old_preview_bounds != self._dimension_preview_bounds
+                or snap_changed
+            ):
+                snap_regions = ()
+                if snap_changed:
+                    snap_regions = tuple(
+                        QRectF(point.x() - 16.0, point.y() - 16.0, 32.0, 32.0)
+                        for point in (old_snap_screen, self._dimension_snap_screen)
+                        if point is not None
+                    )
+                self._update_annotation_regions(
+                    old_preview_bounds, self._dimension_preview_bounds, *snap_regions,
+                )
             event.accept()
             return
         if self._drag_axis_endpoints and event.buttons() & Qt.MouseButton.LeftButton:
@@ -2135,7 +2640,37 @@ class ProjectSheetWorkspace(QWidget):
                 fraction = float(positions.get(endpoint_key, default_fraction))
                 positions[endpoint_key] = fraction + along / direction[2]
             self._drag_position = event.position()
-            self.update()
+            dirty_regions = []
+            axis_overrides: dict[int, dict[str, QRectF]] = {}
+            for view_index, endpoint_key in self._drag_axis_endpoints:
+                axis_key = endpoint_key.rsplit(":", 1)[0]
+                key = (view_index, axis_key)
+                bounds = self._axis_bounds_at_positions(view_index, axis_key)
+                if bounds is not None:
+                    dirty_regions.extend((
+                        self._drag_axis_painted_bounds.get(key, self._drag_axis_current_bounds.get(key)),
+                        bounds,
+                    ))
+                    self._drag_axis_current_bounds[key] = QRectF(bounds)
+                    axis_overrides.setdefault(view_index, {})[axis_key] = QRectF(bounds)
+            for view_index, overrides in axis_overrides.items():
+                if view_index == self._selected_view_index:
+                    previous_frame = self._drag_axis_frame_painted_bounds.get(
+                        view_index, self._drag_axis_frame_current_bounds.get(view_index),
+                    )
+                    predicted = self._view_frame_geometry(
+                        view_index, axis_bounds_override=overrides,
+                    )
+                    next_title = predicted[1] if predicted is not None else None
+                    next_frame = predicted[2] if predicted is not None else None
+                    dirty_regions.extend((
+                        self._view_title_hit_rects.get(view_index), next_title,
+                    ))
+                    dirty_regions.extend(self._frame_outline_regions(previous_frame))
+                    dirty_regions.extend(self._frame_outline_regions(next_frame))
+                    if next_frame is not None:
+                        self._drag_axis_frame_current_bounds[view_index] = QRectF(next_frame)
+            self._update_annotation_regions(*dirty_regions)
             event.accept()
             return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -2165,7 +2700,26 @@ class ProjectSheetWorkspace(QWidget):
                 offset_y + delta.y() / pixels_per_mm,
             )
             self._drag_position = event.position()
-            self.update()
+            old_bounds = self._drag_title_painted_bounds or self._drag_title_current_bounds
+            if self._drag_title_current_bounds is not None:
+                self._drag_title_current_bounds = self._drag_title_current_bounds.translated(delta)
+            dirty_regions = [old_bounds, self._drag_title_current_bounds]
+            if self._drag_view_title_index == self._selected_view_index:
+                previous_frame = (
+                    self._drag_title_frame_painted_bounds
+                    or self._drag_title_frame_current_bounds
+                )
+                predicted = self._view_frame_geometry(
+                    self._drag_view_title_index,
+                    title_hit_rect=self._drag_title_current_bounds,
+                )
+                next_frame = predicted[2] if predicted is not None else None
+                dirty_regions.extend(self._frame_outline_regions(previous_frame))
+                dirty_regions.extend(self._frame_outline_regions(next_frame))
+                self._drag_title_frame_current_bounds = (
+                    QRectF(next_frame) if next_frame is not None else None
+                )
+            self._update_annotation_regions(*dirty_regions)
             event.accept()
             return
         if self._drag_dimension_index is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -2182,6 +2736,9 @@ class ProjectSheetWorkspace(QWidget):
                     first = tuple(float(value) for value in dimension["start"])
                     second = tuple(float(value) for value in dimension["end"])
                     offset = tuple(float(value) for value in dimension["offset"])
+                    old_bounds = self._drag_dimension_current_bounds or self._dimension_bounds.get(
+                        (view_index, dimension_index),
+                    )
                     line_first = self._screen_point(
                         view_index, (first[0] + offset[0], first[1] + offset[1]),
                     )
@@ -2208,10 +2765,53 @@ class ProjectSheetWorkspace(QWidget):
                             )
                             aligned = self._align_dimension_to_existing(view_index, dimension)
                             dimension["offset"] = aligned["offset"]
-                            self.update()
+                            final_offset = tuple(float(value) for value in dimension["offset"])
+                            moved_bounds = None
+                            if old_bounds is not None:
+                                moved_bounds = old_bounds.translated(
+                                    (final_offset[0] - offset[0]) * draw_data[4],
+                                    -(final_offset[1] - offset[1]) * draw_data[4],
+                                )
+                            else:
+                                moved_bounds = self._dimension_screen_bounds(view_index, dimension)
+                            self._drag_dimension_current_bounds = (
+                                QRectF(moved_bounds) if moved_bounds is not None else None
+                            )
+                            content_delta = QPointF(
+                                (final_offset[0] - offset[0]) * draw_data[4],
+                                -(final_offset[1] - offset[1]) * draw_data[4],
+                            )
+                            if self._drag_dimension_content_current_bounds is not None:
+                                self._drag_dimension_content_current_bounds = (
+                                    self._drag_dimension_content_current_bounds.translated(content_delta)
+                                )
+                            dirty_regions = [
+                                self._drag_dimension_painted_bounds or old_bounds,
+                                moved_bounds,
+                            ]
+                            if view_index == self._selected_view_index:
+                                previous_frame = self._view_hit_rects.get(view_index)
+                                predicted = self._view_frame_geometry(
+                                    view_index,
+                                    dimension_bounds_override={
+                                        dimension_index: self._drag_dimension_content_current_bounds,
+                                    } if self._drag_dimension_content_current_bounds is not None else None,
+                                )
+                                next_title = predicted[1] if predicted is not None else None
+                                next_frame = predicted[2] if predicted is not None else None
+                                dirty_regions.extend((
+                                    self._view_title_hit_rects.get(view_index), next_title,
+                                ))
+                                dirty_regions.extend(self._frame_outline_regions(previous_frame))
+                                dirty_regions.extend(self._frame_outline_regions(next_frame))
+                            self._update_annotation_regions(*dirty_regions)
             event.accept()
             return
-        if self._identification_mode:
+        dragging_identification = (
+            self._drag_identification_index is not None
+            and bool(event.buttons() & Qt.MouseButton.LeftButton)
+        )
+        if self._identification_mode and not dragging_identification:
             self._last_identification_position = event.position()
             target = self._element_at(event.position())
             raw_target = (target[1], target[5]) if target is not None and target[5] else None
@@ -2236,9 +2836,21 @@ class ProjectSheetWorkspace(QWidget):
                 if draw_data is not None and draw_data[4] > 0:
                     view = self._sheet_views[index]
                     identifications = view.get("identifications", [])
+                    dirty_regions = []
                     for label_index in self._drag_identification_indices:
                         if not 0 <= label_index < len(identifications):
                             continue
+                        old_bounds = self._drag_identification_current_bounds.get(
+                            label_index,
+                            self._identification_hit_rects.get((index, label_index)),
+                        )
+                        if old_bounds is not None:
+                            moved_bounds = old_bounds.translated(delta)
+                            self._drag_identification_current_bounds[label_index] = moved_bounds
+                            dirty_regions.extend((
+                                self._drag_identification_painted_bounds.get(label_index, old_bounds),
+                                moved_bounds,
+                            ))
                         identification = identifications[label_index]
                         point = identification.get("projected_point")
                         if point is None:
@@ -2250,18 +2862,36 @@ class ProjectSheetWorkspace(QWidget):
                                 float(point[0]) + delta.x() / draw_data[4],
                                 float(point[1]) - delta.y() / draw_data[4],
                             )
-                    self.update()
+                    previous_frame = self._view_hit_rects.get(index)
+                    predicted = self._view_frame_geometry(
+                        index,
+                        identification_bounds_override=self._drag_identification_current_bounds,
+                    )
+                    next_title = predicted[1] if predicted is not None else None
+                    next_frame = predicted[2] if predicted is not None else None
+                    dirty_regions.extend((self._view_title_hit_rects.get(index), next_title))
+                    dirty_regions.extend(self._frame_outline_regions(previous_frame))
+                    dirty_regions.extend(self._frame_outline_regions(next_frame))
+                    self._update_annotation_regions(*dirty_regions)
                 event.accept()
                 return
             index = self._selected_view_index
             if index is not None and self._drawing_area.width() > 0 and self._drawing_area.height() > 0:
                 view = self._sheet_views[index]
                 x, y = view.get("position", (0.5, 0.5))
-                view["position"] = (
+                new_position = (
                     max(0.0, min(1.0, float(x) + delta.x() / self._drawing_area.width())),
                     max(0.0, min(1.0, float(y) + delta.y() / self._drawing_area.height())),
                 )
-                self.update()
+                actual_delta = QPointF(
+                    (new_position[0] - float(x)) * self._drawing_area.width(),
+                    (new_position[1] - float(y)) * self._drawing_area.height(),
+                )
+                view["position"] = new_position
+                old_bounds = self._drag_view_painted_bounds or self._drag_view_current_bounds
+                if self._drag_view_current_bounds is not None:
+                    self._drag_view_current_bounds = self._drag_view_current_bounds.translated(actual_delta)
+                self._update_annotation_regions(old_bounds, self._drag_view_current_bounds)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -2276,6 +2906,10 @@ class ProjectSheetWorkspace(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._drag_view_title_index is not None:
             self._drag_view_title_index = None
+            self._drag_title_current_bounds = None
+            self._drag_title_painted_bounds = None
+            self._drag_title_frame_current_bounds = None
+            self._drag_title_frame_painted_bounds = None
             self._drag_position = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
             self.update()
@@ -2284,6 +2918,10 @@ class ProjectSheetWorkspace(QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_axis_endpoints:
             self._drag_axis_endpoints = ()
+            self._drag_axis_current_bounds.clear()
+            self._drag_axis_painted_bounds.clear()
+            self._drag_axis_frame_current_bounds.clear()
+            self._drag_axis_frame_painted_bounds.clear()
             self._drag_position = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
             self.update()
@@ -2292,6 +2930,8 @@ class ProjectSheetWorkspace(QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_dimension_index is not None:
             self._drag_dimension_index = None
+            self._drag_dimension_current_bounds = None
+            self._drag_dimension_painted_bounds = None
             self._drag_position = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
             self.update()
@@ -2300,13 +2940,16 @@ class ProjectSheetWorkspace(QWidget):
             return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_position is not None:
             self._drag_position = None
+            self._drag_view_index = None
+            self._drag_view_current_bounds = None
+            self._drag_view_painted_bounds = None
             moved_identification = self._drag_identification_index is not None
             self._drag_identification_index = None
             self._drag_identification_indices = ()
+            self._drag_identification_current_bounds.clear()
+            self._drag_identification_painted_bounds.clear()
             self.unsetCursor()
-            if moved_identification:
-                self.layout_changed.emit()
-            elif self._selected_view_index is not None:
+            if moved_identification or self._selected_view_index is not None:
                 self.layout_changed.emit()
             event.accept()
             return
@@ -2359,10 +3002,9 @@ class ProjectSheetWorkspace(QWidget):
             self.identification_finished.emit(event.key() == Qt.Key.Key_Escape)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Delete:
-            if self.delete_selected_dimension():
-                event.accept()
-                return
+        if event.key() == Qt.Key.Key_Delete and self.delete_selected_dimension():
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Delete and self._selected_view_index is not None:
             if not self.delete_selected_identification():
                 self.remove_view_requested.emit(self._selected_view_index)
