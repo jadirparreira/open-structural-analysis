@@ -23,7 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame
 
 from osa.rendering.detailing_2d import prepare_surface_data, visible_segments_from_meshes
-from osa.rendering.batched_renderer import _transformed_points
+from osa.rendering.batched_renderer import _clip_line_mesh_outside_cutters, _transformed_points
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from osa.sections import section_shape
@@ -555,7 +555,21 @@ class DetailingViewPreview(QFrame):
             origin = start_point + LocalAxesRenderer.section_offset(member, start, end)
             points = _transformed_points(np.asarray(source.points), origin, end_point - start_point,
                                          basis[1], basis[2], getattr(member, "solid_face_angles", (0.,) * 4))
-            transitions[name] = pv.PolyData(points, lines=np.asarray(source.lines).copy())
+            transition = pv.PolyData(points, lines=np.asarray(source.lines).copy())
+            detail_scene = getattr(self, "_detail_scene", None)
+            view_cutters = getattr(
+                detail_scene, "_detailing_view_subtraction_meshes", {},
+            )
+            cutter_meshes = tuple(
+                cutter for reference in (
+                    *member.detail_subtractions,
+                    *(('end_cut', cut.identifier) for cut in member.detail_end_cuts),
+                )
+                if (cutter := view_cutters.get(tuple(reference))) is not None
+            )
+            if cutter_meshes:
+                transition = _clip_line_mesh_outside_cutters(transition, cutter_meshes)
+            transitions[name] = transition
         self._shared_model_curve_edges[cache_owner] = (self._model_cache_key, transitions, processed)
         return transitions
 
@@ -709,7 +723,9 @@ class DetailingViewPreview(QFrame):
                             length = float(np.linalg.norm(direction))
                             if length > 1e-12:
                                 planes.setdefault(name, []).append(
-                                    (point, direction / length, max(1e-8, length * 1e-8)),
+                                    # Boolean meshes are stored as float32 and can
+                                    # drift slightly from the original joint plane.
+                                    (point, direction / length, max(1e-6, length * 1e-7)),
                                 )
         return {name: tuple(values) for name, values in planes.items()}
 

@@ -13,14 +13,17 @@ from .entities import (
     ActionGroup,
     AnalysisResult,
     Bar,
+    DetailEndCut,
     LoadCase,
     LoadCombination,
     Node,
+    NodeComponentAssignment,
     Plate,
     ReferenceAxis,
     RigidBar,
 )
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
+from .node_components import BASE_PLATE_PLANES, default_hook_headings, node_component_definition
 
 
 class StructuralModel:
@@ -211,6 +214,73 @@ class StructuralModel:
         self.update_detail_subtractions(
             target_kind, target_name, (*current, (cutter_kind, cutter_name)),
         )
+
+    @staticmethod
+    def _validated_detail_end_cuts(values) -> tuple[DetailEndCut, ...]:
+        normalized = []
+        identifiers = set()
+        for item in values:
+            try:
+                cut = item if isinstance(item, DetailEndCut) else DetailEndCut(**item)
+                point = tuple(float(value) for value in cut.point)
+                normal = tuple(float(value) for value in cut.normal)
+                planes = tuple(
+                    (tuple(float(value) for value in plane_point),
+                     tuple(float(value) for value in plane_normal))
+                    for plane_point, plane_normal in cut.planes
+                )
+            except (TypeError, ValueError, KeyError) as error:
+                raise ValueError("A configuração do corte de extremidade é inválida.") from error
+            if (
+                len(point) != 3 or len(normal) != 3
+                or not all(math.isfinite(value) for value in (*point, *normal))
+                or math.sqrt(sum(value * value for value in normal)) <= 1e-12
+                or not isinstance(cut.identifier, str) or not cut.identifier
+                or cut.identifier in identifiers
+                or not isinstance(cut.reference_label, str) or not cut.reference_label
+                or any(
+                    len(plane_point) != 3 or len(plane_normal) != 3
+                    or not all(math.isfinite(value) for value in (*plane_point, *plane_normal))
+                    or math.sqrt(sum(value * value for value in plane_normal)) <= 1e-12
+                    for plane_point, plane_normal in planes
+                )
+            ):
+                raise ValueError("A configuração do corte de extremidade é inválida.")
+            magnitude = math.sqrt(sum(value * value for value in normal))
+            identifiers.add(cut.identifier)
+            normalized_planes = tuple(
+                (plane_point, tuple(
+                    value / math.sqrt(sum(component * component for component in plane_normal))
+                    for value in plane_normal
+                ))
+                for plane_point, plane_normal in planes
+            )
+            normalized.append(DetailEndCut(
+                cut.identifier, point, tuple(value / magnitude for value in normal),
+                cut.reference_label, normalized_planes,
+            ))
+        return tuple(normalized)
+
+    def update_detail_end_cuts(self, member_name: str, values) -> None:
+        member = self.bars.get(member_name)
+        if member is None:
+            raise ValueError("A barra que receberá o corte não existe.")
+        normalized = self._validated_detail_end_cuts(values)
+        if member.detail_end_cuts == normalized:
+            return
+        self.bars[member_name] = replace(member, detail_end_cuts=normalized)
+        self._touch()
+
+    def add_detail_end_cut(
+        self, member_name: str, identifier: str, point, normal, reference_label: str,
+        planes=(),
+    ) -> None:
+        member = self.bars.get(member_name)
+        if member is None:
+            raise ValueError("A barra que receberá o corte não existe.")
+        self.update_detail_end_cuts(member_name, (*member.detail_end_cuts, DetailEndCut(
+            identifier, tuple(point), tuple(normal), reference_label, tuple(planes),
+        )))
 
     def _remove_detail_subtraction_references(self, removed_kind: str, removed_name: str) -> None:
         removed = (removed_kind, removed_name)
@@ -495,6 +565,120 @@ class StructuralModel:
         self._touch()
         return node
 
+    def update_node_component(
+        self, name: str, component: NodeComponentAssignment | None,
+    ) -> Node:
+        """Assign or clear the component instance attached to a node."""
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        if component is not None and (
+            not isinstance(component.component_id, str) or not component.component_id.strip()
+        ):
+            raise ValueError("A identificação do componente é inválida.")
+        if component is not None and component.component_id == "base_plate":
+            values = dict(component.parameters)
+            fixador = values.get("fixador", "Reto")
+            if fixador == "Químico":
+                fixador = "Reto"
+            if fixador not in {"Reto", "Gancho"}:
+                raise ValueError("Selecione um tipo de fixador válido.")
+            normalized = []
+            for key, default in (
+                ("largura_mm", 300.0), ("comprimento_mm", 300.0),
+                ("espessura_mm", 20.0), ("rotacao_deg", 0.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value):
+                    raise ValueError("Os parâmetros da chapa de base devem ser finitos.")
+                if key == "rotacao_deg":
+                    if not 0.0 <= value <= 259.9:
+                        raise ValueError("A rotação da chapa de base deve estar entre 0° e 259,9°.")
+                elif value <= 0.0:
+                    raise ValueError("As dimensões da chapa de base devem ser positivas e finitas.")
+                normalized.append((key, value))
+            for key in ("deslocamento_a_mm", "deslocamento_b_mm"):
+                value = float(values.get(key, 0.0))
+                if not math.isfinite(value):
+                    raise ValueError("Os deslocamentos da chapa de base devem ser finitos.")
+                normalized.append((key, value))
+            normalized.append(("fixador", fixador))
+            for key in ("fixadores_lado_a", "fixadores_lado_b"):
+                raw_count = float(values.get(key, 2))
+                if (
+                    not math.isfinite(raw_count) or raw_count < 2.0
+                    or raw_count > 100.0 or not raw_count.is_integer()
+                ):
+                    raise ValueError("Cada lado deve ter entre 2 e 100 fixadores inteiros.")
+                normalized.append((key, int(raw_count)))
+            for key, default in (
+                ("distancia_a_mm", 50.0),
+                ("comprimento_fixador_mm", 300.0), ("embutimento_mm", 150.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("As dimensões dos fixadores devem ser positivas e finitas.")
+                normalized.append((key, value))
+            plane = str(values.get("plano", "XY+"))
+            if plane not in BASE_PLATE_PLANES:
+                raise ValueError("Selecione um plano válido para a chapa de base/topo.")
+            normalized.append(("plano", plane))
+            if fixador == "Gancho":
+                leg = float(values.get("perna_mm", 200.0))
+                if not math.isfinite(leg) or leg <= 0.0:
+                    raise ValueError("A perna do fixador deve ser positiva e finita.")
+                normalized.append(("perna_mm", leg))
+                headings = default_hook_headings(dict(normalized))
+                for index, radial_heading in enumerate(headings):
+                    key = f"rotacao_global_gancho_{index}_deg"
+                    legacy_key = f"rotacao_gancho_{index}_deg"
+                    if key in values:
+                        raw_rotation = float(values[key])
+                    elif legacy_key in values:
+                        raw_rotation = radial_heading + float(values[legacy_key])
+                    else:
+                        raw_rotation = radial_heading + float(values.get("rotacao_gancho_deg", 0.0))
+                    if not math.isfinite(raw_rotation):
+                        raise ValueError("A rotação do gancho deve ser finita.")
+                    hook_rotation = round(raw_rotation % 360.0, 1)
+                    if hook_rotation >= 360.0:
+                        hook_rotation = 0.0
+                    normalized.append((key, hook_rotation))
+            diameter = float(values.get("diametro_mm", 16.0))
+            if not math.isfinite(diameter) or diameter <= 0.0:
+                raise ValueError("O diâmetro da barra deve ser positivo e finito.")
+            normalized.append(("diametro_mm", diameter))
+            parameter_values = dict(normalized)
+            if parameter_values["distancia_a_mm"] * 2.0 >= min(
+                parameter_values["largura_mm"], parameter_values["comprimento_mm"],
+            ):
+                raise ValueError("A distância da borda deve ser menor que a metade do menor lado da chapa.")
+            if parameter_values["diametro_mm"] * 1.1 >= parameter_values["distancia_a_mm"]:
+                raise ValueError("A distância da borda deve acomodar a arruela dos fixadores.")
+            minimum_length = (
+                parameter_values["embutimento_mm"] + parameter_values["espessura_mm"]
+                + parameter_values["diametro_mm"] * 1.25
+            )
+            if parameter_values["comprimento_fixador_mm"] <= minimum_length:
+                raise ValueError(
+                    "O comprimento do fixador deve permitir o embutimento, atravessar a chapa "
+                    "e receber arruela e porca."
+                )
+            component = NodeComponentAssignment(component.component_id, tuple(normalized))
+        previous = self.nodes[name]
+        node = replace(previous, component=component)
+        if node != previous:
+            self.nodes[name] = node
+            definitions = (
+                node_component_definition(previous.component.component_id)
+                if previous.component is not None else None,
+                node_component_definition(component.component_id) if component is not None else None,
+            )
+            if any(item is not None and item.interacts_with_model for item in definitions):
+                self._touch()
+            else:
+                self.view_revision += 1
+        return node
+
     def set_reference_axes(self, axes: dict[str, tuple[ReferenceAxis, ...]]) -> None:
         """Replace the named reference axes after validating their per-direction identity."""
         normalized: dict[str, tuple[ReferenceAxis, ...]] = {}
@@ -608,6 +792,10 @@ class StructuralModel:
         start_coordinates = (start.x, start.y, start.z)
         direction = (end.x - start.x, end.y - start.y, end.z - start.z)
         member_length = math.hypot(*direction)
+        split_axis = (
+            tuple(value / member_length for value in direction)
+            if member_length > self.coordinate_tolerance else None
+        )
         if segment_lengths is None:
             positions = tuple(index / len(member_names) for index in range(1, len(member_names)))
         else:
@@ -674,6 +862,16 @@ class StructuralModel:
                 source.solid_face_angles[2] if index == len(member_names) - 1 else 0.0,
                 source.solid_face_angles[3] if index == len(member_names) - 1 else 0.0,
             )
+            if split_axis is None or index not in {0, len(member_names) - 1}:
+                end_cuts = ()
+            else:
+                endpoint_sign = -1.0 if index == 0 else 1.0
+                end_cuts = tuple(
+                    cut for cut in source.detail_end_cuts
+                    if endpoint_sign * sum(
+                        value * axis for value, axis in zip(cut.normal, split_axis)
+                    ) > 0.0
+                )
             new_bars[member_name] = replace(
                 source,
                 name=member_name,
@@ -683,6 +881,7 @@ class StructuralModel:
                 solid_face_offsets=offsets,
                 solid_face_angles=angles,
                 rotation_flexibility_percent=rotation_percent,
+                detail_end_cuts=end_cuts,
             )
 
         member_actions = tuple(

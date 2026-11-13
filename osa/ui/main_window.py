@@ -26,6 +26,7 @@ from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
 from .calculation_properties_panel import CalculationPropertiesPanel
+from .node_components_dialog import NodeComponentsDialog
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
@@ -172,6 +173,8 @@ class MainWindow(QMainWindow):
         self._member_placement_start_snap_target: tuple[str, str] | None = None
         self._endpoint_alignment_source: tuple[str, str] | None = None
         self._detail_subtraction_target: tuple[str, str] | None = None
+        self._detail_end_cut_target: str | None = None
+        self._detail_end_cut_reference_faces: list[tuple] = []
         self._face_alignment_source: tuple[str, str] | None = None
         self._face_alignment_source_hit = None
         self._connect_member_ends_first_bar: str | None = None
@@ -275,6 +278,7 @@ class MainWindow(QMainWindow):
         self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
         self.scene.alignment_face_clicked.connect(self._align_element_face_to_reference)
+        self.scene.detail_end_cut_face_clicked.connect(self._apply_detail_end_cut_face)
         self.scene.empty_clicked.connect(self._empty_scene_clicked)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
@@ -408,6 +412,7 @@ class MainWindow(QMainWindow):
         self._detail_subtraction_visible_refs: set[tuple[str, str, str, str]] = set()
         self.displacement_panel = DisplacementPanel(self)
         self.calculation_properties_panel = CalculationPropertiesPanel(self)
+        self.node_components_dialog = None
         self.processing_panel = ProcessingPanel(self)
         self.verification_panel = VerificationPanel(self)
         self.axes_panel = AxesPanel(self)
@@ -1779,6 +1784,7 @@ class MainWindow(QMainWindow):
         self.axes_panel.hide()
         self.reference_panel.hide()
         self._command_mode = "endpoint_alignment_bar_selection"
+        self.scene.set_node_component_pick_through(True)
         self.scene.set_endpoint_alignment_target(None)
         self.history.append(
             "> <b>Alinhar extremidade</b> "
@@ -1803,9 +1809,243 @@ class MainWindow(QMainWindow):
         self.axes_panel.hide()
         self.reference_panel.hide()
         self._command_mode = "detail_subtraction_target_selection"
+        self.scene.set_node_component_pick_through(True)
         self.history.append(
             "> <b>Subtrair trecho</b> "
             "<span style='color:#57606a'>(Selecione a barra ou placa que será cortada; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_detail_end_cut(self) -> None:
+        """Start a bar selection followed by a reference face for an end cut."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._detail_end_cut_target = None
+        self._detail_end_cut_reference_faces = []
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "detail_end_cut_target_selection"
+        self.scene.set_node_component_pick_through(True)
+        self.scene.set_detail_end_cut_target(None)
+        self.history.append(
+            "> <b>Subtrair extremidade</b> "
+            "<span style='color:#57606a'>(Selecione a barra; depois escolha uma face, "
+            "use Ctrl+clique para adicionar outras e pressione Enter para aplicar; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _apply_detail_end_cut_face(self, hit: object, add_face: bool = False) -> None:
+        """Collect reference faces; Ctrl-click adds to the pending intersection."""
+        if self._command_mode != "detail_end_cut_face_selection":
+            return
+        try:
+            face_kind, face_name, cell_id, face_point, face_normal = hit
+            face_point = np.asarray(face_point, dtype=float)
+            face_normal = np.asarray(face_normal, dtype=float)
+        except (TypeError, ValueError):
+            return
+        target_name = self._detail_end_cut_target
+        if target_name not in self.model.bars:
+            return
+        if face_kind not in {"bar", "plate", "component"}:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa ou chapa de base)</span>"
+            )
+            return
+        if face_kind == "bar" and face_name == target_name:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione a face de outro elemento como referência)</span>"
+            )
+            return
+        normal_length = float(np.linalg.norm(face_normal))
+        if normal_length <= 1e-12 or not np.isfinite(face_point).all():
+            return
+        face_normal /= normal_length
+        selected_face = (
+            str(face_kind), str(face_name), int(cell_id),
+            tuple(float(value) for value in face_point),
+            tuple(float(value) for value in face_normal),
+        )
+        if add_face:
+            if selected_face not in self._detail_end_cut_reference_faces:
+                self._detail_end_cut_reference_faces.append(selected_face)
+        else:
+            # A plain click starts a new face selection; Ctrl-click extends it.
+            self._detail_end_cut_reference_faces = [selected_face]
+        count = len(self._detail_end_cut_reference_faces)
+        self.history.append(
+            "> <b>Subtrair extremidade</b> <span style='color:#57606a'>"
+            f"({count} face{'s' if count != 1 else ''} selecionada{'s' if count != 1 else ''}; "
+            "Ctrl+clique adiciona faces; pressione Enter para aplicar)</span>"
+        )
+
+    @staticmethod
+    def _detail_end_cut_face_label(face) -> str:
+        kind, name = face[0], face[1]
+        if kind == "bar":
+            return f"Barra {name}"
+        if kind == "plate":
+            return f"Placa {name}"
+        return f"Chapa de base/topo no nó {name}"
+
+    def _commit_detail_end_cut_faces(self) -> None:
+        """Apply one face plane or the intersection of the selected face planes."""
+        target_name = self._detail_end_cut_target
+        faces = tuple(self._detail_end_cut_reference_faces)
+        if target_name not in self.model.bars or not faces:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione pelo menos uma face e pressione Enter)</span>"
+            )
+            return
+        member = self.model.bars[target_name]
+        start_node = self.model.nodes[member.start_node]
+        end_node = self.model.nodes[member.end_node]
+        basis = LocalAxesRenderer.basis(start_node, end_node, rotation=member.rotation)
+        if basis is None:
+            return
+        start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
+        end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
+        section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+        rendered_start = start - basis[0] * float(member.solid_face_offsets[0]) + section_offset
+        rendered_end = end + basis[0] * float(member.solid_face_offsets[1]) + section_offset
+        face_points = np.asarray([face[3] for face in faces], dtype=float)
+        face_normals = np.asarray([face[4] for face in faces], dtype=float)
+        axis_direction = np.asarray(basis[0], dtype=float)
+        removal_planes = ()
+
+        if len(faces) == 1:
+            face_point, face_normal = face_points[0], face_normals[0]
+            signed_distances = (
+                float(np.dot(rendered_start - face_point, face_normal)),
+                float(np.dot(rendered_end - face_point, face_normal)),
+            )
+            if signed_distances[0] * signed_distances[1] > 1e-10:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(A face de referência não cruza a barra)</span>"
+                )
+                return
+            endpoint_index = min(range(2), key=lambda index: abs(signed_distances[index]))
+            side = signed_distances[endpoint_index]
+            if abs(side) <= 1e-8:
+                outward = -axis_direction if endpoint_index == 0 else axis_direction
+                side = float(np.dot(outward, face_normal))
+            if abs(side) <= 1e-8:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(Não foi possível identificar o lado da extremidade; "
+                    "selecione outra face)</span>"
+                )
+                return
+            cut_point = face_point
+            removal_normal = face_normal if side > 0.0 else -face_normal
+        else:
+            # Find the common line/point of the selected infinite face planes.
+            offsets = np.einsum("ij,ij->i", face_normals, face_points)
+            intersection_point, _, rank, _ = np.linalg.lstsq(
+                face_normals, offsets, rcond=None,
+            )
+            _, _, right_vectors = np.linalg.svd(face_normals, full_matrices=True)
+            residual = np.abs(face_normals @ intersection_point - offsets)
+            scale = max(1.0, float(np.linalg.norm(rendered_end - rendered_start)))
+            if rank < 2 or float(np.max(residual, initial=0.0)) > scale * 1e-6:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(As faces selecionadas não formam uma interseção comum)</span>"
+                )
+                return
+            axis_length = float(np.linalg.norm(rendered_end - rendered_start))
+            if axis_length <= 1e-12:
+                return
+            axis_direction = (rendered_end - rendered_start) / axis_length
+            if rank == 2:
+                line_direction = right_vectors[-1]
+                line_direction /= max(float(np.linalg.norm(line_direction)), 1e-12)
+                # Closest approach between the face-intersection line and the
+                # target member axis gives the station at which to cut.
+                parameters, *_ = np.linalg.lstsq(
+                    np.column_stack((line_direction, -axis_direction)),
+                    rendered_start - intersection_point,
+                    rcond=None,
+                )
+                axis_parameter = float(parameters[1])
+            else:
+                axis_parameter = float(np.dot(intersection_point - rendered_start, axis_direction))
+            tolerance = max(1e-8, axis_length * 1e-7)
+            if axis_parameter < -tolerance or axis_parameter > axis_length + tolerance:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(A interseção das faces está fora da barra)</span>"
+                )
+                return
+            axis_parameter = min(axis_length, max(0.0, axis_parameter))
+            cut_point = rendered_start + axis_direction * axis_parameter
+            removing_start = axis_parameter <= axis_length / 2
+            removal_normal = -axis_direction if removing_start else axis_direction
+            selected_end = rendered_start if removing_start else rendered_end
+            removal_planes_list = []
+            for plane_point, plane_normal in zip(face_points, face_normals):
+                side = float(np.dot(selected_end - plane_point, plane_normal))
+                if abs(side) <= 1e-8:
+                    outward = -axis_direction if removing_start else axis_direction
+                    side = float(np.dot(outward, plane_normal))
+                oriented_normal = plane_normal if side >= 0.0 else -plane_normal
+                removal_planes_list.append((
+                    tuple(float(value) for value in plane_point),
+                    tuple(float(value) for value in oriented_normal),
+                ))
+            removal_planes = tuple(removal_planes_list)
+
+        labels = tuple(dict.fromkeys(self._detail_end_cut_face_label(face) for face in faces))
+        reference_label = labels[0] if len(labels) == 1 else "Interseção das faces: " + ", ".join(labels)
+        cut_id = str(uuid.uuid4())
+        try:
+            self.model.add_detail_end_cut(
+                target_name, cut_id, cut_point, removal_normal, reference_label,
+                planes=removal_planes,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Subtrair extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self.refresh_scene()
+        cut_reference = ("end_cut", cut_id)
+        if ("bar", target_name, *cut_reference) in self.scene._detail_subtraction_failures:
+            member = self.model.bars[target_name]
+            self.model.update_detail_end_cuts(
+                target_name,
+                tuple(cut for cut in member.detail_end_cuts if cut.identifier != cut_id),
+            )
+            self.refresh_scene()
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Não foi possível gerar um corte válido; "
+                "a geometria original foi preservada)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        self._detail_end_cut_target = None
+        self._detail_end_cut_reference_faces = []
+        self._command_mode = "detail_end_cut_target_selection"
+        self.scene.set_detail_end_cut_target(None)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Subtrair extremidade</b> <span style='color:#57606a'>"
+            f"(Extremidade de {escape(target_name)} cortada por {escape(reference_label)}; "
+            "selecione outra barra ou pressione Esc)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -1827,6 +2067,7 @@ class MainWindow(QMainWindow):
         self.axes_panel.hide()
         self.reference_panel.hide()
         self._command_mode = "face_alignment_source_selection"
+        self.scene.set_node_component_pick_through(False)
         self.scene.set_face_alignment_mode(True)
         self.history.append(
             "> <b>Alinhar faces</b> "
@@ -1846,7 +2087,7 @@ class MainWindow(QMainWindow):
             if target_kind not in {"bar", "plate"}:
                 self.history.append(
                     "> <b>Alinhar faces</b> "
-                    "<span style='color:#8c959f'>(Selecione uma face de barra ou placa)</span>"
+                    "<span style='color:#8c959f'>(Selecione uma face de barra ou placa que será movida)</span>"
                 )
                 return
             self._face_alignment_source = (target_kind, target_name)
@@ -1868,6 +2109,8 @@ class MainWindow(QMainWindow):
         if source is None or source_hit is None:
             return
         source_kind, source_name = source
+        if target_kind not in {"bar", "plate", "component"}:
+            return
         if (target_kind, target_name) == source:
             self.history.append(
                 "> <b>Alinhar faces</b> "
@@ -2188,7 +2431,7 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return
         source = self._endpoint_alignment_source
-        if source is None or target_kind not in {"bar", "plate"}:
+        if source is None or target_kind not in {"bar", "plate", "component"}:
             return
         source_kind, source_name = source
         if source_kind == "plate":
@@ -2227,7 +2470,7 @@ class MainWindow(QMainWindow):
                 ("bar", name, self.model.bars[name])
                 for name in target_group_names if name in self.model.bars
             ]
-        else:
+        elif target_kind == "plate":
             plate = self.model.plates.get(target_name)
             if plate is None:
                 return
@@ -2249,6 +2492,14 @@ class MainWindow(QMainWindow):
                 for _kind, name, member in target_members
                 for node_name in (member.start_node, member.end_node)
             }
+        else:
+            node_name = target_name
+            target_members = [
+                ("bar", name, member)
+                for name, member in self.model.bars.items()
+                if node_name in (member.start_node, member.end_node)
+            ]
+            target_outer_nodes = {(name, node_name) for _kind, name, _member in target_members}
         candidates = []
         for candidate_name in source_names:
             source_candidate = self.model.bars.get(candidate_name)
@@ -2284,8 +2535,8 @@ class MainWindow(QMainWindow):
         if len(candidates) != 1:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#8c959f'>(Selecione uma face de barra ou de uma placa apoiada "
-                "em uma barra ligada à extremidade externa do grupo)</span>"
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa ou chapa de base "
+                "conectada a uma barra ligada à extremidade externa do grupo)</span>"
             )
             return
         source, endpoint_pair = candidates[0]
@@ -2391,6 +2642,7 @@ class MainWindow(QMainWindow):
         self.reference_panel.hide()
         self.scene.set_endpoint_alignment_target(None)
         self._command_mode = "connect_member_ends_selection"
+        self.scene.set_node_component_pick_through(True)
         self.history.append(
             "> <b>Conectar extremidades</b> "
             "<span style='color:#57606a'>(Selecione a primeira barra; Esc cancela)</span>"
@@ -3238,15 +3490,27 @@ class MainWindow(QMainWindow):
         target_kind, target_name = target
         elements = self.model.bars if target_kind == "bar" else self.model.plates
         element = elements.get(target_name)
-        if element is None or cutter not in element.detail_subtractions:
+        if element is None:
+            return
+        if cutter[0] == "end_cut":
+            cuts = getattr(element, "detail_end_cuts", ())
+            if not any(cut.identifier == cutter[1] for cut in cuts):
+                return
+        elif cutter not in element.detail_subtractions:
             return
         was_open = self.subtractions_panel.isVisible()
         self._detail_subtraction_visible_refs.discard((*target, *cutter))
         self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
-        self.model.update_detail_subtractions(
-            target_kind, target_name,
-            tuple(reference for reference in element.detail_subtractions if reference != cutter),
-        )
+        if cutter[0] == "end_cut":
+            self.model.update_detail_end_cuts(
+                target_name,
+                tuple(cut for cut in element.detail_end_cuts if cut.identifier != cutter[1]),
+            )
+        else:
+            self.model.update_detail_subtractions(
+                target_kind, target_name,
+                tuple(reference for reference in element.detail_subtractions if reference != cutter),
+            )
         self.refresh_scene()
         self.properties.update_subtractions_status(*target)
         if was_open:
@@ -3276,6 +3540,15 @@ class MainWindow(QMainWindow):
         self.calculation_properties_panel.raise_()
         if button is not None:
             button.setChecked(True)
+
+    def show_node_components_dialog(self, node_name: str) -> None:
+        """Open the component catalog for one selected node."""
+        if node_name not in self.model.nodes or self.palette.active_group != "Geometria":
+            return
+        dialog = NodeComponentsDialog(self, node_name, self)
+        self.node_components_dialog = dialog
+        dialog.exec()
+        self.node_components_dialog = None
 
     def show_section_panel(self, section: str, button=None) -> None:
         """Show the geometry panel that corresponds to a section family."""
@@ -3907,6 +4180,9 @@ class MainWindow(QMainWindow):
     def _confirm_command_selection(self) -> None:
         """Apply commands to the shared Ctrl selection when ENTER is pressed."""
         mode = self._command_mode
+        if mode == "detail_end_cut_face_selection":
+            self._commit_detail_end_cut_faces()
+            return
         if mode == "plate_selection":
             self._finish_plate_selection()
             return
@@ -4704,6 +4980,7 @@ class MainWindow(QMainWindow):
             )
             return
         if self._command_mode == "connect_member_ends_selection":
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
             self._connect_member_ends_first_bar = None
             self.clear_selection()
@@ -4715,6 +4992,7 @@ class MainWindow(QMainWindow):
         if self._command_mode in {
             "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
         }:
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
             self._detail_subtraction_target = None
             self.clear_selection()
@@ -4724,8 +5002,23 @@ class MainWindow(QMainWindow):
             )
             return
         if self._command_mode in {
+            "detail_end_cut_target_selection", "detail_end_cut_face_selection",
+        }:
+            self.scene.set_node_component_pick_through(False)
+            self.scene.set_detail_end_cut_target(None)
+            self._detail_end_cut_target = None
+            self._detail_end_cut_reference_faces = []
+            self._command_mode = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
         }:
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
             self._endpoint_alignment_source = None
             self.scene.set_endpoint_alignment_target(None)
@@ -4738,6 +5031,7 @@ class MainWindow(QMainWindow):
         if self._command_mode in {
             "face_alignment_source_selection", "face_alignment_reference_selection",
         }:
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
             self._face_alignment_source = None
             self._face_alignment_source_hit = None
@@ -5007,6 +5301,26 @@ class MainWindow(QMainWindow):
         if self._command_mode == "plate_selection":
             self._plate_add_selection(kind, name)
             return
+        if self._command_mode == "detail_end_cut_target_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                )
+                self.clear_selection()
+                return
+            self._detail_end_cut_target = name
+            self._detail_end_cut_reference_faces = []
+            self._command_mode = "detail_end_cut_face_selection"
+            self.clear_selection()
+            self.scene.set_detail_end_cut_target(name)
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#57606a'>(Selecione uma face; Ctrl+clique adiciona outras; "
+                "pressione Enter para aplicar; Esc cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
         if self._command_mode in {
             "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
         }:
@@ -5163,7 +5477,7 @@ class MainWindow(QMainWindow):
             self.scene.set_endpoint_alignment_target(name)
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#57606a'>(Selecione uma face de uma barra ou outra placa; Esc cancela)</span>"
+                "<span style='color:#57606a'>(Selecione uma face de barra, placa ou chapa de base; Esc cancela)</span>"
             )
             self.scene.plotter.setFocus()
             return

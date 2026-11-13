@@ -6,11 +6,14 @@ from .entities import (
     ActionGroup,
     AnalysisResult,
     Bar,
+    DetailEndCut,
     LoadCase,
     LoadCombination,
     Material,
     Member,
     Node,
+    NodeComponentAssignment,
+    NodeComponentDefinition,
     Plate,
     ReferenceAxis,
     RigidBar,
@@ -21,5 +24,5 @@ from .model import StructuralModel
 
 __all__ = [
     "Action", "ActionDefinition", "ActionGroup", "AnalysisResult", "Bar", "LoadCase", "LoadCombination",
-    "Material", "Member", "Node", "Plate", "ReferenceAxis", "RigidBar", "Section", "StructuralModel", "Support",
+    "DetailEndCut", "Material", "Member", "Node", "NodeComponentAssignment", "NodeComponentDefinition", "Plate", "ReferenceAxis", "RigidBar", "Section", "StructuralModel", "Support",
 ]

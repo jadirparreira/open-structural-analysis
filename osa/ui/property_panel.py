@@ -147,6 +147,24 @@ class PropertyPanel(QFrame):
         identity_layout.setContentsMargins(0, 0, 0, 0)
         identity_layout.setSpacing(6)
         identity_layout.addWidget(self.identity_value, 1)
+        self._node_component_button = QToolButton()
+        self._node_component_button.setFixedSize(34, 34)
+        self._node_component_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "component.svg"
+        )))
+        self._node_component_button.setIconSize(QSize(18, 18))
+        self._node_component_button.setToolTip("Componente")
+        self._node_component_button.setAccessibleName("Componente do nó")
+        self._node_component_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        self._node_component_button.clicked.connect(
+            lambda: window.show_node_components_dialog(self._selected[1])
+            if self._selected is not None else None
+        )
+        identity_layout.addWidget(self._node_component_button)
         self._calculation_properties_button = QToolButton()
         self._calculation_properties_button.setFixedSize(34, 34)
         self._calculation_properties_button.setIcon(QIcon(str(
@@ -468,6 +486,7 @@ class PropertyPanel(QFrame):
         self.verify_bar_button.setAccessibleName("Verificar barra isoladamente")
         self._calculation_properties_button.setEnabled(True)
         self._calculation_properties_button.setToolTip("Propriedades de Cálculo")
+        self._node_component_button.hide()
         if self._verification_memory_button is not None:
             self._verification_memory_button.setEnabled(True)
         self.coordinates_title.hide()
@@ -582,6 +601,9 @@ class PropertyPanel(QFrame):
             self.member_color_button.setAccessibleName("Definir cor da barra")
         self._calculation_properties_button.setVisible(
             kind == "bar" and verification_mode and bool(names)
+        )
+        self._node_component_button.setVisible(
+            kind == "node" and section == "Geometria" and len(names) == 1
         )
         # Member and node deletion stays in the main delete command/shortcut,
         # keeping their property identity row free of a delete control.
@@ -1166,14 +1188,18 @@ class PropertyPanel(QFrame):
         label = QLabel("Subtrações")
         label.setObjectName("propertySection")
         cutters = tuple(element.detail_subtractions)
-        summary = ", ".join(cutter_name for _cutter_kind, cutter_name in cutters) or "Nenhuma"
+        end_cuts = tuple(getattr(element, "detail_end_cuts", ()))
+        summary_items = [cutter_name for _cutter_kind, cutter_name in cutters]
+        summary_items.extend(f"Extremidade: {cut.reference_label}" for cut in end_cuts)
+        summary = ", ".join(summary_items) or "Nenhuma"
         value = QLineEdit(summary)
         value.setReadOnly(True)
         value.setObjectName("identityDisplay")
         value.setAccessibleName("Subtrações recebidas")
         value.setToolTip("\n".join(
-            f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
-            for cutter_kind, cutter_name in cutters
+            [f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+             for cutter_kind, cutter_name in cutters]
+            + [f"Extremidade cortada pela face de {cut.reference_label}" for cut in end_cuts]
         ) or "Nenhuma subtração aplicada")
         self._subtractions_status = value
         row = QWidget()
@@ -1208,13 +1234,18 @@ class PropertyPanel(QFrame):
         if element is None:
             return
         cutters = tuple(element.detail_subtractions)
-        self._subtractions_status.setText(
-            ", ".join(cutter_name for _cutter_kind, cutter_name in cutters) or "Nenhuma"
-        )
-        self._subtractions_status.setToolTip("\n".join(
+        end_cuts = tuple(getattr(element, "detail_end_cuts", ()))
+        summary_items = [cutter_name for _cutter_kind, cutter_name in cutters]
+        summary_items.extend(f"Extremidade: {cut.reference_label}" for cut in end_cuts)
+        tooltip_items = [
             f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
             for cutter_kind, cutter_name in cutters
-        ) or "Nenhuma subtração aplicada")
+        ]
+        tooltip_items.extend(
+            f"Extremidade cortada pela face de {cut.reference_label}" for cut in end_cuts
+        )
+        self._subtractions_status.setText(", ".join(summary_items) or "Nenhuma")
+        self._subtractions_status.setToolTip("\n".join(tooltip_items) or "Nenhuma subtração aplicada")
 
     @classmethod
     def _plate_positioning_summary(cls, plate) -> str:

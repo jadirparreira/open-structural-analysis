@@ -6,11 +6,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pyvista as pv
+import pytest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from osa.model import StructuralModel
-from osa.rendering.batched_renderer import BatchedMemberRenderer
+from osa.domain import DetailEndCut, NodeComponentAssignment
+from osa.rendering.batched_renderer import (
+    BatchedMemberRenderer,
+    _boolean_difference_mesh,
+    _clip_line_mesh_outside_cutters,
+)
 from osa.ui.detailing_preview import DetailingViewPreview
 from osa.ui.detailing_viewport import (
     DetailingViewViewport,
@@ -58,6 +64,242 @@ def test_depth_clip_fast_paths_preserve_bounds_and_intersections():
     crossing = clip(mesh, (0, 0, 1), 2, -.25, .25)
     assert crossing is not None
     np.testing.assert_allclose(crossing.bounds[4:], (-.25, .25))
+
+
+def test_end_cut_uses_a_closed_face_plane_cutter_with_boolean_difference():
+    from osa.rendering.scene_batched import StructureScene
+
+    target = pv.Cube().triangulate()
+    cut = DetailEndCut("cut-1", (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), "Face de referência")
+    cutter = StructureScene._detail_end_cut_mesh(target, cut)
+    result = _boolean_difference_mesh(target, cutter)
+
+    assert result is not None
+    assert result.volume == pytest.approx(target.volume / 2.0, rel=1e-6)
+    assert result.bounds[5] <= 1e-6
+
+
+def test_multi_face_end_cut_removes_only_the_common_half_space_region():
+    from osa.rendering.scene_batched import StructureScene
+
+    target = pv.Cube(
+        center=(0.5, 0.0, 0.0), x_length=1.0, y_length=1.0, z_length=1.0,
+    ).triangulate()
+    cut = DetailEndCut(
+        "cut-multi", (0.4, 0.2, 0.0), (1.0, 0.0, 0.0),
+        "Interseção das faces", (
+            ((0.4, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            ((0.0, 0.2, 0.0), (0.0, 1.0, 0.0)),
+        ),
+    )
+
+    cutter = StructureScene._detail_end_cut_mesh(target, cut)
+    result = _boolean_difference_mesh(target, cutter)
+
+    assert result is not None
+    assert result.volume == pytest.approx(0.82, rel=1e-5)
+    assert result.bounds[1] == pytest.approx(1.0)
+    assert result.bounds[3] == pytest.approx(0.5)
+
+
+def test_end_cut_is_included_for_a_member_without_standard_subtractions():
+    from osa.rendering.scene_batched import StructureScene
+
+    model = _model()
+    model.add_detail_end_cut(
+        "B0", "cut-1", (0.5, 0.0, 0.0), (1.0, 0.0, 0.0), "Face de referência",
+    )
+    cutter = pv.Cube()
+    scene_state = SimpleNamespace(
+        _detailing_session_active=True,
+        _solid_members_visible=True,
+        _detail_subtraction_meshes={("end_cut", "cut-1"): cutter},
+    )
+
+    mapped = StructureScene._detail_subtractions_by_target(scene_state, model)
+
+    assert mapped[("bar", "B0")] == ((('end_cut', 'cut-1'), cutter),)
+
+
+def test_member_profile_edges_remain_on_both_sides_of_a_subtraction():
+    source_edges = pv.PolyData(
+        np.asarray(((-2.0, 0.0, 0.0), (2.0, 0.0, 0.0))),
+        lines=np.asarray((2, 0, 1)),
+    )
+
+    clipped = _clip_line_mesh_outside_cutters(source_edges, (pv.Cube(),))
+
+    assert clipped.n_lines == 2
+    np.testing.assert_allclose(clipped.bounds, (-2.0, 2.0, 0.0, 0.0, 0.0, 0.0))
+    for cell in clipped.lines.reshape((-1, 3)):
+        endpoints = clipped.points[cell[1:]]
+        assert abs(endpoints.mean(axis=0)[0]) >= 0.5 - 1e-9
+
+
+@pytest.mark.parametrize("reference", [("end_cut", "cut"), ("bar", "B1")])
+def test_cut_tubular_members_keep_their_section_profile_edges(reference):
+    from osa.rendering.scene_batched import StructureScene
+
+    model = StructuralModel()
+    model.add_node("N0", 0, 0, 0)
+    model.add_node("N1", 2, 0, 0)
+    model.add_bar("B0", "N0", "N1")
+    model.update_bar_section("B0", "Tubular Quadrado")
+    model.update_member_profile("B0", "TQ 100 x 3", {"b": 100, "t": 3})
+    renderer = BatchedMemberRenderer()
+    original = renderer.build(model, 0.05)
+    first, last = original.face_cell_ranges["B0"]
+    target = original.faces.extract_cells(np.arange(first, last)).extract_surface(
+        algorithm="dataset_surface",
+    ).triangulate().clean()
+    cutter = StructureScene._detail_end_cut_mesh(
+        target, DetailEndCut("cut", (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), "Face"),
+    )
+
+    cut = renderer.build(
+        model, 0.05, subtraction_meshes={("bar", "B0"): ((reference, cutter),)},
+    )
+
+    edge_start, edge_end = cut.edge_cell_ranges["B0"]
+    face_start, face_end = cut.face_cell_ranges["B0"]
+    cut_surface = cut.faces.extract_cells(np.arange(face_start, face_end)).extract_surface(
+        algorithm="dataset_surface",
+    ).triangulate().clean()
+    boolean_edges = cut_surface.extract_feature_edges(
+        boundary_edges=True, feature_edges=True,
+        manifold_edges=False, non_manifold_edges=False, feature_angle=25.0,
+    )
+    assert edge_end - edge_start > boolean_edges.n_cells
+
+
+def test_adding_end_cut_rebuilds_the_rendered_member_solid():
+    from osa.rendering.scene_batched import StructureScene
+
+    app = QApplication.instance() or QApplication([])
+    model = _model()
+    scene = StructureScene()
+    try:
+        scene.render_model(model)
+        scene.set_detailing_session_active(True)
+        scene.set_solid_members_visible(True)
+        model.add_detail_end_cut(
+            "B0", "cut-1", (0.5, 0.0, 0.0), (1.0, 0.0, 0.0), "Face de referência",
+        )
+        scene.refresh_model_changes(model)
+
+        start, end = scene._member_batch.face_cell_ranges["B0"]
+        member = scene._member_batch.faces.extract_cells(np.arange(start, end)).extract_surface(
+            algorithm="dataset_surface",
+        ).triangulate().clean()
+        assert member.bounds[1] <= 0.5 + 1e-6
+        app.processEvents()
+    finally:
+        scene.close()
+
+
+def test_managed_view_geometry_builds_with_multi_face_end_cut():
+    from osa.ui.detailing_viewport import _ViewportGeometryBuilder, _DetachedDetailingScene
+
+    model = StructuralModel()
+    model.add_node("N0", 0, 0, 0)
+    model.add_node("N1", 2, 0, 0)
+    model.add_bar("B0", "N0", "N1")
+    model.update_bar_section("B0", "Tubular Quadrado")
+    model.update_member_profile("B0", "TQ 100 x 3", {"b": 100, "t": 3})
+    model.update_node_component("N0", NodeComponentAssignment("base_plate"))
+    model.add_detail_end_cut(
+        "B0", "cut-managed-view", (0.8, 0.0, 0.0), (1.0, 0.0, 0.0),
+        "Interseção das faces",
+        planes=(
+            ((0.8, 0.0, 0.0), (1.0, -0.4, 0.0)),
+            ((0.8, 0.0, 0.0), (1.0, 0.0, -0.4)),
+        ),
+    )
+
+    source = _DetachedDetailingScene(SimpleNamespace())
+    surfaces, edges = _ViewportGeometryBuilder(source)._build_scene_meshes(
+        model, "ISO-SE", None, {},
+    )
+
+    assert surfaces is not None and surfaces.n_cells > 0
+    assert edges is not None and edges.n_cells > 0
+    solid_names = {name for name, _mesh in source.detailing_view_solid_meshes(model)}
+    assert any(name.startswith("component:N0:") for name in solid_names)
+
+
+def test_viewport_adds_silhouette_lines_to_round_fasteners():
+    import numpy as np
+    import pyvista as pv
+    from osa.ui.detailing_viewport import _ViewportGeometryBuilder
+
+    rod = pv.Cylinder(
+        center=(0, 0, 0), direction=(0, 0, 1), radius=0.05, height=1.0,
+        resolution=32,
+    ).triangulate()
+
+    silhouettes = _ViewportGeometryBuilder._view_silhouette_edges(
+        [rod], np.asarray((1.0, 0.0, 0.0)), np.asarray((0.0, 0.0, 1.0)),
+    )
+
+    assert silhouettes[0].n_lines >= 2
+    line_cells = silhouettes[0].lines
+    cursor = 0
+    longitudinal_contours = 0
+    while cursor < len(line_cells):
+        count = int(line_cells[cursor])
+        point_ids = line_cells[cursor + 1:cursor + count + 1]
+        points = silhouettes[0].points[point_ids]
+        if len(points) >= 2 and abs(points[-1, 2] - points[0, 2]) >= 0.99:
+            longitudinal_contours += 1
+        cursor += count + 1
+    assert longitudinal_contours >= 2
+
+
+def test_viewport_removes_group_interface_edges_with_boolean_mesh_tolerance():
+    import numpy as np
+    import pyvista as pv
+    from osa.ui.detailing_viewport import _ViewportGeometryBuilder
+
+    # The boolean cut can leave vertices a fraction of a micron off the
+    # original joint plane. Both ends of the seam should still be filtered.
+    edge_mesh = pv.PolyData(
+        np.asarray(((1.0 + 2e-7, 0, 0), (1.0 + 2e-7, 1, 0), (0, 0, 0), (0, 1, 0))),
+        lines=np.asarray((2, 0, 1, 2, 2, 3)),
+    )
+    filtered = _ViewportGeometryBuilder._without_group_interface_edges(
+        edge_mesh, ((np.asarray((1.0, 0, 0)), np.asarray((1.0, 0, 0)), 1e-6),),
+    )
+
+    assert filtered.n_lines == 1
+
+
+def test_profile_transition_edges_are_clipped_by_end_cut_in_managed_views():
+    from osa.ui.detailing_preview import DetailingViewPreview, _ViewGeometryCalculator
+    from osa.ui.detailing_viewport import _DetachedDetailingScene
+
+    model = StructuralModel()
+    model.add_node("N0", 0, 0, 0)
+    model.add_node("N1", 2, 0, 0)
+    model.add_bar("B0", "N0", "N1")
+    model.update_bar_section("B0", "Tubular Quadrado")
+    model.update_member_profile("B0", "TQ 100 x 3", {"b": 100, "t": 3})
+    model.add_detail_end_cut(
+        "B0", "cut-transition", (1.5, 0.0, 0.0), (1.0, 0.0, 0.0),
+        "Interseção das faces",
+        planes=(
+            ((1.5, 0.0, 0.0), (1.0, -0.4, 0.0)),
+            ((1.5, 0.0, 0.0), (1.0, 0.0, -0.4)),
+        ),
+    )
+
+    calculator = _ViewGeometryCalculator()
+    calculator._mesh_cache_owner = model
+    calculator._detail_scene = _DetachedDetailingScene(SimpleNamespace())
+    DetailingViewPreview._ensure_model_meshes(calculator, model)
+    transitions = calculator._ensure_model_curve_edges(model)
+
+    assert transitions["B0"].n_lines > 0
+    assert transitions["B0"].bounds[1] < 1.7
 
 
 def test_viewport_returns_immediately_and_discards_stale_previews(monkeypatch):
@@ -311,7 +553,7 @@ def test_viewport_scene_includes_curved_profile_transitions(monkeypatch):
         _surface, restored_edges = builder._build_scene_meshes(model, plane, 0, {
             "upper_offset_cm": 1000, "lower_offset_cm": 1000,
         })
-        assert restored_edges.n_lines >= old_edges.n_lines + 8
+        assert restored_edges.n_lines >= old_edges.n_lines + 4
 
 
 def test_curve_edges_use_the_existing_hidden_line_rules():

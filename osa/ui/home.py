@@ -112,6 +112,7 @@ class ScrollingNameLabel(QLabel):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._full_text = text
+        self._fade_color = QColor(255, 255, 255)
         self._scroll_offset = 0.0
         self._animation = QPropertyAnimation(self, b"scrollOffset", self)
         self._animation.finished.connect(self._on_animation_finished)
@@ -140,6 +141,10 @@ class ScrollingNameLabel(QLabel):
         self._cycle_state = "idle"
         self._scroll_offset = 0.0
         super().setText(self._full_text)
+        self.update()
+
+    def set_fade_color(self, color: QColor | str) -> None:
+        self._fade_color = QColor(color)
         self.update()
 
     def _text_width(self) -> int:
@@ -247,9 +252,12 @@ class ScrollingNameLabel(QLabel):
             left_edge_alpha = round(255 * (1.0 - progress))
             right_edge_alpha = round(255 * progress)
             fade = QLinearGradient(0, 0, text_width, 0)
-            opaque = QColor(255, 255, 255, 255)
-            left_edge = QColor(255, 255, 255, left_edge_alpha)
-            right_edge = QColor(255, 255, 255, right_edge_alpha)
+            opaque = QColor(self._fade_color)
+            left_edge = QColor(self._fade_color)
+            right_edge = QColor(self._fade_color)
+            opaque.setAlpha(255)
+            left_edge.setAlpha(left_edge_alpha)
+            right_edge.setAlpha(right_edge_alpha)
             fade.setColorAt(max(0.0, visible_start / text_width), left_edge)
             fade.setColorAt(min(1.0, (visible_start + fade_width) / text_width), opaque)
             fade.setColorAt(max(0.0, (visible_end - fade_width) / text_width), opaque)

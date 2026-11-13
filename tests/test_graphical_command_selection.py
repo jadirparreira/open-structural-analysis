@@ -127,6 +127,88 @@ def test_copy_accepts_ctrl_rectangle(window, monkeypatch):
     assert window._command_mode == "copy_elements_reference_placement"
 
 
+def test_detailing_commands_pick_through_node_components(window):
+    scene = window.scene
+
+    window.start_connect_member_ends()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    window.start_detail_subtraction()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    window.start_member_endpoint_alignment()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    scene._node_component_pick_through = True
+    assert scene._pick_node_component((0, 0)) is None
+    scene._node_component_pick_through = False
+
+
+def test_subtract_end_routes_from_bar_selection_to_reference_face(window):
+    window.start_detail_end_cut()
+    assert window._command_mode == "detail_end_cut_target_selection"
+    assert window.scene._node_component_pick_through
+
+    click(window, ("bar", "B1"))
+    assert window._command_mode == "detail_end_cut_face_selection"
+    assert window._detail_end_cut_target == "B1"
+    assert window.scene._detail_end_cut_target == "B1"
+
+    window.cancel_member_placement()
+    assert window._command_mode is None
+    assert window._detail_end_cut_target is None
+    assert not window.scene._node_component_pick_through
+
+
+def test_subtract_end_chooses_the_protruding_side_from_face_position(window, monkeypatch):
+    window._command_mode = "detail_end_cut_face_selection"
+    window._detail_end_cut_target = "B1"
+    monkeypatch.setattr(window, "refresh_scene", lambda **_kwargs: None)
+
+    window._apply_detail_end_cut_face(
+        ("plate", "P-reference", 0, (0.7, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    )
+    assert window.model.bars["B1"].detail_end_cuts == ()
+    window._confirm_command_selection()
+
+    cuts = window.model.bars["B1"].detail_end_cuts
+    assert len(cuts) == 1
+    assert cuts[0].point == pytest.approx((0.7, 0.0, 0.0))
+    assert cuts[0].normal == pytest.approx((1.0, 0.0, 0.0))
+    assert cuts[0].reference_label == "Placa P-reference"
+    assert window._command_mode == "detail_end_cut_target_selection"
+
+
+def test_subtract_end_uses_intersection_of_ctrl_selected_faces(window, monkeypatch):
+    window._command_mode = "detail_end_cut_face_selection"
+    window._detail_end_cut_target = "B1"
+    monkeypatch.setattr(window, "refresh_scene", lambda **_kwargs: None)
+
+    window._apply_detail_end_cut_face(
+        ("plate", "P-x", 0, (0.7, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    )
+    window._apply_detail_end_cut_face(
+        ("plate", "P-y", 1, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        add_face=True,
+    )
+
+    assert window.model.bars["B1"].detail_end_cuts == ()
+    window._confirm_command_selection()
+
+    cuts = window.model.bars["B1"].detail_end_cuts
+    assert len(cuts) == 1
+    assert cuts[0].point == pytest.approx((0.7, 0.0, 0.0))
+    assert cuts[0].normal == pytest.approx((1.0, 0.0, 0.0))
+    assert "P-x" in cuts[0].reference_label and "P-y" in cuts[0].reference_label
+    assert window._command_mode == "detail_end_cut_target_selection"
+
+
 @pytest.mark.parametrize("preselected", [False, True])
 def test_reverse_applies_to_every_selected_member(window, monkeypatch, preselected):
     if preselected:

@@ -38,10 +38,44 @@ class Node:
     supports: tuple[bool, bool, bool, bool, bool, bool] = (False,) * 6
     # Translational stiffnesses use kN/m; rotational stiffnesses use kN·m/rad.
     support_stiffness: tuple[float, float, float, float, float, float] = (0.0,) * 6
+    component: NodeComponentAssignment | None = None
 
     @property
     def support(self) -> Support:
         return Support.from_tuple(self.supports)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeComponentAssignment:
+    """A component instance attached to a node, with component-owned parameters."""
+
+    component_id: str
+    parameters: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NodeComponentDefinition:
+    """Metadata used by future node-component implementations and the UI."""
+
+    component_id: str
+    name: str
+    interacts_with_model: bool = False
+    has_3d_representation: bool = False
+    parametric: bool = False
+    parameters: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DetailEndCut:
+    """A detailing-only end cut defined by one or more oriented planes."""
+
+    identifier: str
+    point: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    reference_label: str
+    planes: tuple[
+        tuple[tuple[float, float, float], tuple[float, float, float]], ...
+    ] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +119,8 @@ class Member:
     calculation_property_overrides: tuple[tuple[str, float], ...] = ()
     # References to solids subtracted from this member in detailing only.
     detail_subtractions: tuple[tuple[str, str], ...] = ()
+    # Face-plane cuts that remove one protruding end, only in detailing.
+    detail_end_cuts: tuple[DetailEndCut, ...] = ()
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

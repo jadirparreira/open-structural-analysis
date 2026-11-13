@@ -16,9 +16,11 @@ from osa.domain import (
     ActionGroup,
     AnalysisResult,
     Bar,
+    DetailEndCut,
     LoadCase,
     LoadCombination,
     Node,
+    NodeComponentAssignment,
     ReferenceAxis,
     RigidBar,
     StructuralModel,
@@ -44,6 +46,19 @@ def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int,
             width_numerator, width_denominator = width.as_integer_ratio()
             cells.append((numerator * width_denominator) // (denominator * width_numerator))
     return tuple(cells)
+
+
+def _node_component(value: Any) -> NodeComponentAssignment | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("component_id"), str):
+        raise ValueError("A configuração do componente do nó é inválida.")
+    parameters = value.get("parameters", ())
+    if isinstance(parameters, dict):
+        parameters = tuple(parameters.items())
+    return NodeComponentAssignment(
+        value["component_id"], tuple((str(key), parameter) for key, parameter in parameters),
+    )
 
 
 class ProjectSerializer:
@@ -147,6 +162,11 @@ class ProjectSerializer:
             for item in data.get("plates", ())
             if isinstance(item, dict) and item.get("detail_subtractions")
         )
+        saved_bar_end_cuts = tuple(
+            (item.get("name"), item.get("detail_end_cuts", ()))
+            for item in data.get("members", data.get("bars", ()))
+            if isinstance(item, dict) and item.get("detail_end_cuts")
+        )
         for item in data.get("references", ()):
             candidate.add_reference(load_reference(item))
             if yield_control is not None:
@@ -165,6 +185,7 @@ class ProjectSerializer:
                 item["name"], *coordinates,
                 tuple(bool(value) for value in item.get("supports", (False,) * 6)),
                 tuple(float(value) for value in item.get("support_stiffness", (0.0,) * 6)),
+                _node_component(item.get("component")),
             )
             cell = _coordinate_cell(coordinates, cell_width)
             for delta in neighbors:
@@ -309,6 +330,22 @@ class ProjectSerializer:
             candidate.update_detail_subtractions("bar", name, cuts)
         for name, cuts in saved_plate_subtractions:
             candidate.update_detail_subtractions("plate", name, cuts)
+        for name, cuts in saved_bar_end_cuts:
+            candidate.update_detail_end_cuts(
+                name,
+                tuple(
+                    DetailEndCut(
+                        str(item["identifier"]), tuple(item["point"]),
+                        tuple(item["normal"]), str(item["reference_label"]),
+                        tuple(
+                            (tuple(plane[0]), tuple(plane[1]))
+                            for plane in item.get("planes", ())
+                        ),
+                    )
+                    if isinstance(item, dict) else item
+                    for item in cuts
+                ),
+            )
 
         candidate.set_reference_axes({
             direction: tuple(

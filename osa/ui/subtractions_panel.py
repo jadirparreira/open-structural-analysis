@@ -58,7 +58,10 @@ class SubtractionsPanel(QFrame):
     def configure_for(self, kind: str, name: str) -> None:
         self._target = (kind, name)
         element = self._element()
-        references = tuple(element.detail_subtractions) if element is not None else ()
+        references = (
+            (*element.detail_subtractions, *(('end_cut', cut.identifier) for cut in getattr(element, "detail_end_cuts", ())))
+            if element is not None else ()
+        )
         self.title.setText("Subtrações")
         while self.rows_layout.count():
             item = self.rows_layout.takeAt(0)
@@ -101,7 +104,16 @@ class SubtractionsPanel(QFrame):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
-        field = QLineEdit(f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}")
+        if cutter_kind == "end_cut":
+            cut = next(
+                (item for item in getattr(self._element(), "detail_end_cuts", ())
+                 if item.identifier == cutter_name),
+                None,
+            )
+            label = f"Extremidade — {cut.reference_label}" if cut is not None else "Extremidade cortada"
+        else:
+            label = f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+        field = QLineEdit(label)
         field.setReadOnly(True)
         field.setObjectName("identityDisplay")
         field.setStyleSheet(

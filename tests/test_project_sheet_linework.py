@@ -68,6 +68,93 @@ def test_grouped_member_interface_filters_only_shared_end_edges():
     assert filtered.lines.tolist() == [2, 0, 1, 2, 3, 4]
 
 
+def test_grouped_member_interface_filters_edges_stored_as_polylines():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import numpy as np
+    import pyvista as pv
+
+    from osa.rendering.scene_batched import StructureScene
+
+    points = np.array([
+        [1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1],
+        [0, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0],
+    ], dtype=float)
+    mesh = pv.PolyData(points, lines=np.array([
+        5, 0, 1, 2, 3, 0,  # first member's shared end contour
+        2, 4, 0,           # first member's longitudinal profile edge
+        5, 0, 1, 2, 3, 0,  # second member's shared start contour
+        2, 0, 5,           # second member's longitudinal profile edge
+        2, 6, 7,           # unrelated member edge
+    ]))
+    mesh.cell_data['element_index'] = np.array([0, 0, 1, 1, 2])
+    nodes = {str(x): SimpleNamespace(x=x, y=0, z=0) for x in (0, 1, 2)}
+    bars = {
+        'a': SimpleNamespace(start_node='0', end_node='1'),
+        'b': SimpleNamespace(start_node='1', end_node='2'),
+    }
+    scene = SimpleNamespace(
+        _member_batch=SimpleNamespace(edges=mesh, names=('a', 'b', 'c')),
+        _member_edge_actor=MagicMock(), _solid_members_visible=True,
+        _analysis_visible=False, _verification_palette_visible=True,
+        _detailing_session_active=False, _verification_group_edge_actor=None,
+        _model=SimpleNamespace(verification_element_groups=[{'members': ['a', 'b']}], bars=bars, nodes=nodes),
+        plotter=MagicMock(), _add_colored_mesh=MagicMock(return_value=MagicMock()),
+    )
+
+    StructureScene._refresh_verification_group_edges(scene)
+
+    filtered = scene._add_colored_mesh.call_args.args[0]
+    assert filtered.n_cells == 3
+    assert filtered.cell_data['element_index'].tolist() == [0, 1, 2]
+
+
+def test_grouped_member_interface_filters_cut_edges_with_boolean_tolerance():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import numpy as np
+    import pyvista as pv
+
+    from osa.rendering.scene_batched import StructureScene
+
+    # Boolean subtraction can perturb points on the shared section plane by a
+    # fraction of a micron. Those cut boundary segments still belong to the
+    # interface and must not reappear as a seam in the grouped profile.
+    points = np.array([
+        [1.0000002, 0, 0], [1.0000002, 1, 0],
+        [0, 0, 0], [2, 0, 0], [3, 0, 0],
+    ], dtype=float)
+    mesh = pv.PolyData(points, lines=np.array([
+        2, 0, 1,  # first member's nearly coplanar cut edge
+        2, 2, 0,  # first member's longitudinal edge
+        2, 0, 1,  # second member's coincident interface edge
+        2, 1, 3,  # second member's longitudinal edge
+        2, 3, 4,  # unrelated member edge
+    ]))
+    mesh.cell_data['element_index'] = np.array([0, 0, 1, 1, 2])
+    nodes = {str(x): SimpleNamespace(x=x, y=0, z=0) for x in (0, 1, 2)}
+    bars = {
+        'a': SimpleNamespace(start_node='0', end_node='1'),
+        'b': SimpleNamespace(start_node='1', end_node='2'),
+    }
+    scene = SimpleNamespace(
+        _member_batch=SimpleNamespace(edges=mesh, names=('a', 'b', 'c')),
+        _member_edge_actor=MagicMock(), _solid_members_visible=True,
+        _analysis_visible=False, _verification_palette_visible=True,
+        _detailing_session_active=False, _verification_group_edge_actor=None,
+        _model=SimpleNamespace(verification_element_groups=[{'members': ['a', 'b']}], bars=bars, nodes=nodes),
+        plotter=MagicMock(), _add_colored_mesh=MagicMock(return_value=MagicMock()),
+    )
+
+    StructureScene._refresh_verification_group_edges(scene)
+
+    filtered = scene._add_colored_mesh.call_args.args[0]
+    assert filtered.n_cells == 3
+    assert filtered.cell_data['element_index'].tolist() == [0, 1, 2]
+
+
 def test_release_loop_matches_original_geometry():
     from math import cos, pi, sin
 

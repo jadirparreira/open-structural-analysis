@@ -2,11 +2,55 @@ import json
 
 import pytest
 
-from osa.domain import ActionDefinition, ActionGroup, AnalysisResult
+from osa.domain import ActionDefinition, ActionGroup, AnalysisResult, DetailEndCut
 from osa.domain.errors import DuplicateMemberError, DuplicateNodeCoordinatesError
 from osa.model import ReferenceAxis, StructuralModel
 from osa.persistence import ProjectRepository
 from osa.services import ThumbnailService
+
+
+def test_project_round_trip_preserves_detail_end_cuts():
+    from osa.persistence.project_serializer import ProjectSerializer
+
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 0.0, 0.0, 2.0)
+    model.add_bar("B1", "N1", "N2")
+    model.add_detail_end_cut(
+        "B1", "cut-1", (0.0, 0.0, 1.0), (0.0, 0.0, 3.0), "Placa P1",
+    )
+    serializer = ProjectSerializer()
+    saved = serializer.dump(model)
+    restored = StructuralModel()
+    serializer.load_into(restored, saved)
+
+    assert restored.bars["B1"].detail_end_cuts == (
+        DetailEndCut("cut-1", (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), "Placa P1"),
+    )
+
+
+def test_project_round_trip_preserves_multi_face_end_cut_planes():
+    from osa.persistence.project_serializer import ProjectSerializer
+
+    model = StructuralModel()
+    model.add_node("N1", 0.0, 0.0, 0.0)
+    model.add_node("N2", 0.0, 0.0, 2.0)
+    model.add_bar("B1", "N1", "N2")
+    planes = (
+        ((0.0, 0.0, 1.0), (0.0, 0.0, 1.0)),
+        ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    )
+    model.add_detail_end_cut(
+        "B1", "cut-multi", (0.0, 0.0, 1.0), (0.0, 0.0, 1.0),
+        "Interseção das faces", planes=planes,
+    )
+    serializer = ProjectSerializer()
+    saved = serializer.dump(model)
+    restored = StructuralModel()
+    serializer.load_into(restored, saved)
+
+    cut = restored.bars["B1"].detail_end_cuts[0]
+    assert cut.planes == planes
 
 
 @pytest.mark.parametrize("first, second", [

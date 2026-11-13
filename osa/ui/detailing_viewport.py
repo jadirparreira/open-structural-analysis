@@ -18,6 +18,8 @@ from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 from pyvistaqt import QtInteractor
 
 from osa.ui.detailing_preview import DetailingViewPreview, _ModelSnapshot, _ViewGeometryCalculator
+from osa.rendering.batched_renderer import _merge_unique_line_meshes
+from osa.rendering.solid_member_renderer import SolidMemberRenderer
 
 _LOG = logging.getLogger(__name__)
 
@@ -311,13 +313,92 @@ class DetailingViewViewport(QFrame):
             filtered_edge_meshes.append(edge_mesh)
         edge_meshes = filtered_edge_meshes
 
-        surfaces = [mesh for mesh in surfaces if mesh.n_points and mesh.n_cells]
-        edge_meshes = [mesh for mesh in edge_meshes if mesh.n_points and mesh.n_lines]
-        if not surfaces or not edge_meshes:
+        aligned_geometry = [
+            (surface, edges, member_name)
+            for surface, edges, member_name in zip(surfaces, edge_meshes, surface_member_names)
+            if surface.n_points and surface.n_cells and edges.n_points and edges.n_lines
+        ]
+        if not aligned_geometry:
             return None, None
+        surfaces = [surface for surface, _edges, _name in aligned_geometry]
+        edge_meshes = [edges for _surface, edges, _name in aligned_geometry]
+        surface_member_names = [name for _surface, _edges, name in aligned_geometry]
+        camera_direction = self._view_camera_direction(plane, coordinate, settings)
+        view_up = self._view_camera_up(plane, coordinate, settings, camera_direction)
+        silhouettes = self._view_silhouette_edges(surfaces, camera_direction, view_up)
+        edge_meshes = [
+            _merge_unique_line_meshes(edges, silhouette)
+            for edges, silhouette in zip(edge_meshes, silhouettes)
+        ]
+        edge_meshes = [
+            self._without_group_interface_edges(
+                edge_mesh, interfaces_by_member.get(member_name, ()),
+            )
+            if interfaces_by_member.get(member_name, ()) else edge_mesh
+            for member_name, edge_mesh in zip(surface_member_names, edge_meshes)
+        ]
         surface_scene = pv.merge(surfaces, merge_points=False)
         edge_scene = pv.merge(edge_meshes, merge_points=False)
         return surface_scene, edge_scene
+
+    def _view_camera_direction(self, plane: str, coordinate, settings) -> np.ndarray:
+        if plane in self._isometric_directions:
+            direction = np.asarray(self._isometric_directions[plane], dtype=float)
+        elif plane == "custom":
+            points = np.asarray(coordinate, dtype=float)
+            direction = np.cross(points[1] - points[0], points[2] - points[0])
+        else:
+            direction = np.asarray(self._plane_data[plane][0], dtype=float)
+        direction /= max(float(np.linalg.norm(direction)), 1e-12)
+        if (
+            plane not in self._isometric_directions
+            and settings.get("orientation", "Superior para inferior") == "Inferior para superior"
+        ):
+            direction *= -1.0
+        return direction
+
+    def _view_camera_up(
+        self, plane: str, coordinate, settings, camera_direction: np.ndarray,
+    ) -> np.ndarray:
+        if plane in self._isometric_directions:
+            up = np.asarray((0.0, 0.0, 1.0), dtype=float)
+        elif plane == "custom":
+            points = np.asarray(coordinate, dtype=float)
+            u_axis = points[1] - points[0]
+            u_axis /= max(float(np.linalg.norm(u_axis)), 1e-12)
+            up = np.cross(camera_direction, u_axis)
+        else:
+            up = np.asarray(self._plane_data[plane][2], dtype=float)
+        view_direction = -camera_direction
+        angle = radians(-float(settings.get("rotation_degrees", 0.0)))
+        up = (
+            up * cos(angle)
+            + np.cross(view_direction, up) * sin(angle)
+            + view_direction * np.dot(view_direction, up) * (1.0 - cos(angle))
+        )
+        up -= np.dot(up, camera_direction) * camera_direction
+        return up / max(float(np.linalg.norm(up)), 1e-12)
+
+    @staticmethod
+    def _view_silhouette_edges(
+        surfaces: list[pv.PolyData], camera_direction: np.ndarray, view_up: np.ndarray,
+    ) -> list[pv.PolyData]:
+        """Add camera-dependent contours, including smooth tube and fastener walls."""
+        bounds = np.asarray([mesh.bounds for mesh in surfaces], dtype=float)
+        minimum = np.asarray((bounds[:, 0].min(), bounds[:, 2].min(), bounds[:, 4].min()))
+        maximum = np.asarray((bounds[:, 1].max(), bounds[:, 3].max(), bounds[:, 5].max()))
+        center = (minimum + maximum) / 2.0
+        distance = max(float(np.linalg.norm(maximum - minimum)) * 3.0, 1.0)
+        camera = vtk.vtkCamera()
+        camera.SetFocalPoint(center)
+        camera.SetPosition(center + camera_direction * distance)
+        camera.SetViewUp(view_up)
+        camera.ParallelProjectionOn()
+        output = []
+        for mesh in surfaces:
+            silhouette = SolidMemberRenderer.silhouette_for(mesh, camera)
+            output.append(silhouette if silhouette.n_lines else pv.PolyData())
+        return output
 
     @staticmethod
     def _without_group_interface_edges(edge_mesh, interface_planes):
@@ -575,12 +656,18 @@ class _DetachedDetailingScene:
             "_build_detail_subtraction_meshes", "_detail_subtractions_by_target", "detailing_view_solid_meshes",
         ):
             setattr(self, name, getattr(StructureScene, name).__get__(self))
+        # This helper is a staticmethod. Bind it directly as a function so the
+        # detached scene doesn't receive itself as the target mesh argument.
+        self._detail_end_cut_mesh = StructureScene._detail_end_cut_mesh
 
 
 class _ViewportGeometryBuilder:
     _plane_data = DetailingViewViewport._plane_data
     _isometric_directions = DetailingViewViewport._isometric_directions
     _build_scene_meshes = DetailingViewViewport._build_scene_meshes
+    _view_camera_direction = DetailingViewViewport._view_camera_direction
+    _view_camera_up = DetailingViewViewport._view_camera_up
+    _view_silhouette_edges = staticmethod(DetailingViewViewport._view_silhouette_edges)
     _without_group_interface_edges = staticmethod(DetailingViewViewport._without_group_interface_edges)
 
     def __init__(self, source) -> None:

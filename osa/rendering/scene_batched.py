@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import replace
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,7 @@ from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
 from .local_axes_renderer import LocalAxesRenderer
 from .navigation_widget import NavigationWidget
+from .node_component_renderer import append_polydata_meshes, base_plate_component_meshes
 from .plate_antialiasing import PlateAntialiasing
 from .plate_member_intersections import dashed_plate_member_intersections
 from .plate_result_display import (
@@ -216,6 +218,7 @@ class StructureScene(QWidget):
     analysis_point_clicked = Signal(str, str, object)
     solid_face_clicked = Signal(object)
     alignment_face_clicked = Signal(object)
+    detail_end_cut_face_clicked = Signal(object, bool)
     empty_clicked = Signal()
     selection_changed = Signal(object)
     placement_point_clicked = Signal(object)
@@ -504,6 +507,12 @@ class StructureScene(QWidget):
         self._selected_reference_axis: tuple[str, str] | None = None
         self._node_actor = None
         self._node_glyph_points: pv.PolyData | None = None
+        self._node_component_actors: list[object] = []
+        self._node_component_pick_actors: list[object] = []
+        self._node_component_plate_actors: dict[str, object] = {}
+        self._node_component_pick_through = False
+        self._node_component_rod_meshes: list[pv.PolyData] = []
+        self._node_component_silhouette_actors: list[object] = []
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors: list[object] = []
@@ -558,6 +567,8 @@ class StructureScene(QWidget):
         self._node_supports_visible = True
         self._hovered: tuple[str, str] | None = None
         self._endpoint_alignment_target: str | None = None
+        self._detail_end_cut_target: str | None = None
+        self._selection_control_pressed = False
         self._endpoint_alignment_face_hover: tuple[str, tuple[int, ...]] | None = None
         self._endpoint_alignment_highlight_actor = None
         self._face_alignment_active = False
@@ -958,6 +969,7 @@ class StructureScene(QWidget):
         yield
         self._add_scene_reveal_preview(hidden_members, hidden_rigid_bars)
         self._add_node_batches()
+        self._refresh_node_components(visible_nodes, render=False)
         yield
         self._add_actions()
         yield
@@ -995,6 +1007,7 @@ class StructureScene(QWidget):
         self._orientation_widget.sync_from_camera()
         self._silhouette_timer.stop()
         self._refresh_member_silhouette()
+        self._refresh_node_component_silhouettes()
         self.plotter.render()
         self._capture_rendered_state()
 
@@ -1018,6 +1031,10 @@ class StructureScene(QWidget):
         if any(
             self._rendered_members.get(name) is not None
             and self._rendered_members[name].detail_subtractions != member.detail_subtractions
+            for name, member in model.bars.items()
+        ) or any(
+            self._rendered_members.get(name) is not None
+            and self._rendered_members[name].detail_end_cuts != member.detail_end_cuts
             for name, member in model.bars.items()
         ) or any(
             self._rendered_plates.get(name) is not None
@@ -1175,6 +1192,9 @@ class StructureScene(QWidget):
                 self._display_member_batch(added_members)
         if (changed_nodes or added_nodes) and not removed_nodes:
             self._refresh_support_batch(capture_state=False)
+        if changed_nodes or added_nodes or removed_nodes:
+            self._refresh_node_components()
+            self._sync_highlights()
 
         rigid_changed = (
             self._rendered_rigid_bars != model.rigid_bars
@@ -1456,6 +1476,117 @@ class StructureScene(QWidget):
                 reset_camera=False, render=False,
             )
             self._support_actor.SetVisibility(self._node_supports_visible)
+
+    def _refresh_node_components(self, visible_nodes=None, *, render: bool = True) -> None:
+        """Render visual-only node components as separate scene actors."""
+        for actor in self._node_component_actors:
+            self.plotter.renderer.RemoveActor(actor)
+        self._node_component_actors = []
+        self._node_component_pick_actors = []
+        self._node_component_plate_actors = {}
+        self._node_component_rod_meshes = []
+        self._node_component_silhouette_actors = []
+        visible_names = set(visible_nodes) if visible_nodes is not None else set(self._model.nodes)
+        for name, node in self._model.nodes.items():
+            assignment = node.component
+            if name not in visible_names or assignment is None:
+                continue
+            if assignment.component_id != "base_plate":
+                continue
+            parameters = dict(assignment.parameters)
+            try:
+                plate, rods, washers, nuts = base_plate_component_meshes(
+                    parameters, (node.x, node.y, node.z),
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+            plate_actor = self.plotter.add_mesh(
+                plate, color="#8c959f", edge_color="#57606a", show_edges=True,
+                line_width=1.0, pickable=False, reset_camera=False, render=False,
+            )
+            plate_actor.SetObjectName(f"node-component:{name}")
+            self._node_component_actors.append(plate_actor)
+            self._node_component_pick_actors.append(plate_actor)
+            self._node_component_plate_actors[name] = plate_actor
+
+            combined_rods = append_polydata_meshes(rods)
+            rods_actor = self.plotter.add_mesh(
+                combined_rods, color="#8c959f", smooth_shading=True, pickable=False,
+                reset_camera=False, render=False,
+            )
+            rods_actor.SetObjectName(f"node-component:{name}")
+            self._node_component_actors.append(rods_actor)
+            self._node_component_pick_actors.append(rods_actor)
+            # One silhouette pass per node keeps the applied scene's actor
+            # count independent of the number of perimeter fasteners.
+            self._node_component_rod_meshes.append(combined_rods)
+            if parameters.get("fixador") == "Gancho":
+                edges = combined_rods.extract_feature_edges(
+                    feature_angle=25.0, boundary_edges=True, feature_edges=True,
+                    manifold_edges=False, non_manifold_edges=False,
+                )
+                if edges.n_cells:
+                    edge_actor = self.plotter.add_mesh(
+                        edges, color="#57606a", line_width=1.0,
+                        lighting=False, pickable=False, reset_camera=False, render=False,
+                    )
+                    edge_mapper = edge_actor.GetMapper()
+                    edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                    edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                    edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+                    self._node_component_actors.append(edge_actor)
+
+            hardware = append_polydata_meshes((*washers, *nuts))
+            hardware_actor = self.plotter.add_mesh(
+                hardware, color="#8c959f", smooth_shading=False, pickable=False,
+                reset_camera=False, render=False,
+            )
+            hardware_actor.SetObjectName(f"node-component:{name}")
+            self._node_component_actors.append(hardware_actor)
+            self._node_component_pick_actors.append(hardware_actor)
+            hardware_edges = hardware.extract_feature_edges(
+                feature_angle=25.0, boundary_edges=True, feature_edges=True,
+                manifold_edges=False, non_manifold_edges=False,
+            )
+            if hardware_edges.n_cells:
+                edge_actor = self.plotter.add_mesh(
+                    hardware_edges, color="#57606a", line_width=0.9,
+                    lighting=False, pickable=False, reset_camera=False, render=False,
+                )
+                edge_mapper = edge_actor.GetMapper()
+                edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
+                edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+                self._node_component_actors.append(edge_actor)
+        self._refresh_node_component_silhouettes()
+        if render:
+            self.plotter.render()
+
+    def _refresh_node_component_silhouettes(self) -> None:
+        """Draw camera-facing contours around the cylindrical fasteners."""
+        if len(self._node_component_silhouette_actors) != len(self._node_component_rod_meshes):
+            for actor in self._node_component_silhouette_actors:
+                self.plotter.renderer.RemoveActor(actor)
+            self._node_component_silhouette_actors = []
+            for index, mesh in enumerate(self._node_component_rod_meshes):
+                silhouette = self._member_renderer.solids.silhouette_for(
+                    mesh, self.plotter.renderer.GetActiveCamera(),
+                )
+                if not silhouette.n_cells:
+                    continue
+                actor = self.plotter.add_mesh(
+                    silhouette, color="#57606a", line_width=1.2,
+                    lighting=False, pickable=False, reset_camera=False, render=False,
+                )
+                actor.SetObjectName(f"node-component:fastener-silhouette:{index}")
+                self._node_component_silhouette_actors.append(actor)
+                self._node_component_actors.append(actor)
+            return
+        camera = self.plotter.renderer.GetActiveCamera()
+        for mesh, actor in zip(self._node_component_rod_meshes, self._node_component_silhouette_actors):
+            silhouette = self._member_renderer.solids.silhouette_for(mesh, camera)
+            actor.GetMapper().SetInputData(silhouette)
+            actor.GetMapper().Modified()
 
     def _add_node_glyph_actor(self, batch: NodeBatch) -> vtk.vtkActor | None:
         """Draw identical node spheres as GPU instances instead of packed faces."""
@@ -1837,8 +1968,38 @@ class StructureScene(QWidget):
         return actor
 
     def _pick(self) -> tuple[str, str] | None:
+        component_node = self._pick_node_component()
+        if component_node is not None:
+            return "node", component_node
         candidates = self._pick_candidates()
         return candidates[0] if candidates else None
+
+    def _pick_node_component(self, position: tuple[int, int] | None = None) -> str | None:
+        """Map a click on a component surface back to its owning node."""
+        if (
+            self._analysis_visible or self._scene_selection_mode is not None
+            or self._node_component_pick_through
+        ):
+            return None
+        actors = [actor for actor in self._node_component_pick_actors if actor.GetVisibility()]
+        if not actors:
+            return None
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        picker.PickFromListOn()
+        for actor in actors:
+            actor.SetPickable(True)
+            picker.AddPickList(actor)
+        x, y = position or self.plotter.iren.get_event_position()
+        try:
+            hit = picker.Pick(x, y, 0, self.plotter.renderer)
+            if not hit:
+                return None
+            actor_name = str(picker.GetActor().GetObjectName() or "")
+            return actor_name.removeprefix("node-component:") or None
+        finally:
+            for actor in actors:
+                actor.SetPickable(False)
 
     def _pick_candidates(self) -> list[tuple[str, str]]:
         candidates = self._screen_pick_candidates()
@@ -2034,12 +2195,24 @@ class StructureScene(QWidget):
                 )[0]
             elif kind == "bar" and name in model.bars:
                 member = model.bars[name]
-                bare_member = replace(member, detail_subtractions=())
+                bare_member = replace(member, detail_subtractions=(), detail_end_cuts=())
                 batch = self._member_renderer.build(
                     SimpleNamespace(nodes=model.nodes, bars={name: bare_member}),
                     self._marker_radius_current,
                 )
                 meshes[(kind, name)] = batch.faces
+        for member in model.bars.values():
+            if not member.detail_end_cuts:
+                continue
+            bare_member = replace(member, detail_subtractions=(), detail_end_cuts=())
+            batch = self._member_renderer.build(
+                SimpleNamespace(nodes=model.nodes, bars={member.name: bare_member}),
+                self._marker_radius_current,
+            )
+            for cut in member.detail_end_cuts:
+                meshes[("end_cut", cut.identifier)] = self._detail_end_cut_mesh(
+                    batch.faces, cut,
+                )
         return meshes
 
     def _detail_subtractions_by_target(self, model):
@@ -2047,13 +2220,16 @@ class StructureScene(QWidget):
             return {}
         return {
             ("bar", name): tuple(
-                (tuple(reference), mesh)
-                for reference in member.detail_subtractions
-                if reference[0] in {"bar", "plate"}
-                and (mesh := self._detail_subtraction_meshes.get(tuple(reference))) is not None
+                (reference, mesh)
+                for reference in (
+                    *member.detail_subtractions,
+                    *(('end_cut', cut.identifier) for cut in member.detail_end_cuts),
+                )
+                if reference[0] in {"bar", "plate", "end_cut"}
+                and (mesh := self._detail_subtraction_meshes.get(reference)) is not None
             )
             for name, member in model.bars.items()
-            if member.detail_subtractions
+            if member.detail_subtractions or member.detail_end_cuts
         }
 
     def detailing_view_solid_meshes(self, model):
@@ -2075,6 +2251,9 @@ class StructureScene(QWidget):
             self._member_renderer.solid_positioning_enabled = True
             self._detail_subtraction_failures = set()
             self._detail_subtraction_meshes = self._build_detail_subtraction_meshes(model)
+            # Keep the cutters available to the view linework builder after
+            # this method restores the interactive scene's transient state.
+            self._detailing_view_subtraction_meshes = dict(self._detail_subtraction_meshes)
             subtraction_meshes = self._detail_subtractions_by_target(model)
             marker_radius = max(float(getattr(self, "_marker_radius_current", 0.05)), 1e-4)
             batch = self._member_renderer.build(
@@ -2115,6 +2294,29 @@ class StructureScene(QWidget):
                 mesh = mesh.extract_surface(algorithm="dataset_surface").triangulate().clean()
                 if mesh.n_points and mesh.n_cells:
                     solids.append((f"plate:{name}", mesh))
+            for node_name, node in model.nodes.items():
+                assignment = getattr(node, "component", None)
+                if assignment is None or assignment.component_id != "base_plate":
+                    continue
+                component_meshes = base_plate_component_meshes(
+                    dict(assignment.parameters), (node.x, node.y, node.z),
+                )
+                plate_mesh, rods, washers, nuts = component_meshes
+                parts = (
+                    ("plate", (plate_mesh,)),
+                    ("rod", rods),
+                    ("washer", washers),
+                    ("nut", nuts),
+                )
+                for part_name, meshes in parts:
+                    for index, component_mesh in enumerate(meshes, start=1):
+                        mesh = component_mesh.extract_surface(
+                            algorithm="dataset_surface",
+                        ).triangulate().clean()
+                        if mesh.n_points and mesh.n_cells:
+                            solids.append((
+                                f"component:{node_name}:{part_name}:{index}", mesh,
+                            ))
             return tuple(solids)
         finally:
             self._model = old_model
@@ -2656,7 +2858,7 @@ class StructureScene(QWidget):
         return batch.names[element_index], cell_id, points[closest], normal
 
     def _pick_alignment_face(self):
-        """Return the nearest visible bar or plate surface face under the pointer."""
+        """Return the nearest visible model or component plate face under the pointer."""
         if self._pointer_position is None:
             return None
         x, y = self._qt_to_vtk_position(
@@ -2685,6 +2887,14 @@ class StructureScene(QWidget):
                 picker.AddPickList(actor)
                 pickable_actors.append((actor, was_pickable))
                 plate_actor_names.append((actor, name))
+        component_actor_names = []
+        for name, actor in self._node_component_plate_actors.items():
+            if actor.GetVisibility():
+                was_pickable = bool(actor.GetPickable())
+                actor.SetPickable(True)
+                picker.AddPickList(actor)
+                pickable_actors.append((actor, was_pickable))
+                component_actor_names.append((actor, name))
         hit = picker.Pick(x, y, 0, self.plotter.renderer)
         for actor, was_pickable in pickable_actors:
             actor.SetPickable(was_pickable)
@@ -2694,8 +2904,14 @@ class StructureScene(QWidget):
         actor = picker.GetActor()
         cell_id = int(picker.GetCellId())
         plate_name = next((name for candidate, name in plate_actor_names if actor == candidate), None)
+        component_name = next(
+            (name for candidate, name in component_actor_names if actor == candidate), None,
+        )
         if plate_name is not None:
             kind, name = "plate", plate_name
+            polydata = actor.GetMapper().GetInput()
+        elif component_name is not None:
+            kind, name = "component", component_name
             polydata = actor.GetMapper().GetInput()
         elif actor == member_actor:
             batch = self._member_batch
@@ -2764,6 +2980,12 @@ class StructureScene(QWidget):
                 return False
             start, end = self._member_batch.face_cell_ranges[name]
             candidate_ids = range(start, end)
+        elif kind == "component":
+            actor = self._node_component_plate_actors.get(name)
+            if actor is None:
+                return False
+            mesh = pv.wrap(actor.GetMapper().GetInput())
+            candidate_ids = range(mesh.n_cells)
         else:
             actor = self._plate_actors.get(name)
             if actor is None:
@@ -2830,6 +3052,18 @@ class StructureScene(QWidget):
         self._sync_highlights()
         self.plotter.render()
 
+    def set_detail_end_cut_target(self, member_name: str | None) -> None:
+        """Route the second click of an end-cut command to a reference face."""
+        self._detail_end_cut_target = member_name
+        self._hovered = None
+        self._clear_endpoint_alignment_face_highlight()
+        self._sync_highlights()
+        self.plotter.render()
+
+    def set_node_component_pick_through(self, enabled: bool) -> None:
+        """Let detailing commands select model members drawn behind components."""
+        self._node_component_pick_through = bool(enabled)
+
     def _clear_endpoint_alignment_face_highlight(self) -> bool:
         self._endpoint_alignment_face_hover = None
         actor = self._endpoint_alignment_highlight_actor
@@ -2842,8 +3076,9 @@ class StructureScene(QWidget):
         if hit is None:
             return self._clear_endpoint_alignment_face_highlight()
         kind, target_name, cell_id, _point, hit_normal = hit
-        if kind == "plate":
-            actor = self._plate_actors.get(target_name)
+        if kind in {"plate", "component"}:
+            actors = self._plate_actors if kind == "plate" else self._node_component_plate_actors
+            actor = actors.get(target_name)
             if actor is None:
                 return self._clear_endpoint_alignment_face_highlight()
             data = pv.wrap(actor.GetMapper().GetInput())
@@ -3140,6 +3375,10 @@ class StructureScene(QWidget):
             QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress,
             QEvent.Type.MouseButtonRelease,
         ):
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self._selection_control_pressed = bool(
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                )
             if event.type() == QEvent.Type.MouseMove and self._manual_edit_target is not None:
                 self._cancel_coordinate_edit()
             point = event.position()
@@ -3563,13 +3802,17 @@ class StructureScene(QWidget):
             if target_kind == "plate":
                 remaining = self._plate_meshes(element, apply_subtractions=False)[0]
             else:
-                bare_member = replace(element, detail_subtractions=())
+                bare_member = replace(element, detail_subtractions=(), detail_end_cuts=())
                 batch = self._member_renderer.build(
                     SimpleNamespace(nodes=self._model.nodes, bars={target_name: bare_member}),
                     self._marker_radius_current,
                 )
                 remaining = batch.faces
-            for cutter_reference in element.detail_subtractions:
+            references = (
+                *element.detail_subtractions,
+                *(("end_cut", cut.identifier) for cut in getattr(element, "detail_end_cuts", ())),
+            )
+            for cutter_reference in references:
                 cutter = self._detail_subtraction_meshes.get(tuple(cutter_reference))
                 if cutter is None or remaining is None or not remaining.n_cells:
                     continue
@@ -5172,6 +5415,10 @@ class StructureScene(QWidget):
             if self._pick_and_highlight_endpoint_alignment_face():
                 self.plotter.render()
             return
+        if self._detail_end_cut_target is not None:
+            if self._set_endpoint_alignment_face_highlight(self._pick_alignment_face()):
+                self.plotter.render()
+            return
         if self._face_alignment_active:
             if self._pick_and_highlight_face_alignment_reference():
                 self.plotter.render()
@@ -5231,6 +5478,16 @@ class StructureScene(QWidget):
                     lambda selected_face=hit: self.solid_face_clicked.emit(selected_face),
                 )
             return
+        if self._detail_end_cut_target is not None:
+            hit = self._pick_alignment_face()
+            if hit is not None:
+                add_face = self._selection_control_pressed
+                QTimer.singleShot(
+                    0,
+                    lambda selected_face=hit, add_face=add_face:
+                    self.detail_end_cut_face_clicked.emit(selected_face, add_face),
+                )
+            return
         if self._face_alignment_active:
             hit = self._pick_alignment_face()
             if hit is not None:
@@ -5240,7 +5497,8 @@ class StructureScene(QWidget):
                 )
             return
         position = (int(x), int(y))
-        picked = (
+        component_node = self._pick_node_component(position)
+        picked = ("node", component_node) if component_node is not None else (
             self._hovered
             if position == self._tab_hover_position
             and self._hovered in self._tab_hover_candidates
@@ -5831,8 +6089,12 @@ class StructureScene(QWidget):
             desired["hover"] = hover_targets
 
         node_colors = {
-            name: "#0969da" for kind, name in selected_elements if kind == "node"
+            name: "#d1242f" for name, node in self._model.nodes.items()
+            if node.component is not None
         }
+        for kind, name in selected_elements:
+            if kind == "node":
+                node_colors[name] = "#0969da"
         for name, actor in self._plate_actors.items():
             color = QColor(self._model.plates[name].color)
             actor.GetProperty().SetColor(color.redF(), color.greenF(), color.blueF())
@@ -6039,7 +6301,11 @@ class StructureScene(QWidget):
                         length = float(np.linalg.norm(direction))
                         if length > 1e-12:
                             planes.setdefault(name, []).append(
-                                (point, direction / length, max(1e-8, length * 1e-8)),
+                                # Boolean cuts can leave section vertices a few
+                                # sub-microns off the shared plane. Keep this
+                                # tolerance tight relative to the member span,
+                                # but wide enough to hide those residual seams.
+                                (point, direction / length, max(1e-7, length * 1e-6)),
                             )
         return {name: tuple(values) for name, values in planes.items()}
 
@@ -6762,7 +7028,10 @@ class StructureScene(QWidget):
                             length = float(np.linalg.norm(direction))
                             if length > 1e-12:
                                 interfaces.setdefault(member_indices[name], []).append(
-                                    (point, direction / length, max(1e-8, length * 1e-8)),
+                                    # End-cut booleans can perturb section
+                                    # vertices slightly away from the shared
+                                    # node plane; tolerate that numerical drift.
+                                    (point, direction / length, max(1e-7, length * 1e-6)),
                                 )
         if not interfaces:
             restore_base_edges()
@@ -6784,37 +7053,43 @@ class StructureScene(QWidget):
                 for point, direction, tolerance in member_interfaces:
                     on_interface = np.all(np.abs((points - point) @ direction) <= tolerance, axis=1)
                     keep[cells[on_interface]] = False
+        if line_cells is not None:
+            if np.all(keep):
+                restore_base_edges()
+                return
+            lines = line_cells[keep].ravel()
+            filtered = pv.PolyData(mesh_points, lines=np.asarray(lines, dtype=np.int64))
+            for name, values in mesh.cell_data.items():
+                filtered.cell_data[name] = np.asarray(values)[keep]
         else:
             cursor = 0
             cell = 0
+            lines: list[int] = []
+            source_cells: list[int] = []
+            removed_interface = False
             while cursor < len(connectivity):
                 count = int(connectivity[cursor])
                 point_ids = connectivity[cursor + 1:cursor + count + 1]
-                if cell_members[cell] in interfaces and count == 2:
-                    points = mesh_points[point_ids]
-                    for point, direction, tolerance in interfaces[int(cell_members[cell])]:
-                        if np.all(np.abs((points - point) @ direction) <= tolerance):
-                            keep[cell] = False
-                            break
+                member_interfaces = interfaces.get(int(cell_members[cell]), ())
+                for first, second in zip(point_ids, point_ids[1:]):
+                    endpoints = mesh_points[[first, second]]
+                    on_interface = any(
+                        np.all(np.abs((endpoints - point) @ direction) <= tolerance)
+                        for point, direction, tolerance in member_interfaces
+                    )
+                    if on_interface:
+                        removed_interface = True
+                        continue
+                    lines.extend((2, int(first), int(second)))
+                    source_cells.append(cell)
                 cursor += count + 1
                 cell += 1
-        if np.all(keep):
-            restore_base_edges()
-            return
-
-        if line_cells is not None:
-            lines = line_cells[keep].ravel()
-        else:
-            lines = []
-            cursor = 0
-            for selected in keep:
-                count = int(connectivity[cursor])
-                if selected:
-                    lines.extend(connectivity[cursor:cursor + count + 1])
-                cursor += count + 1
-        filtered = pv.PolyData(mesh_points, lines=np.asarray(lines, dtype=np.int64))
-        for name, values in mesh.cell_data.items():
-            filtered.cell_data[name] = np.asarray(values)[keep]
+            if not removed_interface:
+                restore_base_edges()
+                return
+            filtered = pv.PolyData(mesh_points, lines=np.asarray(lines, dtype=np.int64))
+            for name, values in mesh.cell_data.items():
+                filtered.cell_data[name] = np.asarray(values)[source_cells]
         if self._verification_group_edge_actor is not None:
             self.plotter.remove_actor(
                 self._verification_group_edge_actor, reset_camera=False, render=False,
@@ -7492,6 +7767,58 @@ class StructureScene(QWidget):
                 total += sum(np.asarray(values).nbytes for values in attributes.values())
         return total
 
+    @staticmethod
+    def _detail_end_cut_mesh(target_mesh: pv.PolyData, cut) -> pv.PolyData:
+        """Build a half-space cutter or the shared region of several planes."""
+        planes = tuple(getattr(cut, "planes", ()))
+        if len(planes) > 1:
+            cutters = [
+                StructureScene._detail_end_cut_mesh(
+                    target_mesh, SimpleNamespace(point=point, normal=normal, planes=()),
+                )
+                for point, normal in planes
+            ]
+            result = cutters[0]
+            for cutter in cutters[1:]:
+                intersection = _boolean_intersection_mesh(result, cutter)
+                if intersection is None:
+                    return pv.PolyData()
+                result = intersection
+            return result
+        point = np.asarray(cut.point, dtype=float)
+        normal = np.asarray(cut.normal, dtype=float)
+        normal /= max(float(np.linalg.norm(normal)), 1e-12)
+        axis = np.asarray((1.0, 0.0, 0.0))
+        if abs(float(np.dot(axis, normal))) > 0.9:
+            axis = np.asarray((0.0, 1.0, 0.0))
+        u = np.cross(normal, axis)
+        u /= max(float(np.linalg.norm(u)), 1e-12)
+        v = np.cross(normal, u)
+        bounds = np.asarray(target_mesh.bounds, dtype=float)
+        corners = np.asarray([
+            (x, y, z)
+            for x in (bounds[0], bounds[1])
+            for y in (bounds[2], bounds[3])
+            for z in (bounds[4], bounds[5])
+        ], dtype=float)
+        diagonal = float(np.linalg.norm(bounds[1::2] - bounds[::2]))
+        distance = float(np.max(np.abs((corners - point) @ normal))) if len(corners) else 0.0
+        extent = max(1.0, diagonal * 2.0, distance + diagonal)
+        depth = extent * 2.0
+        center = point + normal * (depth / 2.0)
+        cutter = pv.Cube(
+            center=(0.0, 0.0, 0.0), x_length=2.0 * extent,
+            y_length=2.0 * extent, z_length=depth,
+        )
+        local = np.asarray(cutter.points, dtype=float)
+        cutter.points = (
+            center
+            + local[:, 0, None] * u
+            + local[:, 1, None] * v
+            + local[:, 2, None] * normal
+        )
+        return cutter.triangulate().clean()
+
     def _refresh_node_batch(self) -> None:
         """Rebuild only node markers and supports after node removal."""
         radius = self._node_marker_radius()
@@ -7504,10 +7831,19 @@ class StructureScene(QWidget):
         for actor in (self._node_actor, self._support_actor):
             if actor is not None:
                 self.plotter.renderer.RemoveActor(actor)
+        for actor in self._node_component_actors:
+            self.plotter.renderer.RemoveActor(actor)
         self._node_actor = None
         self._node_glyph_points = None
+        self._node_component_actors = []
+        self._node_component_pick_actors = []
+        self._node_component_plate_actors = {}
+        self._node_component_pick_through = False
+        self._node_component_rod_meshes = []
+        self._node_component_silhouette_actors = []
         self._support_actor = None
         self._add_node_batches()
+        self._refresh_node_components(render=False)
         self._label_overlay.set_group(
             "node", batch.label_positions, batch.names,
             visible=self._labels_visibility["node"],
@@ -8042,6 +8378,7 @@ class StructureScene(QWidget):
         if self._camera_interacting:
             return
         self._refresh_member_silhouette()
+        self._refresh_node_component_silhouettes()
         circular = self._highlight_targets.get("selected:circular")
         if circular and self._solid_members_visible:
             self._replace_highlight("selected:circular", circular, "#0969da")

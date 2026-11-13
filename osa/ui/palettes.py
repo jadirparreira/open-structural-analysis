@@ -289,7 +289,9 @@ class FloatingPalette(QFrame):
         command_mode = getattr(self.window, "_command_mode", None)
         if command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
-            "connect_member_ends_selection",
+            "connect_member_ends_selection", "detail_subtraction_target_selection",
+            "detail_subtraction_cutter_selection", "detail_end_cut_target_selection",
+            "detail_end_cut_face_selection",
         } and next_group != "Detalhamento":
             self.window.cancel_member_placement()
         elif name != "Geometria" and command_mode in {
@@ -796,6 +798,23 @@ class DetailingTopPalette(QFrame):
             "QToolButton:pressed { background: #d0d7de; }"
         )
         layout.addWidget(self.connect_ends_button)
+        self.subtract_end_button = QToolButton(self)
+        self.subtract_end_button.setFixedSize(30, 30)
+        self.subtract_end_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "subtract-end.svg"))
+        )
+        self.subtract_end_button.setIconSize(QSize(21, 21))
+        self.subtract_end_button.setToolTip("Subtrair extremidade")
+        self.subtract_end_button.setProperty("paletteTooltip", "Subtrair extremidade")
+        self.subtract_end_button.setAccessibleName("Subtrair extremidade")
+        self.subtract_end_button.clicked.connect(window.start_detail_end_cut)
+        self.subtract_end_button.installEventFilter(self)
+        self.subtract_end_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.subtract_end_button)
         self.subtract_button = QToolButton(self)
         self.subtract_button.setFixedSize(30, 30)
         self.subtract_button.setIcon(
@@ -857,6 +876,7 @@ class DetailingTopPalette(QFrame):
             self.additional_detailing_button,
             self.connect_ends_button,
             self.subtract_button,
+            self.subtract_end_button,
         ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
