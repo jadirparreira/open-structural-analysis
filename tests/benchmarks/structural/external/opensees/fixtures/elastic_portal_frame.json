@@ -1,0 +1,38 @@
+{
+  "source": {
+    "project": "OpenSees",
+    "source_commit": "0d8b51407",
+    "runtime": "OpenSeesPy 3.8.0.0",
+    "element": "elasticBeamColumn",
+    "model": "one-bay one-story elastic portal frame",
+    "units": "kN,m"
+  },
+  "nodes": {
+    "C": {
+      "horizontal_displacement_m": 0.0013053883715648483,
+      "vertical_displacement_m": -0.000005200431523960924,
+      "rotation_rad": -0.00030775891437656285
+    },
+    "D": {
+      "horizontal_displacement_m": 0.0013053883715648485,
+      "vertical_displacement_m": -0.000009799568476039072,
+      "rotation_rad": -0.00030775891437656285
+    }
+  },
+  "supports": {
+    "A": {
+      "horizontal_reaction_kN": -10.000000000000048,
+      "vertical_reaction_kN": 13.867817397229132,
+      "moment_kN_m": 17.73563479445841
+    },
+    "B": {
+      "horizontal_reaction_kN": -10.00000000000005,
+      "vertical_reaction_kN": 26.13218260277086,
+      "moment_kN_m": 17.735634794458413
+    }
+  },
+  "beam_start": {
+    "shear_kN": -6.132182602770868,
+    "moment_kN_m": -12.264365205541736
+  }
+}
