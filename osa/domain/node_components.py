@@ -7,6 +7,7 @@ import math
 from .entities import NodeComponentDefinition
 
 BASE_PLATE_PLANES = ("XY+", "XY-", "XZ+", "XZ-", "YZ+", "YZ-")
+STAIR_WOOD_THICKNESS_MM = 20.0
 
 
 def base_plate_anchor_offsets(parameters: dict[str, object]) -> tuple[tuple[float, float], ...]:
@@ -45,8 +46,7 @@ def default_hook_headings(parameters: dict[str, object]) -> tuple[float, ...]:
     return tuple(headings)
 
 
-# Component implementations can register their definitions here. The initial
-# product slice intentionally ships with an empty catalog.
+# Component implementations register their definitions here.
 NODE_COMPONENTS: tuple[NodeComponentDefinition, ...] = (
     NodeComponentDefinition(
         component_id="base_plate",
@@ -71,6 +71,26 @@ NODE_COMPONENTS: tuple[NodeComponentDefinition, ...] = (
             ("fixadores_lado_b", 2),
             ("distancia_a_mm", 50.0),
             ("plano", "XY+"),
+        ),
+    ),
+    NodeComponentDefinition(
+        component_id="stair_plate",
+        name="Chapa degrau",
+        interacts_with_model=False,
+        has_3d_representation=True,
+        parametric=True,
+        parameters=(
+            ("largura_mm", 200.0),
+            ("comprimento_mm", 300.0),
+            ("deslocamento_a_mm", 0.0),
+            ("deslocamento_b_mm", 0.0),
+            ("espessura_mm", 6.3),
+            ("rotacao_deg", 0.0),
+            ("madeira_largura_mm", 280.0),
+            ("madeira_comprimento_mm", 800.0),
+            ("madeira_deslocamento_a_mm", 0.0),
+            ("madeira_deslocamento_b_mm", 0.0),
+            ("madeira_espessura_mm", 20.0),
         ),
     ),
 )

@@ -9,7 +9,14 @@ import numpy as np
 import pyvista as pv
 import vtk
 
-from osa.domain.node_components import base_plate_anchor_offsets, default_hook_headings
+from osa.domain.node_components import (
+    STAIR_WOOD_THICKNESS_MM,
+    base_plate_anchor_offsets,
+    default_hook_headings,
+)
+
+STAIR_WOOD_COLOR = "#9b5a2e"
+STAIR_WOOD_EDGE_COLOR = "#6b4226"
 
 _BASE_PLATE_PLANE_BASES = {
     # Map the plate's local X, Y and positive thickness axes to global axes.
@@ -241,3 +248,60 @@ def base_plate_component_meshes(
     for mesh in (plate, *rods, *washers, *nuts):
         _orient_base_plate_mesh(mesh, origin, plane)
     return plate, tuple(rods), tuple(washers), tuple(nuts)
+
+
+def stair_plate_mesh(
+    parameters: dict[str, object], origin: tuple[float, float, float],
+) -> pv.PolyData:
+    """Build the steel stair plate below the step-top node reference."""
+    width = float(parameters.get("largura_mm", 200.0)) / 1000.0
+    length = float(parameters.get("comprimento_mm", 300.0)) / 1000.0
+    thickness = float(parameters.get("espessura_mm", 6.3)) / 1000.0
+    wood_thickness = float(
+        parameters.get("madeira_espessura_mm", STAIR_WOOD_THICKNESS_MM),
+    ) / 1000.0
+    rotation = float(parameters.get("rotacao_deg", 0.0))
+    displacement_a = float(parameters.get("deslocamento_a_mm", 0.0)) / 1000.0
+    displacement_b = float(parameters.get("deslocamento_b_mm", 0.0)) / 1000.0
+    angle = math.radians(rotation)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    shift_x = displacement_a * cosine - displacement_b * sine
+    shift_y = displacement_a * sine + displacement_b * cosine
+    center = (
+        origin[0] + shift_x,
+        origin[1] + shift_y,
+        origin[2] - wood_thickness - thickness / 2.0,
+    )
+    plate = pv.Cube(
+        center=center, x_length=width, y_length=length, z_length=thickness,
+    )
+    if rotation:
+        plate.rotate_z(rotation, point=center, inplace=True)
+    return plate
+
+
+def stair_wood_mesh(
+    parameters: dict[str, object], origin: tuple[float, float, float],
+) -> pv.PolyData:
+    """Build the wooden tread whose top face coincides with the node reference."""
+    width = float(parameters.get("madeira_largura_mm", 280.0)) / 1000.0
+    length = float(parameters.get("madeira_comprimento_mm", 800.0)) / 1000.0
+    thickness = float(parameters.get("madeira_espessura_mm", STAIR_WOOD_THICKNESS_MM)) / 1000.0
+    rotation = float(parameters.get("rotacao_deg", 0.0))
+    displacement_a = float(parameters.get("madeira_deslocamento_a_mm", 0.0)) / 1000.0
+    displacement_b = float(parameters.get("madeira_deslocamento_b_mm", 0.0)) / 1000.0
+    angle = math.radians(rotation)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    shift_x = displacement_a * cosine - displacement_b * sine
+    shift_y = displacement_a * sine + displacement_b * cosine
+    center = (
+        origin[0] + shift_x,
+        origin[1] + shift_y,
+        origin[2] - thickness / 2.0,
+    )
+    wood = pv.Cube(
+        center=center, x_length=width, y_length=length, z_length=thickness,
+    )
+    if rotation:
+        wood.rotate_z(rotation, point=center, inplace=True)
+    return wood

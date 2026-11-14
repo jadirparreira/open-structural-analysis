@@ -35,8 +35,12 @@ from osa.domain.node_components import BASE_PLATE_PLANES, default_hook_headings,
 from osa.rendering.batched_renderer import _clip_line_mesh_outside_cutters, _transformed_points
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.node_component_renderer import (
+    STAIR_WOOD_COLOR,
+    STAIR_WOOD_EDGE_COLOR,
     append_polydata_meshes,
     base_plate_component_meshes,
+    stair_plate_mesh,
+    stair_wood_mesh,
 )
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
 from osa.sections import section_shape
@@ -61,6 +65,11 @@ _PARAMETER_LABELS = {
     "fixadores_lado_a": "Fixadores lado A",
     "fixadores_lado_b": "Fixadores lado B",
     "plano": "Plano",
+    "madeira_largura_mm": "Dimensão A",
+    "madeira_comprimento_mm": "Dimensão B",
+    "madeira_deslocamento_a_mm": "Deslocamento A",
+    "madeira_deslocamento_b_mm": "Deslocamento B",
+    "madeira_espessura_mm": "Espessura da chapa",
 }
 _FIXADORES = ("Reto", "Gancho")
 _NO_HOOK_ROTATION_VALUE = -1_000_000_000.0
@@ -98,6 +107,7 @@ class ComponentPreview(QWidget):
         self._preview_bar_silhouette_sources: list[pv.PolyData] = []
         self._empty_label_actor = None
         self._plate_actor = None
+        self._wood_actor = None
         self._rod_actor = None
         self._rod_edge_actor = None
         self._hardware_actor = None
@@ -168,7 +178,7 @@ class ComponentPreview(QWidget):
         self._hook_silhouette_sources.clear()
         self._hook_actors.clear()
         plotter.set_background("#f6f8fa")
-        if self._component_id != "base_plate":
+        if self._component_id not in {"base_plate", "stair_plate"}:
             for actor in self._preview_bar_actors:
                 actor.SetVisibility(False)
             if self._empty_label_actor is None:
@@ -183,6 +193,41 @@ class ComponentPreview(QWidget):
             self._empty_label_actor = None
 
         p = self._parameters
+        if self._component_id == "stair_plate":
+            width = max(
+                float(p.get("largura_mm", 200.0)),
+                float(p.get("madeira_largura_mm", 280.0)),
+            ) / 1000.0
+            length = max(
+                float(p.get("comprimento_mm", 300.0)),
+                float(p.get("madeira_comprimento_mm", 800.0)),
+            ) / 1000.0
+            self._ensure_preview_bars(width, length, 0.0)
+            for actor in self._preview_bar_actors:
+                actor.SetVisibility(True)
+            plate = stair_plate_mesh(p, (0.0, 0.0, 0.0))
+            wood = stair_wood_mesh(p, (0.0, 0.0, 0.0))
+            self._plate_actor = self._set_preview_mesh_actor(
+                self._plate_actor, plate,
+                color="#8c959f", edge_color="#57606a", show_edges=True,
+                line_width=1.2, smooth_shading=False, lighting=False, pickable=True,
+            )
+            self._plate_actor.SetObjectName("component-preview-plate")
+            self._wood_actor = self._set_preview_mesh_actor(
+                self._wood_actor, wood,
+                color=STAIR_WOOD_COLOR, edge_color=STAIR_WOOD_EDGE_COLOR,
+                show_edges=True, line_width=1.2, smooth_shading=False,
+                lighting=False, pickable=True,
+            )
+            self._wood_actor.SetObjectName("component-preview-wood")
+            if not self._camera_initialized:
+                plotter.view_vector((-1.0, -1.0, 1.0), viewup=(0.0, 0.0, 1.0), render=False)
+                plotter.reset_camera()
+                plotter.camera.zoom(1.12)
+                self._camera_initialized = True
+            plotter.render()
+            return
+
         if p.get("fixador") != "Gancho":
             self._selected_hook_index = None
         width = float(p.get("largura_mm", 300.0)) / 1000.0
@@ -910,30 +955,36 @@ class NodeComponentsDialog(QDialog):
         values = dict(current.parameters) if current and current.component_id == component_id else {}
         for key, default in definition.parameters:
             values.setdefault(key, default)
-        if values.get("fixador") == "Químico":
-            values["fixador"] = "Reto"
-        if values.get("fixador") not in _FIXADORES:
-            values["fixador"] = "Reto"
-        if values["fixador"] == "Reto":
-            values.pop("perna_mm", None)
-            values.pop("rotacao_gancho_deg", None)
-        else:
-            legacy_rotation = float(values.get("rotacao_gancho_deg", 0.0))
-            for index, heading in enumerate(default_hook_headings(values)):
-                global_key = f"rotacao_global_gancho_{index}_deg"
-                legacy_key = f"rotacao_gancho_{index}_deg"
-                if global_key not in values:
-                    values[global_key] = _normalized_hook_rotation(
-                        heading
-                        + float(values.get(legacy_key, legacy_rotation)),
-                    )
-                values.pop(legacy_key, None)
-            values.pop("rotacao_gancho_deg", None)
+        if component_id == "base_plate":
+            if values.get("fixador") == "Químico":
+                values["fixador"] = "Reto"
+            if values.get("fixador") not in _FIXADORES:
+                values["fixador"] = "Reto"
+            if values["fixador"] == "Reto":
+                values.pop("perna_mm", None)
+                values.pop("rotacao_gancho_deg", None)
+            else:
+                legacy_rotation = float(values.get("rotacao_gancho_deg", 0.0))
+                for index, heading in enumerate(default_hook_headings(values)):
+                    global_key = f"rotacao_global_gancho_{index}_deg"
+                    legacy_key = f"rotacao_gancho_{index}_deg"
+                    if global_key not in values:
+                        values[global_key] = _normalized_hook_rotation(
+                            heading
+                            + float(values.get(legacy_key, legacy_rotation)),
+                        )
+                    values.pop(legacy_key, None)
+                values.pop("rotacao_gancho_deg", None)
         self._draft_parameters = values
         self.details_title.setText(definition.name)
+        description = (
+            "O topo da madeira coincide com o nó; a chapa de aço fica embaixo. "
+            "A rotação da chapa de aço também orienta o degrau."
+            if component_id == "stair_plate" else
+            "Chapa retangular posicionada no plano selecionado no nó."
+        )
         self.details_text.setText(
-            "Chapa retangular posicionada no plano selecionado no nó. "
-            "Os parâmetros visuais são aplicados ao nó somente ao clicar em Aplicar."
+            f"{description} Os parâmetros visuais são aplicados ao nó somente ao clicar em Aplicar."
         )
         self._show_parameters(definition.parameters, values)
         self._update_preview()
@@ -945,8 +996,19 @@ class NodeComponentsDialog(QDialog):
             if key not in {"perna_mm", "rotacao_gancho_deg"}
             or values.get("fixador") == "Gancho"
         ]
-        for index, (key, default) in enumerate(visible_parameters):
-            row, column = divmod(index, 2)
+        row, column = 0, 0
+        active_section = None
+        for key, default in visible_parameters:
+            section = "Degrau de madeira" if key.startswith("madeira_") else "Chapa de aço"
+            if section != active_section:
+                if column:
+                    row += 1
+                    column = 0
+                heading = QLabel(section, self.parameters_widget)
+                heading.setObjectName("propertySection")
+                self.parameters_layout.addWidget(heading, row, 0, 1, 2)
+                row += 1
+                active_section = section
             field_group = QWidget(self.parameters_widget)
             group_layout = QVBoxLayout(field_group)
             group_layout.setContentsMargins(0, 0, 0, 0)
@@ -996,14 +1058,20 @@ class NodeComponentsDialog(QDialog):
                     field.setRange(2.0, 100.0)
                     field.setSingleStep(1.0)
                 elif key == "rotacao_deg":
-                    field.setRange(0.0, 259.9)
+                    field.setRange(
+                        0.0,
+                        359.9 if self._current_definition.component_id == "stair_plate" else 259.9,
+                    )
                     field.setSingleStep(0.1)
                 elif key == "rotacao_gancho_deg":
                     field.setSpecialValueText("Nenhum")
                     field.setRange(_NO_HOOK_ROTATION_VALUE, 1_000_000_000.0)
                     field.setSingleStep(0.1)
                     field.setValue(_NO_HOOK_ROTATION_VALUE)
-                elif key in {"deslocamento_a_mm", "deslocamento_b_mm"}:
+                elif key in {
+                    "deslocamento_a_mm", "deslocamento_b_mm",
+                    "madeira_deslocamento_a_mm", "madeira_deslocamento_b_mm",
+                }:
                     field.setRange(-100_000.0, 100_000.0)
                     field.setSingleStep(1.0)
                 elif key not in {"fixadores_lado_a", "fixadores_lado_b"}:
@@ -1040,6 +1108,10 @@ class NodeComponentsDialog(QDialog):
                 group_layout.addWidget(unit_box)
                 self._inputs[key] = field
             self.parameters_layout.addWidget(field_group, row, column)
+            column += 1
+            if column == 2:
+                row += 1
+                column = 0
 
         self.parameters_layout.activate()
         QTimer.singleShot(0, self._update_parameter_content_minimum_height)

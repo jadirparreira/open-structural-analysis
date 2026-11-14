@@ -40,7 +40,14 @@ from .grid_renderer import GridRenderer
 from .label_overlay import LabelOverlay, project_world_to_screen
 from .local_axes_renderer import LocalAxesRenderer
 from .navigation_widget import NavigationWidget
-from .node_component_renderer import append_polydata_meshes, base_plate_component_meshes
+from .node_component_renderer import (
+    STAIR_WOOD_COLOR,
+    STAIR_WOOD_EDGE_COLOR,
+    append_polydata_meshes,
+    base_plate_component_meshes,
+    stair_plate_mesh,
+    stair_wood_mesh,
+)
 from .plate_antialiasing import PlateAntialiasing
 from .plate_member_intersections import dashed_plate_member_intersections
 from .plate_result_display import (
@@ -510,6 +517,9 @@ class StructureScene(QWidget):
         self._node_component_actors: list[object] = []
         self._node_component_pick_actors: list[object] = []
         self._node_component_plate_actors: dict[str, object] = {}
+        self._node_component_face_actors: dict[str, tuple[object, ...]] = {}
+        self._node_component_hover_meshes: dict[str, pv.PolyData] = {}
+        self._last_picked_component_face_actor = None
         self._node_component_pick_through = False
         self._node_component_rod_meshes: list[pv.PolyData] = []
         self._node_component_silhouette_actors: list[object] = []
@@ -1484,12 +1494,44 @@ class StructureScene(QWidget):
         self._node_component_actors = []
         self._node_component_pick_actors = []
         self._node_component_plate_actors = {}
+        self._node_component_face_actors = {}
+        self._node_component_hover_meshes = {}
+        self._last_picked_component_face_actor = None
         self._node_component_rod_meshes = []
         self._node_component_silhouette_actors = []
         visible_names = set(visible_nodes) if visible_nodes is not None else set(self._model.nodes)
         for name, node in self._model.nodes.items():
             assignment = node.component
             if name not in visible_names or assignment is None:
+                continue
+            if assignment.component_id == "stair_plate":
+                try:
+                    plate = stair_plate_mesh(
+                        dict(assignment.parameters), (node.x, node.y, node.z),
+                    )
+                    wood = stair_wood_mesh(
+                        dict(assignment.parameters), (node.x, node.y, node.z),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                plate_actor = self.plotter.add_mesh(
+                    plate, color="#8c959f", edge_color="#57606a", show_edges=True,
+                    line_width=1.0, pickable=False, reset_camera=False, render=False,
+                )
+                plate_actor.SetObjectName(f"node-component:{name}")
+                self._node_component_actors.append(plate_actor)
+                self._node_component_pick_actors.append(plate_actor)
+                wood_actor = self.plotter.add_mesh(
+                    wood, color=STAIR_WOOD_COLOR, edge_color=STAIR_WOOD_EDGE_COLOR,
+                    show_edges=True, line_width=1.0, pickable=False,
+                    reset_camera=False, render=False,
+                )
+                wood_actor.SetObjectName(f"node-component:{name}")
+                self._node_component_actors.append(wood_actor)
+                self._node_component_pick_actors.append(wood_actor)
+                self._node_component_face_actors[name] = (plate_actor, wood_actor)
+                self._node_component_plate_actors[name] = wood_actor
+                self._node_component_hover_meshes[name] = append_polydata_meshes((plate, wood))
                 continue
             if assignment.component_id != "base_plate":
                 continue
@@ -1507,6 +1549,7 @@ class StructureScene(QWidget):
             plate_actor.SetObjectName(f"node-component:{name}")
             self._node_component_actors.append(plate_actor)
             self._node_component_pick_actors.append(plate_actor)
+            self._node_component_face_actors[name] = (plate_actor,)
             self._node_component_plate_actors[name] = plate_actor
 
             combined_rods = append_polydata_meshes(rods)
@@ -1530,10 +1573,6 @@ class StructureScene(QWidget):
                         edges, color="#57606a", line_width=1.0,
                         lighting=False, pickable=False, reset_camera=False, render=False,
                     )
-                    edge_mapper = edge_actor.GetMapper()
-                    edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
-                    edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-                    edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
                     self._node_component_actors.append(edge_actor)
 
             hardware = append_polydata_meshes((*washers, *nuts))
@@ -1544,6 +1583,9 @@ class StructureScene(QWidget):
             hardware_actor.SetObjectName(f"node-component:{name}")
             self._node_component_actors.append(hardware_actor)
             self._node_component_pick_actors.append(hardware_actor)
+            self._node_component_hover_meshes[name] = append_polydata_meshes(
+                (plate, combined_rods, hardware),
+            )
             hardware_edges = hardware.extract_feature_edges(
                 feature_angle=25.0, boundary_edges=True, feature_edges=True,
                 manifold_edges=False, non_manifold_edges=False,
@@ -1553,10 +1595,6 @@ class StructureScene(QWidget):
                     hardware_edges, color="#57606a", line_width=0.9,
                     lighting=False, pickable=False, reset_camera=False, render=False,
                 )
-                edge_mapper = edge_actor.GetMapper()
-                edge_mapper.SetResolveCoincidentTopologyToPolygonOffset()
-                edge_mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
-                edge_mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
                 self._node_component_actors.append(edge_actor)
         self._refresh_node_component_silhouettes()
         if render:
@@ -1981,13 +2019,28 @@ class StructureScene(QWidget):
             or self._node_component_pick_through
         ):
             return None
-        actors = [actor for actor in self._node_component_pick_actors if actor.GetVisibility()]
-        if not actors:
+        component_actors = [
+            actor for actor in self._node_component_pick_actors if actor.GetVisibility()
+        ]
+        occluding_actors = (
+            self._member_face_actor,
+            self._member_line_actor,
+            self._member_fallback_actor,
+            self._rigid_bar_actor,
+            *self._plate_actors.values(),
+        )
+        actors = component_actors + [
+            actor for actor in occluding_actors
+            if actor is not None and actor.GetVisibility()
+        ]
+        if not component_actors:
             return None
         picker = vtk.vtkCellPicker()
         picker.SetTolerance(0.0005)
         picker.PickFromListOn()
+        pickable_states = []
         for actor in actors:
+            pickable_states.append((actor, bool(actor.GetPickable())))
             actor.SetPickable(True)
             picker.AddPickList(actor)
         x, y = position or self.plotter.iren.get_event_position()
@@ -1996,10 +2049,12 @@ class StructureScene(QWidget):
             if not hit:
                 return None
             actor_name = str(picker.GetActor().GetObjectName() or "")
+            if not actor_name.startswith("node-component:"):
+                return None
             return actor_name.removeprefix("node-component:") or None
         finally:
-            for actor in actors:
-                actor.SetPickable(False)
+            for actor, was_pickable in pickable_states:
+                actor.SetPickable(was_pickable)
 
     def _pick_candidates(self) -> list[tuple[str, str]]:
         candidates = self._screen_pick_candidates()
@@ -2296,7 +2351,25 @@ class StructureScene(QWidget):
                     solids.append((f"plate:{name}", mesh))
             for node_name, node in model.nodes.items():
                 assignment = getattr(node, "component", None)
-                if assignment is None or assignment.component_id != "base_plate":
+                if assignment is None:
+                    continue
+                if assignment.component_id == "stair_plate":
+                    component_meshes = (
+                        ("steel", stair_plate_mesh(
+                            dict(assignment.parameters), (node.x, node.y, node.z),
+                        )),
+                        ("wood", stair_wood_mesh(
+                            dict(assignment.parameters), (node.x, node.y, node.z),
+                        )),
+                    )
+                    for part_name, component_mesh in component_meshes:
+                        mesh = component_mesh.extract_surface(
+                            algorithm="dataset_surface",
+                        ).triangulate().clean()
+                        if mesh.n_points and mesh.n_cells:
+                            solids.append((f"component:{node_name}:{part_name}", mesh))
+                    continue
+                if assignment.component_id != "base_plate":
                     continue
                 component_meshes = base_plate_component_meshes(
                     dict(assignment.parameters), (node.x, node.y, node.z),
@@ -2859,6 +2932,7 @@ class StructureScene(QWidget):
 
     def _pick_alignment_face(self):
         """Return the nearest visible model or component plate face under the pointer."""
+        self._last_picked_component_face_actor = None
         if self._pointer_position is None:
             return None
         x, y = self._qt_to_vtk_position(
@@ -2888,13 +2962,14 @@ class StructureScene(QWidget):
                 pickable_actors.append((actor, was_pickable))
                 plate_actor_names.append((actor, name))
         component_actor_names = []
-        for name, actor in self._node_component_plate_actors.items():
-            if actor.GetVisibility():
-                was_pickable = bool(actor.GetPickable())
-                actor.SetPickable(True)
-                picker.AddPickList(actor)
-                pickable_actors.append((actor, was_pickable))
-                component_actor_names.append((actor, name))
+        for name, component_actors in self._node_component_face_actors.items():
+            for actor in component_actors:
+                if actor.GetVisibility():
+                    was_pickable = bool(actor.GetPickable())
+                    actor.SetPickable(True)
+                    picker.AddPickList(actor)
+                    pickable_actors.append((actor, was_pickable))
+                    component_actor_names.append((actor, name))
         hit = picker.Pick(x, y, 0, self.plotter.renderer)
         for actor, was_pickable in pickable_actors:
             actor.SetPickable(was_pickable)
@@ -2913,6 +2988,7 @@ class StructureScene(QWidget):
         elif component_name is not None:
             kind, name = "component", component_name
             polydata = actor.GetMapper().GetInput()
+            self._last_picked_component_face_actor = actor
         elif actor == member_actor:
             batch = self._member_batch
             if batch is None or cell_id < 0 or cell_id >= batch.faces.n_cells:
@@ -2970,7 +3046,13 @@ class StructureScene(QWidget):
         ):
             return self._clear_face_alignment_highlight()
         kind, name, cell_id, point, normal = hit
-        key = kind, name, int(cell_id)
+        component_actor = (
+            self._last_picked_component_face_actor if kind == "component" else None
+        )
+        key = (
+            kind, name, id(component_actor) if component_actor is not None else None,
+            int(cell_id),
+        )
         if key == self._face_alignment_face_hover:
             return False
         self._clear_face_alignment_highlight()
@@ -2981,7 +3063,7 @@ class StructureScene(QWidget):
             start, end = self._member_batch.face_cell_ranges[name]
             candidate_ids = range(start, end)
         elif kind == "component":
-            actor = self._node_component_plate_actors.get(name)
+            actor = component_actor or self._node_component_plate_actors.get(name)
             if actor is None:
                 return False
             mesh = pv.wrap(actor.GetMapper().GetInput())
@@ -3077,8 +3159,12 @@ class StructureScene(QWidget):
             return self._clear_endpoint_alignment_face_highlight()
         kind, target_name, cell_id, _point, hit_normal = hit
         if kind in {"plate", "component"}:
-            actors = self._plate_actors if kind == "plate" else self._node_component_plate_actors
-            actor = actors.get(target_name)
+            actor = (
+                self._last_picked_component_face_actor
+                if kind == "component" else self._plate_actors.get(target_name)
+            )
+            if actor is None and kind == "component":
+                actor = self._node_component_plate_actors.get(target_name)
             if actor is None:
                 return self._clear_endpoint_alignment_face_highlight()
             data = pv.wrap(actor.GetMapper().GetInput())
@@ -3129,7 +3215,7 @@ class StructureScene(QWidget):
             coplanar_cells.append(candidate_id)
         if not coplanar_cells:
             coplanar_cells = [cell_id]
-        key = kind, name, tuple(coplanar_cells)
+        key = kind, name, id(actor) if kind == "component" else None, tuple(coplanar_cells)
         if key == self._endpoint_alignment_face_hover:
             return False
         self._clear_endpoint_alignment_face_highlight()
@@ -6087,6 +6173,11 @@ class StructureScene(QWidget):
                 if group is not None:
                     hover_targets = tuple(("bar", name) for name in group["members"])
             desired["hover"] = hover_targets
+        if (
+            hover is not None and hover[0] == "node"
+            and hover[1] in self._node_component_hover_meshes
+        ):
+            desired["component_hover"] = (("component", hover[1]),)
 
         node_colors = {
             name: "#d1242f" for name, node in self._model.nodes.items()
@@ -6136,6 +6227,43 @@ class StructureScene(QWidget):
         if not targets:
             return
         kind, name = targets[0]
+        if kind == "component":
+            source = self._node_component_hover_meshes.get(name)
+            if source is None or not source.n_cells:
+                return
+            edges = source.extract_feature_edges(
+                feature_angle=25.0,
+                boundary_edges=True,
+                feature_edges=True,
+                manifold_edges=False,
+                non_manifold_edges=False,
+            )
+            silhouette = self._member_renderer.solids.silhouette_for(
+                source, self.plotter.renderer.GetActiveCamera(),
+            )
+            overlay = vtk.vtkAppendPolyData()
+            if edges.n_cells:
+                overlay.AddInputData(edges)
+            if silhouette.n_cells:
+                overlay.AddInputData(silhouette)
+            overlay.Update()
+            mesh = pv.wrap(overlay.GetOutput())
+            if not mesh.n_cells:
+                return
+            actor = self.plotter.add_mesh(
+                mesh,
+                color=color,
+                line_width=self._highlight_line_width(slot, "component"),
+                render_lines_as_tubes=True,
+                lighting=False,
+                pickable=False,
+                reset_camera=False,
+                render=False,
+            )
+            actor.SetVisibility(True)
+            actor.SetObjectName(f"highlight:{slot}")
+            self._highlight_actors[slot] = actor
+            return
         if kind in {"bar", "rigid_bar"}:
             mesh = self._batched_highlight_mesh(targets, slot)
             if mesh is None or not mesh.n_cells:
@@ -6404,6 +6532,8 @@ class StructureScene(QWidget):
         top at every zoom level while preserving the separate solid/line
         representations.
         """
+        if kind == "component":
+            return self._solid_highlight_line_width
         if kind == "rigid_bar":
             reference_actor = self._rigid_bar_actor
             fallback = self._rigid_bar_line_width
@@ -7838,6 +7968,8 @@ class StructureScene(QWidget):
         self._node_component_actors = []
         self._node_component_pick_actors = []
         self._node_component_plate_actors = {}
+        self._node_component_face_actors = {}
+        self._last_picked_component_face_actor = None
         self._node_component_pick_through = False
         self._node_component_rod_meshes = []
         self._node_component_silhouette_actors = []
@@ -8379,6 +8511,9 @@ class StructureScene(QWidget):
             return
         self._refresh_member_silhouette()
         self._refresh_node_component_silhouettes()
+        component_hover = self._highlight_targets.get("component_hover")
+        if component_hover:
+            self._replace_highlight("component_hover", component_hover, "#24292f")
         circular = self._highlight_targets.get("selected:circular")
         if circular and self._solid_members_visible:
             self._replace_highlight("selected:circular", circular, "#0969da")
@@ -8470,7 +8605,7 @@ class StructureScene(QWidget):
         for actor, width in self._result_line_widths:
             actor.GetProperty().SetLineWidth(width * zoom_factor)
         for slot, actor in self._highlight_actors.items():
-            if actor is not None and (slot.startswith("selected") or slot == "hover"):
+            if actor is not None and (slot.startswith("selected") or slot in {"hover", "component_hover"}):
                 targets = self._highlight_targets.get(slot, ())
                 kind = targets[0][0] if targets else "bar"
                 member_name = targets[0][1] if targets and kind == "bar" else None

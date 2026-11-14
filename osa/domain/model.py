@@ -23,7 +23,11 @@ from .entities import (
     RigidBar,
 )
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
-from .node_components import BASE_PLATE_PLANES, default_hook_headings, node_component_definition
+from .node_components import (
+    BASE_PLATE_PLANES,
+    default_hook_headings,
+    node_component_definition,
+)
 
 
 class StructuralModel:
@@ -663,6 +667,33 @@ class StructuralModel:
                     "O comprimento do fixador deve permitir o embutimento, atravessar a chapa "
                     "e receber arruela e porca."
                 )
+            component = NodeComponentAssignment(component.component_id, tuple(normalized))
+        elif component is not None and component.component_id == "stair_plate":
+            values = dict(component.parameters)
+            normalized = []
+            for key, default in (
+                ("largura_mm", 200.0), ("comprimento_mm", 300.0),
+                ("espessura_mm", 6.3),
+                ("madeira_largura_mm", 280.0),
+                ("madeira_comprimento_mm", 800.0),
+                ("madeira_espessura_mm", 20.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("As dimensões da chapa e do degrau devem ser positivas e finitas.")
+                normalized.append((key, value))
+            for key in (
+                "deslocamento_a_mm", "deslocamento_b_mm",
+                "madeira_deslocamento_a_mm", "madeira_deslocamento_b_mm",
+            ):
+                value = float(values.get(key, 0.0))
+                if not math.isfinite(value):
+                    raise ValueError("Os deslocamentos da chapa e do degrau devem ser finitos.")
+                normalized.append((key, value))
+            rotation = float(values.get("rotacao_deg", 0.0))
+            if not math.isfinite(rotation):
+                raise ValueError("A rotação da chapa degrau deve ser finita.")
+            normalized.append(("rotacao_deg", round(rotation % 360.0, 1)))
             component = NodeComponentAssignment(component.component_id, tuple(normalized))
         previous = self.nodes[name]
         node = replace(previous, component=component)

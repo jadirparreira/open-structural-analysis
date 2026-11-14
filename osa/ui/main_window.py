@@ -49,7 +49,7 @@ from .dialogs import (
 )
 from .displacement_panel import DisplacementPanel
 from .detailing_preview import (
-    DETAILING_LINEWORK_VERSION, DetailingViewPreview, _ModelSnapshot, _ViewGeometryCalculator,
+    DETAILING_LINEWORK_VERSION, _ModelSnapshot,
 )
 from .detailing_viewport import _DetachedDetailingScene
 from .group_positioning import group_endpoint_faces
@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self._create_project_loading_overlay()
+        self._create_sheet_views_updating_dialog()
         self.project_sheet_view_panel = ProjectSheetViewPanel(self)
         self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
         self.project_sheet_workspace.selection_changed.connect(
@@ -716,9 +717,7 @@ class MainWindow(QMainWindow):
         """Switch between the detailing model and its blank project sheet view."""
         self._detailing_project_mode = bool(active)
         if self._detailing_project_mode and hasattr(self, "project_sheets_palette"):
-            self.refresh_project_sheet_views(
-                self.project_sheets_palette.sheet_selector.currentText(),
-            )
+            self.refresh_project_sheet_views()
         if not self._detailing_project_mode and hasattr(self, "project_sheet_workspace"):
             self.project_sheet_workspace.select_view(None)
         if self.view_stack.currentWidget() is not self.home:
@@ -753,68 +752,46 @@ class MainWindow(QMainWindow):
             )
 
     def refresh_project_sheet_views(self, sheet_name: str | None = None) -> None:
-        """Regenerate saved sheet linework from the current model on sheet open."""
+        """Regenerate stale saved sheet linework away from the interface thread."""
         palette = getattr(self, "project_sheets_palette", None)
         if palette is None:
             return
-        sheet_name = sheet_name or palette.sheet_selector.currentText()
-        views = palette._sheet_views.get(sheet_name)
-        if views is None:
-            return
-
+        sheet_names = (
+            [sheet_name] if sheet_name is not None
+            else list(palette._sheet_names)
+        )
         state_changed = False
-        upgrade_jobs = []
-        for view in views:
-            if self._refresh_project_view_identifications(view):
-                state_changed = True
-            if view.get("model_revision") == self.model.revision:
+        refresh_jobs = []
+        for current_sheet_name in sheet_names:
+            for view in palette._sheet_views.get(current_sheet_name, ()):
+                if self._refresh_project_view_identifications(view):
+                    state_changed = True
+                if (
+                    view.get("model_revision") == self.model.revision
+                    and view.get("linework_version") == DETAILING_LINEWORK_VERSION
+                ):
+                    continue
                 projection = view.get("projection")
-                if (view.get("linework_version") != DETAILING_LINEWORK_VERSION
-                        and isinstance(projection, dict) and isinstance(projection.get("plane"), str)
-                        and "coordinate" in projection):
-                    upgrade_jobs.append((sheet_name, view, copy.deepcopy(projection), bool(view.get("segments"))))
-                continue
-            projection = view.get("projection")
-            if not isinstance(projection, dict):
-                continue
-            plane = projection.get("plane")
-            if not isinstance(plane, str) or "coordinate" not in projection:
-                continue
-            calculator = _ViewGeometryCalculator()
-            calculator._mesh_cache_owner = self.model
-            calculator._detail_scene = self.scene
-            try:
-                DetailingViewPreview.set_view(
-                    calculator,
-                    self.model,
-                    plane,
-                    projection["coordinate"],
-                    upper_offset_cm=float(projection.get("upper_offset_cm", 50.0)),
-                    lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
-                    orientation=str(projection.get("orientation", "Superior para inferior")),
-                    rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
-                )
-            except (IndexError, KeyError, OverflowError, RuntimeError, TypeError, ValueError):
-                continue
-            segments = tuple(calculator._segments_2d)
-            owners = tuple(calculator._segment_sources)
-            if (
-                segments != tuple(view.get("segments", ()))
-                or owners != tuple(view.get("segment_owners", ()))
-            ):
-                view["segments"] = segments
-                view["segment_owners"] = owners
-                state_changed = True
-            view["model_revision"] = self.model.revision
-            view["linework_version"] = DETAILING_LINEWORK_VERSION
-            state_changed = True
+                if (
+                    not isinstance(projection, dict)
+                    or not isinstance(projection.get("plane"), str)
+                    or "coordinate" not in projection
+                ):
+                    continue
+                refresh_jobs.append((
+                    current_sheet_name, view, copy.deepcopy(projection),
+                    bool(view.get("segments")),
+                ))
 
         if state_changed:
-            if palette.sheet_selector.currentText() == sheet_name:
-                self.project_sheet_workspace.set_sheet_views(views)
+            current_sheet_name = palette.sheet_selector.currentText()
+            if current_sheet_name in sheet_names:
+                self.project_sheet_workspace.set_sheet_views(
+                    palette._sheet_views.get(current_sheet_name, ()),
+                )
             self._store_detailing_state()
-        if upgrade_jobs:
-            self._queue_sheet_linework_upgrade(upgrade_jobs)
+        if refresh_jobs:
+            self._queue_sheet_linework_upgrade(refresh_jobs)
 
     def _queue_sheet_linework_upgrade(self, jobs) -> None:
         revision = self.model.revision
@@ -827,15 +804,25 @@ class MainWindow(QMainWindow):
         pending = self._sheet_linework_pending
         fresh = [job for job in jobs if (id(job[1]), revision, group_revision) not in pending]
         if not fresh:
+            if pending and self._detailing_project_mode:
+                self.project_sheet_workspace.set_linework_updating(True)
+                self._show_sheet_views_updating_dialog()
             return
         pending.update((id(job[1]), revision, group_revision) for job in fresh)
         self.project_sheet_workspace.set_linework_updating(True)
-        snapshot = _ModelSnapshot(self.model)
-        source = _DetachedDetailingScene(self.scene)
-        QThreadPool.globalInstance().start(SheetLineworkTask(
-            self._sheet_linework_signals, snapshot, source, revision, group_revision, fresh,
-            self._sheet_linework_cancel,
-        ))
+        if self._detailing_project_mode:
+            self._show_sheet_views_updating_dialog()
+
+        def start_refresh() -> None:
+            snapshot = _ModelSnapshot(self.model)
+            source = _DetachedDetailingScene(self.scene)
+            task = SheetLineworkTask(
+                self._sheet_linework_signals, snapshot, source, revision, group_revision, fresh,
+                self._sheet_linework_cancel,
+            )
+            QThreadPool.globalInstance().start(task)
+
+        QTimer.singleShot(75, start_refresh)
 
     @Slot(object, object, int, object, object, object, object, bool)
     def _sheet_linework_upgraded(self, sheet_name, view, revision, group_revision,
@@ -843,20 +830,56 @@ class MainWindow(QMainWindow):
         pending = self._sheet_linework_pending
         pending.discard((id(view), revision, group_revision))
         self.project_sheet_workspace.set_linework_updating(bool(pending))
+        if not pending:
+            self._sheet_views_updating_dialog.hide()
         views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
         if (not success or revision != self.model.revision
                 or group_revision != self.model.verification_group_revision
-                or not any(item is view for item in views) or view.get("projection") != projection
-                or view.get("model_revision") != revision
-                or view.get("linework_version") == DETAILING_LINEWORK_VERSION):
+                or not any(item is view for item in views) or view.get("projection") != projection):
             return
         view["segments"] = segments
         view["segment_owners"] = owners
+        view["model_revision"] = revision
         view["linework_version"] = DETAILING_LINEWORK_VERSION
         if self.project_sheets_palette.sheet_selector.currentText() == sheet_name:
             self.project_sheet_workspace._dimension_snap_cache.clear()
             self.project_sheet_workspace.update()
         self._store_detailing_state()
+
+    def _show_sheet_views_updating_dialog(self) -> None:
+        dialog = self._sheet_views_updating_dialog
+        dialog.adjustSize()
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.show()
+        dialog.raise_()
+
+    def _create_sheet_views_updating_dialog(self) -> None:
+        dialog = _ProjectLoadingDialog(self)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setModal(True)
+        dialog.setWindowTitle("Atualizando vistas")
+        dialog.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+        )
+        dialog.setObjectName("sheetViewsUpdatingDialog")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+        title = QLabel("Atualizando vistas…", dialog)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
+        description = QLabel(
+            "Aguarde enquanto as vistas inseridas nas folhas são atualizadas.", dialog,
+        )
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(LoadingIndicator(dialog))
+        dialog.setFixedWidth(420)
+        dialog.hide()
+        self._sheet_views_updating_dialog = dialog
 
     def _sync_project_sheet_view_settings(
         self,
@@ -1859,7 +1882,7 @@ class MainWindow(QMainWindow):
         if face_kind not in {"bar", "plate", "component"}:
             self.history.append(
                 "> <b>Subtrair extremidade</b> "
-                "<span style='color:#8c959f'>(Selecione uma face de barra, placa ou chapa de base)</span>"
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa, chapa de base ou degrau)</span>"
             )
             return
         if face_kind == "bar" and face_name == target_name:
@@ -2535,7 +2558,7 @@ class MainWindow(QMainWindow):
         if len(candidates) != 1:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#8c959f'>(Selecione uma face de barra, placa ou chapa de base "
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa, chapa de base ou degrau "
                 "conectada a uma barra ligada à extremidade externa do grupo)</span>"
             )
             return
@@ -5477,7 +5500,7 @@ class MainWindow(QMainWindow):
             self.scene.set_endpoint_alignment_target(name)
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#57606a'>(Selecione uma face de barra, placa ou chapa de base; Esc cancela)</span>"
+                "<span style='color:#57606a'>(Selecione uma face de barra, placa, chapa de base ou degrau; Esc cancela)</span>"
             )
             self.scene.plotter.setFocus()
             return
