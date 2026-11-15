@@ -1028,17 +1028,38 @@ class ProjectSheetsPalette(QFrame):
             "tag.svg", "Identificar", window.start_project_view_identification,
         )
         self.identify_button.setEnabled(True)
+        self.hide_view_elements_button = self._action_button(
+            "lightbulb-off.svg", "Ocultar elemento da vista",
+            lambda: window.start_project_sheet_visibility("hide"),
+        )
+        self.reveal_view_elements_button = self._action_button(
+            "lightbulb.svg", "Reexibir elemento oculto da vista",
+            lambda: window.start_project_sheet_visibility("reveal"),
+        )
+        self.reveal_all_view_elements_button = self._action_button(
+            "lightbulb-all.svg", "Reexibir todos os elementos da vista",
+            lambda: window.start_project_sheet_visibility("reveal_all"),
+        )
         self.dimension_button = self._action_button(
-            "dimension.svg", "Inserir cota", window.start_project_view_dimension,
+            "dimension.svg", "Cota alinhada", window.start_project_view_dimension,
         )
         self.dimension_button.setIconSize(QSize(21, 21))
+        self.orthogonal_dimension_button = self._action_button(
+            "dimension-orthogonal.svg", "Cota ortogonal",
+            window.start_project_view_orthogonal_dimension,
+        )
+        self.orthogonal_dimension_button.setIconSize(QSize(21, 21))
         self.manage_views_button = self._action_button(
-            "scan-square.svg", "Gerenciar vistas", window.open_detailing_views,
+            "scan-square.svg", "Adicionar vistas", window.open_detailing_views,
         )
         self.manage_views_button.setIconSize(QSize(21, 21))
         layout.addWidget(self.manage_views_button)
         layout.addWidget(self.identify_button)
+        layout.addWidget(self.hide_view_elements_button)
+        layout.addWidget(self.reveal_view_elements_button)
+        layout.addWidget(self.reveal_all_view_elements_button)
         layout.addWidget(self.dimension_button)
+        layout.addWidget(self.orthogonal_dimension_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 

@@ -1,6 +1,8 @@
 import math
+import copy
 
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QLinearGradient, QPalette, QPen
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -1036,9 +1038,14 @@ class SettingsDialog(QDialog):
 class DetailingViewsDialog(QDialog):
     """Preliminary view manager for the detailing workspace."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, view_instance: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Gerenciar vistas")
+        self._editing_view_instance = isinstance(view_instance, dict)
+        self._instance_view_settings_result = None
+        self._instance_view_key = None
+        self.setWindowTitle(
+            "Configurações da vista" if self._editing_view_instance else "Adicionar vista"
+        )
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setFixedSize(1120, 600)
         self.setStyleSheet(
@@ -1087,7 +1094,9 @@ class DetailingViewsDialog(QDialog):
         titlebar.setFixedHeight(40)
         titlebar_layout = QHBoxLayout(titlebar)
         titlebar_layout.setContentsMargins(12, 6, 8, 6)
-        title = QLabel("Gerenciar vistas")
+        title = QLabel(
+            "Configurações da vista" if self._editing_view_instance else "Adicionar vista"
+        )
         title.setObjectName("windowTitle")
         titlebar_layout.addWidget(title)
         titlebar_layout.addStretch()
@@ -1111,9 +1120,14 @@ class DetailingViewsDialog(QDialog):
                 parent._detailing_view_settings = {}
             if not hasattr(parent, "_detailing_custom_planes"):
                 parent._detailing_custom_planes = {}
-            saved_view_names = parent._detailing_view_names
-            saved_view_settings = parent._detailing_view_settings
-            saved_custom_planes = parent._detailing_custom_planes
+            if self._editing_view_instance:
+                saved_view_names = copy.deepcopy(parent._detailing_view_names)
+                saved_view_settings = copy.deepcopy(parent._detailing_view_settings)
+                saved_custom_planes = copy.deepcopy(parent._detailing_custom_planes)
+            else:
+                saved_view_names = parent._detailing_view_names
+                saved_view_settings = parent._detailing_view_settings
+                saved_custom_planes = parent._detailing_custom_planes
         else:
             saved_view_names = {}
             saved_view_settings = {}
@@ -1193,6 +1207,48 @@ class DetailingViewsDialog(QDialog):
                 saved_view_names,
                 is_custom=True,
             )
+        if self._editing_view_instance:
+            projection = view_instance.get("projection", {})
+            if isinstance(projection, dict):
+                plane = str(projection.get("plane", ""))
+                coordinate = projection.get("coordinate", 0.0)
+                stable_key = str(view_instance.get("detail_view_key", ""))
+                instance_key = (model_key, stable_key) if stable_key else None
+                if instance_key not in self._view_definitions:
+                    instance_key = next((
+                        key for key, (candidate_plane, candidate_coordinate) in self._view_definitions.items()
+                        if candidate_plane == plane and self._coordinates_match(
+                            candidate_coordinate, coordinate, plane == "custom",
+                        )
+                    ), None)
+                if instance_key is None:
+                    stable_key = stable_key or f"sheet-instance:{id(view_instance)}"
+                    instance_key = (model_key, stable_key)
+                    display_name = str(view_instance.get("name", "Vista inserida"))
+                    self._append_detail_view(
+                        view_list,
+                        instance_key,
+                        plane,
+                        coordinate,
+                        "Configuração da vista inserida",
+                        display_name,
+                        saved_view_names,
+                        is_custom=plane == "custom",
+                    )
+                    view_keys.append(instance_key)
+                orientation_names = ("Superior para inferior", "Inferior para superior")
+                orientation_index = (
+                    orientation_names.index(projection.get("orientation"))
+                    if projection.get("orientation") in orientation_names else 0
+                )
+                saved_view_settings[instance_key] = {
+                    "top": float(projection.get("upper_offset_cm", 50.0)),
+                    "bottom": float(projection.get("lower_offset_cm", 50.0)),
+                    "orientation": orientation_index,
+                    "rotation": float(projection.get("rotation_degrees", 0.0)),
+                }
+                saved_view_names[instance_key] = str(view_instance.get("name", ""))
+                self._instance_view_key = instance_key
         self._saved_view_names = saved_view_names
         self._saved_view_settings = saved_view_settings
         self._saved_custom_planes = saved_custom_planes
@@ -1293,14 +1349,23 @@ class DetailingViewsDialog(QDialog):
         close_button = QPushButton("Fechar")
         close_button.setObjectName("closeProperties")
         close_button.setAutoDefault(False)
-        close_button.clicked.connect(self._commit_view_name_update)
-        close_button.clicked.connect(self.accept)
+        if self._editing_view_instance:
+            close_button.setText("Cancelar")
+            close_button.clicked.connect(self.reject)
+        else:
+            close_button.clicked.connect(self._commit_view_name_update)
+            close_button.clicked.connect(self.accept)
+        self._instance_cancel_button = close_button
         add_view_button = QPushButton("Adicionar vista")
         add_view_button.setObjectName("detailViewAddViewButton")
         add_view_button.setAutoDefault(False)
         add_view_button.setCursor(Qt.CursorShape.PointingHandCursor)
         add_view_button.setEnabled(False)
-        add_view_button.clicked.connect(self._add_selected_view_to_sheet)
+        if self._editing_view_instance:
+            add_view_button.setText("Salvar")
+            add_view_button.clicked.connect(self._save_instance_view_settings)
+        else:
+            add_view_button.clicked.connect(self._add_selected_view_to_sheet)
         self.add_view_button = add_view_button
         footer = QHBoxLayout()
         footer.addWidget(export_button)
@@ -1444,7 +1509,15 @@ class DetailingViewsDialog(QDialog):
         settings_layout.addWidget(orientation_group)
         self._view_settings_panel.hide()
         preferred_view_key = getattr(parent, "_detailing_preferred_view_key", None)
-        if preferred_view_key in self._view_definitions:
+        if self._editing_view_instance and self._instance_view_key in self._view_definitions:
+            self._select_detail_view(self._instance_view_key)
+            sidebar.hide()
+            self.add_detail_plane_button.hide()
+            self.remove_detail_plane_button.hide()
+            self.view_name_input.setEnabled(False)
+            self.export_dxf_button.hide()
+            self.view_settings_button.setChecked(True)
+        elif preferred_view_key in self._view_definitions:
             self._select_detail_view(preferred_view_key)
         elif view_keys:
             self._select_detail_view(view_keys[0])
@@ -1491,6 +1564,20 @@ class DetailingViewsDialog(QDialog):
         self._view_fallbacks[view_key] = fallback_name
         self._view_definitions[view_key] = (plane, coordinate)
         self._view_is_custom[view_key] = is_custom
+
+    @staticmethod
+    def _coordinates_match(first, second, custom: bool) -> bool:
+        if custom:
+            try:
+                first_points = tuple(tuple(float(value) for value in point) for point in first)
+                second_points = tuple(tuple(float(value) for value in point) for point in second)
+            except (TypeError, ValueError):
+                return False
+            return first_points == second_points
+        try:
+            return math.isclose(float(first), float(second), rel_tol=0.0, abs_tol=1e-9)
+        except (TypeError, ValueError):
+            return False
 
     def _add_detail_plane(self) -> None:
         self._commit_view_name_update()
@@ -1552,6 +1639,18 @@ class DetailingViewsDialog(QDialog):
         }
         self._add_view_requested = True
         self.done(QDialog.DialogCode.Rejected)
+
+    def _save_instance_view_settings(self) -> None:
+        if not self._editing_view_instance or self._active_view_key is None:
+            return
+        self._save_active_detail_view_settings()
+        self._instance_view_settings_result = {
+            "upper_offset_cm": self.view_displacement_inputs["top"].value(),
+            "lower_offset_cm": self.view_displacement_inputs["bottom"].value(),
+            "orientation": self.view_direction_selector.currentText(),
+            "rotation_degrees": self.view_rotation_input.value(),
+        }
+        self.accept()
 
     def _remove_selected_detail_plane(self) -> None:
         view_key = self._active_view_key
@@ -2391,6 +2490,261 @@ class ProgramSettingsDialog(QDialog):
         self.window.scene.set_antialiasing_samples(samples)
 
 
+class _DimensionColorSpectrum(QWidget):
+    """Opaque hue/saturation/value picker shown inside the color modal."""
+
+    def __init__(self, color: QColor, on_change, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(238)
+        self._on_change = on_change
+        self._active_region = None
+        self._hue = max(0, color.hsvHue())
+        self._saturation = color.hsvSaturation() / 255.0
+        self._value = color.value() / 255.0
+
+    def set_color(self, color: QColor) -> None:
+        hue = color.hsvHue()
+        if hue >= 0:
+            self._hue = hue
+        self._saturation = color.hsvSaturation() / 255.0
+        self._value = color.value() / 255.0
+        self.update()
+
+    def _color(self) -> QColor:
+        return QColor.fromHsv(
+            self._hue,
+            round(self._saturation * 255),
+            round(self._value * 255),
+        )
+
+    def _geometry(self):
+        bounds = self.rect().adjusted(1, 1, -1, -1)
+        hue_height = 16
+        hue_top = bounds.bottom() - hue_height
+        square = QRectF(bounds.left(), bounds.top(), bounds.width(), max(1, hue_top - bounds.top() - 10))
+        hue = QRectF(bounds.left(), hue_top, bounds.width(), hue_height)
+        return square, hue
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        square, hue_rect = self._geometry()
+        hue_color = QColor.fromHsv(self._hue, 255, 255)
+        painter.fillRect(square, hue_color)
+        white = QLinearGradient(square.left(), square.top(), square.right(), square.top())
+        white.setColorAt(0.0, QColor(255, 255, 255, 255))
+        white.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillRect(square, white)
+        black = QLinearGradient(square.left(), square.top(), square.left(), square.bottom())
+        black.setColorAt(0.0, QColor(0, 0, 0, 0))
+        black.setColorAt(1.0, QColor(0, 0, 0, 255))
+        painter.fillRect(square, black)
+        painter.setPen(QPen(QColor("#d0d7de"), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(square)
+
+        hue_gradient = QLinearGradient(hue_rect.left(), hue_rect.top(), hue_rect.right(), hue_rect.top())
+        for step in range(7):
+            hue_gradient.setColorAt(step / 6.0, QColor.fromHsv((step * 60) % 360, 255, 255))
+        painter.fillRect(hue_rect, hue_gradient)
+        painter.setPen(QPen(QColor("#d0d7de"), 1))
+        painter.drawRect(hue_rect)
+
+        marker_x = square.left() + 6 + self._saturation * max(1.0, square.width() - 12)
+        marker_y = square.top() + 6 + (1.0 - self._value) * max(1.0, square.height() - 12)
+        painter.setPen(QPen(QColor("#ffffff"), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(marker_x, marker_y), 6, 6)
+        hue_x = hue_rect.left() + self._hue / 359.0 * hue_rect.width()
+        painter.setPen(QPen(QColor("#ffffff"), 3))
+        painter.drawLine(QPointF(hue_x, hue_rect.top() - 2), QPointF(hue_x, hue_rect.bottom() + 2))
+        painter.setPen(QPen(QColor("#24292f"), 1))
+        painter.drawLine(QPointF(hue_x, hue_rect.top() - 2), QPointF(hue_x, hue_rect.bottom() + 2))
+
+    def _update_from_position(self, position) -> None:
+        square, hue = self._geometry()
+        if self._active_region == "square":
+            self._saturation = min(1.0, max(0.0, (position.x() - square.left() - 6) / max(1.0, square.width() - 12)))
+            self._value = 1.0 - min(1.0, max(0.0, (position.y() - square.top() - 6) / max(1.0, square.height() - 12)))
+        elif self._active_region == "hue":
+            self._hue = round(min(1.0, max(0.0, (position.x() - hue.left()) / max(1.0, hue.width()))) * 359)
+        else:
+            return
+        self.update()
+        self._on_change(self._color())
+
+    def mousePressEvent(self, event) -> None:
+        square, hue = self._geometry()
+        if square.contains(event.position()):
+            self._active_region = "square"
+        elif hue.adjusted(-4, -5, 4, 5).contains(event.position()):
+            self._active_region = "hue"
+        else:
+            event.ignore()
+            return
+        self._update_from_position(event.position())
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._active_region is not None:
+            self._update_from_position(event.position())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._active_region = None
+        super().mouseReleaseEvent(event)
+
+
+class _DimensionColorDialog(QDialog):
+    """Modal palette, saved swatches, and inline opaque color picker."""
+
+    PRESET_COLORS = (
+        "#000000", "#ffffff", "#ff0000", "#c62828", "#ff7f0e", "#f2c744",
+        "#2e7d32", "#00a884", "#00a6c7", "#1976d2", "#673ab7", "#8e24aa",
+        "#6e7781", "#9e9e9e", "#c8c8c8", "#6b4423",
+    )
+    CUSTOM_SLOT_COUNT = 8
+
+    def __init__(self, color: str, custom_colors=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Selecionar cor")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(390, 570)
+        self.selected_color = QColor(color).name(QColor.NameFormat.HexRgb)
+        self.custom_colors = list(custom_colors or ())[:self.CUSTOM_SLOT_COUNT]
+        self.custom_colors.extend([None] * (self.CUSTOM_SLOT_COUNT - len(self.custom_colors)))
+        self._swatch_buttons = {}
+        self._custom_buttons = []
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#pickerTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QPushButton { min-height: 32px; padding: 3px 10px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton:hover { background: #eaeef2; }"
+            "QPushButton#applyColor { color: #ffffff; background: #0969da; border: 0; font-weight: 600; }"
+            "QPushButton#applyColor:hover { background: #0550ae; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(7)
+        heading = QLabel("Selecionar cor", self)
+        heading.setObjectName("pickerTitle")
+        layout.addWidget(heading)
+        layout.addWidget(QLabel("Cores predefinidas", self))
+        preset_grid = QGridLayout()
+        preset_grid.setSpacing(6)
+        for index, preset in enumerate(self.PRESET_COLORS):
+            swatch = QToolButton(self)
+            swatch.setFixedSize(32, 28)
+            swatch.setToolTip(preset.upper())
+            swatch.setAccessibleName(f"Cor {preset.upper()}")
+            self._swatch_buttons[preset] = swatch
+            swatch.clicked.connect(lambda _checked=False, value=preset: self._set_color(value))
+            preset_grid.addWidget(swatch, index // 8, index % 8)
+        layout.addLayout(preset_grid)
+        self._update_preset_styles()
+
+        layout.addWidget(QLabel("Minhas cores", self))
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(6)
+        for index in range(self.CUSTOM_SLOT_COUNT):
+            slot = QToolButton(self)
+            slot.setFixedSize(32, 28)
+            slot.setAccessibleName(f"Cor salva {index + 1}")
+            slot.setToolTip("Clique para salvar a cor atual ou selecionar uma cor salva")
+            slot.clicked.connect(lambda _checked=False, slot_index=index: self._custom_slot_clicked(slot_index))
+            self._custom_buttons.append(slot)
+            custom_row.addWidget(slot)
+        layout.addLayout(custom_row)
+        self._update_custom_styles()
+
+        layout.addWidget(QLabel("Seletor de matiz, saturação e luminosidade", self))
+        self._spectrum = _DimensionColorSpectrum(QColor(self.selected_color), self._spectrum_color_changed, self)
+        layout.addWidget(self._spectrum, 1)
+        hex_row = QHBoxLayout()
+        hex_row.addWidget(QLabel("HEX", self))
+        self._hex_edit = QLineEdit(self.selected_color.upper(), self)
+        self._hex_edit.setMaxLength(7)
+        self._hex_edit.setAccessibleName("Código hexadecimal da cor")
+        self._hex_edit.setToolTip("Código hexadecimal RGB, sem transparência")
+        self._hex_edit.editingFinished.connect(self._hex_edited)
+        hex_row.addWidget(self._hex_edit, 1)
+        self._color_preview = QFrame(self)
+        self._color_preview.setFixedSize(28, 28)
+        hex_row.addWidget(self._color_preview)
+        layout.addLayout(hex_row)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel = QPushButton("Cancelar", self)
+        cancel.clicked.connect(self.reject)
+        apply_button = QPushButton("Usar cor", self)
+        apply_button.setObjectName("applyColor")
+        apply_button.clicked.connect(self.accept)
+        footer.addWidget(cancel)
+        footer.addWidget(apply_button)
+        layout.addLayout(footer)
+        self._refresh_color_display()
+
+    def _set_color(self, color: str) -> None:
+        selected = QColor(color)
+        if selected.isValid():
+            self.selected_color = selected.name(QColor.NameFormat.HexRgb)
+            self._spectrum.set_color(selected)
+            self._refresh_color_display()
+            self._update_preset_styles()
+
+    def _spectrum_color_changed(self, color: QColor) -> None:
+        self.selected_color = color.name(QColor.NameFormat.HexRgb)
+        self._refresh_color_display()
+        self._update_preset_styles()
+
+    def _hex_edited(self) -> None:
+        color = QColor(self._hex_edit.text().strip())
+        if color.isValid():
+            self._set_color(color.name(QColor.NameFormat.HexRgb))
+        else:
+            self._hex_edit.setText(self.selected_color.upper())
+
+    def _refresh_color_display(self) -> None:
+        self._hex_edit.setText(self.selected_color.upper())
+        self._color_preview.setStyleSheet(
+            f"QFrame {{ background: {self.selected_color}; border: 1px solid #8c959f; border-radius: 4px; }}"
+        )
+
+    def _update_preset_styles(self) -> None:
+        for color, button in self._swatch_buttons.items():
+            border = "2px solid #0969da" if color.lower() == self.selected_color.lower() else "1px solid #d0d7de"
+            button.setStyleSheet(
+                f"QToolButton {{ background: {color}; border: {border}; border-radius: 5px; }}"
+                "QToolButton:hover { border: 2px solid #0969da; }"
+            )
+
+    def _update_custom_styles(self) -> None:
+        for color, button in zip(self.custom_colors, self._custom_buttons):
+            if color:
+                button.setStyleSheet(
+                    f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+                    "QToolButton:hover { border: 2px solid #0969da; }"
+                )
+            else:
+                button.setStyleSheet(
+                    "QToolButton { background: #ffffff; border: 1px dashed #8c959f; border-radius: 5px; }"
+                    "QToolButton:hover { background: #f6f8fa; border: 2px solid #0969da; }"
+                )
+
+    def _custom_slot_clicked(self, index: int) -> None:
+        if self.custom_colors[index]:
+            self._set_color(self.custom_colors[index])
+        else:
+            self.custom_colors[index] = self.selected_color
+            self._update_custom_styles()
+
+
 class ProjectSheetSettingsDialog(QDialog):
     """Page, identification, and title block settings for one project sheet."""
 
@@ -2433,7 +2787,7 @@ class ProjectSheetSettingsDialog(QDialog):
             "QListWidget:focus { outline: none; border: 0; }"
             "QLabel { color: #57606a; }"
             "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
-            "QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox { min-height: 32px; padding: 2px 9px; "
+            "QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox, QSpinBox { min-height: 32px; padding: 2px 9px; "
             "border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #24292f; }"
             "QComboBox#sheetFormatSelector::drop-down, QComboBox#sheetOrientationSelector::drop-down "
             "{ width: 0; border: 0; }"
@@ -2443,6 +2797,8 @@ class ProjectSheetSettingsDialog(QDialog):
             "QComboBox#sheetSubjectSelector::down-arrow { image: none; }"
             "QComboBox#sheetNumberSelector::drop-down { width: 0; border: 0; }"
             "QComboBox#sheetNumberSelector::down-arrow { image: none; }"
+            "QComboBox#dimensionSettingSelector::drop-down { width: 0; border: 0; }"
+            "QComboBox#dimensionSettingSelector::down-arrow { image: none; }"
             "QCheckBox { color: #57606a; spacing: 8px; min-height: 28px; }"
             "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #d0d7de; "
             "border-radius: 4px; background: #ffffff; }"
@@ -2901,7 +3257,10 @@ class ProjectSheetSettingsDialog(QDialog):
         return page
 
     def _build_dimension_settings(self) -> QWidget:
-        page = QWidget(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(18, 16, 18, 12)
         layout.setSpacing(10)
@@ -2912,6 +3271,44 @@ class ProjectSheetSettingsDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         form = QFormLayout()
+        color_defaults = {
+            "dimension_text_color": "#000000",
+            "dimension_line_color": "#ff0000",
+            "dimension_extension_color": "#ff0000",
+            "dimension_terminator_color": "#ff0000",
+        }
+        self._dimension_color_values = {}
+        for key, default in color_defaults.items():
+            color = QColor(str(self._project_settings.get(key, default)))
+            self._dimension_color_values[key] = (
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else default
+            )
+        self._dimension_custom_colors = []
+        for value in self._project_settings.get("dimension_custom_colors", ()):
+            color = QColor(str(value)) if value else QColor()
+            self._dimension_custom_colors.append(
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else None
+            )
+        self._dimension_custom_colors = self._dimension_custom_colors[:_DimensionColorDialog.CUSTOM_SLOT_COUNT]
+        self._dimension_custom_colors.extend(
+            [None] * (_DimensionColorDialog.CUSTOM_SLOT_COUNT - len(self._dimension_custom_colors))
+        )
+        self._dimension_color_buttons = {}
+        color_rows = (
+            ("dimension_text_color", "Cor do valor da cota"),
+            ("dimension_line_color", "Cor da linha de cota"),
+            ("dimension_extension_color", "Cor da linha de extensão"),
+            ("dimension_terminator_color", "Cor do terminador"),
+        )
+        for key, label in color_rows:
+            button = QToolButton(page)
+            button.setFixedSize(34, 34)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(lambda _checked=False, color_key=key: self._choose_dimension_color(color_key))
+            self._dimension_color_buttons[key] = button
+            self._set_dimension_color_button(key)
+            form.addRow(label, button)
         self.dimension_text_height_box, self.dimension_text_height_spin = self._unit_input(
             page,
             self._project_settings.get("dimension_text_height_mm", 3.0),
@@ -2948,6 +3345,7 @@ class ProjectSheetSettingsDialog(QDialog):
             decimals=1,
         )
         self.dimension_text_position_combo = QComboBox(page)
+        self.dimension_text_position_combo.setObjectName("dimensionSettingSelector")
         self.dimension_text_position_combo.addItem("Centro", "centro")
         self.dimension_text_position_combo.addItem("Superior", "superior")
         self.dimension_text_position_combo.addItem("Inferior", "inferior")
@@ -2955,15 +3353,55 @@ class ProjectSheetSettingsDialog(QDialog):
             self._project_settings.get("dimension_text_position", "superior")
         )
         self.dimension_text_position_combo.setCurrentIndex(max(0, position_index))
+        self.dimension_unit_combo = QComboBox(page)
+        self.dimension_unit_combo.setObjectName("dimensionSettingSelector")
+        for label, unit in (("Metros", "m"), ("Centímetros", "cm"),
+                            ("Decímetros", "dm"), ("Milímetros", "mm")):
+            self.dimension_unit_combo.addItem(label, unit)
+        unit_index = self.dimension_unit_combo.findData(
+            self._project_settings.get("dimension_unit", "cm")
+        )
+        self.dimension_unit_combo.setCurrentIndex(max(0, unit_index))
+        self.dimension_decimal_places_spin = QSpinBox(page)
+        self.dimension_decimal_places_spin.setRange(0, 8)
+        self.dimension_decimal_places_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        try:
+            decimal_places = int(self._project_settings.get("dimension_decimal_places", 0))
+        except (TypeError, ValueError):
+            decimal_places = 0
+        self.dimension_decimal_places_spin.setValue(max(0, min(8, decimal_places)))
+        self.dimension_decimal_places_spin.setToolTip("Casas decimais exibidas no valor da cota")
         form.addRow("Altura do valor da cota", self.dimension_text_height_box)
-        form.addRow("Altura do terminador (tick)", self.dimension_terminator_height_box)
+        form.addRow("Altura do terminador", self.dimension_terminator_height_box)
         form.addRow("Distância da linha de extensão", self.dimension_extension_gap_box)
         form.addRow("Comprimento excedente na linha de cota", self.dimension_line_extension_box)
         form.addRow("Comprimento excedente na linha de extensão", self.dimension_extension_overrun_box)
         form.addRow("Posição do valor da cota", self.dimension_text_position_combo)
+        form.addRow("Unidade do valor da cota", self.dimension_unit_combo)
+        form.addRow("Unidades decimais da cota", self.dimension_decimal_places_spin)
         layout.addLayout(form)
         layout.addStretch(1)
-        return page
+        scroll.setWidget(page)
+        return scroll
+
+    def _set_dimension_color_button(self, key: str) -> None:
+        color = self._dimension_color_values[key]
+        button = self._dimension_color_buttons[key]
+        button.setStyleSheet(
+            f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+            "QToolButton:hover { border: 2px solid #0969da; }"
+        )
+
+    def _choose_dimension_color(self, key: str) -> None:
+        picker = _DimensionColorDialog(
+            self._dimension_color_values[key], self._dimension_custom_colors, self,
+        )
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            selected = QColor(picker.selected_color)
+            if selected.isValid():
+                self._dimension_color_values[key] = selected.name(QColor.NameFormat.HexRgb)
+                self._dimension_custom_colors = list(picker.custom_colors)
+                self._set_dimension_color_button(key)
 
     def _save(self) -> None:
         self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
@@ -2981,7 +3419,11 @@ class ProjectSheetSettingsDialog(QDialog):
             "view_element_text_height_mm": self.view_element_text_height_spin.value(),
             "view_section_text_height_mm": self.view_section_text_height_spin.value(),
             "dimension_text_height_mm": self.dimension_text_height_spin.value(),
+            **self._dimension_color_values,
+            "dimension_custom_colors": list(self._dimension_custom_colors),
             "dimension_terminator_height_mm": self.dimension_terminator_height_spin.value(),
+            "dimension_unit": self.dimension_unit_combo.currentData(),
+            "dimension_decimal_places": self.dimension_decimal_places_spin.value(),
             "dimension_extension_gap_mm": self.dimension_extension_gap_spin.value(),
             "dimension_line_extension_mm": self.dimension_line_extension_spin.value(),
             "dimension_extension_overrun_mm": self.dimension_extension_overrun_spin.value(),

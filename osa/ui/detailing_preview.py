@@ -28,7 +28,7 @@ from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.solid_member_renderer import SolidMemberRenderer, deform_extruded_points
 from osa.sections import section_shape
 
-DETAILING_LINEWORK_VERSION = 1
+DETAILING_LINEWORK_VERSION = 2
 
 
 class DetailingViewPreview(QFrame):
@@ -105,6 +105,7 @@ class DetailingViewPreview(QFrame):
         lower_offset_cm: float = 50.0,
         orientation: str = "Superior para inferior",
         rotation_degrees: float = 0.0,
+        excluded_owners=(),
     ) -> None:
         """Render the slab around a view plane, looking from its selected side."""
         plane_data = self._plane_data.get(plane)
@@ -118,6 +119,7 @@ class DetailingViewPreview(QFrame):
             if plane == "custom"
             else float(coordinate)
         )
+        excluded_owners = tuple(sorted({str(owner) for owner in excluded_owners}))
         cache_key = (
             id(model),
             getattr(model, "revision", None),
@@ -127,6 +129,7 @@ class DetailingViewPreview(QFrame):
             float(lower_offset_cm),
             orientation,
             float(rotation_degrees),
+            excluded_owners,
         )
         cached = self._view_cache.get(cache_key)
         if cached is not None:
@@ -139,6 +142,13 @@ class DetailingViewPreview(QFrame):
             return
 
         self._ensure_model_meshes(model)
+        excluded = set(excluded_owners)
+        member_indices = [
+            index for index, name in enumerate(self._solid_member_names)
+            if self._view_owner_token(name, model) not in excluded
+        ]
+        view_member_names = [self._solid_member_names[index] for index in member_indices]
+        view_solid_meshes = [self._solid_meshes[index] for index in member_indices]
         feature_edge_meshes = None
         surface_data = None
         if plane == "custom":
@@ -165,7 +175,7 @@ class DetailingViewPreview(QFrame):
             transform[:3, :3] = basis
             transform[:3, 3] = -basis @ origin
             solid_meshes = []
-            for solid in self._solid_meshes:
+            for solid in view_solid_meshes:
                 local_mesh = solid.copy(deep=True)
                 local_mesh.transform(transform, inplace=True)
                 solid_meshes.append(local_mesh)
@@ -175,8 +185,9 @@ class DetailingViewPreview(QFrame):
             coordinate_value = 0.0
         elif isometric:
             self._ensure_model_edge_meshes(model)
-            feature_edge_meshes = self._solid_edge_meshes
-            surface_data = self._ensure_model_surface_data(model)
+            feature_edge_meshes = [self._solid_edge_meshes[index] for index in member_indices]
+            all_surface_data = self._ensure_model_surface_data(model)
+            surface_data = [all_surface_data[index] for index in member_indices]
             normal_array = np.asarray(self._isometric_directions[plane], dtype=float)
             normal_array /= np.linalg.norm(normal_array)
             view_up_array = np.asarray((0.0, 0.0, 1.0), dtype=float)
@@ -184,11 +195,11 @@ class DetailingViewPreview(QFrame):
             view_up_array /= np.linalg.norm(view_up_array)
             normal = tuple(float(value) for value in normal_array)
             view_up = tuple(float(value) for value in view_up_array)
-            solid_meshes = self._solid_meshes
+            solid_meshes = view_solid_meshes
             coordinate_value = 0.0
         else:
             normal, normal_axis, view_up = plane_data
-            solid_meshes = self._solid_meshes
+            solid_meshes = view_solid_meshes
             coordinate_value = float(coordinate)
             surface_data = None
         upper = coordinate_value + max(0.0, float(upper_offset_cm)) / 100.0
@@ -200,10 +211,10 @@ class DetailingViewPreview(QFrame):
         extra_edges = None
         if isometric:
             clipped_meshes = list(solid_meshes)
-            clipped_member_names = list(self._solid_member_names)
+            clipped_member_names = list(view_member_names)
         else:
             clipped_meshes: list[pv.PolyData] = []
-            for solid_number, (member_name, solid) in enumerate(zip(self._solid_member_names, solid_meshes)):
+            for solid_number, (member_name, solid) in enumerate(zip(view_member_names, solid_meshes)):
                 if solid_number % 16 == 0:
                     sleep(0)
                 clipped = self._clip_to_depth_range(
@@ -241,7 +252,7 @@ class DetailingViewPreview(QFrame):
                 interfaces_by_member = transformed_interfaces
             line_interfaces = [interfaces_by_member.get(name, ()) for name in clipped_member_names]
             source_member_names = (
-                self._solid_member_names if feature_edge_meshes is not None else clipped_member_names
+                view_member_names if feature_edge_meshes is not None else clipped_member_names
             )
             source_tokens = [
                 f"bar:{name}" if name in model.bars else
@@ -257,7 +268,7 @@ class DetailingViewPreview(QFrame):
                 float(rotation_degrees),
                 feature_edge_meshes,
                 line_interfaces,
-                [interfaces_by_member.get(name, ()) for name in self._solid_member_names]
+                [interfaces_by_member.get(name, ()) for name in view_member_names]
                 if feature_edge_meshes is not None else line_interfaces,
                 surface_data,
                 source_tokens,
@@ -273,6 +284,16 @@ class DetailingViewPreview(QFrame):
         self._view_cache.move_to_end(cache_key)
         while len(self._view_cache) > self._view_cache_limit:
             self._view_cache.popitem(last=False)
+
+    @staticmethod
+    def _view_owner_token(name: str, model) -> str:
+        if name in model.bars:
+            return f"bar:{name}"
+        if name in model.plates:
+            return f"plate:{name}"
+        if name in model.rigid_bars:
+            return f"rigid_bar:{name}"
+        return str(name)
 
     def request_view(self, model, plane: str, coordinate, **settings) -> None:
         """Queue view generation so navigation and dialog painting stay responsive."""
@@ -880,6 +901,7 @@ class _ViewGeometryCalculator:
     _ensure_model_meshes = DetailingViewPreview._ensure_model_meshes
     _ensure_model_edge_meshes = DetailingViewPreview._ensure_model_edge_meshes
     _ensure_model_curve_edges = DetailingViewPreview._ensure_model_curve_edges
+    _view_owner_token = staticmethod(DetailingViewPreview._view_owner_token)
     _clip_curve_edges = staticmethod(DetailingViewPreview._clip_curve_edges)
     _ensure_model_surface_data = DetailingViewPreview._ensure_model_surface_data
     _group_interface_planes = staticmethod(DetailingViewPreview._group_interface_planes)

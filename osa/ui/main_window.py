@@ -49,7 +49,7 @@ from .dialogs import (
 )
 from .displacement_panel import DisplacementPanel
 from .detailing_preview import (
-    DETAILING_LINEWORK_VERSION, _ModelSnapshot,
+    DETAILING_LINEWORK_VERSION, DetailingViewPreview, _ModelSnapshot,
 )
 from .detailing_viewport import _DetachedDetailingScene
 from .group_positioning import group_endpoint_faces
@@ -262,8 +262,20 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.dimension_step_changed.connect(
             self._project_view_dimension_step_changed
         )
+        self.project_sheet_workspace.element_visibility_finished.connect(
+            self._finish_project_sheet_visibility
+        )
+        self.project_sheet_workspace.element_visibility_view_activated.connect(
+            self._project_sheet_visibility_view_activated
+        )
+        self.project_sheet_workspace.element_visibility_changed.connect(
+            self._project_sheet_element_visibility_changed
+        )
         self.project_sheet_view_panel.scale_edited.connect(
             self._project_sheet_view_scale_edited
+        )
+        self.project_sheet_view_panel.settings_applied.connect(
+            self.apply_selected_project_sheet_view_settings
         )
         self.project_sheet_view_panel.axes_visibility_edited.connect(
             self._project_sheet_view_axes_visibility_edited
@@ -718,6 +730,13 @@ class MainWindow(QMainWindow):
 
     def set_detailing_project_mode(self, active: bool) -> None:
         """Switch between the detailing model and its blank project sheet view."""
+        if not active and getattr(self, "_command_mode", None) in {
+            "project_sheet_element_visibility_hide",
+            "project_sheet_element_visibility_reveal",
+            "project_sheet_element_visibility_reveal_all",
+        }:
+            self.project_sheet_workspace.set_element_visibility_mode(None)
+            self._finish_project_sheet_visibility(canceled=True)
         self._detailing_project_mode = bool(active)
         if self._detailing_project_mode and hasattr(self, "project_sheets_palette"):
             self.refresh_project_sheet_views()
@@ -784,6 +803,7 @@ class MainWindow(QMainWindow):
                 refresh_jobs.append((
                     current_sheet_name, view, copy.deepcopy(projection),
                     bool(view.get("segments")),
+                    tuple(sorted({str(owner) for owner in view.get("hidden_owners", ())})),
                 ))
 
         if state_changed:
@@ -805,13 +825,18 @@ class MainWindow(QMainWindow):
             self._sheet_linework_signals = SheetLineworkSignals()
             self._sheet_linework_signals.finished.connect(self._sheet_linework_upgraded)
         pending = self._sheet_linework_pending
-        fresh = [job for job in jobs if (id(job[1]), revision, group_revision) not in pending]
+        fresh = [
+            job for job in jobs
+            if (id(job[1]), revision, group_revision, tuple(job[4])) not in pending
+        ]
         if not fresh:
             if pending and self._detailing_project_mode:
                 self.project_sheet_workspace.set_linework_updating(True)
                 self._show_sheet_views_updating_dialog()
             return
-        pending.update((id(job[1]), revision, group_revision) for job in fresh)
+        pending.update(
+            (id(job[1]), revision, group_revision, tuple(job[4])) for job in fresh
+        )
         self.project_sheet_workspace.set_linework_updating(True)
         if self._detailing_project_mode:
             self._show_sheet_views_updating_dialog()
@@ -827,27 +852,65 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(75, start_refresh)
 
-    @Slot(object, object, int, object, object, object, object, bool)
+    @Slot(object, object, int, int, object, object, object, object, bool)
     def _sheet_linework_upgraded(self, sheet_name, view, revision, group_revision,
-                                 projection, segments, owners, success) -> None:
+                                 projection, excluded_owners, segments, owners, success) -> None:
         pending = self._sheet_linework_pending
-        pending.discard((id(view), revision, group_revision))
+        excluded_owners = tuple(sorted({str(owner) for owner in excluded_owners}))
+        pending.discard((id(view), revision, group_revision, excluded_owners))
         self.project_sheet_workspace.set_linework_updating(bool(pending))
         if not pending:
             self._sheet_views_updating_dialog.hide()
         views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
+        current_hidden = tuple(sorted({str(owner) for owner in view.get("hidden_owners", ())}))
+        if (
+            any(item is view for item in views)
+            and view.get("projection") == projection
+            and current_hidden != excluded_owners
+        ):
+            self._queue_sheet_linework_upgrade([(
+                sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), current_hidden,
+            )])
+            return
         if (not success or revision != self.model.revision
                 or group_revision != self.model.verification_group_revision
                 or not any(item is view for item in views) or view.get("projection") != projection):
             return
-        view["segments"] = segments
-        view["segment_owners"] = owners
+        merged_segments = list(segments)
+        merged_owners = [str(owner) for owner in owners]
+        hidden_linework = view.get("hidden_linework", {})
+        if isinstance(hidden_linework, dict):
+            for hidden_owner in excluded_owners:
+                for segment in hidden_linework.get(hidden_owner, ()):
+                    merged_segments.append(segment)
+                    merged_owners.append(hidden_owner)
+        view["segments"] = tuple(merged_segments)
+        view["segment_owners"] = tuple(merged_owners)
         view["model_revision"] = revision
         view["linework_version"] = DETAILING_LINEWORK_VERSION
         if self.project_sheets_palette.sheet_selector.currentText() == sheet_name:
-            self.project_sheet_workspace._dimension_snap_cache.clear()
+            view_index = next((
+                index for index, candidate in enumerate(views) if candidate is view
+            ), None)
+            if view_index is not None:
+                self.project_sheet_workspace.invalidate_view_geometry(view_index)
             self.project_sheet_workspace.update()
         self._store_detailing_state()
+
+    def _project_sheet_element_visibility_changed(self, view_index: int, hidden_owners) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
+        if not 0 <= view_index < len(views):
+            return
+        view = views[view_index]
+        projection = view.get("projection")
+        if not isinstance(projection, dict):
+            self._store_detailing_state()
+            return
+        owners = tuple(sorted({str(owner) for owner in hidden_owners}))
+        self._queue_sheet_linework_upgrade([(
+            sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), owners,
+        )])
 
     def _show_sheet_views_updating_dialog(self) -> None:
         dialog = self._sheet_views_updating_dialog
@@ -883,85 +946,6 @@ class MainWindow(QMainWindow):
         dialog.setFixedWidth(420)
         dialog.hide()
         self._sheet_views_updating_dialog = dialog
-
-    def _sync_project_sheet_view_settings(
-        self,
-        view_settings: dict,
-        view_definitions: dict,
-        view_names: dict,
-        view_fallbacks: dict,
-    ) -> None:
-        """Refresh sheet instances linked to definitions changed in the view manager."""
-        palette = getattr(self, "project_sheets_palette", None)
-        if palette is None:
-            return
-        model_key = id(self.model)
-        default_settings = {"top": 50.0, "bottom": 50.0, "orientation": 0, "rotation": 0.0}
-        changed_sheets: set[str] = set()
-        orientation_names = ("Superior para inferior", "Inferior para superior")
-
-        def coordinates_match(first, second) -> bool:
-            try:
-                first_array = np.asarray(first, dtype=float)
-                second_array = np.asarray(second, dtype=float)
-            except (TypeError, ValueError):
-                return False
-            return (
-                first_array.shape == second_array.shape
-                and bool(np.allclose(first_array, second_array, rtol=0.0, atol=1e-9))
-            )
-
-        for sheet_name, views in palette._sheet_views.items():
-            for view in views:
-                projection = view.get("projection")
-                if not isinstance(projection, dict):
-                    continue
-                for view_key, definition in view_definitions.items():
-                    if not isinstance(view_key, tuple) or len(view_key) != 2 or view_key[0] != model_key:
-                        continue
-                    plane, coordinate = definition
-                    stable_key = str(view_key[1])
-                    linked = view.get("detail_view_key") == stable_key
-                    same_definition = (
-                        projection.get("plane") == plane
-                        and coordinates_match(projection.get("coordinate"), coordinate)
-                    )
-                    if not linked and not same_definition:
-                        continue
-                    settings = view_settings.get(view_key, default_settings)
-                    orientation_index = min(
-                        len(orientation_names) - 1,
-                        max(0, int(settings.get("orientation", 0))),
-                    )
-                    updated_projection = {
-                        "upper_offset_cm": float(settings.get("top", 50.0)),
-                        "lower_offset_cm": float(settings.get("bottom", 50.0)),
-                        "orientation": orientation_names[orientation_index],
-                        "rotation_degrees": float(settings.get("rotation", 0.0)),
-                    }
-                    view_name = str(view_names.get(view_key, "")).strip()
-                    updated_name = view_name or str(
-                        view_fallbacks.get(view_key, view.get("name", "Vista"))
-                    )
-                    instance_changed = (
-                        any(projection.get(key) != value for key, value in updated_projection.items())
-                        or view.get("detail_view_key") != stable_key
-                        or view.get("name") != updated_name
-                    )
-                    if not instance_changed:
-                        break
-                    projection.update(updated_projection)
-                    view["detail_view_key"] = stable_key
-                    view["name"] = updated_name
-                    view["model_revision"] = None
-                    changed_sheets.add(sheet_name)
-                    break
-
-        if not changed_sheets:
-            return
-        for sheet_name in changed_sheets:
-            self.refresh_project_sheet_views(sheet_name)
-        self._store_detailing_state()
 
     def _refresh_project_view_identifications(self, view: dict) -> bool:
         """Refresh label text from current element names and bar sections."""
@@ -1198,37 +1182,121 @@ class MainWindow(QMainWindow):
             "Esc encerra preservando as identificações lançadas)</span>"
         )
 
+    def start_project_sheet_visibility(self, mode: str) -> None:
+        if not self._detailing_project_mode or mode not in {"hide", "reveal", "reveal_all"}:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = f"project_sheet_element_visibility_{mode}"
+        labels = {
+            "hide": "Ocultar elemento",
+            "reveal": "Reexibir elemento",
+            "reveal_all": "Reexibir tudo",
+        }
+        has_selected_view = self.project_sheet_workspace._selected_view_index is not None
+        if mode == "hide":
+            prompt = "Selecione uma vista da folha para ocultar elementos"
+        elif mode == "reveal":
+            prompt = "Selecione uma vista da folha para reexibir elementos ocultos"
+        else:
+            prompt = "Selecione a vista da folha em que deseja reexibir tudo"
+        if mode == "reveal_all" and has_selected_view:
+            prompt = "Reexibindo todos os elementos da vista selecionada"
+        if not has_selected_view or mode == "reveal_all":
+            self.history.append(f"> <b>{labels[mode]}</b> <span style='color:#57606a'>({prompt})</span>")
+        self.project_sheet_workspace.set_element_visibility_mode(mode)
+
+    def _project_sheet_visibility_view_activated(self, _view_index: int) -> None:
+        prompts = {
+            "project_sheet_element_visibility_hide": (
+                "Passe o cursor sobre um elemento e clique para ocultá-lo"
+            ),
+            "project_sheet_element_visibility_reveal": (
+                "Selecione um elemento oculto para reexibi-lo"
+            ),
+        }
+        prompt = prompts.get(self._command_mode)
+        if prompt:
+            self.history.append(
+                f"> <b>Vista selecionada</b> <span style='color:#57606a'>"
+                f"({prompt}; Enter ou Esc encerra)</span>"
+            )
+
+    def _finish_project_sheet_visibility(self, canceled: bool = False) -> None:
+        labels = {
+            "project_sheet_element_visibility_hide": "Ocultar elemento",
+            "project_sheet_element_visibility_reveal": "Reexibir elemento",
+            "project_sheet_element_visibility_reveal_all": "Reexibir tudo",
+        }
+        label = labels.get(self._command_mode)
+        if label is None:
+            return
+        self._command_mode = None
+        self.project_sheet_workspace.set_element_visibility_mode(None)
+        self._store_detailing_state()
+        message = "Operação encerrada" if canceled else "Concluído"
+        self.history.append(
+            f"> <b>{label}</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
     def start_project_view_dimension(self) -> None:
+        self._start_project_view_dimension("aligned")
+
+    def start_project_view_orthogonal_dimension(self) -> None:
+        self._start_project_view_dimension("orthogonal")
+
+    def _start_project_view_dimension(self, dimension_type: str) -> None:
         if not self._detailing_project_mode:
             return
         if not self.project_sheets_palette.sheet_selector.currentText():
             return
         self.command_session.cancel()
-        self._command_mode = "project_sheet_dimension"
+        self._command_mode = f"project_sheet_{dimension_type}_dimension"
         self.project_sheet_workspace.set_identification_mode(False)
-        self.project_sheet_workspace.set_dimension_mode(True)
+        self.project_sheet_workspace.set_dimension_mode(True, dimension_type)
+        label = "Cota alinhada" if dimension_type == "aligned" else "Cota ortogonal"
         self.history.append(
-            "> <b>Cota</b> <span style='color:#57606a'>"
+            f"> <b>{label}</b> <span style='color:#57606a'>"
             "(Selecione o ponto inicial da cota)</span>"
         )
 
     def _project_view_dimension_step_changed(self, step: int) -> None:
-        if self._command_mode != "project_sheet_dimension":
+        if self._command_mode not in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+        }:
             return
+        label = (
+            "Cota alinhada"
+            if self._command_mode == "project_sheet_aligned_dimension"
+            else "Cota ortogonal"
+        )
+        placement_prompt = "Clique na posição da linha de cota"
+        if self._command_mode == "project_sheet_orthogonal_dimension":
+            placement_prompt = (
+                "Posicione acima/abaixo para medir X ou à esquerda/direita para medir Y"
+            )
         prompt = {
             0: "Selecione o ponto inicial da próxima cota",
             1: "Selecione o ponto final da cota",
-            2: "Clique na posição da linha de cota",
+            2: placement_prompt,
         }.get(step, "Selecione o ponto inicial da cota")
-        self.history.append(f"> <b>Cota</b> <span style='color:#57606a'>({prompt})</span>")
+        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt})</span>")
 
     def _finish_project_view_dimension(self, canceled: bool = False) -> None:
-        if self._command_mode != "project_sheet_dimension":
+        if self._command_mode not in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+        }:
             return
+        label = (
+            "Cota alinhada"
+            if self._command_mode == "project_sheet_aligned_dimension"
+            else "Cota ortogonal"
+        )
         self._command_mode = None
         self._store_detailing_state()
         message = "Lançamento cancelado" if canceled else "Cota lançada"
-        self.history.append(f"> <b>Cota</b> <span style='color:#8c959f'>({message})</span>")
+        self.history.append(f"> <b>{label}</b> <span style='color:#8c959f'>({message})</span>")
 
     def _finish_project_view_identification(self, canceled: bool = False) -> None:
         if self._command_mode != "project_sheet_identification":
@@ -1738,10 +1806,6 @@ class MainWindow(QMainWindow):
             return
         self._detailing_views_dialog_open = True
         dialog = None
-        updated_view_settings = {}
-        updated_view_definitions = {}
-        updated_view_names = {}
-        updated_view_fallbacks = {}
         cancel_action = getattr(self, "_cancel_placement_action", None)
         cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
         try:
@@ -1756,10 +1820,6 @@ class MainWindow(QMainWindow):
             add_plane_requested = dialog._add_plane_requested
             add_view_requested = dialog._add_view_requested
             requested_sheet_view = dialog._requested_sheet_view
-            updated_view_settings = copy.deepcopy(dialog._saved_view_settings)
-            updated_view_definitions = dict(dialog._view_definitions)
-            updated_view_names = dict(dialog._saved_view_names)
-            updated_view_fallbacks = dict(dialog._view_fallbacks)
         finally:
             self._detailing_views_dialog_open = False
             self._detailing_views_dialog = None
@@ -1768,12 +1828,6 @@ class MainWindow(QMainWindow):
                 dialog.deleteLater()
             if cancel_action is not None:
                 cancel_action.setEnabled(cancel_action_was_enabled)
-        self._sync_project_sheet_view_settings(
-            updated_view_settings,
-            updated_view_definitions,
-            updated_view_names,
-            updated_view_fallbacks,
-        )
         self._store_detailing_state()
         if add_view_requested and requested_sheet_view is not None:
             self.project_sheets_palette.add_view_to_active_sheet(requested_sheet_view)
@@ -1782,6 +1836,147 @@ class MainWindow(QMainWindow):
             if self._detail_plane_return_to_project:
                 self.detailing_mode_palette._buttons[0].click()
             self._start_detail_plane_placement()
+
+    def apply_selected_project_sheet_view_settings(self, settings: dict) -> None:
+        if not self._detailing_project_mode or not isinstance(settings, dict):
+            return
+        index = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if index is None or not 0 <= index < len(views):
+            return
+        view = views[index]
+        projection = view.get("projection")
+        if not isinstance(projection, dict):
+            return
+        updated_projection = {**projection, **settings}
+        self._transform_projected_view_annotations(view, projection, updated_projection)
+        projection.update(settings)
+        view["model_revision"] = None
+        self.project_sheet_view_panel.show_for(view)
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        hidden_owners = tuple(sorted({
+            str(owner) for owner in view.get("hidden_owners", ())
+        }))
+        self._queue_sheet_linework_upgrade([(
+            sheet_name,
+            view,
+            copy.deepcopy(projection),
+            bool(view.get("segments")),
+            hidden_owners,
+        )])
+        self._store_detailing_state()
+
+    @staticmethod
+    def _projected_view_axes(projection: dict) -> tuple[np.ndarray, np.ndarray] | None:
+        plane = str(projection.get("plane", ""))
+        if plane == "custom":
+            try:
+                points = np.asarray(projection.get("coordinate"), dtype=float)
+                if points.shape != (3, 3):
+                    return None
+                origin = points[0]
+                right = points[1] - origin
+                right_length = float(np.linalg.norm(right))
+                if right_length <= 1e-12:
+                    return None
+                right /= right_length
+                normal = np.cross(right, points[2] - origin)
+                normal_length = float(np.linalg.norm(normal))
+                if normal_length <= 1e-12:
+                    return None
+                normal /= normal_length
+                base_up = np.cross(normal, right)
+            except (TypeError, ValueError):
+                return None
+        elif plane in DetailingViewPreview._isometric_directions:
+            normal = np.asarray(DetailingViewPreview._isometric_directions[plane], dtype=float)
+            normal /= np.linalg.norm(normal)
+            base_up = np.asarray((0.0, 0.0, 1.0), dtype=float)
+            base_up -= np.dot(base_up, normal) * normal
+            length = float(np.linalg.norm(base_up))
+            if length <= 1e-12:
+                return None
+            base_up /= length
+        else:
+            plane_data = DetailingViewPreview._plane_data.get(plane)
+            if plane_data is None:
+                return None
+            normal = np.asarray(plane_data[0], dtype=float)
+            base_up = np.asarray(plane_data[2], dtype=float)
+
+        if projection.get("orientation") == "Inferior para superior":
+            camera_direction = -normal
+        else:
+            camera_direction = normal
+        view_direction = -camera_direction
+        angle = math.radians(-float(projection.get("rotation_degrees", 0.0)))
+        rotated_up = (
+            base_up * math.cos(angle)
+            + np.cross(view_direction, base_up) * math.sin(angle)
+            + view_direction * np.dot(view_direction, base_up) * (1.0 - math.cos(angle))
+        )
+        right_axis = np.cross(view_direction, rotated_up)
+        right_length = float(np.linalg.norm(right_axis))
+        up_length = float(np.linalg.norm(rotated_up))
+        if right_length <= 1e-12 or up_length <= 1e-12:
+            return None
+        return right_axis / right_length, rotated_up / up_length
+
+    @classmethod
+    def _transform_projected_view_annotations(
+        cls, view: dict, old_projection: dict, new_projection: dict,
+    ) -> None:
+        old_axes = cls._projected_view_axes(old_projection)
+        new_axes = cls._projected_view_axes(new_projection)
+        if old_axes is None or new_axes is None:
+            return
+        old_right, old_up = old_axes
+        new_right, new_up = new_axes
+        transform = np.asarray((
+            (np.dot(new_right, old_right), np.dot(new_right, old_up)),
+            (np.dot(new_up, old_right), np.dot(new_up, old_up)),
+        ), dtype=float)
+        if np.allclose(transform, np.eye(2), rtol=0.0, atol=1e-10):
+            return
+
+        def point(value):
+            try:
+                result = transform @ np.asarray(value, dtype=float)
+                if result.shape != (2,):
+                    return value
+                return tuple(float(component) for component in result)
+            except (TypeError, ValueError):
+                return value
+
+        for dimension in view.get("dimensions", ()):
+            if not isinstance(dimension, dict):
+                continue
+            old_start = dimension.get("start")
+            old_end = dimension.get("end")
+            axis = dimension.get("orthogonal_axis")
+            direction = None
+            if axis in {"x", "y"}:
+                try:
+                    delta = np.asarray(old_end, dtype=float) - np.asarray(old_start, dtype=float)
+                    direction = np.asarray((delta[0], 0.0) if axis == "x" else (0.0, delta[1]))
+                except (TypeError, ValueError, IndexError):
+                    direction = None
+            if old_start is not None:
+                dimension["start"] = point(old_start)
+            if old_end is not None:
+                dimension["end"] = point(old_end)
+            if dimension.get("offset") is not None:
+                dimension["offset"] = point(dimension["offset"])
+            if direction is not None:
+                transformed_direction = transform @ direction
+                dimension["orthogonal_axis"] = (
+                    "x" if abs(transformed_direction[0]) >= abs(transformed_direction[1]) else "y"
+                )
+        for identification in view.get("identifications", ()):
+            if not isinstance(identification, dict):
+                continue
+            if identification.get("projected_point") is not None:
+                identification["projected_point"] = point(identification["projected_point"])
 
     def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
         """Expand a picked bar to its group only while detailing is active."""
@@ -5182,12 +5377,22 @@ class MainWindow(QMainWindow):
         if self._command_mode == "stair_custom_geometry_placement":
             self._cancel_stair_custom_geometry_capture()
             return
-        if self._command_mode == "project_sheet_dimension":
+        if self._command_mode in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+        }:
             self.project_sheet_workspace.set_dimension_mode(False)
             self._finish_project_view_dimension(canceled=True)
             return
         if self._command_mode == "project_sheet_identification":
             self._finish_project_view_identification(canceled=True)
+            return
+        if self._command_mode in {
+            "project_sheet_element_visibility_hide",
+            "project_sheet_element_visibility_reveal",
+            "project_sheet_element_visibility_reveal_all",
+        }:
+            self.project_sheet_workspace.set_element_visibility_mode(None)
+            self._finish_project_sheet_visibility(canceled=True)
             return
         if self._command_mode in {"plate_selection", "plate_manual"}:
             self._command_mode = None

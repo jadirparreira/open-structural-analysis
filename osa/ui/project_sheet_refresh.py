@@ -12,7 +12,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class SheetLineworkSignals(QObject):
-    finished = Signal(object, object, int, object, object, object, object, bool)
+    finished = Signal(object, object, int, int, object, object, object, object, bool)
 
 
 class SheetLineworkTask(QRunnable):
@@ -29,7 +29,7 @@ class SheetLineworkTask(QRunnable):
     def run(self) -> None:
         calculator = _ViewGeometryCalculator()
         calculator._detail_scene = self.source
-        for sheet_name, view, projection, had_segments in self.jobs:
+        for sheet_name, view, projection, had_segments, excluded_owners in self.jobs:
             if self.cancelled.is_set():
                 return
             segments, owners, success = (), (), False
@@ -40,17 +40,19 @@ class SheetLineworkTask(QRunnable):
                     lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
                     orientation=str(projection.get("orientation", "Superior para inferior")),
                     rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
+                    excluded_owners=excluded_owners,
                 )
                 segments, owners = tuple(calculator._segments_2d), tuple(calculator._segment_sources)
                 # Do not replace an existing drawing with an empty result if
                 # the projection pipeline silently failed.
-                success = bool(segments) or not had_segments
+                success = bool(segments) or not had_segments or bool(excluded_owners)
             except Exception:  # noqa: BLE001 - keep the saved view if regeneration fails
                 _LOG.exception("Não foi possível atualizar a vista %s", sheet_name)
             if not self.cancelled.is_set():
                 try:
                     self.signals.finished.emit(
-                        sheet_name, view, self.revision, self.group_revision, projection, segments, owners, success,
+                        sheet_name, view, self.revision, self.group_revision, projection,
+                        excluded_owners, segments, owners, success,
                     )
                 except RuntimeError:
                     # The application can close while this global-pool task is

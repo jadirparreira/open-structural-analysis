@@ -4,18 +4,21 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Signal
 from PySide6.QtGui import QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPicture, QPixmap, QRegion
 from PySide6.QtSvg import QSvgRenderer
 
 from .common import (
     QCheckBox,
     QColor,
+    QComboBox,
+    QAbstractSpinBox,
     QFrame,
     QHBoxLayout,
     QIcon,
     QLabel,
     QLineEdit,
+    QPushButton,
     QRectF,
     QSize,
     Qt,
@@ -23,7 +26,7 @@ from .common import (
     QVBoxLayout,
     QWidget,
 )
-from .property_panel import MixedCheckBox
+from .property_panel import CompactDoubleSpinBox, MixedCheckBox
 from .window_frame import WindowFrame
 
 PAPER_SIZES_MM = {
@@ -122,10 +125,12 @@ class ProjectSheetViewPanel(QFrame):
 
     scale_edited = Signal(str)
     axes_visibility_edited = Signal(bool)
+    settings_applied = Signal(dict)
 
     def __init__(self, window) -> None:
         super().__init__(window)
         self._window = window
+        self._view_instance = None
         self.setObjectName("propertyPanel")
         self.setFixedWidth(300)
         layout = QVBoxLayout(self)
@@ -141,7 +146,26 @@ class ProjectSheetViewPanel(QFrame):
         self.name_input.setObjectName("identityDisplay")
         self.name_input.setReadOnly(True)
         self.name_input.setAccessibleName("Identidade da vista")
-        layout.addWidget(self.name_input)
+        identity_row = QHBoxLayout()
+        identity_row.setContentsMargins(0, 0, 0, 0)
+        identity_row.setSpacing(6)
+        identity_row.addWidget(self.name_input, 1)
+        self.settings_button = QToolButton(self)
+        self.settings_button.setFixedSize(34, 34)
+        self.settings_button.setCheckable(True)
+        self.settings_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "settings.svg"
+        )))
+        self.settings_button.setIconSize(QSize(19, 19))
+        self.settings_button.setToolTip("Configurações da vista inserida")
+        self.settings_button.setAccessibleName("Configurações da vista inserida")
+        self.settings_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        self.settings_button.toggled.connect(self._toggle_settings_panel)
+        identity_row.addWidget(self.settings_button)
+        layout.addLayout(identity_row)
         scale_label = QLabel("Escala", self)
         scale_label.setObjectName("propertySection")
         layout.addWidget(scale_label)
@@ -192,12 +216,141 @@ class ProjectSheetViewPanel(QFrame):
         self.axes_button.toggled.connect(self.axes_visibility_edited)
         axes_row.addWidget(self.axes_button)
         layout.addLayout(axes_row)
+
+        self._settings_popup = QFrame(
+            window, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint,
+        )
+        self._settings_popup.setObjectName("insertedViewSettingsPopup")
+        self._settings_popup.setFixedSize(245, 380)
+        self._settings_popup.setStyleSheet(
+            "QFrame#insertedViewSettingsPopup { background: #f6f8fa; "
+            "border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#propertySection { color: #57606a; font-size: 13px; }"
+            "QFrame#viewSettingsValueBox { min-height: 34px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#viewSettingsValueBox[focused=\"true\"] { border: 2px solid #0969da; }"
+            "QFrame#viewSettingsValueBox QDoubleSpinBox { border: 0; background: transparent; "
+            "color: #57606a; padding: 2px 9px; }"
+            "QFrame#viewSettingsValueBox QLabel { color: #57606a; padding-right: 9px; }"
+            "QComboBox#viewSettingsOrientation { min-height: 34px; padding: 2px 9px; "
+            "border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #24292f; }"
+            "QComboBox#viewSettingsOrientation::drop-down { width: 0; border: 0; }"
+            "QComboBox#viewSettingsOrientation::down-arrow { image: none; }"
+            "QPushButton#applyInsertedViewSettings { min-height: 34px; padding: 4px 14px; "
+            "border: 1px solid #0969da; border-radius: 7px; color: #ffffff; "
+            "background: #0969da; font-weight: 600; }"
+            "QPushButton#applyInsertedViewSettings:hover { background: #0550ae; }"
+        )
+        popup_layout = QVBoxLayout(self._settings_popup)
+        popup_layout.setContentsMargins(14, 14, 14, 14)
+        popup_layout.setSpacing(9)
+        self._view_settings_inputs = {}
+        for key, label_text in (
+            ("upper_offset_cm", "Deslocamento superior"),
+            ("lower_offset_cm", "Deslocamento inferior"),
+        ):
+            group = QWidget(self._settings_popup)
+            group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(4)
+            label = QLabel(label_text, group)
+            label.setObjectName("propertySection")
+            group_layout.addWidget(label)
+            value_box = QFrame(group)
+            value_box.setObjectName("viewSettingsValueBox")
+            value_layout = QHBoxLayout(value_box)
+            value_layout.setContentsMargins(0, 0, 0, 0)
+            value_layout.setSpacing(0)
+            field = CompactDoubleSpinBox(value_box)
+            field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            field.setRange(0, 1e9)
+            field.setDecimals(1)
+            field.setKeyboardTracking(False)
+            field.setAccessibleName(f"{label_text} (cm)")
+            value_layout.addWidget(field, 1)
+            value_layout.addWidget(QLabel("cm", value_box))
+            group_layout.addWidget(value_box)
+            popup_layout.addWidget(group)
+            self._view_settings_inputs[key] = field
+
+        rotation_group = QWidget(self._settings_popup)
+        rotation_layout = QVBoxLayout(rotation_group)
+        rotation_layout.setContentsMargins(0, 0, 0, 0)
+        rotation_layout.setSpacing(4)
+        rotation_label = QLabel("Rotação", rotation_group)
+        rotation_label.setObjectName("propertySection")
+        rotation_layout.addWidget(rotation_label)
+        rotation_row = QHBoxLayout()
+        rotation_row.setContentsMargins(0, 0, 0, 0)
+        rotation_row.setSpacing(8)
+        rotation_box = QFrame(rotation_group)
+        rotation_box.setObjectName("viewSettingsValueBox")
+        rotation_box_layout = QHBoxLayout(rotation_box)
+        rotation_box_layout.setContentsMargins(0, 0, 0, 0)
+        rotation_box_layout.setSpacing(0)
+        self._view_rotation_input = CompactDoubleSpinBox(rotation_box)
+        self._view_rotation_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._view_rotation_input.setRange(-1e12, 1e12)
+        self._view_rotation_input.setDecimals(1)
+        self._view_rotation_input.setKeyboardTracking(False)
+        self._view_rotation_input.setAccessibleName("Rotação (graus)")
+        rotation_box_layout.addWidget(self._view_rotation_input, 1)
+        rotation_box_layout.addWidget(QLabel("°", rotation_box))
+        rotation_row.addWidget(rotation_box, 1)
+        self._view_rotation_button = QToolButton(rotation_group)
+        self._view_rotation_button.setFixedSize(36, 36)
+        self._view_rotation_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "rotate-cw.svg"
+        )))
+        self._view_rotation_button.setIconSize(QSize(20, 20))
+        self._view_rotation_button.setToolTip("Girar a vista em 90°")
+        self._view_rotation_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        self._view_rotation_button.clicked.connect(
+            lambda: self._view_rotation_input.setValue(
+                (self._view_rotation_input.value() + 90.0) % 360.0,
+            )
+        )
+        rotation_row.addWidget(self._view_rotation_button)
+        rotation_layout.addLayout(rotation_row)
+        popup_layout.addWidget(rotation_group)
+
+        orientation_group = QWidget(self._settings_popup)
+        orientation_layout = QVBoxLayout(orientation_group)
+        orientation_layout.setContentsMargins(0, 0, 0, 0)
+        orientation_layout.setSpacing(4)
+        orientation_label = QLabel("Orientação", orientation_group)
+        orientation_label.setObjectName("propertySection")
+        orientation_layout.addWidget(orientation_label)
+        self._view_orientation_selector = QComboBox(self._settings_popup)
+        self._view_orientation_selector.setObjectName("viewSettingsOrientation")
+        self._view_orientation_selector.addItems(
+            ("Superior para inferior", "Inferior para superior")
+        )
+        orientation_layout.addWidget(self._view_orientation_selector)
+        popup_layout.addWidget(orientation_group)
+        self._apply_view_settings_button = QPushButton("Aplicar", self._settings_popup)
+        self._apply_view_settings_button.setObjectName("applyInsertedViewSettings")
+        self._apply_view_settings_button.clicked.connect(self._apply_settings)
+        popup_layout.addStretch(1)
+        popup_layout.addWidget(self._apply_view_settings_button)
+        self._settings_popup.hide()
+        self._settings_popup.installEventFilter(self)
         self.hide()
 
     def show_for(self, view: dict | None) -> None:
         if view is None:
+            self._settings_popup.hide()
+            self._view_instance = None
             self.hide()
             return
+        if self._view_instance is not view:
+            self._settings_popup.hide()
+            self.settings_button.setChecked(False)
+        self._view_instance = view
         self.name_input.setText(str(view.get("name", "Vista")))
         denominator = float(view.get("scale_denominator", 100.0))
         self.scale_input.setText(f"{denominator:g}")
@@ -215,6 +368,56 @@ class ProjectSheetViewPanel(QFrame):
         self.show()
         self.raise_()
         self.reposition()
+
+    def _toggle_settings_panel(self, opened: bool) -> None:
+        if not opened or self._view_instance is None:
+            self._settings_popup.hide()
+            return
+        projection = self._view_instance.get("projection", {})
+        if not isinstance(projection, dict):
+            return
+        self._view_settings_inputs["upper_offset_cm"].setValue(
+            max(0.0, float(projection.get("upper_offset_cm", 50.0)))
+        )
+        self._view_settings_inputs["lower_offset_cm"].setValue(
+            max(0.0, float(projection.get("lower_offset_cm", 50.0)))
+        )
+        self._view_rotation_input.setValue(float(projection.get("rotation_degrees", 0.0)))
+        self._view_orientation_selector.setCurrentIndex(
+            1 if projection.get("orientation") == "Inferior para superior" else 0
+        )
+        isometric = str(projection.get("plane", "")).startswith("ISO-")
+        for field in self._view_settings_inputs.values():
+            field.setEnabled(not isometric)
+        self._view_orientation_selector.setEnabled(not isometric)
+        panel_origin = self.mapToGlobal(QPoint(0, 0))
+        popup_x = panel_origin.x() - self._settings_popup.width() - 8
+        popup_y = panel_origin.y() + (self.height() - self._settings_popup.height()) // 2
+        self._settings_popup.move(popup_x, popup_y)
+        self._settings_popup.show()
+        self._settings_popup.raise_()
+
+    def _apply_settings(self) -> None:
+        if self._view_instance is None:
+            return
+        settings = {
+            key: field.value() for key, field in self._view_settings_inputs.items()
+        }
+        settings.update({
+            "rotation_degrees": self._view_rotation_input.value() % 360.0,
+            "orientation": self._view_orientation_selector.currentText(),
+        })
+        self._settings_popup.hide()
+        self.settings_button.setChecked(False)
+        self.settings_applied.emit(settings)
+
+    def eventFilter(self, watched, event):
+        if watched is self._settings_popup and event.type() == QEvent.Type.Hide:
+            if self.settings_button.isChecked():
+                self.settings_button.blockSignals(True)
+                self.settings_button.setChecked(False)
+                self.settings_button.blockSignals(False)
+        return super().eventFilter(watched, event)
 
     def reposition(self) -> None:
         margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
@@ -362,9 +565,16 @@ def default_project_settings() -> dict:
         "view_section_text_height_mm": 2.5,
         "dimension_text_height_mm": 3.0,
         "dimension_terminator_height_mm": 3.0,
+        "dimension_unit": "cm",
+        "dimension_decimal_places": 0,
         "dimension_extension_gap_mm": 1.0,
         "dimension_line_extension_mm": 3.0,
         "dimension_extension_overrun_mm": 3.0,
+        "dimension_text_color": "#000000",
+        "dimension_line_color": "#ff0000",
+        "dimension_extension_color": "#ff0000",
+        "dimension_terminator_color": "#ff0000",
+        "dimension_custom_colors": [],
         "dimension_text_position": "superior",
     }
 
@@ -380,6 +590,9 @@ class ProjectSheetWorkspace(QWidget):
     identification_finished = Signal(bool)
     dimension_finished = Signal(bool)
     dimension_step_changed = Signal(int)
+    element_visibility_finished = Signal(bool)
+    element_visibility_view_activated = Signal(int)
+    element_visibility_changed = Signal(int, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -440,10 +653,13 @@ class ProjectSheetWorkspace(QWidget):
             tuple[int, tuple[str, ...]], _DimensionSnapIndex,
         ] = {}
         self._dimension_text_hit_rects: dict[tuple[int, int], QRectF] = {}
+        self._dimension_endpoint_hit_rects: dict[tuple[int, int, str], QRectF] = {}
         self._dimension_bounds: dict[tuple[int, int], QRectF] = {}
         self._selected_dimension: tuple[int, int] | None = None
         self._identification_mode = False
         self._dimension_mode = False
+        self._element_visibility_mode: str | None = None
+        self._dimension_type = "aligned"
         self._dimension_points: list[tuple[float, float]] = []
         self._dimension_view_index: int | None = None
         self._dimension_hover_view_index: int | None = None
@@ -471,6 +687,7 @@ class ProjectSheetWorkspace(QWidget):
         self._drag_identification_index: int | None = None
         self._drag_identification_indices: tuple[int, ...] = ()
         self._drag_dimension_index: tuple[int, int] | None = None
+        self._drag_dimension_endpoint: tuple[int, int, str] | None = None
         self._drag_dimension_current_bounds: QRectF | None = None
         self._drag_dimension_painted_bounds: QRectF | None = None
         self._drag_dimension_content_current_bounds: QRectF | None = None
@@ -535,6 +752,9 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_views(self, views, *, clear_selection: bool = False) -> None:
+        if self._element_visibility_mode is not None:
+            self.set_element_visibility_mode(None)
+            self.element_visibility_finished.emit(True)
         if self._dimension_mode:
             self.set_dimension_mode(False)
             self.dimension_finished.emit(True)
@@ -562,6 +782,15 @@ class ProjectSheetWorkspace(QWidget):
             identifications = self._sheet_views[self._selected_view_index].get("identifications", ())
             self._emit_identification_selection(identifications)
         self.update()
+
+    def invalidate_view_geometry(self, view_index: int) -> None:
+        """Drop derived drawing and snap caches for one inserted sheet view."""
+        self._view_linework.pop(view_index, None)
+        self._view_segment_grids.pop(view_index, None)
+        self._dimension_snap_cache = {
+            key: value for key, value in self._dimension_snap_cache.items()
+            if key[0] != view_index
+        }
 
     def select_view(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self._sheet_views):
@@ -674,6 +903,7 @@ class ProjectSheetWorkspace(QWidget):
 
     def set_identification_mode(self, active: bool, view_index: int | None = None) -> None:
         self._dimension_mode = False
+        self._element_visibility_mode = None
         self._identification_mode = bool(active)
         self._hover_owners.clear()
         self._hover_raw_target = None
@@ -685,7 +915,11 @@ class ProjectSheetWorkspace(QWidget):
             self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update()
 
-    def set_dimension_mode(self, active: bool) -> None:
+    def set_dimension_mode(self, active: bool, dimension_type: str | None = None) -> None:
+        if dimension_type is not None:
+            if dimension_type not in {"aligned", "orthogonal"}:
+                raise ValueError("Tipo de cota desconhecido.")
+            self._dimension_type = dimension_type
         self._dimension_mode = bool(active)
         self._dimension_points.clear()
         self._dimension_view_index = None
@@ -697,6 +931,7 @@ class ProjectSheetWorkspace(QWidget):
         self._dimension_snap_screen = None
         self._dimension_snap_kind = None
         self._identification_mode = False
+        self._element_visibility_mode = None
         self._hover_owners.clear()
         self.setCursor(QCursor(
             Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor
@@ -704,6 +939,48 @@ class ProjectSheetWorkspace(QWidget):
         if active:
             self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update()
+
+    def set_element_visibility_mode(self, mode: str | None) -> None:
+        if mode not in {None, "hide", "reveal", "reveal_all"}:
+            raise ValueError("Modo de visibilidade desconhecido.")
+        self._dimension_mode = False
+        self._identification_mode = False
+        self._element_visibility_mode = mode
+        self._hover_owners.clear()
+        self._hover_raw_target = None
+        if mode is None:
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+            if self._selected_view_index is not None:
+                self._activate_element_visibility_view(self._selected_view_index)
+        self.update()
+
+    def _activate_element_visibility_view(self, view_index: int) -> None:
+        if not 0 <= view_index < len(self._sheet_views):
+            return
+        self.select_view(view_index)
+        if self._element_visibility_mode == "reveal_all":
+            view = self._sheet_views[view_index]
+            if view.get("hidden_owners"):
+                view["hidden_owners"] = []
+                view["hidden_linework"] = {}
+                self.layout_changed.emit()
+                self.element_visibility_changed.emit(view_index, ())
+            self._finish_element_visibility_mode(False)
+            return
+        self.element_visibility_view_activated.emit(view_index)
+
+    def _finish_element_visibility_mode(self, canceled: bool) -> None:
+        if self._element_visibility_mode is None:
+            return
+        self._element_visibility_mode = None
+        self._hover_owners.clear()
+        self._hover_raw_target = None
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
+        self.element_visibility_finished.emit(canceled)
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -989,14 +1266,14 @@ class ProjectSheetWorkspace(QWidget):
         try:
             first = tuple(float(value) for value in dimension["start"])
             second = tuple(float(value) for value in dimension["end"])
-            offset = tuple(float(value) for value in dimension["offset"])
         except (KeyError, TypeError, ValueError):
             return None
+        line_first, line_second = self._dimension_line_points(dimension)
         points = (
             self._screen_point(view_index, first),
             self._screen_point(view_index, second),
-            self._screen_point(view_index, (first[0] + offset[0], first[1] + offset[1])),
-            self._screen_point(view_index, (second[0] + offset[0], second[1] + offset[1])),
+            self._screen_point(view_index, line_first),
+            self._screen_point(view_index, line_second),
         )
         if any(point is None for point in points):
             return None
@@ -1066,6 +1343,7 @@ class ProjectSheetWorkspace(QWidget):
             self._axis_endpoint_drag_data = {}
             self._axis_dimension_snap_segments = {}
             self._dimension_text_hit_rects = {}
+            self._dimension_endpoint_hit_rects = {}
             self._dimension_bounds = {}
             self._view_draw_data = {}
             self._drawing_area = inner
@@ -1083,6 +1361,7 @@ class ProjectSheetWorkspace(QWidget):
         self._view_title_hit_rects = {}
         self._identification_hit_rects = {}
         self._dimension_text_hit_rects = {}
+        self._dimension_endpoint_hit_rects = {}
         self._dimension_bounds = {}
         self._view_draw_data = {}
         self._axis_endpoint_hit_rects = {}
@@ -1101,25 +1380,36 @@ class ProjectSheetWorkspace(QWidget):
             segments = view.get("segments", ())
             if not segments:
                 continue
+            owners = view.get("segment_owners", ())
+            hidden_owners = {str(owner) for owner in view.get("hidden_owners", ())}
+            hidden_key = tuple(sorted(hidden_owners))
             cached = self._view_linework.get(index)
-            if cached is None or cached[0] is not segments:
+            if cached is None or cached[0] is not segments or cached[1] != hidden_key:
                 path = QPainterPath()
+                hidden_path = QPainterPath()
                 points = []
+                hidden_points = []
                 min_x = min_y = math.inf
                 max_x = max_y = -math.inf
-                for start, end in segments:
+                for segment_index, (start, end) in enumerate(segments):
                     x1, y1 = float(start[0]), float(start[1])
                     x2, y2 = float(end[0]), float(end[1])
                     min_x, max_x = min(min_x, x1, x2), max(max_x, x1, x2)
                     min_y, max_y = min(min_y, y1, y2), max(max_y, y1, y2)
+                    owner = str(owners[segment_index]) if len(owners) == len(segments) else ""
+                    target_path = hidden_path if owner in hidden_owners else path
+                    target_points = hidden_points if owner in hidden_owners else points
                     if x1 == x2 and y1 == y2:
-                        points.append(QPointF(x1, y1))
+                        target_points.append(QPointF(x1, y1))
                     else:
-                        path.moveTo(x1, y1)
-                        path.lineTo(x2, y2)
-                cached = (segments, path, points, (min_x, max_x, min_y, max_y))
+                        target_path.moveTo(x1, y1)
+                        target_path.lineTo(x2, y2)
+                cached = (
+                    segments, hidden_key, path, hidden_path, points, hidden_points,
+                    (min_x, max_x, min_y, max_y),
+                )
                 self._view_linework[index] = cached
-            _, path, points, (min_x, max_x, min_y, max_y) = cached
+            _, _, path, hidden_path, points, hidden_points, (min_x, max_x, min_y, max_y) = cached
             center_x = (min_x + max_x) / 2.0
             center_y = (min_y + max_y) / 2.0
             position = view.get("position")
@@ -1232,7 +1522,6 @@ class ProjectSheetWorkspace(QWidget):
                     -4.0, -3.0, 4.0, 3.0,
                 )
                 view_bounds = view_bounds.united(label_rect)
-            owners = view.get("segment_owners", ())
             painter.save()
             painter.translate(target_x, target_y)
             painter.scale(model_to_pixels, -model_to_pixels)
@@ -1240,10 +1529,27 @@ class ProjectSheetWorkspace(QWidget):
             painter.drawPath(path)
             if points:
                 painter.drawPoints(points)
+            if self._element_visibility_mode == "reveal":
+                hidden_pen = QPen(QColor("#afb8c1"), 1.0)
+                hidden_pen.setCosmetic(True)
+                painter.setPen(hidden_pen)
+                painter.drawPath(hidden_path)
+                if hidden_points:
+                    painter.drawPoints(hidden_points)
             painter.restore()
-            if self._identification_mode and self._hover_owners and len(owners) == len(segments):
+            if (
+                (self._identification_mode or self._element_visibility_mode in {"hide", "reveal"})
+                and self._hover_owners and len(owners) == len(segments)
+            ):
                 for segment_index, (start, end) in enumerate(segments):
-                    if (index, str(owners[segment_index])) not in self._hover_owners:
+                    owner = str(owners[segment_index])
+                    if (index, owner) not in self._hover_owners:
+                        continue
+                    if (
+                        self._element_visibility_mode == "hide" and owner in hidden_owners
+                    ) or (
+                        self._element_visibility_mode == "reveal" and owner not in hidden_owners
+                    ):
                         continue
                     start_screen = QPointF(
                         target_x + (float(start[0]) - center_x) * model_to_pixels,
@@ -1630,8 +1936,31 @@ class ProjectSheetWorkspace(QWidget):
                     normal[0] * u[1] - normal[1] * u[0],
                 )
                 delta = (x - origin[0], y - origin[1], z - origin[2])
-                return sum(delta[i] * u[i] for i in range(3)), sum(
-                    delta[i] * v[i] for i in range(3)
+                orientation = projection.get("orientation", "Superior para inferior")
+                camera_direction = tuple(
+                    -value if orientation == "Inferior para superior" else value
+                    for value in normal
+                )
+                view_direction = tuple(-value for value in camera_direction)
+                cosine, sine = math.cos(rotation), math.sin(rotation)
+                dot = sum(v[i] * view_direction[i] for i in range(3))
+                cross = (
+                    view_direction[1] * v[2] - view_direction[2] * v[1],
+                    view_direction[2] * v[0] - view_direction[0] * v[2],
+                    view_direction[0] * v[1] - view_direction[1] * v[0],
+                )
+                rotated_up = tuple(
+                    v[i] * cosine + cross[i] * sine
+                    + view_direction[i] * dot * (1 - cosine)
+                    for i in range(3)
+                )
+                right = (
+                    view_direction[1] * rotated_up[2] - view_direction[2] * rotated_up[1],
+                    view_direction[2] * rotated_up[0] - view_direction[0] * rotated_up[2],
+                    view_direction[0] * rotated_up[1] - view_direction[1] * rotated_up[0],
+                )
+                return sum(delta[i] * right[i] for i in range(3)), sum(
+                    delta[i] * rotated_up[i] for i in range(3)
                 )
             except (KeyError, TypeError, ValueError, IndexError):
                 return None
@@ -1783,8 +2112,22 @@ class ProjectSheetWorkspace(QWidget):
             )
             search_radius = 12.0 / model_to_pixels
             segment_grid = self._segment_grid_for_view(index)
-            normalized_segments = segment_grid.segments
-            cache_key = (index, tuple(sorted(enabled)))
+            hidden_owners = {str(owner) for owner in self._sheet_views[index].get("hidden_owners", ())}
+            owners = self._sheet_views[index].get("segment_owners", ())
+            visible_items = [
+                (
+                    segment,
+                    str(owners[segment_index]) if len(owners) == len(segment_grid.segments) else "",
+                )
+                for segment_index, segment in enumerate(segment_grid.segments)
+                if len(owners) != len(segment_grid.segments)
+                or str(owners[segment_index]) not in hidden_owners
+            ]
+            normalized_segments = tuple(segment for segment, _owner in visible_items)
+            visible_grid = _SegmentSpatialGrid(
+                normalized_segments, tuple(owner for _segment, owner in visible_items),
+            )
+            cache_key = (index, tuple(sorted(enabled)), tuple(sorted(hidden_owners)))
             snap_index = self._dimension_snap_cache.get(cache_key)
             if snap_index is None:
                 candidates = []
@@ -1833,7 +2176,7 @@ class ProjectSheetWorkspace(QWidget):
                              uy * midpoint + ux * line_offset),
                             "center",
                         ))
-                snap_index = _DimensionSnapIndex(candidates, segment_grid)
+                snap_index = _DimensionSnapIndex(candidates, visible_grid)
                 self._dimension_snap_cache[cache_key] = snap_index
             for candidate, kind in snap_index.nearby_points(
                 projected_cursor[0], projected_cursor[1], search_radius,
@@ -1926,6 +2269,34 @@ class ProjectSheetWorkspace(QWidget):
         if third is None:
             return None
         first, second = self._dimension_points
+        if self._dimension_type == "orthogonal":
+            midpoint_x = (first[0] + second[0]) / 2.0
+            midpoint_y = (first[1] + second[1]) / 2.0
+            delta_x = abs(second[0] - first[0])
+            delta_y = abs(second[1] - first[1])
+            can_measure_x = delta_x > 1e-12
+            can_measure_y = delta_y > 1e-12
+            if not can_measure_x and not can_measure_y:
+                return None
+            choose_x = can_measure_x and (
+                not can_measure_y
+                or abs(third[1] - midpoint_y) >= abs(third[0] - midpoint_x)
+            )
+            if choose_x:
+                offset = (0.0, third[1] - first[1])
+                return {
+                    "start": first,
+                    "end": second,
+                    "offset": offset,
+                    "orthogonal_axis": "x",
+                }
+            offset = (third[0] - first[0], 0.0)
+            return {
+                "start": first,
+                "end": second,
+                "offset": offset,
+                "orthogonal_axis": "y",
+            }
         dx, dy = second[0] - first[0], second[1] - first[1]
         length = math.hypot(dx, dy)
         if length <= 1e-12:
@@ -1938,6 +2309,23 @@ class ProjectSheetWorkspace(QWidget):
             "offset": (normal[0] * offset_amount, normal[1] * offset_amount),
         }
 
+    @staticmethod
+    def _dimension_line_points(dimension: dict) -> tuple[tuple[float, float], tuple[float, float]]:
+        start = tuple(float(value) for value in dimension["start"])
+        end = tuple(float(value) for value in dimension["end"])
+        offset = tuple(float(value) for value in dimension["offset"])
+        axis = dimension.get("orthogonal_axis")
+        if axis == "x":
+            line_y = start[1] + offset[1]
+            return (start[0], line_y), (end[0], line_y)
+        if axis == "y":
+            line_x = start[0] + offset[0]
+            return (line_x, start[1]), (line_x, end[1])
+        return (
+            (start[0] + offset[0], start[1] + offset[1]),
+            (end[0] + offset[0], end[1] + offset[1]),
+        )
+
     def _align_dimension_to_existing(
         self, view_index: int, dimension: dict, tolerance: float = 4.0,
     ) -> dict:
@@ -1947,15 +2335,10 @@ class ProjectSheetWorkspace(QWidget):
             return dimension
         model_to_pixels = draw_data[4]
         start = tuple(float(value) for value in dimension["start"])
-        end = tuple(float(value) for value in dimension["end"])
-        offset = tuple(float(value) for value in dimension["offset"])
         source = self._screen_point(view_index, start)
-        moving_start = self._screen_point(
-            view_index, (start[0] + offset[0], start[1] + offset[1]),
-        )
-        moving_end = self._screen_point(
-            view_index, (end[0] + offset[0], end[1] + offset[1]),
-        )
+        line_start, line_end = self._dimension_line_points(dimension)
+        moving_start = self._screen_point(view_index, line_start)
+        moving_end = self._screen_point(view_index, line_end)
         if None in (source, moving_start, moving_end):
             return dimension
         moving_dx = moving_end.x() - moving_start.x()
@@ -1974,19 +2357,11 @@ class ProjectSheetWorkspace(QWidget):
             if other is dimension:
                 continue
             try:
-                other_start = tuple(float(value) for value in other["start"])
-                other_end = tuple(float(value) for value in other["end"])
-                other_offset = tuple(float(value) for value in other["offset"])
+                other_line = self._dimension_line_points(other)
             except (KeyError, TypeError, ValueError):
                 continue
-            other_line_start = self._screen_point(
-                view_index,
-                (other_start[0] + other_offset[0], other_start[1] + other_offset[1]),
-            )
-            other_line_end = self._screen_point(
-                view_index,
-                (other_end[0] + other_offset[0], other_end[1] + other_offset[1]),
-            )
+            other_line_start = self._screen_point(view_index, other_line[0])
+            other_line_end = self._screen_point(view_index, other_line[1])
             if other_line_start is None or other_line_end is None:
                 continue
             other_dx = other_line_end.x() - other_line_start.x()
@@ -2023,15 +2398,15 @@ class ProjectSheetWorkspace(QWidget):
         try:
             first = tuple(float(value) for value in dimension["start"])
             second = tuple(float(value) for value in dimension["end"])
-            offset = tuple(float(value) for value in dimension["offset"])
-            if len(first) != 2 or len(second) != 2 or len(offset) != 2:
+            if len(first) != 2 or len(second) != 2:
                 return None
+            line_first, line_second = self._dimension_line_points(dimension)
         except (KeyError, TypeError, ValueError):
             return None
         first_screen = self._screen_point(view_index, first)
         second_screen = self._screen_point(view_index, second)
-        dim_first = self._screen_point(view_index, (first[0] + offset[0], first[1] + offset[1]))
-        dim_second = self._screen_point(view_index, (second[0] + offset[0], second[1] + offset[1]))
+        dim_first = self._screen_point(view_index, line_first)
+        dim_second = self._screen_point(view_index, line_second)
         if None in (first_screen, second_screen, dim_first, dim_second):
             return None
         dx, dy = dim_second.x() - dim_first.x(), dim_second.y() - dim_first.y()
@@ -2045,6 +2420,11 @@ class ProjectSheetWorkspace(QWidget):
         painter.save()
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        def dimension_color(key: str, default: str) -> QColor:
+            color = QColor(str(self._project_settings.get(key, default)))
+            return color if color.isValid() else QColor(default)
+
         line_extension = max(
             0.0,
             float(self._project_settings.get("dimension_line_extension_mm", 3.0))
@@ -2061,6 +2441,9 @@ class ProjectSheetWorkspace(QWidget):
         dimension_bounds = QRectF(line_start, line_end).normalized()
         # Witness lines extend slightly beyond the dimension line and leave a small gap
         # at the measured point, as in the architectural reference.
+        extension_pen = QPen(dimension_color("dimension_extension_color", "#ff0000"), 1.0)
+        extension_pen.setCosmetic(True)
+        painter.setPen(extension_pen)
         for source, target in ((first_screen, dim_first), (second_screen, dim_second)):
             vx, vy = target.x() - source.x(), target.y() - source.y()
             magnitude = math.hypot(vx, vy)
@@ -2091,6 +2474,9 @@ class ProjectSheetWorkspace(QWidget):
                 dimension_bounds = dimension_bounds.united(
                     QRectF(witness_start, witness_end).normalized(),
                 )
+        line_pen = QPen(dimension_color("dimension_line_color", "#ff0000"), 1.0)
+        line_pen.setCosmetic(True)
+        painter.setPen(line_pen)
         painter.drawLine(line_start, line_end)
         tick = (
             float(self._project_settings.get("dimension_terminator_height_mm", 3.0))
@@ -2098,6 +2484,9 @@ class ProjectSheetWorkspace(QWidget):
         )
         tick_direction = ((normal[0] + axis[0]) / math.sqrt(2.0),
                           (normal[1] + axis[1]) / math.sqrt(2.0))
+        terminator_pen = QPen(dimension_color("dimension_terminator_color", "#ff0000"), 1.0)
+        terminator_pen.setCosmetic(True)
+        painter.setPen(terminator_pen)
         for point in (dim_first, dim_second):
             tick_start = QPointF(
                 point.x() - tick_direction[0] * tick,
@@ -2114,8 +2503,22 @@ class ProjectSheetWorkspace(QWidget):
             dimension_bounds = dimension_bounds.united(
                 QRectF(tick_start, tick_end).normalized(),
             )
-        numeric_value = math.hypot(second[0] - first[0], second[1] - first[1])
-        text = f"{numeric_value:.2f}"
+        orthogonal_axis = dimension.get("orthogonal_axis")
+        if orthogonal_axis == "x":
+            numeric_value = abs(second[0] - first[0])
+        elif orthogonal_axis == "y":
+            numeric_value = abs(second[1] - first[1])
+        else:
+            numeric_value = math.hypot(second[0] - first[0], second[1] - first[1])
+        unit_scales = {"m": 1.0, "cm": 100.0, "dm": 10.0, "mm": 1000.0}
+        unit_key = str(self._project_settings.get("dimension_unit", "cm")).lower()
+        unit_scale = unit_scales.get(unit_key, unit_scales["cm"])
+        try:
+            decimal_places = max(0, min(8, int(self._project_settings.get("dimension_decimal_places", 0))))
+        except (TypeError, ValueError):
+            decimal_places = 0
+        displayed_value = numeric_value * unit_scale
+        text = f"{displayed_value:.{decimal_places}f}"
         font = QFont(painter.font())
         height_mm = float(self._project_settings.get("dimension_text_height_mm", 3.0))
         font.setPixelSize(max(1, round(height_mm * self._sheet_pixels_per_mm)))
@@ -2167,7 +2570,7 @@ class ProjectSheetWorkspace(QWidget):
         painter.save()
         painter.translate(midpoint)
         painter.rotate(rotation)
-        painter.setPen(QColor("#24292f"))
+        painter.setPen(dimension_color("dimension_text_color", "#000000"))
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, text)
         if dimension_index is not None:
             selection_padding_x = 3.0 * self._sheet_pixels_per_mm
@@ -2190,19 +2593,43 @@ class ProjectSheetWorkspace(QWidget):
                     selection_padding_y,
                 ))
         painter.restore()
+        if dimension_index is not None and self._selected_dimension == (view_index, dimension_index):
+            handle_radius = 4.0
+            handle_hit_radius = 9.0
+            handle_pen = QPen(QColor("#0969da"), 1.5)
+            handle_pen.setCosmetic(True)
+            painter.setPen(handle_pen)
+            painter.setBrush(QColor("#ffffff"))
+            for endpoint_name, point in (("start", first_screen), ("end", second_screen)):
+                painter.drawEllipse(point, handle_radius, handle_radius)
+                self._dimension_endpoint_hit_rects[(view_index, dimension_index, endpoint_name)] = (
+                    QRectF(point.x() - handle_hit_radius, point.y() - handle_hit_radius,
+                           handle_hit_radius * 2.0, handle_hit_radius * 2.0)
+                )
+                dimension_bounds = dimension_bounds.united(
+                    QRectF(point.x() - handle_hit_radius, point.y() - handle_hit_radius,
+                           handle_hit_radius * 2.0, handle_hit_radius * 2.0)
+                )
+            self._dimension_bounds[(view_index, dimension_index)] = dimension_bounds.adjusted(
+                -2.0, -2.0, 2.0, 2.0,
+            )
         painter.restore()
         return dimension_bounds.adjusted(-2.0, -2.0, 2.0, 2.0)
 
-    def _element_at(self, position: QPointF):
+    def _element_at(self, position: QPointF, view_index: int | None = None):
         if self._stamp_rect.contains(position):
             return None
         best = None
-        for view_index, view in enumerate(self._sheet_views):
-            draw_data = self._view_draw_data.get(view_index)
+        view_indices = (view_index,) if view_index is not None else range(len(self._sheet_views))
+        for index in view_indices:
+            if index is None or not 0 <= index < len(self._sheet_views):
+                continue
+            view = self._sheet_views[index]
+            draw_data = self._view_draw_data.get(index)
             if draw_data is None:
                 continue
             center_x, center_y, target_x, target_y, model_to_pixels = draw_data
-            grid = self._segment_grid_for_view(view_index)
+            grid = self._segment_grid_for_view(index)
             segments = grid.segments
             owners = view.get("segment_owners", ())
             if model_to_pixels <= 1e-12:
@@ -2214,6 +2641,7 @@ class ProjectSheetWorkspace(QWidget):
             candidate_indices = grid.query(
                 projected_cursor[0], projected_cursor[1], 12.0 / model_to_pixels,
             )
+            hidden_owners = {str(owner) for owner in view.get("hidden_owners", ())}
             for segment_index in candidate_indices:
                 start, end = segments[segment_index]
                 start_screen = QPointF(
@@ -2231,7 +2659,12 @@ class ProjectSheetWorkspace(QWidget):
                         float(start[1]) + (float(end[1]) - float(start[1])) * fraction,
                     )
                     owner = str(owners[segment_index]) if len(owners) == len(segments) else ""
-                    best = (distance, view_index, owner, projected_point)
+                    if self._element_visibility_mode == "reveal":
+                        if owner not in hidden_owners:
+                            continue
+                    elif owner in hidden_owners:
+                        continue
+                    best = (distance, index, owner, projected_point)
         if best is None or best[0] > 12.0:
             return None
         distance, view_index, owner, projected_point = best
@@ -2246,6 +2679,13 @@ class ProjectSheetWorkspace(QWidget):
                 hover_owners = {
                     (view_index, f"bar:{member}") for member in members
                 }
+                if self._element_visibility_mode == "reveal":
+                    hidden_owners = {
+                        str(token) for token in self._sheet_views[view_index].get("hidden_owners", ())
+                    }
+                    hover_owners = {
+                        key for key in hover_owners if key[1] in hidden_owners
+                    }
                 if not self._identification_pick_member:
                     selected_owner = "bar_group:" + "|".join(members)
         return distance, view_index, selected_owner, projected_point, hover_owners, owner
@@ -2258,6 +2698,63 @@ class ProjectSheetWorkspace(QWidget):
         self.select_view(view_index)
         self.element_identification_requested.emit(view_index, element_name, projected_point)
         return True
+
+    def _element_visibility_click(self, position: QPointF) -> None:
+        mode = self._element_visibility_mode
+        if mode is None:
+            return
+        view_hit = next((
+            index for index, rect in reversed(tuple(self._view_hit_rects.items()))
+            if rect.contains(position)
+        ), None)
+        if self._selected_view_index is None:
+            if view_hit is not None:
+                self._selected_view_title_index = None
+                self._selected_axis_endpoints.clear()
+                self._activate_element_visibility_view(view_hit)
+            return
+        if view_hit is not None and view_hit != self._selected_view_index:
+            self._activate_element_visibility_view(view_hit)
+            return
+        if mode == "reveal_all":
+            self._activate_element_visibility_view(self._selected_view_index)
+            return
+        view_index = self._selected_view_index
+        if not 0 <= view_index < len(self._sheet_views):
+            return
+        target = self._element_at(position, view_index=view_index)
+        if target is None or not target[5]:
+            return
+        view = self._sheet_views[view_index]
+        hidden = {str(owner) for owner in view.get("hidden_owners", ())}
+        selected_owners = {key[1] for key in target[4]}
+        if not selected_owners:
+            selected_owners = {str(target[5])}
+        if mode == "hide":
+            updated = hidden | selected_owners
+            newly_hidden = updated - hidden
+            hidden_linework = dict(view.get("hidden_linework", {}))
+            owners = view.get("segment_owners", ())
+            for owner in newly_hidden:
+                hidden_linework[owner] = tuple(
+                    segment
+                    for segment, segment_owner in zip(view.get("segments", ()), owners)
+                    if str(segment_owner) == owner
+                )
+            view["hidden_linework"] = hidden_linework
+        else:
+            updated = hidden - selected_owners
+            hidden_linework = dict(view.get("hidden_linework", {}))
+            for owner in hidden - updated:
+                hidden_linework.pop(owner, None)
+            view["hidden_linework"] = hidden_linework
+        if updated != hidden:
+            view["hidden_owners"] = sorted(updated)
+            self._hover_owners.clear()
+            self._hover_raw_target = None
+            self.update()
+            self.layout_changed.emit()
+            self.element_visibility_changed.emit(view_index, tuple(sorted(updated)))
 
     def wheelEvent(self, event) -> None:
         delta = event.angleDelta().y()
@@ -2289,6 +2786,10 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._element_visibility_mode is not None:
+                self._element_visibility_click(event.position())
+                event.accept()
+                return
             if self._dimension_mode:
                 if len(self._dimension_points) < 2:
                     snap = self._dimension_snap_at(
@@ -2334,11 +2835,29 @@ class ProjectSheetWorkspace(QWidget):
                     view.setdefault("dimensions", []).append(dimension)
                     self.update()
                     self.layout_changed.emit()
-                    self.set_dimension_mode(True)
+                    self.set_dimension_mode(True, self._dimension_type)
                     self.dimension_step_changed.emit(0)
                 event.accept()
                 return
             selected_view = self._selected_view_index
+            dimension_endpoint_hit = next((
+                key for key, rect in reversed(tuple(self._dimension_endpoint_hit_rects.items()))
+                if key[0] == selected_view and rect.contains(event.position())
+            ), None)
+            if dimension_endpoint_hit is not None:
+                self._selected_view_title_index = None
+                self._selected_axis_endpoints.clear()
+                self._selected_dimension = dimension_endpoint_hit[:2]
+                self._drag_dimension_endpoint = dimension_endpoint_hit
+                self._drag_position = event.position()
+                self._selected_identification_index = None
+                self._selected_identification_indices.clear()
+                self.identification_selection_changed.emit(None)
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.update()
+                event.accept()
+                return
             axis_hit = next((
                 key for key, rect in reversed(tuple(self._axis_endpoint_hit_rects.items()))
                 if key[0] == selected_view and rect.contains(event.position())
@@ -2550,7 +3069,7 @@ class ProjectSheetWorkspace(QWidget):
             super().update()
             event.accept()
             return
-        if self._dimension_mode or self._identification_mode:
+        if self._dimension_mode or self._identification_mode or self._element_visibility_mode:
             self._ensure_navigation_geometry()
         if self._dimension_mode:
             old_preview_bounds = self._dimension_preview_bounds
@@ -2722,6 +3241,26 @@ class ProjectSheetWorkspace(QWidget):
             self._update_annotation_regions(*dirty_regions)
             event.accept()
             return
+        if self._drag_dimension_endpoint is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            view_index, dimension_index, endpoint_name = self._drag_dimension_endpoint
+            if 0 <= view_index < len(self._sheet_views):
+                dimensions = self._sheet_views[view_index].get("dimensions", [])
+                if 0 <= dimension_index < len(dimensions):
+                    dimension = dimensions[dimension_index]
+                    snap = self._dimension_snap_at(event.position(), view_index)
+                    candidate = snap[2] if snap is not None else self._projected_point_at(
+                        view_index, event.position(),
+                    )
+                    if candidate is not None:
+                        other_name = "end" if endpoint_name == "start" else "start"
+                        other = tuple(float(value) for value in dimension[other_name])
+                        candidate = tuple(float(value) for value in candidate)
+                        if math.hypot(candidate[0] - other[0], candidate[1] - other[1]) > 1e-9:
+                            dimension[endpoint_name] = candidate
+                            self._drag_position = event.position()
+                            self.update()
+            event.accept()
+            return
         if self._drag_dimension_index is not None and event.buttons() & Qt.MouseButton.LeftButton:
             view_index, dimension_index = self._drag_dimension_index
             if 0 <= view_index < len(self._sheet_views):
@@ -2733,18 +3272,13 @@ class ProjectSheetWorkspace(QWidget):
                     and draw_data[4] > 0
                 ):
                     dimension = dimensions[dimension_index]
-                    first = tuple(float(value) for value in dimension["start"])
-                    second = tuple(float(value) for value in dimension["end"])
                     offset = tuple(float(value) for value in dimension["offset"])
                     old_bounds = self._drag_dimension_current_bounds or self._dimension_bounds.get(
                         (view_index, dimension_index),
                     )
-                    line_first = self._screen_point(
-                        view_index, (first[0] + offset[0], first[1] + offset[1]),
-                    )
-                    line_second = self._screen_point(
-                        view_index, (second[0] + offset[0], second[1] + offset[1]),
-                    )
+                    dimension_line = self._dimension_line_points(dimension)
+                    line_first = self._screen_point(view_index, dimension_line[0])
+                    line_second = self._screen_point(view_index, dimension_line[1])
                     if line_first is not None and line_second is not None:
                         dx = line_second.x() - line_first.x()
                         dy = line_second.y() - line_first.y()
@@ -2811,11 +3345,20 @@ class ProjectSheetWorkspace(QWidget):
             self._drag_identification_index is not None
             and bool(event.buttons() & Qt.MouseButton.LeftButton)
         )
-        if self._identification_mode and not dragging_identification:
+        if (
+            self._identification_mode
+            or self._element_visibility_mode in {"hide", "reveal"}
+        ) and not dragging_identification:
             self._last_identification_position = event.position()
-            target = self._element_at(event.position())
+            visibility_mode = self._element_visibility_mode in {"hide", "reveal"}
+            target = None
+            if not visibility_mode or self._selected_view_index is not None:
+                target = self._element_at(
+                    event.position(),
+                    view_index=self._selected_view_index if visibility_mode else None,
+                )
             raw_target = (target[1], target[5]) if target is not None and target[5] else None
-            if raw_target != self._hover_raw_target:
+            if self._identification_mode and raw_target != self._hover_raw_target:
                 self._identification_pick_member = False
                 target = self._element_at(event.position())
                 raw_target = (target[1], target[5]) if target is not None and target[5] else None
@@ -2928,6 +3471,14 @@ class ProjectSheetWorkspace(QWidget):
             self.layout_changed.emit()
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_dimension_endpoint is not None:
+            self._drag_dimension_endpoint = None
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_dimension_index is not None:
             self._drag_dimension_index = None
             self._drag_dimension_current_bounds = None
@@ -3000,6 +3551,12 @@ class ProjectSheetWorkspace(QWidget):
             Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
         ):
             self.identification_finished.emit(event.key() == Qt.Key.Key_Escape)
+            event.accept()
+            return
+        if self._element_visibility_mode is not None and event.key() in (
+            Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
+        ):
+            self._finish_element_visibility_mode(event.key() == Qt.Key.Key_Escape)
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete and self.delete_selected_dimension():
