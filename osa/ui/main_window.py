@@ -162,6 +162,9 @@ class MainWindow(QMainWindow):
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
+        self._stair_geometry_capture_dialog = None
+        self._stair_geometry_capture_node: str | None = None
+        self._stair_geometry_capture_points: list[tuple[float, float, float]] = []
         self._detailing_project_mode = False
         self._detail_plane_return_to_project = False
         self._detailing_views_dialog_open = False
@@ -3390,6 +3393,28 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode == "stair_custom_geometry_placement"
+        ):
+            self._cancel_stair_custom_geometry_capture()
+            event.accept()
+            return True
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "stair_custom_geometry_placement"
+        ):
+            self._finish_stair_custom_geometry_capture()
+            event.accept()
+            return True
         if (command_bar is not None and watched is command_bar.input
                 and event.type() == QEvent.Type.KeyPress
                 and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
@@ -3570,8 +3595,179 @@ class MainWindow(QMainWindow):
             return
         dialog = NodeComponentsDialog(self, node_name, self)
         self.node_components_dialog = dialog
-        dialog.exec()
-        self.node_components_dialog = None
+        dialog.finished.connect(
+            lambda _result, current=dialog: self._node_components_dialog_finished(current)
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _node_components_dialog_finished(self, dialog) -> None:
+        if self.node_components_dialog is dialog:
+            self.node_components_dialog = None
+        dialog.deleteLater()
+
+    def start_stair_custom_geometry_capture(self, dialog) -> bool:
+        """Temporarily return to the 3D scene to capture a planar tread outline."""
+        if (
+            self._command_mode is not None
+            or dialog._draft_component_id != "stair_plate"
+            or dialog.node_name not in self.model.nodes
+        ):
+            return False
+        self._stair_geometry_capture_dialog = dialog
+        self._stair_geometry_capture_node = dialog.node_name
+        self._stair_geometry_capture_points = []
+        node = self.model.nodes[dialog.node_name]
+        self._command_mode = "stair_custom_geometry_placement"
+        self.scene.set_stair_polygon_capture_plane(node.z)
+        self.scene.set_stair_polygon_preview(())
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            "> <b>Geometria personalizada do degrau</b> "
+            "<span style='color:#57606a'>(Clique nos vértices do plano; clique no primeiro ponto "
+            "ou pressione Enter para fechar; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+        return True
+
+    def _handle_stair_custom_geometry_point(self, point: object) -> None:
+        coordinates = np.asarray(tuple(float(value) for value in point), dtype=float)
+        if self._stair_geometry_capture_points:
+            first = np.asarray(self._stair_geometry_capture_points[0], dtype=float)
+            first_screen, first_visible = self.scene._world_to_screen(first)
+            point_screen, point_visible = self.scene._world_to_screen(coordinates)
+            if first_visible and point_visible and float(np.linalg.norm(first_screen - point_screen)) <= 9.0:
+                if len(self._stair_geometry_capture_points) >= 3:
+                    self._finish_stair_custom_geometry_capture()
+                else:
+                    self.history.append(
+                        "> <b>Geometria personalizada do degrau</b> "
+                        "<span style='color:#8c959f'>(Defina ao menos três vértices antes de fechar)</span>"
+                    )
+                return
+        if self._stair_geometry_capture_points:
+            previous = np.asarray(self._stair_geometry_capture_points[-1], dtype=float)
+            if float(np.linalg.norm(coordinates - previous)) <= 1e-4:
+                return
+        self._stair_geometry_capture_points.append(tuple(float(value) for value in coordinates))
+        self.scene.set_stair_polygon_preview(self._stair_geometry_capture_points)
+        self.scene.set_member_preview_start(coordinates)
+        self.scene.plotter.render()
+
+    def _finish_stair_custom_geometry_capture(self) -> None:
+        points = self._stair_geometry_capture_points
+        if len(points) < 3:
+            self.history.append(
+                "> <b>Geometria personalizada do degrau</b> "
+                "<span style='color:#8c959f'>(Defina ao menos três vértices antes de fechar)</span>"
+            )
+            return
+        node_name = self._stair_geometry_capture_node
+        dialog = self._stair_geometry_capture_dialog
+        node = self.model.nodes.get(node_name) if node_name is not None else None
+        if node is None or dialog is None:
+            self._cancel_stair_custom_geometry_capture()
+            return
+        parameters = dialog._draft_parameters
+        angle = math.radians(float(parameters.get("rotacao_deg", 0.0)))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        displacement_a = float(parameters.get("madeira_deslocamento_a_mm", 0.0))
+        displacement_b = float(parameters.get("madeira_deslocamento_b_mm", 0.0))
+        outline_mm = []
+        for x, y, _z in points:
+            dx, dy = x - node.x, y - node.y
+            local_x = (dx * cosine + dy * sine) * 1000.0 - displacement_a
+            local_y = (-dx * sine + dy * cosine) * 1000.0 - displacement_b
+            outline_mm.append((local_x, local_y))
+        if not self._stair_outline_is_simple(outline_mm):
+            self._cancel_stair_custom_geometry_capture(
+                "o contorno se cruza ou repete vértices; reinicie o desenho"
+            )
+            return
+        area_twice = sum(
+            first[0] * second[1] - second[0] * first[1]
+            for first, second in zip(outline_mm, (*outline_mm[1:], outline_mm[0]))
+        )
+        if abs(area_twice) <= 1e-3:
+            self._cancel_stair_custom_geometry_capture(
+                "A geometria capturada não delimita uma área. Desenhe vértices diferentes."
+            )
+            return
+        self._end_stair_custom_geometry_capture()
+        dialog._stair_custom_geometry_captured(outline_mm)
+        self.history.append(
+            f"> <b>Geometria personalizada do degrau</b> "
+            f"<span style='color:#57606a'>({len(outline_mm)} vértices capturados)</span>"
+        )
+
+    @staticmethod
+    def _stair_outline_is_simple(points: list[tuple[float, float]]) -> bool:
+        """Reject self-crossing outlines before passing them to VTK tessellation."""
+        if len(points) < 3 or not np.isfinite(np.asarray(points, dtype=float)).all():
+            return False
+
+        def orientation(a, b, c) -> float:
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+        def on_segment(a, b, point, epsilon) -> bool:
+            return (
+                min(a[0], b[0]) - epsilon <= point[0] <= max(a[0], b[0]) + epsilon
+                and min(a[1], b[1]) - epsilon <= point[1] <= max(a[1], b[1]) + epsilon
+            )
+
+        def intersects(a, b, c, d, epsilon) -> bool:
+            ab_c, ab_d = orientation(a, b, c), orientation(a, b, d)
+            cd_a, cd_b = orientation(c, d, a), orientation(c, d, b)
+            if (
+                ((ab_c > epsilon and ab_d < -epsilon) or (ab_c < -epsilon and ab_d > epsilon))
+                and ((cd_a > epsilon and cd_b < -epsilon) or (cd_a < -epsilon and cd_b > epsilon))
+            ):
+                return True
+            return (
+                abs(ab_c) <= epsilon and on_segment(a, b, c, epsilon)
+                or abs(ab_d) <= epsilon and on_segment(a, b, d, epsilon)
+                or abs(cd_a) <= epsilon and on_segment(c, d, a, epsilon)
+                or abs(cd_b) <= epsilon and on_segment(c, d, b, epsilon)
+            )
+
+        count = len(points)
+        scale = max(1.0, *(abs(value) for point in points for value in point))
+        epsilon = 1e-10 * scale * scale
+        for first in range(count):
+            a, b = points[first], points[(first + 1) % count]
+            if math.dist(a, b) <= 1e-7:
+                return False
+            for second in range(first + 1, count):
+                if second == first or second == (first + 1) % count or first == (second + 1) % count:
+                    continue
+                c, d = points[second], points[(second + 1) % count]
+                if intersects(a, b, c, d, epsilon):
+                    return False
+        return True
+
+    def _cancel_stair_custom_geometry_capture(self, message: str | None = None) -> None:
+        dialog = self._stair_geometry_capture_dialog
+        self._end_stair_custom_geometry_capture()
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+        self.history.append(
+            "> <b>Geometria personalizada do degrau</b> "
+            f"<span style='color:#8c959f'>({message or 'Lançamento cancelado'})</span>"
+        )
+
+    def _end_stair_custom_geometry_capture(self) -> None:
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_stair_polygon_capture_plane(None)
+        self.scene.set_stair_polygon_preview(())
+        self._command_mode = None
+        self._stair_geometry_capture_dialog = None
+        self._stair_geometry_capture_node = None
+        self._stair_geometry_capture_points = []
+        self.scene.plotter.render()
 
     def show_section_panel(self, section: str, button=None) -> None:
         """Show the geometry panel that corresponds to a section family."""
@@ -4729,6 +4925,9 @@ class MainWindow(QMainWindow):
 
     def _handle_member_placement_point(self, point: object) -> None:
         """Advance the two-click graphical member placement flow."""
+        if self._command_mode == "stair_custom_geometry_placement":
+            self._handle_stair_custom_geometry_point(point)
+            return
         if self._command_mode == "plate_manual":
             self._plate_manual_point(tuple(float(value) for value in point))
             return
@@ -4980,6 +5179,9 @@ class MainWindow(QMainWindow):
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
         self.member_placement_editor.hide()
+        if self._command_mode == "stair_custom_geometry_placement":
+            self._cancel_stair_custom_geometry_capture()
+            return
         if self._command_mode == "project_sheet_dimension":
             self.project_sheet_workspace.set_dimension_mode(False)
             self._finish_project_view_dimension(canceled=True)

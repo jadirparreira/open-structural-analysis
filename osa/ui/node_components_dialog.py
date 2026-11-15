@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -39,6 +40,7 @@ from osa.rendering.node_component_renderer import (
     STAIR_WOOD_EDGE_COLOR,
     append_polydata_meshes,
     base_plate_component_meshes,
+    stair_wood_edge_mesh,
     stair_plate_mesh,
     stair_wood_mesh,
 )
@@ -108,6 +110,7 @@ class ComponentPreview(QWidget):
         self._empty_label_actor = None
         self._plate_actor = None
         self._wood_actor = None
+        self._wood_edge_actor = None
         self._rod_actor = None
         self._rod_edge_actor = None
         self._hardware_actor = None
@@ -202,6 +205,11 @@ class ComponentPreview(QWidget):
                 float(p.get("comprimento_mm", 300.0)),
                 float(p.get("madeira_comprimento_mm", 800.0)),
             ) / 1000.0
+            outline = p.get("madeira_geometria_mm")
+            if outline:
+                outline_points = np.asarray(outline, dtype=float) / 1000.0
+                width = max(width, float(np.ptp(outline_points[:, 0])))
+                length = max(length, float(np.ptp(outline_points[:, 1])))
             self._ensure_preview_bars(width, length, 0.0)
             for actor in self._preview_bar_actors:
                 actor.SetVisibility(True)
@@ -216,10 +224,17 @@ class ComponentPreview(QWidget):
             self._wood_actor = self._set_preview_mesh_actor(
                 self._wood_actor, wood,
                 color=STAIR_WOOD_COLOR, edge_color=STAIR_WOOD_EDGE_COLOR,
-                show_edges=True, line_width=1.2, smooth_shading=False,
+                show_edges=False, smooth_shading=False,
                 lighting=False, pickable=True,
             )
             self._wood_actor.SetObjectName("component-preview-wood")
+            self._wood_edge_actor = self._set_preview_mesh_actor(
+                self._wood_edge_actor,
+                stair_wood_edge_mesh(p, (0.0, 0.0, 0.0)),
+                color=STAIR_WOOD_EDGE_COLOR, line_width=1.2,
+                render_lines_as_tubes=True, lighting=False, pickable=False,
+            )
+            self._wood_edge_actor.SetObjectName("component-preview-wood-edges")
             if not self._camera_initialized:
                 plotter.view_vector((-1.0, -1.0, 1.0), viewup=(0.0, 0.0, 1.0), render=False)
                 plotter.reset_camera()
@@ -770,6 +785,7 @@ class NodeComponentsDialog(QDialog):
         self._preview_shutdown = False
         self._inputs: dict[str, QWidget] = {}
         self._hook_rotation_unit_label: QLabel | None = None
+        self._custom_outline_input: QLineEdit | None = None
         current = window.model.nodes[node_name].component
         self._draft_component_id = current.component_id if current else None
         self._draft_parameters = dict(current.parameters) if current else {}
@@ -920,6 +936,18 @@ class NodeComponentsDialog(QDialog):
         if parent is not None:
             self.move(parent.geometry().center() - self.rect().center())
 
+    def reject(self) -> None:
+        """Cancel scene capture without ending the dialog's nested exec loop."""
+        if not self.isVisible():
+            if (
+                getattr(self.window, "_command_mode", None)
+                == "stair_custom_geometry_placement"
+                and getattr(self.window, "_stair_geometry_capture_dialog", None) is self
+            ):
+                self.window.cancel_member_placement()
+            return
+        super().reject()
+
     def _add_component_row(self, name: str, component_id: str | None) -> None:
         item = QListWidgetItem(name)
         item.setData(Qt.ItemDataRole.UserRole, component_id)
@@ -991,6 +1019,7 @@ class NodeComponentsDialog(QDialog):
 
     def _show_parameters(self, parameters, values: dict[str, object]) -> None:
         self._clear_parameter_inputs()
+        custom_outline = tuple(values.get("madeira_geometria_mm", ()))
         visible_parameters = [
             (key, default) for key, default in parameters
             if key not in {"perna_mm", "rotacao_gancho_deg"}
@@ -1004,11 +1033,78 @@ class NodeComponentsDialog(QDialog):
                 if column:
                     row += 1
                     column = 0
-                heading = QLabel(section, self.parameters_widget)
+                heading_row = QWidget(self.parameters_widget)
+                heading_layout = QHBoxLayout(heading_row)
+                heading_layout.setContentsMargins(0, 0, 0, 0)
+                heading_layout.setSpacing(6)
+                heading = QLabel(section, heading_row)
                 heading.setObjectName("propertySection")
-                self.parameters_layout.addWidget(heading, row, 0, 1, 2)
+                heading_layout.addWidget(heading)
+                if section == "Degrau de madeira" and self._draft_component_id == "stair_plate":
+                    heading_layout.addStretch(1)
+                    remove_button = QToolButton(heading_row)
+                    remove_button.setIcon(QIcon(str(
+                        Path(__file__).parents[1] / "resources" / "icons" / "delete.svg"
+                    )))
+                    remove_button.setIconSize(QSize(17, 17))
+                    remove_button.setFixedSize(30, 30)
+                    remove_button.setStyleSheet(
+                        "QToolButton { border: 1px solid #d0d7de; border-radius: 6px; "
+                        "background: #ffffff; }"
+                        "QToolButton:hover { background: #eaeef2; }"
+                        "QToolButton:pressed { background: #d0d7de; }"
+                        "QToolButton:disabled { color: #8c959f; background: #f6f8fa; }"
+                    )
+                    remove_button.setEnabled(bool(custom_outline))
+                    remove_button.setToolTip("Remover geometria personalizada")
+                    remove_button.setAccessibleName("Remover geometria personalizada do degrau")
+                    remove_button.clicked.connect(self._remove_stair_custom_geometry)
+                    heading_layout.addWidget(remove_button)
+                    draw_button = QToolButton(heading_row)
+                    draw_button.setIcon(QIcon(str(
+                        Path(__file__).parents[1] / "resources" / "icons" / "square-pen.svg"
+                    )))
+                    draw_button.setIconSize(QSize(17, 17))
+                    draw_button.setFixedSize(30, 30)
+                    draw_button.setStyleSheet(
+                        "QToolButton { border: 1px solid #d0d7de; border-radius: 6px; "
+                        "background: #ffffff; }"
+                        "QToolButton:hover { background: #eaeef2; }"
+                        "QToolButton:pressed { background: #d0d7de; }"
+                        "QToolButton:disabled { color: #8c959f; background: #f6f8fa; }"
+                    )
+                    draw_button.setToolTip("Desenhar geometria personalizada do degrau")
+                    draw_button.setAccessibleName("Desenhar geometria personalizada do degrau")
+                    draw_button.clicked.connect(self._request_stair_custom_geometry)
+                    heading_layout.addWidget(draw_button)
+                self.parameters_layout.addWidget(heading_row, row, 0, 1, 2)
                 row += 1
                 active_section = section
+                if section == "Degrau de madeira" and custom_outline:
+                    label = QLabel("Coordenadas do degrau personalizado", self.parameters_widget)
+                    label.setObjectName("componentParameterName")
+                    self.parameters_layout.addWidget(label, row, 0, 1, 2)
+                    row += 1
+                    coordinate_text = "; ".join(
+                        f"{float(point[0]) / 1000.0:.3f}, {float(point[1]) / 1000.0:.3f}"
+                        for point in custom_outline
+                    )
+                    self._custom_outline_input = QLineEdit(coordinate_text, self.parameters_widget)
+                    self._custom_outline_input.setReadOnly(True)
+                    self._custom_outline_input.setAccessibleName(
+                        "Coordenadas do degrau personalizado, em metros"
+                    )
+                    self._custom_outline_input.setStyleSheet(
+                        "QLineEdit { background: #ffffff; border: 1px solid #d0d7de; "
+                        "border-radius: 6px; padding: 8px 10px; color: #57606a; }"
+                    )
+                    self._custom_outline_input.setToolTip(
+                        "Coordenadas X e Y no plano local do degrau, em metros."
+                    )
+                    self.parameters_layout.addWidget(self._custom_outline_input, row, 0, 1, 2)
+                    row += 1
+            if custom_outline and key in {"madeira_largura_mm", "madeira_comprimento_mm"}:
+                continue
             field_group = QWidget(self.parameters_widget)
             group_layout = QVBoxLayout(field_group)
             group_layout.setContentsMargins(0, 0, 0, 0)
@@ -1124,6 +1220,7 @@ class NodeComponentsDialog(QDialog):
     def _clear_parameter_inputs(self) -> None:
         self._inputs.clear()
         self._hook_rotation_unit_label = None
+        self._custom_outline_input = None
         self.parameters_widget.setMinimumHeight(0)
         while self.parameters_layout.count():
             item = self.parameters_layout.takeAt(0)
@@ -1190,6 +1287,34 @@ class NodeComponentsDialog(QDialog):
 
     def _update_preview(self) -> None:
         self.preview.set_component(self._draft_component_id, self._draft_parameters)
+
+    def _request_stair_custom_geometry(self) -> None:
+        if self._draft_component_id != "stair_plate":
+            return
+        self.hide()
+        if not self.window.start_stair_custom_geometry_capture(self):
+            self.show()
+            self.raise_()
+
+    def _remove_stair_custom_geometry(self) -> None:
+        self._draft_parameters.pop("madeira_geometria_mm", None)
+        self.preview._camera_initialized = False
+        if self._current_definition is not None:
+            self._show_parameters(self._current_definition.parameters, self._draft_parameters)
+        self._update_preview()
+
+    def _stair_custom_geometry_captured(self, points_mm) -> None:
+        self._draft_parameters["madeira_geometria_mm"] = tuple(
+            tuple(float(coordinate) for coordinate in point) for point in points_mm
+        )
+        self.preview._camera_initialized = False
+        if self._current_definition is not None:
+            self._show_parameters(self._current_definition.parameters, self._draft_parameters)
+        self.show()
+        self.raise_()
+        # A hidden QVTK widget may have no current OpenGL context. Rebuild and
+        # render its component only after Qt has exposed the dialog again.
+        QTimer.singleShot(0, self._update_preview)
 
     def _apply_component(self) -> None:
         if self._draft_component_id is None:

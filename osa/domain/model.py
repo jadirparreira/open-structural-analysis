@@ -690,6 +690,33 @@ class StructuralModel:
                 if not math.isfinite(value):
                     raise ValueError("Os deslocamentos da chapa e do degrau devem ser finitos.")
                 normalized.append((key, value))
+            raw_outline = values.get("madeira_geometria_mm", ())
+            if raw_outline:
+                try:
+                    outline = tuple(
+                        tuple(float(coordinate) for coordinate in point)
+                        for point in raw_outline
+                    )
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValueError("As coordenadas do degrau personalizado são inválidas.") from error
+                if any(len(point) != 2 for point in outline):
+                    raise ValueError("Cada vértice do degrau personalizado deve ter coordenadas X e Y.")
+                if len(outline) > 1 and outline[-1] == outline[0]:
+                    outline = outline[:-1]
+                if len(outline) < 3 or any(
+                    not math.isfinite(coordinate)
+                    for point in outline for coordinate in point
+                ):
+                    raise ValueError("O degrau personalizado deve ter ao menos três vértices finitos.")
+                if len(set(outline)) != len(outline):
+                    raise ValueError("Os vértices do degrau personalizado não podem se repetir.")
+                area_twice = sum(
+                    first[0] * second[1] - second[0] * first[1]
+                    for first, second in zip(outline, (*outline[1:], outline[0]))
+                )
+                if abs(area_twice) <= 1e-6:
+                    raise ValueError("A geometria personalizada do degrau deve delimitar uma área.")
+                normalized.append(("madeira_geometria_mm", outline))
             rotation = float(values.get("rotacao_deg", 0.0))
             if not math.isfinite(rotation):
                 raise ValueError("A rotação da chapa degrau deve ser finita.")

@@ -45,6 +45,7 @@ from .node_component_renderer import (
     STAIR_WOOD_EDGE_COLOR,
     append_polydata_meshes,
     base_plate_component_meshes,
+    stair_wood_edge_mesh,
     stair_plate_mesh,
     stair_wood_mesh,
 )
@@ -504,6 +505,8 @@ class StructureScene(QWidget):
         self._member_silhouette_actor = None
         self._reveal_rigid_bar_actor = None
         self._member_preview_actor = None
+        self._stair_polygon_preview_actor = None
+        self._stair_polygon_plane_z: float | None = None
         self._measurement_preview_actor = None
         self._normal_guide_actor = None
         self._orthogonal_guide_actor = None
@@ -1523,12 +1526,21 @@ class StructureScene(QWidget):
                 self._node_component_pick_actors.append(plate_actor)
                 wood_actor = self.plotter.add_mesh(
                     wood, color=STAIR_WOOD_COLOR, edge_color=STAIR_WOOD_EDGE_COLOR,
-                    show_edges=True, line_width=1.0, pickable=False,
+                    show_edges=False, pickable=False,
                     reset_camera=False, render=False,
                 )
                 wood_actor.SetObjectName(f"node-component:{name}")
                 self._node_component_actors.append(wood_actor)
                 self._node_component_pick_actors.append(wood_actor)
+                wood_edge_actor = self.plotter.add_mesh(
+                    stair_wood_edge_mesh(
+                        dict(assignment.parameters), (node.x, node.y, node.z),
+                    ),
+                    color=STAIR_WOOD_EDGE_COLOR, line_width=1.0,
+                    lighting=False, pickable=False, reset_camera=False, render=False,
+                )
+                wood_edge_actor.SetObjectName(f"node-component:{name}")
+                self._node_component_actors.append(wood_edge_actor)
                 self._node_component_face_actors[name] = (plate_actor, wood_actor)
                 self._node_component_plate_actors[name] = wood_actor
                 self._node_component_hover_meshes[name] = append_polydata_meshes((plate, wood))
@@ -4039,6 +4051,35 @@ class StructureScene(QWidget):
         )
         self._update_coordinate_readout()
 
+    def set_stair_polygon_capture_plane(self, z_coordinate: float | None) -> None:
+        """Constrain a custom wooden-tread outline to its horizontal top plane."""
+        self._stair_polygon_plane_z = (
+            None if z_coordinate is None else float(z_coordinate)
+        )
+
+    def set_stair_polygon_preview(self, points) -> None:
+        """Draw the already placed vertices as a temporary blue polyline."""
+        coordinates = np.asarray(tuple(points), dtype=float).reshape((-1, 3))
+        if len(coordinates) < 2:
+            if self._stair_polygon_preview_actor is not None:
+                self._stair_polygon_preview_actor.SetVisibility(False)
+            return
+        line = pv.PolyData(
+            coordinates,
+            lines=np.asarray((len(coordinates), *range(len(coordinates))), dtype=np.int64),
+        )
+        if self._stair_polygon_preview_actor is None:
+            self._stair_polygon_preview_actor = self.plotter.add_mesh(
+                line, color="#0969da", line_width=3.0, render_lines_as_tubes=True,
+                lighting=False, pickable=False, reset_camera=False, render=False,
+            )
+            self._stair_polygon_preview_actor.SetObjectName("stair-polygon-preview")
+        else:
+            mapper = self._stair_polygon_preview_actor.GetMapper()
+            mapper.SetInputData(line)
+            mapper.Modified()
+            self._stair_polygon_preview_actor.SetVisibility(True)
+
     def set_snap_enabled(self, enabled: bool) -> None:
         """Keep the master snap active; individual snap types use settings."""
         del enabled
@@ -4453,7 +4494,6 @@ class StructureScene(QWidget):
         matrix, width, height = self._measurement_projection_context()
         perpendicular = self._perpendicular_snap_target(projection=(matrix, width, height))
         pointer = np.asarray(self._pointer_position, dtype=float)
-
         intersection = self._intersection_snap_target(projection=(matrix, width, height))
         if intersection is not None:
             candidate, distance = intersection
@@ -5451,6 +5491,8 @@ class StructureScene(QWidget):
             "XZ": (1, self._reference_plane_z),
             "YZ": (0, self._reference_plane_z),
         }[self._reference_plane_mode]
+        if self._stair_polygon_plane_z is not None:
+            axis_index, offset = 2, self._stair_polygon_plane_z
         denominator = float(direction[axis_index])
         if abs(denominator) <= 1e-12:
             # Resolve visible features in any view, even when the construction
@@ -5751,7 +5793,10 @@ class StructureScene(QWidget):
             self._perpendicular_snap_element = None
             self._placement_snap_member_name = None
             self._placement_snap_element = None
-            return self._manual_edit_target.copy()
+            target = self._manual_edit_target.copy()
+            if self._stair_polygon_plane_z is not None:
+                target[2] = self._stair_polygon_plane_z
+            return target
         position = self._cursor_world_position()
         if position is None:
             self._perpendicular_snap_member_name = None
@@ -5763,6 +5808,9 @@ class StructureScene(QWidget):
             target, _snap_kind = self._measurement_target(position)
             return target
         target, _snap_kind = self._placement_target(position)
+        if self._stair_polygon_plane_z is not None:
+            target = np.asarray(target, dtype=float).copy()
+            target[2] = self._stair_polygon_plane_z
         return target
 
     def _normal_direction(self) -> np.ndarray:
@@ -6114,9 +6162,13 @@ class StructureScene(QWidget):
         keeping unconstrained second points at the first point's elevation.
         """
         snap = self._snap_position(position)
-        guide_target = self._placement_guide_target()
         if snap is not None:
             return np.asarray(snap[0], dtype=float), snap[1]
+        if self._stair_polygon_plane_z is not None:
+            target = np.asarray(position, dtype=float).copy()
+            target[2] = self._stair_polygon_plane_z
+            return target, None
+        guide_target = self._placement_guide_target()
         if self._member_preview_start is None:
             return np.asarray(position, dtype=float), None
 

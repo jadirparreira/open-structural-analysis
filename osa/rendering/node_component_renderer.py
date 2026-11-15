@@ -284,24 +284,72 @@ def stair_wood_mesh(
     parameters: dict[str, object], origin: tuple[float, float, float],
 ) -> pv.PolyData:
     """Build the wooden tread whose top face coincides with the node reference."""
+    outline, thickness, rotation, displacement_a, displacement_b = _stair_wood_outline_data(
+        parameters,
+    )
+    outline_mesh = pv.PolyData(
+        np.column_stack((outline, np.zeros(len(outline)))),
+        faces=np.asarray((len(outline), *range(len(outline))), dtype=np.int64),
+    )
+    # Keep the n-gon caps intact: show_edges renders dataset cell edges, so
+    # triangulating here would expose tessellation diagonals as model edges.
+    wood = outline_mesh.extrude((0.0, 0.0, -thickness), capping=True).clean()
+    angle = math.radians(rotation)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    local_x = wood.points[:, 0] + displacement_a
+    local_y = wood.points[:, 1] + displacement_b
+    wood.points = np.column_stack((
+        origin[0] + local_x * cosine - local_y * sine,
+        origin[1] + local_x * sine + local_y * cosine,
+        origin[2] + wood.points[:, 2],
+    ))
+    return wood.compute_normals(
+        cell_normals=True, point_normals=False, consistent_normals=True,
+        auto_orient_normals=True, inplace=False,
+    )
+
+
+def stair_wood_edge_mesh(
+    parameters: dict[str, object], origin: tuple[float, float, float],
+) -> pv.PolyData:
+    """Build only the tread's outer perimeter and vertical corner lines."""
+    outline, thickness, rotation, displacement_a, displacement_b = _stair_wood_outline_data(
+        parameters,
+    )
+    angle = math.radians(rotation)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    local_x = outline[:, 0] + displacement_a
+    local_y = outline[:, 1] + displacement_b
+    world_x = origin[0] + local_x * cosine - local_y * sine
+    world_y = origin[1] + local_x * sine + local_y * cosine
+    count = len(outline)
+    top = np.column_stack((world_x, world_y, np.full(count, origin[2])))
+    bottom = top.copy()
+    bottom[:, 2] -= thickness
+    points = np.vstack((top, bottom))
+    lines = [count + 1, *range(count), 0, count + 1, *range(count, 2 * count), count]
+    for index in range(count):
+        lines.extend((2, index, index + count))
+    return pv.PolyData(points, lines=np.asarray(lines, dtype=np.int64))
+
+
+def _stair_wood_outline_data(parameters: dict[str, object]):
     width = float(parameters.get("madeira_largura_mm", 280.0)) / 1000.0
     length = float(parameters.get("madeira_comprimento_mm", 800.0)) / 1000.0
     thickness = float(parameters.get("madeira_espessura_mm", STAIR_WOOD_THICKNESS_MM)) / 1000.0
     rotation = float(parameters.get("rotacao_deg", 0.0))
     displacement_a = float(parameters.get("madeira_deslocamento_a_mm", 0.0)) / 1000.0
     displacement_b = float(parameters.get("madeira_deslocamento_b_mm", 0.0)) / 1000.0
-    angle = math.radians(rotation)
-    cosine, sine = math.cos(angle), math.sin(angle)
-    shift_x = displacement_a * cosine - displacement_b * sine
-    shift_y = displacement_a * sine + displacement_b * cosine
-    center = (
-        origin[0] + shift_x,
-        origin[1] + shift_y,
-        origin[2] - thickness / 2.0,
-    )
-    wood = pv.Cube(
-        center=center, x_length=width, y_length=length, z_length=thickness,
-    )
-    if rotation:
-        wood.rotate_z(rotation, point=center, inplace=True)
-    return wood
+    custom_outline = parameters.get("madeira_geometria_mm")
+    if custom_outline:
+        outline = np.asarray(custom_outline, dtype=float) / 1000.0
+        if outline.ndim != 2 or outline.shape[1] != 2 or len(outline) < 3:
+            raise ValueError("A geometria personalizada do degrau deve ter ao menos três vértices 2D.")
+    else:
+        outline = np.asarray((
+            (-width / 2.0, -length / 2.0),
+            (width / 2.0, -length / 2.0),
+            (width / 2.0, length / 2.0),
+            (-width / 2.0, length / 2.0),
+        ), dtype=float)
+    return outline, thickness, rotation, displacement_a, displacement_b
