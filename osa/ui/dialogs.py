@@ -1,8 +1,14 @@
 import math
 import copy
+import hashlib
+import logging
+from types import SimpleNamespace
 
-from PySide6.QtGui import QLinearGradient, QPalette, QPen
-from PySide6.QtCore import QPointF
+import numpy as np
+import pyvista as pv
+import vtk
+from PySide6.QtGui import QLinearGradient, QPalette, QPen, QPainterPath, QTextCharFormat, QTextCursor, QTextListFormat
+from PySide6.QtCore import QObject, QPointF, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -12,6 +18,7 @@ from PySide6.QtWidgets import (
     QStyleOptionSlider,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
 )
 
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
@@ -20,7 +27,15 @@ from osa.services.action_service import ACTION_GROUP_TEMPLATES
 
 from .common import *
 from .detailing_viewport import DetailingViewViewport
-from .detailing_preview import DETAILING_LINEWORK_VERSION
+from .detailing_preview import (
+    DETAILING_LINEWORK_VERSION,
+)
+from .detailing_viewport import _DetachedDetailingScene
+from osa.rendering.detailing_2d import visible_segments_from_meshes
+from osa.rendering.node_component_renderer import (
+    _BASE_PLATE_PLANE_BASES,
+    base_plate_component_meshes,
+)
 from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
 from .property_panel import CompactDoubleSpinBox
@@ -30,6 +45,101 @@ PROJECT_SITE_URL = "https://www.opensa.com.br"
 PROJECT_MANUAL_URL = "https://www.opensa.com.br/manual"
 PROJECT_GITHUB_URL = "https://github.com/jadirparreira/open-structural-analysis"
 PROJECT_VERSION = "2026.4"
+_LOGGER = logging.getLogger(__name__)
+
+
+class ProjectSheetTextDialog(QDialog):
+    """Small rich-text editor for a text box placed on a project sheet."""
+
+    def __init__(self, parent=None, *, html: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Editar texto")
+        self.setMinimumSize(560, 380)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; }"
+            "QToolButton { min-width: 30px; min-height: 30px; border: 1px solid transparent; "
+            "border-radius: 5px; background: transparent; }"
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; border-color: #d0d7de; }"
+            "QTextEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px; }"
+            "QPushButton#textApply { min-height: 34px; padding: 4px 16px; border: 1px solid #0969da; "
+            "border-radius: 6px; color: #ffffff; background: #0969da; }"
+            "QPushButton#textClose { min-height: 34px; padding: 4px 16px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; color: #24292f; background: #f6f8fa; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
+        icon_root = Path(__file__).parents[1] / "resources" / "icons"
+        self.editor = QTextEdit(self)
+        self.editor.setAcceptRichText(True)
+        self.editor.setHtml(html or "<html><body></body></html>")
+        controls = (
+            ("bold.svg", "Negrito", self._toggle_bold, True),
+            ("italic.svg", "Itálico", self._toggle_italic, True),
+            ("underline.svg", "Sublinhado", self._toggle_underline, True),
+            ("align-left.svg", "Alinhar à esquerda", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft), False),
+            ("align-center.svg", "Centralizar", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignHCenter), False),
+            ("align-right.svg", "Alinhar à direita", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight), False),
+            ("list.svg", "Lista com marcadores", self._toggle_bullets, False),
+        )
+        for filename, tooltip, callback, checkable in controls:
+            button = QToolButton(self)
+            button.setIcon(QIcon(str(icon_root / filename)))
+            button.setIconSize(QSize(18, 18))
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.setCheckable(checkable)
+            button.clicked.connect(callback)
+            toolbar.addWidget(button)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+        layout.addWidget(self.editor, 1)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_button = QPushButton("Fechar", self)
+        close_button.setObjectName("textClose")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.reject)
+        apply_button = QPushButton("Aplicar", self)
+        apply_button.setObjectName("textApply")
+        apply_button.setAutoDefault(False)
+        apply_button.clicked.connect(self.accept)
+        footer.addWidget(close_button)
+        footer.addWidget(apply_button)
+        layout.addLayout(footer)
+
+    def _merge_format(self, char_format: QTextCharFormat) -> None:
+        self.editor.mergeCurrentCharFormat(char_format)
+
+    def _toggle_bold(self, checked: bool) -> None:
+        char_format = QTextCharFormat()
+        char_format.setFontWeight(700 if checked else 400)
+        self._merge_format(char_format)
+
+    def _toggle_italic(self, checked: bool) -> None:
+        char_format = QTextCharFormat()
+        char_format.setFontItalic(checked)
+        self._merge_format(char_format)
+
+    def _toggle_underline(self, checked: bool) -> None:
+        char_format = QTextCharFormat()
+        char_format.setFontUnderline(checked)
+        self._merge_format(char_format)
+
+    def _toggle_bullets(self, _checked: bool = False) -> None:
+        list_format = QTextListFormat()
+        list_format.setStyle(QTextListFormat.Style.ListDisc)
+        self.editor.textCursor().createList(list_format)
+
+    def html(self) -> str:
+        cursor = QTextCursor(self.editor.document())
+        cursor.select(QTextCursor.SelectionType.Document)
+        char_format = QTextCharFormat()
+        char_format.setForeground(QColor("#000000"))
+        cursor.mergeCharFormat(char_format)
+        return self.editor.toHtml()
 
 
 class _SettingsChoiceSwitch(QFrame):
@@ -1033,6 +1143,571 @@ class SettingsDialog(QDialog):
         self.window.section_service.set_included_families(
             material, [included_list.item(i).text() for i in range(included_list.count())]
         )
+
+
+class _ComponentDetailPreview(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._segments = ()
+        self.setMinimumSize(140, 112)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_segments(self, segments) -> None:
+        self._segments = tuple(segments or ())
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+        pen = QPen(QColor("#57606a"))
+        pen.setWidthF(1.25)
+        painter.setPen(pen)
+        if not self._segments:
+            return
+        points = [point for segment in self._segments for point in segment]
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        width = max(max_x - min_x, 1e-9)
+        height = max(max_y - min_y, 1e-9)
+        margin = 12.0
+        scale = min(
+            max(1.0, self.width() - 2 * margin) / width,
+            max(1.0, self.height() - 2 * margin) / height,
+        )
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        path = QPainterPath()
+        for start, end in self._segments:
+            path.moveTo(
+                self.width() / 2.0 + (start[0] - center_x) * scale,
+                self.height() / 2.0 - (start[1] - center_y) * scale,
+            )
+            path.lineTo(
+                self.width() / 2.0 + (end[0] - center_x) * scale,
+                self.height() / 2.0 - (end[1] - center_y) * scale,
+            )
+        painter.drawPath(path)
+
+
+class _ComponentDetailWorkerSignals(QObject):
+    finished = Signal(object, int, object, object)
+
+
+class _ComponentDetailViewsWorker(QRunnable):
+    def __init__(self, model, marker_radius, group_key, generation, group):
+        super().__init__()
+        self.model = model
+        self.marker_radius = marker_radius
+        self.group_key = group_key
+        self.generation = generation
+        self.group = group
+        self.signals = _ComponentDetailWorkerSignals()
+
+    def run(self):
+        try:
+            views = ComponentDetailsDialog._build_group_views(
+                self.model, self.marker_radius, self.group,
+            )
+            self.signals.finished.emit(self.group_key, self.generation, views, None)
+        except Exception as exc:
+            _LOGGER.exception("Falha ao gerar visualizações do componente")
+            self.signals.finished.emit(self.group_key, self.generation, None, str(exc))
+
+
+class ComponentDetailsDialog(QDialog):
+    """Choose orthographic detail views for groups of identical base plates."""
+
+    CONNECTED_MEMBER_LIMIT_MM = 1000.0
+    _VIEW_DEFINITIONS = (
+        ("superior", "Superior", "top"),
+        ("inferior", "Inferior", "bottom"),
+        ("leste", "Leste", "east"),
+        ("oeste", "Oeste", "west"),
+        ("norte", "Norte", "north"),
+        ("sul", "Sul", "south"),
+    )
+    _DIRECTIONS = {
+        "top": (2, 1), "bottom": (2, -1),
+        "east": (0, 1), "west": (0, -1),
+        "north": (1, 1), "south": (1, -1),
+    }
+
+    def __init__(self, parent=None, *, editing_group_id: str | None = None, existing_views=()):
+        super().__init__(parent)
+        self._window = parent
+        self._groups = self._collect_component_groups()
+        self._editing_group_id = str(editing_group_id) if editing_group_id else None
+        self._existing_views_by_direction = {}
+        if self._editing_group_id:
+            for view in existing_views:
+                metadata = view.get("component_detail_group")
+                if isinstance(metadata, dict) and str(metadata.get("id")) == self._editing_group_id:
+                    direction = str(metadata.get("direction", "")).casefold()
+                    self._existing_views_by_direction[direction] = copy.deepcopy(view)
+            target_key = next((
+                key for key in self._groups
+                if hashlib.sha1(repr(key).encode("utf-8")).hexdigest()[:12] == self._editing_group_id
+            ), None)
+            self._groups = ({target_key: self._groups[target_key]} if target_key is not None else {})
+        self._active_group_key = None
+        self._group_views_cache = {}
+        self._generation = 0
+        self._loading_key = None
+        self._views_ready = False
+        self._thread_pool = QThreadPool.globalInstance()
+        self.result_views = []
+        dialog_title = "Configurar vistas do grupo" if self._editing_group_id else "Adicionar detalhe"
+        self.setWindowTitle(dialog_title)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setFixedSize(1120, 600)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
+            "QListWidget::item:hover { background: #eaeef2; color: #24292f; }"
+            "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
+            "QListWidget:focus { outline: none; border: 0; }"
+            "QPushButton#detailViewButton { border: 0; border-radius: 6px; padding: 8px 10px; "
+            "text-align: left; background: transparent; }"
+            "QPushButton#detailViewButton:hover, QPushButton#detailViewButton:checked { background: transparent; }"
+            "QPushButton#detailViewButton:checked QLabel#detailViewTitle { color: #24292f; }"
+            "QLabel#detailViewTitle { color: #57606a; font-size: 14px; font-weight: 400; background: transparent; }"
+            "QLabel#detailViewSystemName { color: #57606a; font-size: 10px; background: transparent; }"
+            "QFrame#componentDetailCard { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QLabel#componentDetailLoading { color: #57606a; font-size: 14px; background: transparent; }"
+            "QPushButton#componentDetailsClose { min-height: 34px; padding: 4px 14px; border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#componentDetailsClose:hover { background: #eaeef2; }"
+            "QPushButton#componentDetailsAdd { min-height: 34px; padding: 4px 14px; border: 1px solid #0969da; border-radius: 7px; color: #ffffff; background: #0969da; }"
+            "QPushButton#componentDetailsAdd:hover { background: #0550ae; }"
+            "QCheckBox { color: #24292f; spacing: 8px; background: transparent; }"
+            "QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #8c959f; border-radius: 4px; background: #ffffff; }"
+            "QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }"
+        )
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        title_bar = QFrame()
+        title_bar.setObjectName("titleBar")
+        title_bar.setFixedHeight(40)
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel(dialog_title)
+        title.setObjectName("windowTitle")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+        outer.addWidget(title_bar)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+        self.component_list = QListWidget()
+        self.component_list.setFixedWidth(255)
+        self.component_list.setSpacing(4)
+        self.component_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.component_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.component_list.setCursor(Qt.CursorShape.PointingHandCursor)
+        content.addWidget(self.component_list)
+
+        main = QWidget()
+        main_layout = QVBoxLayout(main)
+        main_layout.setContentsMargins(12, 12, 12, 10)
+        main_layout.setSpacing(0)
+        self._loading_label = QLabel("Carregando visualização do componente…")
+        self._loading_label.setObjectName("componentDetailLoading")
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self._loading_label, 1)
+        grid_host = QWidget()
+        self._grid_host = grid_host
+        self._cards_grid = QGridLayout(grid_host)
+        self._cards_grid.setContentsMargins(0, 0, 0, 0)
+        self._cards_grid.setSpacing(10)
+        self._cards = {}
+        for index, (key, title_text, direction_key) in enumerate(self._VIEW_DEFINITIONS):
+            card = QFrame()
+            card.setObjectName("componentDetailCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(5)
+            checkbox = QCheckBox(title_text)
+            checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+            checkbox.setEnabled(False)
+            checkbox.toggled.connect(self._update_add_button)
+            card_layout.addWidget(checkbox)
+            preview = _ComponentDetailPreview(card)
+            card_layout.addWidget(preview, 1)
+            row, column = divmod(index, 3)
+            self._cards_grid.addWidget(card, row, column)
+            self._cards[key] = (checkbox, preview, direction_key)
+        for index in range(3):
+            self._cards_grid.setColumnStretch(index, 1)
+        self._cards_grid.setRowStretch(0, 1)
+        self._cards_grid.setRowStretch(1, 1)
+        main_layout.addWidget(grid_host, 1)
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addStretch()
+        close_button = QPushButton("Fechar")
+        close_button.setObjectName("componentDetailsClose")
+        close_button.setAutoDefault(False)
+        close_button.clicked.connect(self.reject)
+        footer.addWidget(close_button)
+        self._add_button = QPushButton("Adicionar detalhes")
+        if self._editing_group_id:
+            self._add_button.setText("Aplicar")
+        self._add_button.setObjectName("componentDetailsAdd")
+        self._add_button.setAutoDefault(False)
+        self._add_button.setEnabled(False)
+        self._add_button.clicked.connect(self._accept_selected_views)
+        footer.addWidget(self._add_button)
+        main_layout.addLayout(footer)
+        content.addWidget(main, 1)
+        outer.addLayout(content, 1)
+
+        for key, group in self._groups.items():
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 62))
+            self.component_list.addItem(item)
+            group["item"] = item
+            button = QPushButton()
+            button.setObjectName("detailViewButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setAutoDefault(False)
+            layout = QVBoxLayout(button)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(1)
+            title_label = QLabel(group["label"])
+            title_label.setObjectName("detailViewTitle")
+            component_label = QLabel(group["component_label"])
+            component_label.setObjectName("detailViewSystemName")
+            layout.addWidget(title_label)
+            layout.addWidget(component_label)
+            self.component_list.setItemWidget(item, button)
+            button.clicked.connect(lambda _checked=False, group_key=key: self._select_group(group_key))
+            group["button"] = button
+        if self._groups:
+            first = next(iter(self._groups))
+            self._select_group(first)
+        else:
+            self._loading_label.setText("Nenhuma chapa de base/topo foi encontrada no modelo")
+            self._grid_host.hide()
+
+    def _collect_component_groups(self):
+        groups = {}
+        model = getattr(self._window, "model", None)
+        display_names = getattr(model, "node_display_names", {})
+        for node_name, node in getattr(model, "nodes", {}).items():
+            assignment = getattr(node, "component", None)
+            if assignment is None or assignment.component_id != "base_plate":
+                continue
+            parameters = dict(assignment.parameters)
+            identity = str(node.name)
+            display_name = str(display_names.get(node_name, "")).strip()
+            label = f"{identity} · {display_name}" if display_name else identity
+            groups[str(node_name)] = {
+                "parameters": parameters,
+                "nodes": [str(node_name)],
+                "label": label,
+                "component_label": "Chapa de base/topo",
+            }
+        return groups
+
+    def _select_group(self, key) -> None:
+        if key not in self._groups:
+            return
+        if key == self._active_group_key and self._loading_key == key:
+            return
+        self._active_group_key = key
+        self._generation += 1
+        generation = self._generation
+        self._views_ready = False
+        for group_key, group in self._groups.items():
+            group["button"].setChecked(group_key == key)
+        group = self._groups[key]
+        self.component_list.setCurrentItem(group["item"])
+        for checkbox, _preview, _direction in self._cards.values():
+            checkbox.setEnabled(False)
+        if key not in self._group_views_cache:
+            self._loading_key = key
+            self._loading_label.setText("Carregando visualização do componente…")
+            self._loading_label.show()
+            self._grid_host.hide()
+            self._update_add_button()
+            model = self._window.model
+            marker_radius = float(getattr(self._window.scene, "_marker_radius_current", 0.05))
+            worker = _ComponentDetailViewsWorker(
+                model, marker_radius, key, generation, group,
+            )
+            worker.signals.finished.connect(self._component_views_ready)
+            self._thread_pool.start(worker)
+            return
+        self._display_group_views(self._group_views_cache[key])
+
+    def _component_views_ready(self, key, generation: int, views, error) -> None:
+        if generation != self._generation or key != self._active_group_key:
+            return
+        self._loading_key = None
+        if error is not None:
+            self._loading_label.setText("Não foi possível carregar a visualização do componente.")
+            self._grid_host.hide()
+            self._loading_label.show()
+            self._views_ready = False
+            self._update_add_button()
+            return
+        self._group_views_cache[key] = views
+        self._display_group_views(views)
+
+    def _display_group_views(self, views) -> None:
+        for name, (_checkbox, preview, direction_key) in self._cards.items():
+            preview.set_segments(views[direction_key]["segments"])
+        for name, (checkbox, _preview, _direction) in self._cards.items():
+            if self._editing_group_id:
+                direction_name = next(
+                    title for key, title, _direction_key in self._VIEW_DEFINITIONS if key == name
+                ).casefold()
+                checkbox.setChecked(direction_name in self._existing_views_by_direction)
+            checkbox.setEnabled(True)
+        self._views_ready = True
+        self._loading_key = None
+        self._loading_label.hide()
+        self._grid_host.show()
+        self._update_add_button()
+
+    @staticmethod
+    def _basis_for_parameters(parameters):
+        plane = str(parameters.get("plano", "XY+"))
+        basis = _BASE_PLATE_PLANE_BASES.get(plane, _BASE_PLATE_PLANE_BASES["XY+"])
+        local_x, local_y, normal = (tuple(float(v) for v in axis) for axis in basis)
+        angle = math.radians(float(parameters.get("rotacao_deg", 0.0)))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        u = tuple(cosine * local_x[i] + sine * local_y[i] for i in range(3))
+        v = tuple(-sine * local_x[i] + cosine * local_y[i] for i in range(3))
+        return u, v, normal
+
+    @classmethod
+    def _build_group_views(cls, model, marker_radius, group):
+        parameters = group["parameters"]
+        node_name = group["nodes"][0]
+        node = model.nodes[node_name]
+        origin = np.asarray((node.x, node.y, node.z), dtype=float)
+        u, v, normal = cls._basis_for_parameters(parameters)
+        frame = np.asarray((u, v, normal), dtype=float)
+
+        def to_component_coordinates(mesh):
+            local = mesh.copy(deep=True)
+            local.points = (np.asarray(local.points) - origin) @ frame.T
+            return local
+
+        plate, rods, washers, nuts = base_plate_component_meshes(
+            parameters, tuple(float(value) for value in origin),
+        )
+        component_meshes = tuple(
+            to_component_coordinates(mesh) for mesh in (plate, *rods, *washers, *nuts)
+        )
+        meshes = list(component_meshes)
+        owners = [f"componente:chapa_base:{index}" for index in range(len(component_meshes))]
+
+        connected_members = {
+            name for name, member in (
+                *model.bars.items(), *getattr(model, "rigid_bars", {}).items(),
+            )
+            if node_name in (member.start_node, member.end_node)
+        }
+        detail_scene = _DetachedDetailingScene(
+            SimpleNamespace(_marker_radius_current=marker_radius)
+        )
+        detail_solids = detail_scene.detailing_view_solid_meshes(model)
+        half_limit = cls.CONNECTED_MEMBER_LIMIT_MM / 2000.0
+        for name, solid in detail_solids:
+            if name not in connected_members:
+                continue
+            local = to_component_coordinates(solid)
+            planes = vtk.vtkPlaneCollection()
+            for axis in range(3):
+                for bound, sign in ((-half_limit, 1.0), (half_limit, -1.0)):
+                    plane = vtk.vtkPlane()
+                    plane.SetOrigin(*(bound if index == axis else 0.0 for index in range(3)))
+                    plane.SetNormal(*(sign if index == axis else 0.0 for index in range(3)))
+                    planes.AddItem(plane)
+            clipper = vtk.vtkClipClosedSurface()
+            clipper.SetInputData(local)
+            clipper.SetClippingPlanes(planes)
+            clipper.GenerateFacesOn()
+            clipper.GenerateOutlineOn()
+            clipper.Update()
+            clipped = pv.wrap(clipper.GetOutput()).copy(deep=True)
+            if not clipped.n_points or not clipped.n_cells:
+                continue
+            meshes.append(clipped)
+            owners.append(name)
+
+        feature_edges = tuple(
+            mesh.extract_feature_edges(
+                boundary_edges=True, feature_edges=True, manifold_edges=False,
+                non_manifold_edges=True, feature_angle=25.0,
+            )
+            for mesh in meshes
+        )
+        owners = tuple(owners)
+        local_axes = (
+            (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+        )
+        local_up = {
+            "top": local_axes[1], "bottom": local_axes[1],
+            "east": local_axes[2], "west": local_axes[2],
+            "north": local_axes[2], "south": local_axes[2],
+        }
+        result = {}
+        for key, (axis, sign) in cls._DIRECTIONS.items():
+            camera = tuple(float(sign) * component for component in local_axes[axis])
+            view_up = local_up[key]
+            segments, segment_owners = visible_segments_from_meshes(
+                meshes, camera, view_up, feature_edge_meshes=feature_edges,
+                element_names=owners, return_sources=True,
+            )
+            view_direction = tuple(-component for component in camera)
+            right = (
+                view_direction[1] * view_up[2] - view_direction[2] * view_up[1],
+                view_direction[2] * view_up[0] - view_direction[0] * view_up[2],
+                view_direction[0] * view_up[1] - view_direction[1] * view_up[0],
+            )
+            right_world = tuple(float(value) for value in np.asarray(right) @ frame)
+            up_world = tuple(float(value) for value in np.asarray(view_up) @ frame)
+            world_origin = tuple(float(value) for value in origin)
+            plate_points = np.asarray(component_meshes[0].points, dtype=float)
+            plate_projected = np.column_stack((plate_points @ np.asarray(right), plate_points @ np.asarray(view_up)))
+            plate_min = plate_projected.min(axis=0)
+            plate_max = plate_projected.max(axis=0)
+            margin = max(0.04, float(parameters.get("largura_mm", 300.0)) / 1000.0 * 0.15)
+            dimensions = []
+            if key in {"top", "bottom"}:
+                bolt_centers = []
+                washer_start = 1 + len(rods)
+                for bolt_mesh in component_meshes[washer_start:washer_start + len(washers)]:
+                    points = np.asarray(bolt_mesh.points, dtype=float)
+                    projected = np.column_stack((points @ np.asarray(right), points @ np.asarray(view_up)))
+                    bolt_centers.append(tuple(projected.mean(axis=0)))
+                bolt_x = sorted({round(center[0], 9) for center in bolt_centers})
+                bolt_y = sorted({round(center[1], 9) for center in bolt_centers})
+                chain_offset = margin * 2.0
+                total_offset = margin * 3.5
+                for first, second in zip([float(plate_min[0]), *bolt_x], [*bolt_x, float(plate_max[0])]):
+                    dimensions.append({
+                        "start": (first, float(plate_min[1])),
+                        "end": (second, float(plate_min[1])),
+                        "offset": (0.0, -chain_offset), "orthogonal_axis": "x",
+                        "unit": "mm", "decimal_places": 0,
+                    })
+                dimensions.append({
+                    "start": (float(plate_min[0]), float(plate_min[1])),
+                    "end": (float(plate_max[0]), float(plate_min[1])),
+                    "offset": (0.0, -total_offset), "orthogonal_axis": "x",
+                    "unit": "mm", "decimal_places": 0,
+                })
+                for first, second in zip([float(plate_min[1]), *bolt_y], [*bolt_y, float(plate_max[1])]):
+                    dimensions.append({
+                        "start": (float(plate_min[0]), first),
+                        "end": (float(plate_min[0]), second),
+                        "offset": (-chain_offset, 0.0), "orthogonal_axis": "y",
+                        "unit": "mm", "decimal_places": 0,
+                    })
+                dimensions.append({
+                    "start": (float(plate_min[0]), float(plate_min[1])),
+                    "end": (float(plate_min[0]), float(plate_max[1])),
+                    "offset": (-total_offset, 0.0), "orthogonal_axis": "y",
+                    "unit": "mm", "decimal_places": 0,
+                })
+            else:
+                rod_points = np.asarray(component_meshes[1].points, dtype=float)
+                rod_projected = np.column_stack((rod_points @ np.asarray(right), rod_points @ np.asarray(view_up)))
+                rod_center_x = float((rod_projected[:, 0].min() + rod_projected[:, 0].max()) / 2.0)
+                rod_lower_y = float(rod_projected[:, 1].min())
+                plate_lower_y = float(plate_min[1])
+                dimensions = [{
+                    "start": (rod_center_x, plate_lower_y),
+                    "end": (rod_center_x, rod_lower_y),
+                    "offset": (margin * 2.0, 0.0), "orthogonal_axis": "y",
+                    "unit": "mm", "decimal_places": 0,
+                }]
+            result[key] = {
+                "segments": segments,
+                "segment_owners": segment_owners,
+                "dimensions": tuple(dimensions),
+                "coordinate": (
+                    world_origin,
+                    tuple(world_origin[i] + right_world[i] for i in range(3)),
+                    tuple(world_origin[i] + up_world[i] for i in range(3)),
+                ),
+            }
+        return result
+
+    def _update_add_button(self, *_args) -> None:
+        has_selection = any(
+            checkbox.isChecked() for checkbox, _preview, _direction in self._cards.values()
+        )
+        self._add_button.setEnabled(
+            self._active_group_key is not None and self._views_ready
+            and (self._editing_group_id is not None or has_selection)
+        )
+
+    def _accept_selected_views(self) -> None:
+        if self._active_group_key is None or not self._views_ready:
+            return
+        group = self._groups[self._active_group_key]
+        generated = self._group_views_cache[self._active_group_key]
+        model_revision = getattr(self._window.model, "revision", None)
+        group_id = hashlib.sha1(repr(self._active_group_key).encode("utf-8")).hexdigest()[:12]
+        self.result_views = []
+        selected_definitions = [
+            definition for definition in self._VIEW_DEFINITIONS
+            if self._cards[definition[0]][0].isChecked()
+        ]
+        existing_metadata = next((
+            view.get("component_detail_group") for view in self._existing_views_by_direction.values()
+            if isinstance(view.get("component_detail_group"), dict)
+        ), {})
+        existing_identity = str(existing_metadata.get("identity", existing_metadata.get("title", "")))
+        for view_slot, (key, title, direction_key) in enumerate(selected_definitions):
+            preserved = self._existing_views_by_direction.get(title.casefold())
+            if preserved is not None:
+                self.result_views.append(preserved)
+                continue
+            data = generated[direction_key]
+            identity = existing_identity or group["label"]
+            view = {
+                "name": f'{group["label"]} - {title}',
+                "detail_view_key": f"component:base_plate:{group_id}:{direction_key}",
+                "model_revision": model_revision,
+                "linework_version": DETAILING_LINEWORK_VERSION,
+                "segments": tuple(data["segments"]),
+                "segment_owners": tuple(data["segment_owners"]),
+                "projection": {
+                    "plane": "custom", "coordinate": data["coordinate"],
+                    "orientation": "Superior para inferior", "rotation_degrees": 0.0,
+                    "upper_offset_cm": 0.0, "lower_offset_cm": 0.0,
+                },
+                "scale_denominator": 10.0,
+                "identifications": [],
+                "component_detail_group": {
+                    "id": group_id,
+                    "component_id": "base_plate", "parameter_key": group_id,
+                    "members": tuple(group["nodes"]), "direction": title,
+                    "title": identity, "identity": identity,
+                    "group_position": existing_metadata.get("group_position", (0.5, 0.53)),
+                    "offset": view_slot,
+                    "view_count": len(selected_definitions),
+                    "label_position": existing_metadata.get("label_position", (0.5, 0.47)),
+                },
+                "dimensions": tuple(data.get("dimensions", ())),
+            }
+            self.result_views.append(view)
+        self.accept()
 
 
 class DetailingViewsDialog(QDialog):
@@ -2834,13 +3509,15 @@ class ProjectSheetSettingsDialog(QDialog):
         navigation.setFixedWidth(170)
         navigation.setSpacing(8)
         navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota"))
+        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota", "Detalhe", "Elevação"))
         pages = QStackedWidget(self)
         pages.addWidget(self._build_project_data_settings())
         pages.addWidget(self._build_sheet_settings())
         pages.addWidget(self._build_title_block_settings())
         pages.addWidget(self._build_view_settings())
         pages.addWidget(self._build_dimension_settings())
+        pages.addWidget(self._build_detail_identifier_settings())
+        pages.addWidget(self._build_elevation_identifier_settings())
         navigation.currentRowChanged.connect(pages.setCurrentIndex)
         navigation.setCurrentRow(0)
         content.addWidget(navigation)
@@ -3403,6 +4080,208 @@ class ProjectSheetSettingsDialog(QDialog):
                 self._dimension_custom_colors = list(picker.custom_colors)
                 self._set_dimension_color_button(key)
 
+    def _build_detail_identifier_settings(self) -> QWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Detalhe")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Defina a aparência dos identificadores de detalhe em todas as folhas do projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        defaults = {
+            "detail_identifier_circle_color": "#ff0000",
+            "detail_identifier_leader_color": "#ff0000",
+            "detail_identifier_text_color": "#000000",
+        }
+        self._detail_identifier_color_values = {}
+        for key, default in defaults.items():
+            color = QColor(str(self._project_settings.get(key, default)))
+            self._detail_identifier_color_values[key] = (
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else default
+            )
+        self._detail_identifier_custom_colors = []
+        for value in self._project_settings.get("detail_identifier_custom_colors", ()):
+            color = QColor(str(value)) if value else QColor()
+            self._detail_identifier_custom_colors.append(
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else None
+            )
+        self._detail_identifier_custom_colors = self._detail_identifier_custom_colors[
+            :_DimensionColorDialog.CUSTOM_SLOT_COUNT
+        ]
+        self._detail_identifier_custom_colors.extend(
+            [None] * (_DimensionColorDialog.CUSTOM_SLOT_COUNT - len(self._detail_identifier_custom_colors))
+        )
+        self._detail_identifier_color_buttons = {}
+        form = QFormLayout()
+        for key, label in (
+            ("detail_identifier_circle_color", "Cor do círculo de detalhe"),
+            ("detail_identifier_leader_color", "Cor da linha de chamada"),
+            ("detail_identifier_text_color", "Cor do texto"),
+        ):
+            button = QToolButton(page)
+            button.setFixedSize(34, 34)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(
+                lambda _checked=False, color_key=key: self._choose_detail_identifier_color(color_key)
+            )
+            self._detail_identifier_color_buttons[key] = button
+            self._set_detail_identifier_color_button(key)
+            form.addRow(label, button)
+
+        self.detail_identifier_leader_length_box, self.detail_identifier_leader_length_spin = self._unit_input(
+            page,
+            self._project_settings.get("detail_identifier_leader_length_mm", 5.0),
+            0.0,
+            1000.0,
+            decimals=1,
+        )
+        self.detail_identifier_text_height_box, self.detail_identifier_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("detail_identifier_text_height_mm", 3.0),
+            0.5,
+            100.0,
+            decimals=1,
+        )
+        form.addRow("Comprimento da linha de chamada", self.detail_identifier_leader_length_box)
+        form.addRow("Altura do texto", self.detail_identifier_text_height_box)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        scroll.setWidget(page)
+        return scroll
+
+    def _set_detail_identifier_color_button(self, key: str) -> None:
+        color = self._detail_identifier_color_values[key]
+        button = self._detail_identifier_color_buttons[key]
+        button.setStyleSheet(
+            f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+            "QToolButton:hover { border: 2px solid #0969da; }"
+        )
+
+    def _choose_detail_identifier_color(self, key: str) -> None:
+        picker = _DimensionColorDialog(
+            self._detail_identifier_color_values[key], self._detail_identifier_custom_colors, self,
+        )
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            selected = QColor(picker.selected_color)
+            if selected.isValid():
+                self._detail_identifier_color_values[key] = selected.name(QColor.NameFormat.HexRgb)
+                self._detail_identifier_custom_colors = list(picker.custom_colors)
+                self._set_detail_identifier_color_button(key)
+
+    def _build_elevation_identifier_settings(self) -> QWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Elevação")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Defina a aparência e o snap angular dos identificadores de elevação.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        defaults = {
+            "elevation_identifier_symbol_color": "#ff0000",
+            "elevation_identifier_text_color": "#000000",
+        }
+        self._elevation_identifier_color_values = {}
+        for key, default in defaults.items():
+            color = QColor(str(self._project_settings.get(key, default)))
+            self._elevation_identifier_color_values[key] = (
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else default
+            )
+        self._elevation_identifier_custom_colors = []
+        for value in self._project_settings.get("elevation_identifier_custom_colors", ()):
+            color = QColor(str(value)) if value else QColor()
+            self._elevation_identifier_custom_colors.append(
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else None
+            )
+        self._elevation_identifier_custom_colors = self._elevation_identifier_custom_colors[
+            :_DimensionColorDialog.CUSTOM_SLOT_COUNT
+        ]
+        self._elevation_identifier_custom_colors.extend(
+            [None] * (_DimensionColorDialog.CUSTOM_SLOT_COUNT - len(self._elevation_identifier_custom_colors))
+        )
+        self._elevation_identifier_color_buttons = {}
+        form = QFormLayout()
+        for key, label in (
+            ("elevation_identifier_symbol_color", "Cor do símbolo"),
+            ("elevation_identifier_text_color", "Cor do texto"),
+        ):
+            button = QToolButton(page)
+            button.setFixedSize(34, 34)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(
+                lambda _checked=False, color_key=key: self._choose_elevation_identifier_color(color_key)
+            )
+            self._elevation_identifier_color_buttons[key] = button
+            self._set_elevation_identifier_color_button(key)
+            form.addRow(label, button)
+
+        self.elevation_identifier_text_height_box, self.elevation_identifier_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("elevation_identifier_text_height_mm", 3.0),
+            0.5,
+            100.0,
+            decimals=1,
+        )
+        self.elevation_identifier_direction_snap_spin = QDoubleSpinBox(page)
+        self.elevation_identifier_direction_snap_spin.setRange(1.0, 180.0)
+        self.elevation_identifier_direction_snap_spin.setDecimals(0)
+        self.elevation_identifier_direction_snap_spin.setButtonSymbols(
+            QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self.elevation_identifier_direction_snap_spin.setKeyboardTracking(False)
+        self.elevation_identifier_direction_snap_spin.setSuffix("°")
+        try:
+            direction_snap = float(self._project_settings.get(
+                "elevation_identifier_direction_snap_degrees", 45.0,
+            ))
+        except (TypeError, ValueError):
+            direction_snap = 45.0
+        self.elevation_identifier_direction_snap_spin.setValue(
+            max(1.0, min(180.0, direction_snap))
+        )
+        form.addRow("Altura do texto", self.elevation_identifier_text_height_box)
+        form.addRow("Snap da direção", self.elevation_identifier_direction_snap_spin)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        scroll.setWidget(page)
+        return scroll
+
+    def _set_elevation_identifier_color_button(self, key: str) -> None:
+        color = self._elevation_identifier_color_values[key]
+        button = self._elevation_identifier_color_buttons[key]
+        button.setStyleSheet(
+            f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+            "QToolButton:hover { border: 2px solid #0969da; }"
+        )
+
+    def _choose_elevation_identifier_color(self, key: str) -> None:
+        picker = _DimensionColorDialog(
+            self._elevation_identifier_color_values[key],
+            self._elevation_identifier_custom_colors,
+            self,
+        )
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            selected = QColor(picker.selected_color)
+            if selected.isValid():
+                self._elevation_identifier_color_values[key] = selected.name(QColor.NameFormat.HexRgb)
+                self._elevation_identifier_custom_colors = list(picker.custom_colors)
+                self._set_elevation_identifier_color_button(key)
+
     def _save(self) -> None:
         self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
         self.result_sheet_settings = self._sheet_settings_by_name
@@ -3428,6 +4307,16 @@ class ProjectSheetSettingsDialog(QDialog):
             "dimension_line_extension_mm": self.dimension_line_extension_spin.value(),
             "dimension_extension_overrun_mm": self.dimension_extension_overrun_spin.value(),
             "dimension_text_position": self.dimension_text_position_combo.currentData(),
+            **self._detail_identifier_color_values,
+            "detail_identifier_custom_colors": list(self._detail_identifier_custom_colors),
+            "detail_identifier_leader_length_mm": self.detail_identifier_leader_length_spin.value(),
+            "detail_identifier_text_height_mm": self.detail_identifier_text_height_spin.value(),
+            **self._elevation_identifier_color_values,
+            "elevation_identifier_custom_colors": list(self._elevation_identifier_custom_colors),
+            "elevation_identifier_text_height_mm": self.elevation_identifier_text_height_spin.value(),
+            "elevation_identifier_direction_snap_degrees": (
+                self.elevation_identifier_direction_snap_spin.value()
+            ),
         })
         self.result_settings = self._sheet_settings_by_name[self._active_sheet_label]
         self.result_project_settings = self._project_settings

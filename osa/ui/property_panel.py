@@ -209,7 +209,7 @@ class PropertyPanel(QFrame):
         self.verification_name_input.setMinimumWidth(0)
         self.verification_name_input.setAccessibleName("Nome do elemento")
         self.verification_name_input.setValidator(QRegularExpressionValidator(
-            QRegularExpression(r"[\p{L}\p{N}]*"), self.verification_name_input,
+            QRegularExpression(r"[\p{L}\p{N} ]*"), self.verification_name_input,
         ))
         self.verification_name_input.editingFinished.connect(self._verification_name_changed)
         self._verification_name_row = QWidget()

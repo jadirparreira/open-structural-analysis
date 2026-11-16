@@ -37,11 +37,13 @@ from .dialogs import (
     CombinationsDialog,
     DetailingExportSuccessDialog,
     DetailingViewsDialog,
+    ComponentDetailsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
     PlateClosureDialog,
     ProgramSettingsDialog,
     ProjectSheetSettingsDialog,
+    ProjectSheetTextDialog,
     RemoveProjectSheetDialog,
     SelfweightDialog,
     SettingsDialog,
@@ -73,6 +75,9 @@ from .palettes import (
 )
 from .project_load_worker import ProjectLoadWorker
 from .project_sheet import (
+    ProjectSheetDetailGroupPanel,
+    ProjectSheetDetailIdentifierPanel,
+    ProjectSheetElevationIdentifierPanel,
     ProjectSheetIdentificationPanel,
     ProjectSheetViewPanel,
     ProjectSheetWorkspace,
@@ -239,12 +244,27 @@ class MainWindow(QMainWindow):
         self._create_project_loading_overlay()
         self._create_sheet_views_updating_dialog()
         self.project_sheet_view_panel = ProjectSheetViewPanel(self)
+        self.project_sheet_detail_group_panel = ProjectSheetDetailGroupPanel(self)
         self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
+        self.project_sheet_detail_identifier_panel = ProjectSheetDetailIdentifierPanel(self)
+        self.project_sheet_elevation_identifier_panel = ProjectSheetElevationIdentifierPanel(self)
         self.project_sheet_workspace.selection_changed.connect(
             self._project_sheet_view_selected
         )
         self.project_sheet_workspace.identification_selection_changed.connect(
             self._project_sheet_identification_selected
+        )
+        self.project_sheet_workspace.detail_identifier_selection_changed.connect(
+            self._project_sheet_detail_identifier_selected
+        )
+        self.project_sheet_workspace.elevation_identifier_selection_changed.connect(
+            self._project_sheet_elevation_identifier_selected
+        )
+        self.project_sheet_workspace.text_editor_requested.connect(
+            self._project_sheet_text_editor_requested
+        )
+        self.project_sheet_workspace.annotation_finished.connect(
+            self._project_sheet_annotation_finished
         )
         self.project_sheet_workspace.layout_changed.connect(self._store_detailing_state)
         self.project_sheet_workspace.remove_view_requested.connect(
@@ -262,6 +282,18 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.dimension_step_changed.connect(
             self._project_view_dimension_step_changed
         )
+        self.project_sheet_workspace.detail_identifier_finished.connect(
+            self._finish_project_detail_identifier
+        )
+        self.project_sheet_workspace.detail_identifier_step_changed.connect(
+            self._project_detail_identifier_step_changed
+        )
+        self.project_sheet_workspace.elevation_identifier_finished.connect(
+            self._finish_project_elevation_identifier
+        )
+        self.project_sheet_workspace.elevation_identifier_step_changed.connect(
+            self._project_elevation_identifier_step_changed
+        )
         self.project_sheet_workspace.element_visibility_finished.connect(
             self._finish_project_sheet_visibility
         )
@@ -274,14 +306,29 @@ class MainWindow(QMainWindow):
         self.project_sheet_view_panel.scale_edited.connect(
             self._project_sheet_view_scale_edited
         )
+        self.project_sheet_view_panel.identity_edited.connect(
+            self._project_sheet_view_identity_edited
+        )
         self.project_sheet_view_panel.settings_applied.connect(
             self.apply_selected_project_sheet_view_settings
         )
         self.project_sheet_view_panel.axes_visibility_edited.connect(
             self._project_sheet_view_axes_visibility_edited
         )
+        self.project_sheet_detail_group_panel.identity_edited.connect(
+            self._project_sheet_detail_group_identity_edited
+        )
+        self.project_sheet_detail_group_panel.add_views_requested.connect(
+            self.open_component_detail_group_views
+        )
         self.project_sheet_identification_panel.property_toggled.connect(
             self._project_sheet_identification_property_toggled
+        )
+        self.project_sheet_detail_identifier_panel.identity_edited.connect(
+            self._project_sheet_detail_identifier_identity_edited
+        )
+        self.project_sheet_elevation_identifier_panel.identity_edited.connect(
+            self._project_sheet_elevation_identifier_identity_edited
         )
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
@@ -978,11 +1025,125 @@ class MainWindow(QMainWindow):
         identification_panel = getattr(self, "project_sheet_identification_panel", None)
         if identification_panel is not None:
             identification_panel.hide()
+        detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if detail_panel is not None:
+            detail_panel.hide()
+        elevation_panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if elevation_panel is not None:
+            elevation_panel.hide()
+        group_panel = getattr(self, "project_sheet_detail_group_panel", None)
+        if group_panel is not None:
+            group_panel.hide()
         panel = getattr(self, "project_sheet_view_panel", None)
+        if isinstance(view, dict) and view.get("_selection_type") == "component_detail_group":
+            if panel is not None:
+                panel.show_for(None)
+            if group_panel is not None:
+                group_panel.show_for(view)
+            return
         if panel is not None:
             panel.show_for(view)
 
+    def _project_sheet_detail_group_identity_edited(self, identity: str) -> None:
+        self.project_sheet_workspace.set_component_detail_group_identity(identity)
+
+    def open_component_detail_group_views(self) -> None:
+        workspace = self.project_sheet_workspace
+        group_id = workspace._selected_component_detail_group
+        if not group_id or getattr(self, "_component_details_dialog_open", False):
+            return
+        palette = self.project_sheets_palette
+        sheet_name = palette.sheet_selector.currentText()
+        current_views = list(palette._sheet_views.get(sheet_name, ())) if sheet_name else []
+        group_views = [
+            view for view in current_views
+            if isinstance(view.get("component_detail_group"), dict)
+            and str(view["component_detail_group"].get("id")) == str(group_id)
+        ]
+        if not group_views:
+            return
+        self._component_details_dialog_open = True
+        dialog = None
+        cancel_action = getattr(self, "_cancel_placement_action", None)
+        cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
+        try:
+            if cancel_action is not None:
+                cancel_action.setEnabled(False)
+            dialog = ComponentDetailsDialog(
+                self, editing_group_id=str(group_id), existing_views=group_views,
+            )
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                first_index = next(
+                    index for index, view in enumerate(current_views)
+                    if isinstance(view.get("component_detail_group"), dict)
+                    and str(view["component_detail_group"].get("id")) == str(group_id)
+                )
+                replacement = []
+                inserted = False
+                for view in current_views:
+                    metadata = view.get("component_detail_group")
+                    if isinstance(metadata, dict) and str(metadata.get("id")) == str(group_id):
+                        if not inserted:
+                            replacement.extend(dialog.result_views)
+                            inserted = True
+                        continue
+                    replacement.append(view)
+                if not inserted:
+                    replacement[first_index:first_index] = dialog.result_views
+                palette._sheet_views[sheet_name] = replacement
+                workspace._selected_component_detail_group = (
+                    str(group_id) if dialog.result_views else None
+                )
+                workspace.select_view(None)
+                workspace.set_sheet_views(replacement, clear_selection=True)
+                if dialog.result_views:
+                    workspace._selected_component_detail_group = str(group_id)
+                    workspace.selection_changed.emit(
+                        workspace._component_detail_group_selection(str(group_id))
+                    )
+                self._store_detailing_state()
+        finally:
+            self._component_details_dialog_open = False
+            if dialog is not None:
+                dialog.deleteLater()
+            if cancel_action is not None:
+                cancel_action.setEnabled(cancel_action_was_enabled)
+
     def _project_sheet_identification_selected(self, identification: dict | None) -> None:
+        if identification is None:
+            selected_elevation = self.project_sheet_workspace._selected_elevation_identifier
+            if selected_elevation is not None:
+                view_index, identifier_index = selected_elevation
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("elevation_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_elevation_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+            selected_detail = self.project_sheet_workspace._selected_detail_identifier
+            if selected_detail is not None:
+                view_index, identifier_index = selected_detail
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("detail_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_detail_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+        detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if detail_panel is not None:
+            detail_panel.hide()
+        elevation_panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if elevation_panel is not None:
+            elevation_panel.hide()
         panel = getattr(self, "project_sheet_identification_panel", None)
         if panel is None:
             return
@@ -1014,6 +1175,94 @@ class MainWindow(QMainWindow):
             )
             aggregated[f"disabled_{key}"] = all(item[f"disabled_{key}"] for item in properties)
         panel.show_for(aggregated)
+
+    def _project_sheet_detail_identifier_selected(self, identifier: dict | None) -> None:
+        panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if panel is None:
+            return
+        if identifier is None:
+            panel.hide()
+            selected_elevation = self.project_sheet_workspace._selected_elevation_identifier
+            if selected_elevation is not None:
+                view_index, identifier_index = selected_elevation
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("elevation_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_elevation_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if not self.project_sheet_workspace._selected_identification_indices:
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_elevation_identifier_panel.hide()
+        panel.show_for(identifier)
+
+    def _project_sheet_elevation_identifier_selected(self, identifier: dict | None) -> None:
+        panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if panel is None:
+            return
+        if identifier is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if (
+                self.project_sheet_workspace._selected_detail_identifier is None
+                and not self.project_sheet_workspace._selected_identification_indices
+            ):
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_detail_identifier_panel.hide()
+        panel.show_for(identifier)
+
+    def _project_sheet_detail_identifier_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_detail_identifier
+        if selected is None:
+            return
+        view_index, identifier_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        identifiers = views[view_index].get("detail_identifiers", ())
+        if not 0 <= identifier_index < len(identifiers):
+            return
+        identifier = identifiers[identifier_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(identifier.get("name", "")):
+            return
+        identifier["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_detail_identifier_panel.show_for(identifier)
+
+    def _project_sheet_elevation_identifier_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_elevation_identifier
+        if selected is None:
+            return
+        view_index, identifier_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        identifiers = views[view_index].get("elevation_identifiers", ())
+        if not 0 <= identifier_index < len(identifiers):
+            return
+        identifier = identifiers[identifier_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(identifier.get("name", "")):
+            return
+        identifier["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_elevation_identifier_panel.show_for(identifier)
 
     def _project_sheet_identification_properties(self, identification: dict) -> dict:
         """Resolve read-only identifier properties from the current model."""
@@ -1160,6 +1409,22 @@ class MainWindow(QMainWindow):
             views[selected] if selected is not None and selected < len(views) else None
         )
 
+    def _project_sheet_view_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if selected is None or not 0 <= selected < len(views):
+            return
+        identity = str(identity).strip()
+        if not identity:
+            return
+        view = views[selected]
+        if identity == str(view.get("name", "Vista")):
+            return
+        view["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_view_panel.show_for(view)
+
     def _project_sheet_view_axes_visibility_edited(self, visible: bool) -> None:
         selected = self.project_sheet_workspace._selected_view_index
         views = self.project_sheet_workspace._sheet_views
@@ -1177,9 +1442,166 @@ class MainWindow(QMainWindow):
         self._command_mode = "project_sheet_identification"
         self.project_sheet_workspace.set_identification_mode(True)
         self.history.append(
-            "> <b>Identificar</b> <span style='color:#57606a'>"
+            "> <b>Identificador de elemento</b> <span style='color:#57606a'>"
             "(Clique sobre um elemento da vista; clique nos próximos; Enter encerra; "
             "Esc encerra preservando as identificações lançadas)</span>"
+        )
+
+    def start_project_detail_identifier(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_detail_identifier"
+        self.project_sheet_workspace.set_detail_identifier_mode(True)
+        self.history.append(
+            "> <b>Identificador de detalhe</b> "
+            "<span style='color:#57606a'>(Clique na vista em que o detalhe será identificado)</span>"
+        )
+
+    def start_project_elevation_identifier(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_elevation_identifier"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_elevation_identifier_mode(True)
+        self.history.append(
+            "> <b>Identificador de elevação</b> "
+            "<span style='color:#57606a'>(Clique na vista em que a elevação será identificada)</span>"
+        )
+
+    def start_project_sheet_text(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_text"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_text_mode(True)
+        self.history.append(
+            "> <b>Inserir texto</b> <span style='color:#57606a'>"
+            "(Clique na folha para definir o canto superior esquerdo; Esc cancela)</span>"
+        )
+
+    def start_project_sheet_line(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_line"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_line_mode(True)
+        self.history.append(
+            "> <b>Desenhar linha</b> <span style='color:#57606a'>"
+            "(Defina os pontos inicial e final; Shift libera o ângulo; Esc cancela)</span>"
+        )
+
+    def _project_sheet_text_editor_requested(self, annotation: dict) -> None:
+        dialog = ProjectSheetTextDialog(self, html=str(annotation.get("html", "")))
+        self._active_sheet_text_dialog = dialog
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self._active_sheet_text_dialog = None
+        if accepted:
+            html = dialog.html()
+            edit_key = annotation.get("_edit_key")
+            if annotation.get("_existing_text") and isinstance(edit_key, tuple):
+                existing = self.project_sheet_workspace._annotation_for_text_key(edit_key)
+                if existing is not None:
+                    existing["html"] = html
+                    self.project_sheet_workspace._selected_sheet_text = edit_key
+                    self.project_sheet_workspace.update()
+                    self.project_sheet_workspace.layout_changed.emit()
+            else:
+                annotation["html"] = html
+                annotation.pop("_edit_key", None)
+                annotation.pop("_existing_text", None)
+                self.project_sheet_workspace.add_sheet_text(annotation)
+            self._store_detailing_state()
+            message = "Concluído"
+        else:
+            self.project_sheet_workspace.set_sheet_text_mode(False)
+            message = "Operação cancelada"
+        self._command_mode = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self.history.append(f"> <b>Inserir texto</b> <span style='color:#8c959f'>({message})</span>")
+
+    def _project_sheet_annotation_finished(self, kind: str, canceled: bool) -> None:
+        if kind == "line":
+            self._command_mode = None
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self._store_detailing_state()
+            message = "Operação cancelada" if canceled else "Concluído"
+            self.history.append(
+                f"> <b>Desenhar linha</b> <span style='color:#8c959f'>({message})</span>"
+            )
+        elif kind == "text" and canceled:
+            self._command_mode = None
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self.history.append("> <b>Inserir texto</b> <span style='color:#8c959f'>(Operação cancelada)</span>")
+
+    def _project_elevation_identifier_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_elevation_identifier":
+            return
+        prompt = {
+            1: "Clique no ponto do símbolo",
+            2: "Aponte a direção; o snap angular está ativo e Shift deixa a direção livre",
+        }.get(step)
+        if prompt:
+            self.history.append(
+                f"> <b>Identificador de elevação</b> "
+                f"<span style='color:#57606a'>({prompt}; Esc cancela)</span>"
+            )
+
+    def _finish_project_elevation_identifier(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_elevation_identifier":
+            return
+        self._command_mode = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._store_detailing_state()
+        message = "Lançamento cancelado; identificadores preservados" if canceled else "Lançamento encerrado"
+        self.history.append(
+            f"> <b>Identificador de elevação</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
+    def _project_detail_identifier_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_detail_identifier":
+            return
+        prompt = {
+            1: "Clique no centro do círculo; os snaps da vista estão ativos",
+            2: "Clique para definir o raio do círculo",
+        }.get(step)
+        if prompt:
+            self.history.append(
+                f"> <b>Identificador de detalhe</b> "
+                f"<span style='color:#57606a'>({prompt}; Esc cancela)</span>"
+            )
+
+    def _finish_project_detail_identifier(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_detail_identifier":
+            return
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento cancelado; identificadores preservados" if canceled else "Lançamento encerrado"
+        self.history.append(
+            f"> <b>Identificador de detalhe</b> "
+            f"<span style='color:#8c959f'>({message})</span>"
         )
 
     def start_project_sheet_visibility(self, mode: str) -> None:
@@ -1210,10 +1632,10 @@ class MainWindow(QMainWindow):
     def _project_sheet_visibility_view_activated(self, _view_index: int) -> None:
         prompts = {
             "project_sheet_element_visibility_hide": (
-                "Passe o cursor sobre um elemento e clique para ocultá-lo"
+                "Selecione um ou mais elementos; pressione Enter para confirmar ou Esc para cancelar"
             ),
             "project_sheet_element_visibility_reveal": (
-                "Selecione um elemento oculto para reexibi-lo"
+                "Selecione um ou mais elementos ocultos; pressione Enter para confirmar ou Esc para cancelar"
             ),
         }
         prompt = prompts.get(self._command_mode)
@@ -1309,7 +1731,7 @@ class MainWindow(QMainWindow):
             if canceled else "Lançamento encerrado"
         )
         self.history.append(
-            f"> <b>Identificar</b> <span style='color:#8c959f'>({message})</span>"
+            f"> <b>Identificador de elemento</b> <span style='color:#8c959f'>({message})</span>"
         )
 
     def _add_project_view_identification(self, view_index: int, name: str, projected_point) -> None:
@@ -1326,7 +1748,7 @@ class MainWindow(QMainWindow):
         view = views[view_index]
         if not name:
             self.history.append(
-                "> <b>Identificar</b> <span style='color:#8c959f'>"
+                "> <b>Identificador de elemento</b> <span style='color:#8c959f'>"
                 "(Esta vista é antiga; adicione-a novamente para habilitar a identificação)</span>"
             )
             return
@@ -1362,7 +1784,7 @@ class MainWindow(QMainWindow):
                 )
                 if same_element:
                     self.history.append(
-                        "> <b>Identificar</b> <span style='color:#8c959f'>"
+                        "> <b>Identificador de elemento</b> <span style='color:#8c959f'>"
                         "(Este elemento já possui uma etiqueta nesta vista)</span>"
                     )
                     return
@@ -1526,7 +1948,7 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.update()
         self._store_detailing_state()
         self.history.append(
-            "> <b>Identificar</b> <span style='color:#57606a'>"
+            "> <b>Identificador de elemento</b> <span style='color:#57606a'>"
             f"({escape(label)} identificado; clique no próximo elemento ou pressione Enter)</span>"
         )
 
@@ -1568,6 +1990,8 @@ class MainWindow(QMainWindow):
                 "sheet_settings": copy.deepcopy(palette._sheet_settings),
                 "project_settings": copy.deepcopy(palette._project_settings),
                 "sheet_views": sheet_views,
+                "sheet_texts": copy.deepcopy(palette._sheet_texts),
+                "sheet_lines": copy.deepcopy(palette._sheet_lines),
             },
             "detail_views": {
                 "names": current_model_entries("_detailing_view_names"),
@@ -1837,6 +2261,34 @@ class MainWindow(QMainWindow):
                 self.detailing_mode_palette._buttons[0].click()
             self._start_detail_plane_placement()
 
+    def open_component_details(self) -> None:
+        if getattr(self, "_component_details_dialog_open", False):
+            return
+        self._component_details_dialog_open = True
+        dialog = None
+        cancel_action = getattr(self, "_cancel_placement_action", None)
+        cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
+        try:
+            if cancel_action is not None:
+                cancel_action.setEnabled(False)
+            dialog = ComponentDetailsDialog(self)
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_views:
+                palette = self.project_sheets_palette
+                sheet_name = palette.sheet_selector.currentText()
+                if sheet_name:
+                    sheet_views = palette._sheet_views.setdefault(sheet_name, [])
+                    sheet_views.extend(dialog.result_views)
+                    self.project_sheet_workspace.set_sheet_views(sheet_views)
+                    self.project_sheet_workspace.select_view(len(sheet_views) - 1)
+                    self._store_detailing_state()
+        finally:
+            self._component_details_dialog_open = False
+            if dialog is not None:
+                dialog.deleteLater()
+            if cancel_action is not None:
+                cancel_action.setEnabled(cancel_action_was_enabled)
+
     def apply_selected_project_sheet_view_settings(self, settings: dict) -> None:
         if not self._detailing_project_mode or not isinstance(settings, dict):
             return
@@ -1977,6 +2429,12 @@ class MainWindow(QMainWindow):
                 continue
             if identification.get("projected_point") is not None:
                 identification["projected_point"] = point(identification["projected_point"])
+        for detail_identifier in view.get("detail_identifiers", ()):
+            if not isinstance(detail_identifier, dict):
+                continue
+            for key in ("center", "label_position"):
+                if detail_identifier.get(key) is not None:
+                    detail_identifier[key] = point(detail_identifier[key])
 
     def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
         """Expand a picked bar to its group only while detailing is active."""
@@ -3476,6 +3934,16 @@ class MainWindow(QMainWindow):
             and self.project_sheet_identification_panel.isVisible()
         ):
             self.project_sheet_identification_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_detail_identifier_panel")
+            and self.project_sheet_detail_identifier_panel.isVisible()
+        ):
+            self.project_sheet_detail_identifier_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_elevation_identifier_panel")
+            and self.project_sheet_elevation_identifier_panel.isVisible()
+        ):
+            self.project_sheet_elevation_identifier_panel.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -3588,6 +4056,32 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode in {"project_sheet_text", "project_sheet_line"}
+        ):
+            if self._command_mode == "project_sheet_text":
+                dialog = getattr(self, "_active_sheet_text_dialog", None)
+                if dialog is not None and dialog.isVisible():
+                    dialog.reject()
+                    event.accept()
+                    return True
+                self.project_sheet_workspace.set_sheet_text_mode(False)
+                self.project_sheet_workspace.annotation_finished.emit("text", True)
+            else:
+                self.project_sheet_workspace.set_sheet_line_mode(False)
+                self.project_sheet_workspace.annotation_finished.emit("line", True)
+            event.accept()
+            return True
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode == "project_sheet_elevation_identifier"
+        ):
+            self.project_sheet_workspace._finish_elevation_identifier_mode(True)
+            event.accept()
+            return True
         if (
             scene is not None
             and command_bar is not None
@@ -5373,9 +5867,22 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         """Cancel the active graphical geometry launch."""
+        workspace = self.project_sheet_workspace
+        if workspace._annotation_mode is not None:
+            kind = workspace._annotation_mode
+            workspace.set_sheet_text_mode(False) if kind == "text" else workspace.set_sheet_line_mode(False)
+            workspace.annotation_finished.emit(kind, True)
+            return
         self.member_placement_editor.hide()
         if self._command_mode == "stair_custom_geometry_placement":
             self._cancel_stair_custom_geometry_capture()
+            return
+        if self._command_mode == "project_sheet_detail_identifier":
+            self.project_sheet_workspace.set_detail_identifier_mode(False)
+            self._finish_project_detail_identifier(canceled=True)
+            return
+        if self._command_mode == "project_sheet_elevation_identifier":
+            self.project_sheet_workspace._finish_elevation_identifier_mode(True)
             return
         if self._command_mode in {
             "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
@@ -6145,6 +6652,14 @@ class MainWindow(QMainWindow):
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
             return
         if self._detailing_project_mode:
+            if self.project_sheet_workspace.delete_selected_sheet_text():
+                return
+            if self.project_sheet_workspace.delete_selected_sheet_line():
+                return
+            if self.project_sheet_workspace.delete_selected_elevation_identifier():
+                return
+            if self.project_sheet_workspace.delete_selected_detail_identifier():
+                return
             if self.project_sheet_workspace.delete_selected_identification():
                 return
             index = self.project_sheet_workspace._selected_view_index

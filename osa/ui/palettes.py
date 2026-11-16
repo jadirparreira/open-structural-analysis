@@ -990,6 +990,8 @@ class ProjectSheetsPalette(QFrame):
             self._sheet_names[0]: default_project_sheet_settings(self._sheet_names[0]),
         }
         self._sheet_views: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self._sheet_texts: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self._sheet_lines: dict[str, list[dict]] = {self._sheet_names[0]: []}
         self.setObjectName("projectSheetsPalette")
         self.setStyleSheet(
             "QFrame#projectSheetsPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
@@ -1025,9 +1027,19 @@ class ProjectSheetsPalette(QFrame):
         self.settings_button.setEnabled(True)
         layout.addWidget(self.settings_button)
         self.identify_button = self._action_button(
-            "tag.svg", "Identificar", window.start_project_view_identification,
+            "tag.svg", "Identificador de elemento", window.start_project_view_identification,
         )
         self.identify_button.setEnabled(True)
+        self.detail_identifier_button = self._action_button(
+            "detail-identifier.svg", "Identificador de detalhe",
+            window.start_project_detail_identifier,
+        )
+        self.detail_identifier_button.setIconSize(QSize(21, 21))
+        self.elevation_identifier_button = self._action_button(
+            "elevation-identifier.svg", "Identificador de elevação",
+            window.start_project_elevation_identifier,
+        )
+        self.elevation_identifier_button.setIconSize(QSize(21, 21))
         self.hide_view_elements_button = self._action_button(
             "lightbulb-off.svg", "Ocultar elemento da vista",
             lambda: window.start_project_sheet_visibility("hide"),
@@ -1049,17 +1061,35 @@ class ProjectSheetsPalette(QFrame):
             window.start_project_view_orthogonal_dimension,
         )
         self.orthogonal_dimension_button.setIconSize(QSize(21, 21))
+        self.sheet_text_button = self._action_button(
+            "square-text.svg", "Inserir texto na folha", window.start_project_sheet_text,
+        )
+        self.sheet_text_button.setIconSize(QSize(21, 21))
+        self.sheet_line_button = self._action_button(
+            "draw-line.svg", "Desenhar linha na folha", window.start_project_sheet_line,
+        )
+        self.sheet_line_button.setIconSize(QSize(21, 21))
         self.manage_views_button = self._action_button(
             "scan-square.svg", "Adicionar vistas", window.open_detailing_views,
         )
         self.manage_views_button.setIconSize(QSize(21, 21))
         layout.addWidget(self.manage_views_button)
+        self.component_details_button = self._action_button(
+            "component.svg", "Adicionar detalhes de componentes",
+            window.open_component_details,
+        )
+        self.component_details_button.setIconSize(QSize(21, 21))
+        layout.addWidget(self.component_details_button)
         layout.addWidget(self.identify_button)
+        layout.addWidget(self.detail_identifier_button)
+        layout.addWidget(self.elevation_identifier_button)
         layout.addWidget(self.hide_view_elements_button)
         layout.addWidget(self.reveal_view_elements_button)
         layout.addWidget(self.reveal_all_view_elements_button)
         layout.addWidget(self.dimension_button)
         layout.addWidget(self.orthogonal_dimension_button)
+        layout.addWidget(self.sheet_text_button)
+        layout.addWidget(self.sheet_line_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 
@@ -1086,6 +1116,8 @@ class ProjectSheetsPalette(QFrame):
             names = ["01 - Folha Geral"]
         raw_settings = state.get("sheet_settings", {})
         raw_views = state.get("sheet_views", {})
+        raw_texts = state.get("sheet_texts", {})
+        raw_lines = state.get("sheet_lines", {})
         self._sheet_names = list(names)
         self._sheet_settings = {}
         self._sheet_views = {}
@@ -1103,6 +1135,10 @@ class ProjectSheetsPalette(QFrame):
             self._sheet_views[name] = [
                 dict(view) for view in saved_views if isinstance(view, dict)
             ] if isinstance(saved_views, list) else []
+            texts = raw_texts.get(name, []) if isinstance(raw_texts, dict) else []
+            lines = raw_lines.get(name, []) if isinstance(raw_lines, dict) else []
+            self._sheet_texts[name] = [dict(item) for item in texts if isinstance(item, dict)] if isinstance(texts, list) else []
+            self._sheet_lines[name] = [dict(item) for item in lines if isinstance(item, dict)] if isinstance(lines, list) else []
         project_settings = default_project_settings()
         saved_project_settings = state.get("project_settings", {})
         if isinstance(saved_project_settings, dict):
@@ -1131,12 +1167,16 @@ class ProjectSheetsPalette(QFrame):
             self._window.project_sheet_workspace.set_sheet_views(
                 self._sheet_views.get(sheet_name, ()), clear_selection=True,
             )
+            self._window.project_sheet_workspace.set_sheet_annotations(
+                self._sheet_texts.get(sheet_name, ()), self._sheet_lines.get(sheet_name, ()),
+            )
         else:
             self._window.project_sheet_workspace.set_sheet_settings(
                 "", default_project_sheet_settings(""), self._project_settings,
                 len(self._sheet_names),
             )
             self._window.project_sheet_workspace.set_sheet_views((), clear_selection=True)
+            self._window.project_sheet_workspace.set_sheet_annotations((), ())
 
     def add_view_to_active_sheet(self, view: dict) -> None:
         sheet_name = self.sheet_selector.currentText()
@@ -1204,6 +1244,8 @@ class ProjectSheetsPalette(QFrame):
         self._sheet_names.append(sheet_label)
         self._sheet_settings[sheet_label] = default_project_sheet_settings(sheet_label)
         self._sheet_views[sheet_label] = []
+        self._sheet_texts[sheet_label] = []
+        self._sheet_lines[sheet_label] = []
         self.sheet_selector.addItem(sheet_label)
         self.sheet_selector.setCurrentText(sheet_label)
         self.sheet_selector.setEnabled(True)
@@ -1236,6 +1278,8 @@ class ProjectSheetsPalette(QFrame):
         settings["subject"] = name
         self._sheet_settings[new_label] = settings
         self._sheet_views[new_label] = self._sheet_views.pop(old_label, [])
+        self._sheet_texts[new_label] = self._sheet_texts.pop(old_label, [])
+        self._sheet_lines[new_label] = self._sheet_lines.pop(old_label, [])
         self._sheet_names[index] = new_label
         self.sheet_selector.setItemText(index, new_label)
         if self.sheet_selector.currentIndex() == index:
@@ -1252,6 +1296,8 @@ class ProjectSheetsPalette(QFrame):
                 label.partition(" - ")[2],
                 self._sheet_settings[label],
                 self._sheet_views.get(label, []),
+                self._sheet_texts.get(label, []),
+                self._sheet_lines.get(label, []),
             )
             for label in self._sheet_names
         ]
@@ -1262,12 +1308,16 @@ class ProjectSheetsPalette(QFrame):
         self._sheet_names = []
         self._sheet_settings = {}
         self._sheet_views = {}
-        for index, (title, settings, views) in enumerate(ordered, start=1):
+        self._sheet_texts = {}
+        self._sheet_lines = {}
+        for index, (title, settings, views, texts, lines) in enumerate(ordered, start=1):
             label = f"{index:02d} - {title}"
             settings["sheet_number"] = f"{index:02d}"
             self._sheet_names.append(label)
             self._sheet_settings[label] = settings
             self._sheet_views[label] = views
+            self._sheet_texts[label] = texts
+            self._sheet_lines[label] = lines
 
         self.sheet_selector.blockSignals(True)
         self.sheet_selector.clear()
@@ -1289,6 +1339,8 @@ class ProjectSheetsPalette(QFrame):
         self._sheet_names.pop(index)
         self._sheet_settings.pop(name, None)
         self._sheet_views.pop(name, None)
+        self._sheet_texts.pop(name, None)
+        self._sheet_lines.pop(name, None)
         self.sheet_selector.removeItem(index)
         has_sheets = bool(self._sheet_names)
         self.sheet_selector.setEnabled(has_sheets)
