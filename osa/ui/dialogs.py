@@ -51,24 +51,49 @@ _LOGGER = logging.getLogger(__name__)
 class ProjectSheetTextDialog(QDialog):
     """Small rich-text editor for a text box placed on a project sheet."""
 
-    def __init__(self, parent=None, *, html: str = "") -> None:
+    def __init__(self, parent=None, *, html: str = "", text_height_mm: float = 3.0) -> None:
         super().__init__(parent)
         self.setWindowTitle("Editar texto")
-        self.setMinimumSize(560, 380)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumSize(640, 440)
         self.setStyleSheet(
-            "QDialog { background: #ffffff; }"
-            "QToolButton { min-width: 30px; min-height: 30px; border: 1px solid transparent; "
-            "border-radius: 5px; background: transparent; }"
-            "QToolButton:hover, QToolButton:checked { background: #eaeef2; border-color: #d0d7de; }"
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QLabel { color: #57606a; }"
+            "QFrame#unitValueBox { min-height: 32px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox QDoubleSpinBox { border: 0; padding: 2px 9px; color: #24292f; }"
+            "QFrame#unitValueBox QLabel { padding-right: 9px; }"
+            "QToolButton { border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; }"
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
             "QTextEdit { border: 1px solid #d0d7de; border-radius: 6px; padding: 8px; }"
             "QPushButton#textApply { min-height: 34px; padding: 4px 16px; border: 1px solid #0969da; "
             "border-radius: 6px; color: #ffffff; background: #0969da; }"
+            "QPushButton#textApply:hover { background: #0550ae; border-color: #0550ae; }"
             "QPushButton#textClose { min-height: 34px; padding: 4px 16px; border: 1px solid #d0d7de; "
             "border-radius: 6px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#textClose:hover { background: #eaeef2; }"
         )
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame(self)
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        title_layout = QHBoxLayout(titlebar)
+        title_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Editar texto", titlebar)
+        title.setObjectName("windowTitle")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+        outer.addWidget(titlebar)
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(18, 16, 18, 14)
         layout.setSpacing(10)
+        outer.addWidget(body, 1)
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
         icon_root = Path(__file__).parents[1] / "resources" / "icons"
@@ -86,6 +111,8 @@ class ProjectSheetTextDialog(QDialog):
         )
         for filename, tooltip, callback, checkable in controls:
             button = QToolButton(self)
+            button.setFixedSize(34, 34)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIcon(QIcon(str(icon_root / filename)))
             button.setIconSize(QSize(18, 18))
             button.setToolTip(tooltip)
@@ -93,10 +120,51 @@ class ProjectSheetTextDialog(QDialog):
             button.setCheckable(checkable)
             button.clicked.connect(callback)
             toolbar.addWidget(button)
+        toolbar.addSpacing(8)
+        self.text_height_button = QToolButton(self)
+        self.text_height_button.setFixedSize(30, 30)
+        self.text_height_button.setStyleSheet(
+            "QToolButton { border: 0; background: transparent; }"
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        self.text_height_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.text_height_button.setIcon(QIcon(str(icon_root / "text-height.svg")))
+        self.text_height_button.setIconSize(QSize(18, 18))
+        self.text_height_button.setToolTip("Altura do texto em milímetros da folha")
+        self.text_height_button.setAccessibleName("Altura do texto")
+        height_box = QFrame(self)
+        height_box.setObjectName("unitValueBox")
+        height_box.setFixedSize(154, 34)
+        height_layout = QHBoxLayout(height_box)
+        height_layout.setContentsMargins(1, 1, 1, 1)
+        height_layout.setSpacing(0)
+        height_layout.addWidget(self.text_height_button)
+        self.text_height_input = QDoubleSpinBox(height_box)
+        self.text_height_input.setStyleSheet(
+            "QDoubleSpinBox, QDoubleSpinBox:focus { min-height: 0; border: 0; "
+            "border-radius: 0; padding: 0 6px; margin: 0; background: transparent; }"
+        )
+        self.text_height_input.setFixedHeight(30)
+        self.text_height_input.setMinimumWidth(0)
+        self.text_height_input.lineEdit().setStyleSheet(
+            "QLineEdit { min-height: 0; border: 0; border-radius: 0; "
+            "padding: 0; margin: 0; background: transparent; }"
+        )
+        self.text_height_input.setAccessibleName("Altura do texto em milímetros da folha")
+        self.text_height_input.setRange(0.5, 100.0)
+        self.text_height_input.setDecimals(1)
+        self.text_height_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.text_height_input.setValue(text_height_mm)
+        height_layout.addWidget(self.text_height_input, 1)
+        height_layout.addWidget(QLabel("mm", height_box))
+        self.text_height_button.clicked.connect(self.text_height_input.setFocus)
+        self.text_height_button.clicked.connect(self.text_height_input.selectAll)
+        toolbar.addWidget(height_box)
         toolbar.addStretch()
         layout.addLayout(toolbar)
         layout.addWidget(self.editor, 1)
         footer = QHBoxLayout()
+        footer.setSpacing(10)
         footer.addStretch()
         close_button = QPushButton("Fechar", self)
         close_button.setObjectName("textClose")

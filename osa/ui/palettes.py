@@ -1065,10 +1065,22 @@ class ProjectSheetsPalette(QFrame):
             "square-text.svg", "Inserir texto na folha", window.start_project_sheet_text,
         )
         self.sheet_text_button.setIconSize(QSize(21, 21))
+        self.sheet_table_button = self._action_button(
+            "insert-table.svg", "Inserir tabela", window.open_project_sheet_tables,
+        )
+        self.sheet_table_button.setIconSize(QSize(21, 21))
         self.sheet_line_button = self._action_button(
             "draw-line.svg", "Desenhar linha na folha", window.start_project_sheet_line,
         )
         self.sheet_line_button.setIconSize(QSize(21, 21))
+        self.sheet_rectangle_button = self._action_button(
+            "draw-rectangle.svg", "Desenhar retângulo na folha", window.start_project_sheet_rectangle,
+        )
+        self.sheet_rectangle_button.setIconSize(QSize(21, 21))
+        self.sheet_circle_button = self._action_button(
+            "draw-circle.svg", "Desenhar círculo na folha", window.start_project_sheet_circle,
+        )
+        self.sheet_circle_button.setIconSize(QSize(21, 21))
         self.manage_views_button = self._action_button(
             "scan-square.svg", "Adicionar vistas", window.open_detailing_views,
         )
@@ -1089,7 +1101,10 @@ class ProjectSheetsPalette(QFrame):
         layout.addWidget(self.dimension_button)
         layout.addWidget(self.orthogonal_dimension_button)
         layout.addWidget(self.sheet_text_button)
+        layout.addWidget(self.sheet_table_button)
         layout.addWidget(self.sheet_line_button)
+        layout.addWidget(self.sheet_rectangle_button)
+        layout.addWidget(self.sheet_circle_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 

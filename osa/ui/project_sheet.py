@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Signal
 from PySide6.QtGui import (
-    QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPicture,
+    QCursor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPicture,
     QPixmap, QRegion, QTextCharFormat, QTextCursor, QTextDocument,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -30,6 +30,7 @@ from .common import (
     QWidget,
 )
 from .property_panel import CompactDoubleSpinBox, MixedCheckBox
+from .sheet_tables import RevisionTableLayout, SteelProfilesTableLayout, revision_rows_for
 from .window_frame import WindowFrame
 
 PAPER_SIZES_MM = {
@@ -806,6 +807,7 @@ class ProjectSheetWorkspace(QWidget):
     element_visibility_view_activated = Signal(int)
     element_visibility_changed = Signal(int, object)
     text_editor_requested = Signal(object)
+    table_editor_requested = Signal(int)
     annotation_finished = Signal(str, bool)
 
     def __init__(self, parent=None) -> None:
@@ -841,6 +843,13 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_views: tuple[dict, ...] = ()
         self._sheet_texts: list[dict] = []
         self._sheet_lines: list[dict] = []
+        self._sheet_table_hit_rects: dict[int, QRectF] = {}
+        self._sheet_table_layouts = {}
+        self.steel_profile_rows_provider = lambda: []
+        self._selected_sheet_table: int | None = None
+        self._drag_sheet_table: int | None = None
+        self._table_drag_raw_bounds: QRectF | None = None
+        self._table_drag_snap_segments = []
         self._sheet_text_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._sheet_text_handle_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._sheet_line_hit_rects: dict[tuple[int, int], QRectF] = {}
@@ -936,6 +945,11 @@ class ProjectSheetWorkspace(QWidget):
         self._annotation_background: QPixmap | None = None
         self._suppress_sheet_annotations = False
         self._sheet_text_documents = {}
+        # A fixed layout device keeps font metrics and line wrapping independent
+        # of screen DPI, zoom and navigation's cached drawing scale.
+        self._sheet_text_layout_device = QImage(1, 1, QImage.Format.Format_ARGB32_Premultiplied)
+        self._sheet_text_layout_device.setDotsPerMeterX(round(96.0 / 0.0254))
+        self._sheet_text_layout_device.setDotsPerMeterY(round(96.0 / 0.0254))
         self._drag_position: QPointF | None = None
         self._drag_view_title_index: int | None = None
         self._drag_view_index: int | None = None
@@ -1008,6 +1022,12 @@ class ProjectSheetWorkspace(QWidget):
         self, sheet_name: str, settings: dict, project_settings: dict | None = None,
         sheet_count: int | None = None,
     ) -> None:
+        if sheet_name != self._sheet_name:
+            self._selected_sheet_table = None
+            self._drag_sheet_table = None
+            self._table_drag_raw_bounds = None
+            self._table_drag_snap_segments = []
+            self._annotation_background = None
         self._sheet_name = sheet_name
         self._settings = settings
         if project_settings is not None:
@@ -1066,7 +1086,10 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_text_mode(self, active: bool) -> None:
+        if active:
+            self._selected_sheet_table = None
         self._annotation_mode = "text" if active else None
+        self._annotation_background = None
         self._line_start_context = None
         self._line_preview_endpoint = None
         self._line_preview_screen_endpoint = None
@@ -1083,8 +1106,13 @@ class ProjectSheetWorkspace(QWidget):
             self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update()
 
-    def set_sheet_line_mode(self, active: bool) -> None:
-        self._annotation_mode = "line" if active else None
+    def set_sheet_line_mode(self, active: bool, kind: str = "line") -> None:
+        if kind not in {"line", "rectangle", "circle"}:
+            raise ValueError("Tipo de desenho inválido")
+        if active:
+            self._selected_sheet_table = None
+        self._annotation_mode = kind if active else None
+        self._annotation_background = None
         self._line_start_context = None
         self._line_preview_endpoint = None
         self._line_preview_screen_endpoint = None
@@ -1745,6 +1773,9 @@ class ProjectSheetWorkspace(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        background_painter = QPainter(self)
+        background_painter.fillRect(self.rect(), QColor("#f6f8fa"))
+        background_painter.end()
         if (self._annotation_background is not None
                 and self._annotation_background.deviceIndependentSize() != self.size()):
             self._annotation_background = None
@@ -1959,7 +1990,7 @@ class ProjectSheetWorkspace(QWidget):
         self._navigation_picture_dirty = True
         background = QPixmap(self.size() * self.devicePixelRatioF())
         background.setDevicePixelRatio(self.devicePixelRatioF())
-        background.fill(self.palette().window().color())
+        background.fill(QColor("#f6f8fa"))
         self._suppress_sheet_annotations = True
         try:
             self.render(background, QPoint(), QRegion(), QWidget.RenderFlag.DrawWindowBackground)
@@ -2650,7 +2681,7 @@ class ProjectSheetWorkspace(QWidget):
             self._draw_sheet_text(painter, annotation, None, text_index, scale)
         for line_index, annotation in enumerate(self._sheet_lines):
             self._draw_sheet_line(painter, annotation, None, line_index)
-        if self._annotation_mode == "line" and self._line_start_context is not None:
+        if self._annotation_mode in {"line", "rectangle", "circle"} and self._line_start_context is not None:
             view_index, start = self._line_start_context
             start_screen = self._sheet_annotation_screen_point({"anchor": start}, view_index)
             end_screen = self._line_preview_screen_endpoint
@@ -2660,7 +2691,7 @@ class ProjectSheetWorkspace(QWidget):
                 pen.setStyle(Qt.PenStyle.DashLine)
                 painter.save()
                 painter.setPen(pen)
-                painter.drawLine(start_screen, end_screen)
+                self._draw_annotation_geometry(painter, self._annotation_mode, start_screen, end_screen)
                 symbol = self._snap_symbol_pixmaps.get(self._line_preview_snap_kind)
                 if symbol is not None and self._line_preview_snap_screen is not None:
                     painter.drawPixmap(
@@ -2669,7 +2700,7 @@ class ProjectSheetWorkspace(QWidget):
                         symbol,
                     )
                 painter.restore()
-        elif self._annotation_mode == "line" and self._line_preview_snap_screen is not None:
+        elif self._annotation_mode in {"line", "rectangle", "circle"} and self._line_preview_snap_screen is not None:
             symbol = self._snap_symbol_pixmaps.get(self._line_preview_snap_kind)
             if symbol is not None:
                 painter.drawPixmap(
@@ -2677,6 +2708,67 @@ class ProjectSheetWorkspace(QWidget):
                     round(self._line_preview_snap_screen.y() - symbol.height() / 2),
                     symbol,
                 )
+
+        self._draw_sheet_tables(painter, scale)
+
+    def _draw_sheet_tables(self, painter: QPainter, scale: float) -> None:
+        self._sheet_table_hit_rects = {}
+        if scale <= 1e-12 or self._drawing_area.isEmpty():
+            return
+        width_mm = min(175.0, self._drawing_area.width() / scale)
+        stack_height = 0.0
+        for index, table in enumerate(self._settings.get("tables", ())):
+            kind = table.get("kind")
+            if kind not in {"sheet_revisions", "project_revisions", "steel_profiles"}:
+                continue
+            rows = (self.steel_profile_rows_provider() if kind == "steel_profiles"
+                    else revision_rows_for(self._settings, self._project_settings, kind))
+            font = QFont(self.font())
+            fields = (("profile", "family", "geometry", "material", "linear_mass", "length", "total_mass")
+                      if kind == "steel_profiles" else ("number", "change", "responsible", "date"))
+            signature = (kind, width_mm, font.toString(),
+                         tuple(tuple(row.get(key, "") for key in fields) for row in rows))
+            cached = self._sheet_table_layouts.get(index)
+            if cached is None or cached[0] != signature:
+                layout = (SteelProfilesTableLayout(rows, width_mm, font) if kind == "steel_profiles"
+                          else RevisionTableLayout(kind, rows, width_mm, font))
+                self._sheet_table_layouts[index] = (signature, layout)
+            else:
+                layout = cached[1]
+            origin = self._sheet_annotation_screen_point({"anchor": table.get("position")}, None)
+            if origin is None:
+                left = self._drawing_area.right() - width_mm * scale
+                if self._settings.get("title_block_visible", True) and self._settings.get("title_block_position") == "Superior":
+                    top = self._stamp_rect.bottom() + (3.0 + stack_height) * scale
+                else:
+                    bottom = self._stamp_rect.top() if not self._stamp_rect.isEmpty() else self._drawing_area.bottom()
+                    top = max(self._drawing_area.top(), bottom - (3.0 + stack_height + layout.height_mm) * scale)
+                origin = QPointF(left, top)
+            stack_height += layout.height_mm + 3.0
+            layout.draw(painter, origin, scale)
+            bounds = QRectF(origin.x(), origin.y(), layout.width_mm * scale, layout.height_mm * scale)
+            self._sheet_table_hit_rects[index] = bounds
+            if self._selected_sheet_table == index:
+                painter.save()
+                pen = QPen(QColor("#0969da"), 1.5)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(bounds.adjusted(-3, -3, 3, 3))
+                painter.restore()
+
+    def delete_selected_sheet_table(self) -> bool:
+        if self._selected_sheet_table is None:
+            return False
+        tables = self._settings.get("tables", [])
+        index = self._selected_sheet_table
+        if 0 <= index < len(tables):
+            tables.pop(index)
+        self._selected_sheet_table = None
+        self._sheet_table_layouts.clear()
+        self.update()
+        self.layout_changed.emit()
+        return True
 
     def _draw_sheet_text(
         self, painter: QPainter, annotation: dict, view_index: int | None,
@@ -2688,37 +2780,44 @@ class ProjectSheetWorkspace(QWidget):
         try:
             width_mm = max(10.0, float(annotation.get("width_mm", 50.0)))
             height_mm = max(5.0, float(annotation.get("height_mm", 25.0)))
+            text_height_mm = max(0.5, float(annotation.get("text_height_mm", 3.0)))
         except (TypeError, ValueError):
             return
         rect = QRectF(anchor.x(), anchor.y(), width_mm * scale, height_mm * scale)
         font = QFont(painter.font())
-        # Match dimension and identifier text: height in sheet mm times zoom scale.
-        font.setPixelSize(max(1, round(3.0 * scale)))
+        # Lay out once in physical sheet units. Zoom only transforms the painter;
+        # rounding the font to screen pixels would change wrapping at each zoom.
+        font.setPointSizeF(text_height_mm * 72.0 / 25.4)
+        layout_pixels_per_mm = self._sheet_text_layout_device.logicalDpiY() / 25.4
+        document_rect = QRectF(0.0, 0.0, width_mm * layout_pixels_per_mm,
+                              height_mm * layout_pixels_per_mm)
         key = (view_index if view_index is not None else -1, text_index)
         html = str(annotation.get("html", ""))
-        signature = (html, font.toString(), rect.width(), self.logicalDpiY())
+        signature = (html, font.toString(), width_mm)
         cached = self._sheet_text_documents.get(key)
         if cached is not None and cached[0] == signature:
             document = cached[1]
         else:
             document = QTextDocument()
+            document.documentLayout().setPaintDevice(self._sheet_text_layout_device)
+            document.setUseDesignMetrics(True)
             document.setDocumentMargin(0)
             document.setDefaultFont(font)
             document.setHtml(html)
             cursor = QTextCursor(document)
             cursor.select(QTextCursor.SelectionType.Document)
             fixed_size = QTextCharFormat()
-            fixed_size.setFontPointSize(
-                float(font.pixelSize()) * 72.0 / max(1.0, float(self.logicalDpiY()))
-            )
+            fixed_size.setFontPointSize(font.pointSizeF())
             cursor.mergeCharFormat(fixed_size)
-            document.setTextWidth(max(1.0, rect.width()))
+            document.setTextWidth(document_rect.width())
             self._sheet_text_documents[key] = (signature, document)
         painter.save()
         painter.setClipRect(rect)
         painter.translate(rect.topLeft())
+        painter.scale(scale / layout_pixels_per_mm, scale / layout_pixels_per_mm)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.setPen(QColor("#000000"))
-        document.drawContents(painter, QRectF(0.0, 0.0, rect.width(), rect.height()))
+        document.drawContents(painter, document_rect)
         painter.restore()
         key = (view_index if view_index is not None else -1, text_index)
         self._sheet_text_hit_rects[key] = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
@@ -2734,6 +2833,37 @@ class ProjectSheetWorkspace(QWidget):
             painter.drawRect(handle)
             self._sheet_text_handle_hit_rects[key] = handle.adjusted(-4.0, -4.0, 4.0, 4.0)
             painter.restore()
+
+    @staticmethod
+    def _draw_annotation_geometry(painter, kind, first, second) -> None:
+        if kind == "rectangle":
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(first, second).normalized())
+        elif kind == "circle":
+            radius = math.hypot(second.x() - first.x(), second.y() - first.y())
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(first, radius, radius)
+        else:
+            painter.drawLine(first, second)
+
+    def _annotation_screen_primitives(self, annotation, view_index):
+        try:
+            first, second = annotation["points"]
+            first = self._sheet_annotation_screen_point({"anchor": first}, view_index)
+            second = self._sheet_annotation_screen_point({"anchor": second}, view_index)
+        except (KeyError, TypeError, ValueError):
+            return (), ()
+        if first is None or second is None:
+            return (), ()
+        kind = annotation.get("kind", "line")
+        if kind == "circle":
+            radius = math.hypot(second.x() - first.x(), second.y() - first.y())
+            return (), ((first, radius),)
+        if kind == "rectangle":
+            rect = QRectF(first, second).normalized()
+            corners = (rect.topLeft(), rect.topRight(), rect.bottomRight(), rect.bottomLeft())
+            return tuple((corners[i], corners[(i + 1) % 4]) for i in range(4)), ()
+        return ((first, second),), ()
 
     def _draw_sheet_line(
         self, painter: QPainter, annotation: dict, view_index: int | None,
@@ -2754,7 +2884,7 @@ class ProjectSheetWorkspace(QWidget):
         pen.setCosmetic(True)
         painter.save()
         painter.setPen(pen)
-        painter.drawLine(first_screen, second_screen)
+        self._draw_annotation_geometry(painter, annotation.get("kind", "line"), first_screen, second_screen)
         if selected:
             painter.setBrush(QColor("#ffffff"))
             painter.drawEllipse(first_screen, 3.5, 3.5)
@@ -2770,26 +2900,23 @@ class ProjectSheetWorkspace(QWidget):
 
     def _sheet_line_at(self, position: QPointF) -> tuple[int, int] | None:
         best = None
-        collections = [
-            (index, view.get("sheet_lines", ()))
-            for index, view in enumerate(self._sheet_views)
-        ]
+        collections = [(index, view.get("sheet_lines", ()))
+                       for index, view in enumerate(self._sheet_views)]
         collections.append((-1, self._sheet_lines))
-        for view_index, lines in collections:
+        for view_index, annotations in collections:
             context = None if view_index < 0 else view_index
-            for line_index, annotation in enumerate(lines):
-                try:
-                    first, second = annotation["points"]
-                    first_screen = self._sheet_annotation_screen_point({"anchor": first}, context)
-                    second_screen = self._sheet_annotation_screen_point({"anchor": second}, context)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if first_screen is None or second_screen is None:
-                    continue
-                closest = self._closest_point_on_screen_segment(position, first_screen, second_screen)
-                distance = math.hypot(closest.x() - position.x(), closest.y() - position.y())
-                if best is None or distance < best[0]:
-                    best = (distance, (view_index, line_index))
+            for index, annotation in enumerate(annotations):
+                segments, circles = self._annotation_screen_primitives(annotation, context)
+                distances = []
+                for first, second in segments:
+                    closest = self._closest_point_on_screen_segment(position, first, second)
+                    distances.append(math.hypot(closest.x() - position.x(), closest.y() - position.y()))
+                for center, radius in circles:
+                    distances.append(abs(math.hypot(position.x() - center.x(), position.y() - center.y()) - radius))
+                if distances:
+                    distance = min(distances)
+                    if best is None or distance < best[0]:
+                        best = (distance, (view_index, index))
         return best[1] if best is not None and best[0] <= 7.0 else None
 
     def _line_endpoint_at(self, screen_point: QPointF, view_index: int | None) -> tuple[float, float] | None:
@@ -2820,15 +2947,13 @@ class ProjectSheetWorkspace(QWidget):
         ) / length_squared))
         return QPointF(first.x() + fraction * dx, first.y() + fraction * dy)
 
-    def _sheet_snap_at(self, position: QPointF) -> tuple[QPointF, str] | None:
-        """Snap to paper/margin/title-block edges and existing sheet lines."""
-        segments: list[tuple[QPointF, QPointF, str]] = []
-
+    def _sheet_reference_segments(self):
+        segments = []
         def add_rect(rect: QRectF) -> None:
             if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
                 return
             corners = (rect.topLeft(), rect.topRight(), rect.bottomRight(), rect.bottomLeft())
-            segments.extend((corners[index], corners[(index + 1) % 4], "endpoint") for index in range(4))
+            segments.extend((corners[index], corners[(index + 1) % 4]) for index in range(4))
 
         add_rect(self._paper_rect)
         add_rect(self._drawing_area)
@@ -2839,90 +2964,178 @@ class ProjectSheetWorkspace(QWidget):
             main_split = stamp.left() + stamp.width() * 0.78
             for row in range(1, 5):
                 y = stamp.top() + row * row_height
-                segments.append((QPointF(stamp.left(), y), QPointF(stamp.right(), y), "endpoint"))
-            segments.append((QPointF(main_split, stamp.top()), QPointF(main_split, stamp.bottom()), "endpoint"))
+                segments.append((QPointF(stamp.left(), y), QPointF(stamp.right(), y)))
+            segments.append((QPointF(main_split, stamp.top()), QPointF(main_split, stamp.bottom())))
             row_four = stamp.top() + 3.0 * row_height
             right_split = main_split + (stamp.right() - main_split) / 2.0
             row_five = stamp.top() + 4.0 * row_height
-            segments.append((QPointF(right_split, row_four), QPointF(right_split, row_five), "endpoint"))
+            segments.append((QPointF(right_split, row_four), QPointF(right_split, row_five)))
             left_mid = stamp.left() + (main_split - stamp.left()) / 2.0
-            segments.append((QPointF(left_mid, row_five), QPointF(left_mid, stamp.bottom()), "endpoint"))
-        for line_index, annotation in enumerate(self._sheet_lines):
-            if (self._drag_sheet_line_endpoint is not None
-                    and self._drag_sheet_line_endpoint[:2] == (-1, line_index)):
-                continue
-            try:
-                first, second = annotation["points"]
-                first_screen = self._sheet_annotation_screen_point({"anchor": first}, None)
-                second_screen = self._sheet_annotation_screen_point({"anchor": second}, None)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if first_screen is not None and second_screen is not None:
-                segments.append((first_screen, second_screen, "endpoint"))
+            segments.append((QPointF(left_mid, row_five), QPointF(left_mid, stamp.bottom())))
+        return segments
 
-        best = None
-        for first, second, kind in segments:
-            snapped = self._closest_point_on_screen_segment(position, first, second)
-            distance = math.hypot(snapped.x() - position.x(), snapped.y() - position.y())
-            if best is None or distance < best[0]:
-                best = (distance, snapped, kind)
-        return (QPointF(best[1]), best[2]) if best is not None and best[0] <= 12.0 else None
-
-    def _line_snap_screen_point(
-        self, position: QPointF, view_index: int | None,
-    ) -> tuple[QPointF, str] | None:
-        if view_index is not None:
-            snap = self._dimension_snap_at(position, view_index)
-            if snap is not None:
-                return QPointF(snap[3]), str(snap[4])
-            # The line tool also supports the view's visible linework even
-            # when dimension snap types have been disabled in project prefs.
-            view = self._sheet_views[view_index]
-            segment_grid = self._segment_grid_for_view(view_index)
-            segments = segment_grid.segments
+    def _table_snap_segments(self):
+        segments = self._sheet_reference_segments()
+        for view_index, annotations in [(None, self._sheet_lines)] + [
+            (index, view.get("sheet_lines", ())) for index, view in enumerate(self._sheet_views)
+        ]:
+            for annotation in annotations:
+                lines, _circles = self._annotation_screen_primitives(annotation, view_index)
+                segments.extend(lines)
+        for view_index, view in enumerate(self._sheet_views):
+            if view_index not in self._view_draw_data:
+                continue
+            grid = self._segment_grid_for_view(view_index)
             owners = view.get("segment_owners", ())
             hidden = {str(owner) for owner in view.get("hidden_owners", ())}
-            best = None
+            for index, (a, b) in enumerate(grid.segments):
+                if len(owners) == len(grid.segments) and str(owners[index]) in hidden:
+                    continue
+                segments.append((self._screen_point(view_index, a), self._screen_point(view_index, b)))
+        return [(a, b) for a, b in segments if a is not None and b is not None]
+
+    @staticmethod
+    def _snap_table_bounds(bounds: QRectF, segments, tolerance=8.0) -> QRectF:
+        """Align parallel edges without accumulating snapped mouse deltas."""
+        dx = dy = None
+        for a, b in segments:
+            if abs(a.x() - b.x()) < 1e-6 and abs(a.y() - b.y()) > 1e-6:
+                if max(a.y(), b.y()) < bounds.top() - tolerance or min(a.y(), b.y()) > bounds.bottom() + tolerance:
+                    continue
+                for edge in (bounds.left(), bounds.right()):
+                    delta = a.x() - edge
+                    if abs(delta) <= tolerance and (dx is None or abs(delta) < abs(dx)):
+                        dx = delta
+            elif abs(a.y() - b.y()) < 1e-6 and abs(a.x() - b.x()) > 1e-6:
+                if max(a.x(), b.x()) < bounds.left() - tolerance or min(a.x(), b.x()) > bounds.right() + tolerance:
+                    continue
+                for edge in (bounds.top(), bounds.bottom()):
+                    delta = a.y() - edge
+                    if abs(delta) <= tolerance and (dy is None or abs(delta) < abs(dy)):
+                        dy = delta
+        return bounds.translated(dx or 0.0, dy or 0.0)
+
+    @staticmethod
+    def _circle_segment_intersections(center, radius, first, second):
+        dx, dy = second.x() - first.x(), second.y() - first.y()
+        ox, oy = first.x() - center.x(), first.y() - center.y()
+        a = dx * dx + dy * dy
+        if a <= 1e-12:
+            return ()
+        b = 2.0 * (dx * ox + dy * oy)
+        c = ox * ox + oy * oy - radius * radius
+        discriminant = b * b - 4.0 * a * c
+        if discriminant < -1e-9:
+            return ()
+        root = math.sqrt(max(0.0, discriminant))
+        return tuple(QPointF(first.x() + t * dx, first.y() + t * dy)
+                     for t in ((-b - root) / (2 * a), (-b + root) / (2 * a))
+                     if 0.0 <= t <= 1.0)
+
+    def _sheet_snap_at(self, position: QPointF, origin: QPointF | None = None):
+        return self._line_snap_screen_point(position, None, origin)
+
+    def _line_snap_screen_point(
+        self, position: QPointF, view_index: int | None, origin: QPointF | None = None,
+    ) -> tuple[QPointF, str] | None:
+        """Only endpoints, midpoints, crossings and perpendiculars from the origin."""
+        segments = []
+        circles = []
+        if view_index is None:
+            segments.extend(self._sheet_reference_segments())
+        elif 0 <= view_index < len(self._sheet_views):
+            view = self._sheet_views[view_index]
+            grid = self._segment_grid_for_view(view_index)
             projected = self._projected_point_at(view_index, position)
             draw_data = self._view_draw_data.get(view_index)
-            if projected is None or draw_data is None or draw_data[4] <= 1e-12:
-                return None
-            nearby = segment_grid.query(*projected, 12.0 / draw_data[4])
-            for index in nearby:
-                segment = segments[index]
-                if len(owners) == len(segments) and str(owners[index]) in hidden:
-                    continue
-                try:
-                    first, second = segment
-                    first_screen = self._screen_point(view_index, first)
-                    second_screen = self._screen_point(view_index, second)
-                except (TypeError, ValueError):
-                    continue
-                if first_screen is None or second_screen is None:
-                    continue
-                candidates = (
-                    (QPointF(first_screen), "endpoint"),
-                    (QPointF(second_screen), "endpoint"),
-                    (QPointF((first_screen.x() + second_screen.x()) / 2,
-                             (first_screen.y() + second_screen.y()) / 2), "center"),
-                    (self._closest_point_on_screen_segment(position, first_screen, second_screen), "perpendicular"),
-                )
-                for candidate, kind in candidates:
-                    distance = math.hypot(candidate.x() - position.x(), candidate.y() - position.y())
-                    if best is None or distance < best[0]:
-                        best = (distance, candidate, kind)
-            if best is not None and best[0] <= 12.0:
-                return QPointF(best[1]), best[2]
+            if projected is not None and draw_data is not None and draw_data[4] > 1e-12:
+                owners = view.get("segment_owners", ())
+                hidden = {str(owner) for owner in view.get("hidden_owners", ())}
+                for index in grid.query(*projected, 12.0 / draw_data[4]):
+                    if len(owners) == len(grid.segments) and str(owners[index]) in hidden:
+                        continue
+                    first, second = grid.segments[index]
+                    segments.append((self._screen_point(view_index, first),
+                                     self._screen_point(view_index, second)))
+                for first, second in self._axis_dimension_snap_segments.get(view_index, ()):
+                    segments.append((self._screen_point(view_index, first),
+                                     self._screen_point(view_index, second)))
+        else:
             return None
-        return self._sheet_snap_at(position)
+        annotations = (self._sheet_lines if view_index is None
+                       else self._sheet_views[view_index].get("sheet_lines", ()))
+        for index, annotation in enumerate(annotations):
+            key = (-1 if view_index is None else view_index, index)
+            if self._drag_sheet_line_endpoint is not None and self._drag_sheet_line_endpoint[:2] == key:
+                continue
+            shape_segments, shape_circles = self._annotation_screen_primitives(annotation, view_index)
+            segments.extend(shape_segments)
+            circles.extend(shape_circles)
+        segments = [(a, b) for a, b in segments if a is not None and b is not None
+                    and QRectF(a, b).normalized().adjusted(-12, -12, 12, 12).contains(position)]
+        best = None
+        def consider(point, kind):
+            nonlocal best
+            distance = math.hypot(point.x() - position.x(), point.y() - position.y())
+            if distance <= 12.0 and (best is None or distance < best[0]):
+                best = (distance, point, kind)
+        for first, second in segments:
+            consider(first, "endpoint")
+            consider(second, "endpoint")
+            consider((first + second) / 2.0, "center")
+            if origin is not None:
+                dx, dy = second.x() - first.x(), second.y() - first.y()
+                length_squared = dx * dx + dy * dy
+                if length_squared > 1e-12:
+                    t = ((origin.x() - first.x()) * dx + (origin.y() - first.y()) * dy) / length_squared
+                    if 0.0 <= t <= 1.0:
+                        consider(QPointF(first.x() + t * dx, first.y() + t * dy), "perpendicular")
+        for i, (first, second) in enumerate(segments):
+            for other_first, other_second in segments[i + 1:]:
+                crossing = self._segment_intersection(
+                    ((first.x(), first.y()), (second.x(), second.y())),
+                    ((other_first.x(), other_first.y()), (other_second.x(), other_second.y())),
+                )
+                if crossing is not None:
+                    consider(QPointF(*crossing), "intersection")
+            for center, radius in circles:
+                for crossing in self._circle_segment_intersections(center, radius, first, second):
+                    consider(crossing, "intersection")
+        for i, (center, radius) in enumerate(circles):
+            if origin is not None:
+                delta = origin - center
+                length = math.hypot(delta.x(), delta.y())
+                if length > 1e-12:
+                    consider(center + delta * (radius / length), "perpendicular")
+                    consider(center - delta * (radius / length), "perpendicular")
+            for other, other_radius in circles[i + 1:]:
+                delta = other - center
+                distance = math.hypot(delta.x(), delta.y())
+                if distance <= 1e-12 or distance > radius + other_radius or distance < abs(radius - other_radius):
+                    continue
+                offset = (radius * radius - other_radius * other_radius + distance * distance) / (2 * distance)
+                height = math.sqrt(max(0.0, radius * radius - offset * offset))
+                base = center + delta * (offset / distance)
+                normal = QPointF(-delta.y(), delta.x()) * (height / distance)
+                consider(base + normal, "intersection")
+                consider(base - normal, "intersection")
+        return (QPointF(best[1]), best[2]) if best is not None else None
 
     def _line_endpoint_screen_point(
         self, first_screen: QPointF, position: QPointF, view_index: int | None, free: bool,
     ) -> QPointF:
         # Explicit geometry snaps take precedence over the 45-degree angle snap.
-        snap = self._line_snap_screen_point(position, view_index)
+        snap = self._line_snap_screen_point(position, view_index, first_screen)
         if snap is not None:
             return snap[0]
+        kind = self._annotation_mode
+        if self._drag_sheet_line_endpoint is not None:
+            view_key, index, _endpoint = self._drag_sheet_line_endpoint
+            collection = self._line_annotation_collection(None if view_key < 0 else view_key)
+            if 0 <= index < len(collection):
+                kind = collection[index].get("kind", "line")
+        if kind in {"rectangle", "circle"}:
+            return QPointF(position)
         return self._constrain_line_endpoint(first_screen, position, free)
 
     def _sheet_annotation_click(self, point: QPointF, modifiers: Qt.KeyboardModifier) -> None:
@@ -2941,7 +3154,7 @@ class ProjectSheetWorkspace(QWidget):
                 "html": "",
             })
             return
-        if self._annotation_mode != "line":
+        if self._annotation_mode not in {"line", "rectangle", "circle"}:
             return
         if self._line_start_context is None:
             view_index = self._annotation_view_at(point)
@@ -2950,6 +3163,7 @@ class ProjectSheetWorkspace(QWidget):
             anchor = self._annotation_anchor(start_point, view_index)
             if anchor is None:
                 return
+            self._begin_sheet_annotation_drag()
             self._line_start_context = (view_index, anchor)
             self._line_preview_endpoint = anchor
             self._line_preview_screen_endpoint = QPointF(start_point)
@@ -2968,11 +3182,18 @@ class ProjectSheetWorkspace(QWidget):
         end = self._line_endpoint_at(end_screen, view_index)
         if end is None or math.hypot(end[0] - start[0], end[1] - start[1]) <= 1e-9:
             return
+        kind = self._annotation_mode
+        if kind == "rectangle" and (abs(end_screen.x() - start_screen.x()) < 1e-6
+                                     or abs(end_screen.y() - start_screen.y()) < 1e-6):
+            return
         collection = self._line_annotation_collection(view_index)
-        collection.append({"points": (start, end)})
+        collection.append({"kind": kind, "points": (start, end)})
+        self._selected_component_detail_group = None
+        self.select_view(None)
         self._selected_sheet_line = (view_index if view_index is not None else -1, len(collection) - 1)
         self._selected_sheet_text = None
         self._annotation_mode = None
+        self._annotation_background = None
         self._line_start_context = None
         self._line_preview_endpoint = None
         self._line_preview_screen_endpoint = None
@@ -2981,7 +3202,7 @@ class ProjectSheetWorkspace(QWidget):
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         self.update()
         self.layout_changed.emit()
-        self.annotation_finished.emit("line", False)
+        self.annotation_finished.emit(kind, False)
 
     def _make_detail_identifier(self, view, name, center, radius) -> dict:
         denominator = max(1.0, float(view.get("scale_denominator", 100.0)))
@@ -4374,6 +4595,29 @@ class ProjectSheetWorkspace(QWidget):
                 self._sheet_annotation_click(event.position(), event.modifiers())
                 event.accept()
                 return
+            table_hit = next((index for index, rect in reversed(tuple(self._sheet_table_hit_rects.items()))
+                              if rect.contains(event.position())), None)
+            if table_hit is not None and not any((self._dimension_mode, self._identification_mode,
+                                                 self._detail_identifier_mode, self._elevation_identifier_mode,
+                                                 self._element_visibility_mode)):
+                self._selected_sheet_table = table_hit
+                self._selected_sheet_text = None
+                self._selected_sheet_line = None
+                self._selected_component_detail_group = None
+                self.select_view(None)
+                self._begin_sheet_annotation_drag()
+                self._drag_sheet_table = table_hit
+                self._table_drag_raw_bounds = QRectF(self._sheet_table_hit_rects[table_hit])
+                self._table_drag_snap_segments = self._table_snap_segments()
+                self._drag_position = event.position()
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                self.update()
+                event.accept()
+                return
+            if self._selected_sheet_table is not None:
+                self._selected_sheet_table = None
+                self.update()
             line_handle = next((
                 key for key, rect in self._sheet_line_handle_hit_rects.items()
                 if rect.contains(event.position())
@@ -4848,6 +5092,23 @@ class ProjectSheetWorkspace(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._drag_sheet_table is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            index = self._drag_sheet_table
+            bounds = self._sheet_table_hit_rects.get(index)
+            tables = self._settings.get("tables", ())
+            if bounds is not None and self._drag_position is not None and 0 <= index < len(tables):
+                delta = event.position() - self._drag_position
+                self._drag_position = event.position()
+                raw_bounds = self._table_drag_raw_bounds if self._table_drag_raw_bounds is not None else bounds
+                self._table_drag_raw_bounds = raw_bounds.translated(delta)
+                moved = self._snap_table_bounds(self._table_drag_raw_bounds, self._table_drag_snap_segments)
+                position = self._annotation_anchor(moved.topLeft(), None)
+                if position is not None:
+                    tables[index]["position"] = position
+                    self._sheet_table_hit_rects[index] = moved
+                    self._update_annotation_regions(bounds, moved)
+            event.accept()
+            return
         if self._drag_sheet_line_endpoint is not None and event.buttons() & Qt.MouseButton.LeftButton:
             view_key, line_index, endpoint = self._drag_sheet_line_endpoint
             view_index = None if view_key < 0 else view_key
@@ -4862,6 +5123,9 @@ class ProjectSheetWorkspace(QWidget):
                     )
                     anchor = self._annotation_anchor(screen, view_index)
                     if anchor is not None:
+                        if collection[line_index].get("kind") == "circle" and endpoint == 0:
+                            dx, dy = anchor[0] - points[0][0], anchor[1] - points[0][1]
+                            points[1] = (points[1][0] + dx, points[1][1] + dy)
                         points[endpoint] = anchor
                         collection[line_index]["points"] = tuple(points)
                         self.update()
@@ -4920,11 +5184,11 @@ class ProjectSheetWorkspace(QWidget):
                 self._update_annotation_regions(old_bounds, self._drag_sheet_text_bounds)
             event.accept()
             return
-        if self._annotation_mode == "line" and self._line_start_context is not None:
+        if self._annotation_mode in {"line", "rectangle", "circle"} and self._line_start_context is not None:
             view_index, start = self._line_start_context
             start_screen = self._sheet_annotation_screen_point({"anchor": start}, view_index)
             if start_screen is not None:
-                snap = self._line_snap_screen_point(event.position(), view_index)
+                snap = self._line_snap_screen_point(event.position(), view_index, start_screen)
                 end_screen = self._line_endpoint_screen_point(
                     start_screen, event.position(), view_index,
                     bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier),
@@ -4936,7 +5200,7 @@ class ProjectSheetWorkspace(QWidget):
                 self.update()
             event.accept()
             return
-        if self._annotation_mode == "line":
+        if self._annotation_mode in {"line", "rectangle", "circle"}:
             view_index = self._annotation_view_at(event.position())
             snap = self._line_snap_screen_point(event.position(), view_index)
             self._line_preview_snap_screen = QPointF(snap[0]) if snap is not None else None
@@ -5559,6 +5823,17 @@ class ProjectSheetWorkspace(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_sheet_table is not None:
+            self._drag_sheet_table = None
+            self._table_drag_raw_bounds = None
+            self._table_drag_snap_segments = []
+            self._drag_position = None
+            self._annotation_background = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_sheet_line_endpoint is not None:
             self._drag_sheet_line_endpoint = None
             self._annotation_background = None
@@ -5699,6 +5974,19 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            table_hit = next((index for index, rect in reversed(tuple(self._sheet_table_hit_rects.items()))
+                              if rect.contains(event.position())), None)
+            if table_hit is not None and self._annotation_mode is None:
+                self._selected_sheet_table = table_hit
+                self._drag_sheet_table = None
+                self._table_drag_raw_bounds = None
+                self._table_drag_snap_segments = []
+                self._drag_position = None
+                self._annotation_background = None
+                self.table_editor_requested.emit(table_hit)
+                self.update()
+                event.accept()
+                return
             text_hit = next((
                 key for key, rect in reversed(tuple(self._sheet_text_hit_rects.items()))
                 if rect.contains(event.position())
@@ -5764,6 +6052,9 @@ class ProjectSheetWorkspace(QWidget):
                 self._finish_element_visibility_mode(True)
             else:
                 self._confirm_element_visibility_selection()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Delete and self.delete_selected_sheet_table():
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete and self.delete_selected_dimension():

@@ -83,6 +83,7 @@ from .project_sheet import (
     ProjectSheetWorkspace,
 )
 from .project_sheet_refresh import SheetLineworkSignals, SheetLineworkTask
+from .sheet_tables import InsertSheetTableDialog, RevisionTableEditor, initial_revision_rows, revision_rows_for, steel_profile_rows
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
@@ -236,6 +237,7 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(self.home)
         self.view_stack.addWidget(self.scene)
         self.project_sheet_workspace = ProjectSheetWorkspace(shell)
+        self.project_sheet_workspace.steel_profile_rows_provider = self._steel_profile_table_rows
         self.view_stack.addWidget(self.project_sheet_workspace)
         shell_layout.addWidget(self.title_bar)
         shell_layout.addWidget(self.view_stack, 1)
@@ -262,6 +264,9 @@ class MainWindow(QMainWindow):
         )
         self.project_sheet_workspace.text_editor_requested.connect(
             self._project_sheet_text_editor_requested
+        )
+        self.project_sheet_workspace.table_editor_requested.connect(
+            self._project_sheet_table_editor_requested
         )
         self.project_sheet_workspace.annotation_finished.connect(
             self._project_sheet_annotation_finished
@@ -1476,6 +1481,62 @@ class MainWindow(QMainWindow):
             "<span style='color:#57606a'>(Clique na vista em que a elevação será identificada)</span>"
         )
 
+    def _steel_profile_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, self.model.calculation_properties_revision)
+        cached = getattr(self, "_steel_profiles_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, steel_profile_rows(self.model))
+            self._steel_profiles_table_cache = cached
+        return cached[1]
+
+    def open_project_sheet_tables(self) -> None:
+        palette = self.project_sheets_palette
+        if not self._detailing_project_mode or not palette.sheet_selector.currentText():
+            return
+        dialog = InsertSheetTableDialog(
+            self, palette._sheet_names, palette.sheet_selector.currentText(),
+            palette._sheet_settings, palette._project_settings, self._steel_profile_table_rows(),
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_table is None:
+            return
+        sheet_name, kind = dialog.result_table
+        settings = palette._sheet_settings[sheet_name]
+        scope = palette._project_settings if kind == "project_revisions" else settings
+        if kind != "steel_profiles" and not isinstance(scope.get(kind), list):
+            scope[kind] = initial_revision_rows()
+        settings.setdefault("tables", []).append({"kind": kind})
+        palette.sheet_selector.setCurrentText(sheet_name)
+        workspace = self.project_sheet_workspace
+        workspace.set_sheet_settings(sheet_name, settings, palette._project_settings, len(palette._sheet_names))
+        workspace.select_view(None)
+        workspace._selected_sheet_text = None
+        workspace._selected_sheet_line = None
+        workspace._selected_component_detail_group = None
+        workspace._selected_sheet_table = len(settings["tables"]) - 1
+        workspace.update()
+        self._store_detailing_state()
+
+    def _project_sheet_table_editor_requested(self, index: int) -> None:
+        palette = self.project_sheets_palette
+        sheet_name = palette.sheet_selector.currentText()
+        settings = palette._sheet_settings.get(sheet_name, {})
+        tables = settings.get("tables", ())
+        if not 0 <= index < len(tables):
+            return
+        kind = tables[index].get("kind")
+        if kind not in {"sheet_revisions", "project_revisions"}:
+            return
+        dialog = RevisionTableEditor(
+            self, kind, revision_rows_for(settings, palette._project_settings, kind), sheet_name,
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            scope = palette._project_settings if kind == "project_revisions" else settings
+            scope[kind] = dialog.result_rows
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+
     def start_project_sheet_text(self) -> None:
         if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
             return
@@ -1491,21 +1552,37 @@ class MainWindow(QMainWindow):
         )
 
     def start_project_sheet_line(self) -> None:
+        self._start_project_sheet_shape("line")
+
+    def start_project_sheet_rectangle(self) -> None:
+        self._start_project_sheet_shape("rectangle")
+
+    def start_project_sheet_circle(self) -> None:
+        self._start_project_sheet_shape("circle")
+
+    def _start_project_sheet_shape(self, kind: str) -> None:
         if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
             return
         self.command_session.cancel()
-        self._command_mode = "project_sheet_line"
+        self._command_mode = f"project_sheet_{kind}"
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
-        self.project_sheet_workspace.set_sheet_line_mode(True)
+        self.project_sheet_workspace.set_sheet_line_mode(True, kind)
+        title, prompt = {
+            "line": ("Desenhar linha", "Defina os pontos inicial e final; Shift libera o ângulo"),
+            "rectangle": ("Desenhar retângulo", "Defina dois cantos opostos do retângulo"),
+            "circle": ("Desenhar círculo", "Defina o centro e depois o raio do círculo"),
+        }[kind]
         self.history.append(
-            "> <b>Desenhar linha</b> <span style='color:#57606a'>"
-            "(Defina os pontos inicial e final; Shift libera o ângulo; Esc cancela)</span>"
+            f"> <b>{title}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>"
         )
 
     def _project_sheet_text_editor_requested(self, annotation: dict) -> None:
-        dialog = ProjectSheetTextDialog(self, html=str(annotation.get("html", "")))
+        dialog = ProjectSheetTextDialog(
+            self, html=str(annotation.get("html", "")),
+            text_height_mm=float(annotation.get("text_height_mm", 3.0)),
+        )
         self._active_sheet_text_dialog = dialog
         dialog.move(self.geometry().center() - dialog.rect().center())
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
@@ -1517,11 +1594,13 @@ class MainWindow(QMainWindow):
                 existing = self.project_sheet_workspace._annotation_for_text_key(edit_key)
                 if existing is not None:
                     existing["html"] = html
+                    existing["text_height_mm"] = dialog.text_height_input.value()
                     self.project_sheet_workspace._selected_sheet_text = edit_key
                     self.project_sheet_workspace.update()
                     self.project_sheet_workspace.layout_changed.emit()
             else:
                 annotation["html"] = html
+                annotation["text_height_mm"] = dialog.text_height_input.value()
                 annotation.pop("_edit_key", None)
                 annotation.pop("_existing_text", None)
                 self.project_sheet_workspace.add_sheet_text(annotation)
@@ -1537,15 +1616,16 @@ class MainWindow(QMainWindow):
         self.history.append(f"> <b>Inserir texto</b> <span style='color:#8c959f'>({message})</span>")
 
     def _project_sheet_annotation_finished(self, kind: str, canceled: bool) -> None:
-        if kind == "line":
+        if kind in {"line", "rectangle", "circle"}:
             self._command_mode = None
             app = QApplication.instance()
             if app is not None:
                 app.removeEventFilter(self)
             self._store_detailing_state()
             message = "Operação cancelada" if canceled else "Concluído"
+            title = {"line": "Desenhar linha", "rectangle": "Desenhar retângulo", "circle": "Desenhar círculo"}[kind]
             self.history.append(
-                f"> <b>Desenhar linha</b> <span style='color:#8c959f'>({message})</span>"
+                f"> <b>{title}</b> <span style='color:#8c959f'>({message})</span>"
             )
         elif kind == "text" and canceled:
             self._command_mode = None
@@ -4059,7 +4139,7 @@ class MainWindow(QMainWindow):
         if (
             event.type() == QEvent.Type.KeyPress
             and event.key() == Qt.Key.Key_Escape
-            and self._command_mode in {"project_sheet_text", "project_sheet_line"}
+            and self._command_mode in {"project_sheet_text", "project_sheet_line", "project_sheet_rectangle", "project_sheet_circle"}
         ):
             if self._command_mode == "project_sheet_text":
                 dialog = getattr(self, "_active_sheet_text_dialog", None)
@@ -4070,8 +4150,10 @@ class MainWindow(QMainWindow):
                 self.project_sheet_workspace.set_sheet_text_mode(False)
                 self.project_sheet_workspace.annotation_finished.emit("text", True)
             else:
+                kind = self.project_sheet_workspace._annotation_mode
                 self.project_sheet_workspace.set_sheet_line_mode(False)
-                self.project_sheet_workspace.annotation_finished.emit("line", True)
+                if kind in {"line", "rectangle", "circle"}:
+                    self.project_sheet_workspace.annotation_finished.emit(kind, True)
             event.accept()
             return True
         if (
@@ -6652,6 +6734,8 @@ class MainWindow(QMainWindow):
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
             return
         if self._detailing_project_mode:
+            if self.project_sheet_workspace.delete_selected_sheet_table():
+                return
             if self.project_sheet_workspace.delete_selected_sheet_text():
                 return
             if self.project_sheet_workspace.delete_selected_sheet_line():
