@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 
 from .entities import NodeComponentDefinition
@@ -61,6 +63,9 @@ NODE_COMPONENTS: tuple[NodeComponentDefinition, ...] = (
             ("deslocamento_b_mm", 0.0),
             ("espessura_mm", 20.0),
             ("rotacao_deg", 0.0),
+            ("material_chapa", "ASTM A36"),
+            ("plano", "XY+"),
+            ("identificacao_fixador", ""),
             ("fixador", "Reto"),
             ("diametro_mm", 16.0),
             ("comprimento_fixador_mm", 300.0),
@@ -70,12 +75,12 @@ NODE_COMPONENTS: tuple[NodeComponentDefinition, ...] = (
             ("fixadores_lado_a", 2),
             ("fixadores_lado_b", 2),
             ("distancia_a_mm", 50.0),
-            ("plano", "XY+"),
+            ("material_fixador", "SAE 1020"),
         ),
     ),
     NodeComponentDefinition(
         component_id="stair_plate",
-        name="Chapa degrau",
+        name="Chapa de degrau",
         interacts_with_model=False,
         has_3d_representation=True,
         parametric=True,
@@ -86,6 +91,8 @@ NODE_COMPONENTS: tuple[NodeComponentDefinition, ...] = (
             ("deslocamento_b_mm", 0.0),
             ("espessura_mm", 6.3),
             ("rotacao_deg", 0.0),
+            ("material_chapa", "ASTM A36"),
+            ("madeira_ativa", True),
             ("madeira_largura_mm", 280.0),
             ("madeira_comprimento_mm", 800.0),
             ("madeira_deslocamento_a_mm", 0.0),
@@ -104,3 +111,10 @@ def node_component_definition(component_id: str) -> NodeComponentDefinition | No
     return next(
         (item for item in NODE_COMPONENTS if item.component_id == component_id), None,
     )
+
+
+def node_component_geometry_signature(model) -> str:
+    """Stable visual-geometry stamp, independent of sheet annotations."""
+    components = [(name, node.component.component_id, node.component.parameters)
+                  for name, node in sorted(model.nodes.items()) if getattr(node, "component", None) is not None]
+    return hashlib.sha256(json.dumps(components, sort_keys=True).encode()).hexdigest()

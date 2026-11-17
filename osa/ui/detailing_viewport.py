@@ -17,6 +17,7 @@ from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 from pyvistaqt import QtInteractor
 
+from osa.domain.node_components import node_component_geometry_signature
 from osa.ui.detailing_preview import DetailingViewPreview, _ModelSnapshot, _ViewGeometryCalculator
 from osa.rendering.batched_renderer import _merge_unique_line_meshes
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
@@ -104,6 +105,7 @@ class DetailingViewViewport(QFrame):
         return (
             id(model),
             getattr(model, "revision", None),
+            node_component_geometry_signature(model),
             plane,
             cls._coordinate_key(plane, coordinate),
             float(settings.get("upper_offset_cm", 50.0)),
@@ -139,6 +141,7 @@ class DetailingViewViewport(QFrame):
                 shared.move_to_end(cache_key)
         if cached is None:
             snapshot_key = (id(model), getattr(model, "revision", None),
+                            node_component_geometry_signature(model),
                             getattr(model, "verification_group_revision", None))
             if snapshot_key != self._worker_snapshot_key:
                 self._worker_snapshot_key = snapshot_key
@@ -178,6 +181,7 @@ class DetailingViewViewport(QFrame):
         if self._is_shutdown or generation != self._render_generation or self._current_model is None:
             return
         if (cache_key[1] != getattr(self._current_model, "revision", None)
+                or cache_key[2] != node_component_geometry_signature(self._current_model)
                 or cache_key[-1] != getattr(self._current_model, "verification_group_revision", None)):
             plane, coordinate, settings = self._current_view
             self.request_view(self._current_model, plane, coordinate, **settings)

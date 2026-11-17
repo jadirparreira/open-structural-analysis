@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 
+from osa.domain.node_components import node_component_geometry_signature
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
@@ -1752,6 +1753,7 @@ class ComponentDetailsDialog(QDialog):
                 "name": f'{group["label"]} - {title}',
                 "detail_view_key": f"component:base_plate:{group_id}:{direction_key}",
                 "model_revision": model_revision,
+                "component_geometry_signature": node_component_geometry_signature(self._window.model),
                 "linework_version": DETAILING_LINEWORK_VERSION,
                 "segments": tuple(data["segments"]),
                 "segment_owners": tuple(data["segment_owners"]),
@@ -2366,6 +2368,7 @@ class DetailingViewsDialog(QDialog):
             or self._view_fallbacks[view_key],
             "detail_view_key": str(view_key[1]),
             "model_revision": model.revision,
+            "component_geometry_signature": node_component_geometry_signature(model),
             "linework_version": DETAILING_LINEWORK_VERSION,
             "segments": tuple(segments),
             "segment_owners": tuple(segment_owners),
@@ -3495,6 +3498,7 @@ class ProjectSheetSettingsDialog(QDialog):
         self, sheet_name: str, settings: dict, project_settings: dict,
         sheet_count: int, parent=None, rename_sheet_callback=None,
         sheet_settings: dict | None = None, sheet_names: list[str] | None = None,
+        manage_sheets_callback=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Configurações do projeto")
@@ -3506,16 +3510,18 @@ class ProjectSheetSettingsDialog(QDialog):
         self._project_settings = dict(project_settings)
         self._project_settings.pop("phase", None)
         self._sheet_count = sheet_count
+        self._manage_sheets_callback = manage_sheets_callback
         self._rename_sheet_callback = rename_sheet_callback
-        self._sheet_names = list(sheet_names or (sheet_name,))
+        self._sheet_names = list(sheet_names if sheet_names is not None else (sheet_name,))
         self._active_sheet_label = sheet_name
         self._sheet_settings_by_name = {}
-        for label, values in (sheet_settings or {sheet_name: settings}).items():
+        for label, values in (sheet_settings if sheet_settings is not None else {sheet_name: settings}).items():
             cloned = dict(values)
             cloned["visible_fields"] = dict(values.get("visible_fields", {}))
             cloned["visible_fields"].pop("phase", None)
             self._sheet_settings_by_name[label] = cloned
-        self._sheet_settings_by_name.setdefault(sheet_name, dict(settings))
+        if sheet_name:
+            self._sheet_settings_by_name.setdefault(sheet_name, dict(settings))
         self._loading_sheet_settings = False
         self.result_settings: dict | None = None
         self.result_project_settings: dict | None = None
@@ -3577,7 +3583,7 @@ class ProjectSheetSettingsDialog(QDialog):
         navigation.setFixedWidth(170)
         navigation.setSpacing(8)
         navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota", "Detalhe", "Elevação"))
+        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota", "Detalhe", "Elevação", "Solda"))
         pages = QStackedWidget(self)
         pages.addWidget(self._build_project_data_settings())
         pages.addWidget(self._build_sheet_settings())
@@ -3586,6 +3592,7 @@ class ProjectSheetSettingsDialog(QDialog):
         pages.addWidget(self._build_dimension_settings())
         pages.addWidget(self._build_detail_identifier_settings())
         pages.addWidget(self._build_elevation_identifier_settings())
+        pages.addWidget(self._build_weld_settings())
         navigation.currentRowChanged.connect(pages.setCurrentIndex)
         navigation.setCurrentRow(0)
         content.addWidget(navigation)
@@ -3703,6 +3710,22 @@ class ProjectSheetSettingsDialog(QDialog):
         )
         self.rename_subject_button.clicked.connect(self._rename_sheet_from_settings)
         subject_layout.addWidget(self.rename_subject_button)
+        for attribute, icon, title, operation in (
+            ("add_sheet_button", "plus.svg", "Adicionar folha", "add"),
+            ("remove_sheet_button", "minus.svg", "Remover folha", "remove"),
+        ):
+            button = QToolButton(subject_row)
+            button.setIcon(QIcon(str(icons_path / icon)))
+            button.setIconSize(QSize(18, 18))
+            button.setFixedSize(34, 34)
+            button.setToolTip(title)
+            button.setAccessibleName(title)
+            button.setStyleSheet(self.rename_subject_button.styleSheet())
+            button.clicked.connect(lambda _checked=False, op=operation: self._manage_sheet_from_settings(op))
+            button.setEnabled(self._manage_sheets_callback is not None and (operation == "add" or bool(self._sheet_names)))
+            subject_layout.addWidget(button)
+            setattr(self, attribute, button)
+        self.rename_subject_button.setEnabled(bool(self._sheet_names) and self._rename_sheet_callback is not None)
         self._add_sheet_setting_field(dimensions, "Assunto", subject_row, 0, 0, 2)
         self.paper_size_combo = QComboBox(page)
         self.paper_size_combo.setObjectName("sheetFormatSelector")
@@ -3813,6 +3836,39 @@ class ProjectSheetSettingsDialog(QDialog):
     ) -> None:
         grid.addWidget(QLabel(label), row, column, 1, column_span)
         grid.addWidget(widget, row + 1, column, 1, column_span)
+
+    def _manage_sheet_from_settings(self, operation: str) -> None:
+        if self._manage_sheets_callback is None:
+            return
+        if self._active_sheet_label:
+            self._sheet_settings_by_name[self._active_sheet_label] = dict(self._collect_sheet_settings())
+        state = self._manage_sheets_callback(operation, self._active_sheet_label)
+        drafts = {label.partition(" - ")[2]: (label, values)
+                  for label, values in self._sheet_settings_by_name.items()}
+        self._sheet_names = list(state["names"])
+        self._sheet_count = len(self._sheet_names)
+        self._sheet_settings_by_name = {}
+        for label in self._sheet_names:
+            old_label, draft = drafts.get(label.partition(" - ")[2], (label, state["settings"][label]))
+            values = dict(draft)
+            if old_label != label:
+                values["sheet_number"] = state["settings"][label].get("sheet_number", label.partition(" - ")[0])
+            self._sheet_settings_by_name[label] = values
+        self._active_sheet_label = state["active"]
+        self.subject_edit.blockSignals(True)
+        self.subject_edit.clear()
+        for label in self._sheet_names:
+            self.subject_edit.addItem(label, label)
+        self.subject_edit.setCurrentIndex(self.subject_edit.findData(self._active_sheet_label))
+        self.subject_edit.blockSignals(False)
+        self.sheet_number_combo.blockSignals(True)
+        self.sheet_number_combo.clear()
+        self.sheet_number_combo.addItems(f"{number:02d}" for number in range(1, self._sheet_count + 1))
+        self.sheet_number_combo.blockSignals(False)
+        self._load_sheet_settings(self._sheet_settings_by_name.get(self._active_sheet_label, {}))
+        has_sheets = bool(self._sheet_names)
+        self.remove_sheet_button.setEnabled(has_sheets)
+        self.rename_subject_button.setEnabled(has_sheets and self._rename_sheet_callback is not None)
 
     def _rename_sheet_from_settings(self) -> None:
         if self._rename_sheet_callback is None:
@@ -4350,8 +4406,99 @@ class ProjectSheetSettingsDialog(QDialog):
                 self._elevation_identifier_custom_colors = list(picker.custom_colors)
                 self._set_elevation_identifier_color_button(key)
 
+    def _build_weld_settings(self) -> QWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Solda")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Defina a aparência das marcas de solda em todas as folhas.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        defaults = {
+            "weld_symbol_color": "#000000",
+            "weld_line_color": "#ff0000",
+            "weld_text_color": "#000000",
+        }
+        self._weld_color_values = {}
+        for key, default in defaults.items():
+            color = QColor(str(self._project_settings.get(key, default)))
+            self._weld_color_values[key] = (
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else default
+            )
+        self._weld_custom_colors = []
+        for value in self._project_settings.get("weld_custom_colors", ()):
+            color = QColor(str(value)) if value else QColor()
+            self._weld_custom_colors.append(
+                color.name(QColor.NameFormat.HexRgb) if color.isValid() else None
+            )
+        self._weld_custom_colors = self._weld_custom_colors[
+            :_DimensionColorDialog.CUSTOM_SLOT_COUNT
+        ]
+        self._weld_custom_colors.extend(
+            [None] * (_DimensionColorDialog.CUSTOM_SLOT_COUNT - len(self._weld_custom_colors))
+        )
+        self._weld_color_buttons = {}
+        form = QFormLayout()
+        for key, label in (
+            ("weld_line_color", "Cor da linha"),
+            ("weld_symbol_color", "Cor dos símbolos"),
+            ("weld_text_color", "Cor do texto"),
+        ):
+            button = QToolButton(page)
+            button.setFixedSize(34, 34)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(
+                lambda _checked=False, color_key=key: self._choose_weld_color(color_key)
+            )
+            self._weld_color_buttons[key] = button
+            self._set_weld_color_button(key)
+            form.addRow(label, button)
+
+        self.weld_text_height_box, self.weld_text_height_spin = self._unit_input(
+            page,
+            self._project_settings.get("weld_text_height_mm", 3.0),
+            0.5,
+            100.0,
+            decimals=1,
+        )
+        form.addRow("Altura do texto", self.weld_text_height_box)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        scroll.setWidget(page)
+        return scroll
+
+    def _set_weld_color_button(self, key: str) -> None:
+        color = self._weld_color_values[key]
+        button = self._weld_color_buttons[key]
+        button.setStyleSheet(
+            f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+            "QToolButton:hover { border: 2px solid #0969da; }"
+        )
+
+    def _choose_weld_color(self, key: str) -> None:
+        picker = _DimensionColorDialog(
+            self._weld_color_values[key],
+            self._weld_custom_colors,
+            self,
+        )
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            selected = QColor(picker.selected_color)
+            if selected.isValid():
+                self._weld_color_values[key] = selected.name(QColor.NameFormat.HexRgb)
+                self._weld_custom_colors = list(picker.custom_colors)
+                self._set_weld_color_button(key)
+
     def _save(self) -> None:
-        self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
+        if self._active_sheet_label:
+            self._sheet_settings_by_name[self._active_sheet_label] = self._collect_sheet_settings()
         self.result_sheet_settings = self._sheet_settings_by_name
         self._project_settings.update({
             "client": self.client_edit.text().strip(),
@@ -4379,6 +4526,9 @@ class ProjectSheetSettingsDialog(QDialog):
             "detail_identifier_custom_colors": list(self._detail_identifier_custom_colors),
             "detail_identifier_leader_length_mm": self.detail_identifier_leader_length_spin.value(),
             "detail_identifier_text_height_mm": self.detail_identifier_text_height_spin.value(),
+            **self._weld_color_values,
+            "weld_custom_colors": list(self._weld_custom_colors),
+            "weld_text_height_mm": self.weld_text_height_spin.value(),
             **self._elevation_identifier_color_values,
             "elevation_identifier_custom_colors": list(self._elevation_identifier_custom_colors),
             "elevation_identifier_text_height_mm": self.elevation_identifier_text_height_spin.value(),
@@ -4386,7 +4536,7 @@ class ProjectSheetSettingsDialog(QDialog):
                 self.elevation_identifier_direction_snap_spin.value()
             ),
         })
-        self.result_settings = self._sheet_settings_by_name[self._active_sheet_label]
+        self.result_settings = self._sheet_settings_by_name.get(self._active_sheet_label, {})
         self.result_project_settings = self._project_settings
         self.accept()
 

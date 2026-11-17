@@ -7,6 +7,7 @@ import uuid
 import numpy as np
 from PySide6.QtCore import QSettings, QThread, QThreadPool, Signal, Slot
 
+from osa.domain.node_components import node_component_geometry_signature
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
@@ -18,6 +19,8 @@ from osa.rendering.plate_result_display import (
 )
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
+from osa.services.steel_quantities import steel_plate_rows
+from osa.services.component_accessories import component_accessory_rows
 from osa.services.plate_contour import plate_contour
 from osa.transcriptions import is_import_path
 from osa.transcriptions.plates import require_no_pending_plates
@@ -81,6 +84,7 @@ from .project_sheet import (
     ProjectSheetIdentificationPanel,
     ProjectSheetViewPanel,
     ProjectSheetWorkspace,
+    default_project_sheet_settings,
 )
 from .project_sheet_refresh import SheetLineworkSignals, SheetLineworkTask
 from .sheet_tables import InsertSheetTableDialog, RevisionTableEditor, initial_revision_rows, revision_rows_for, steel_profile_rows
@@ -99,6 +103,7 @@ from .split_member_dialog import SplitMemberDialog
 from .subtractions_panel import SubtractionsPanel
 from .verification_worker import VerificationWorker
 from .window_frame import TitleBar, WindowFrame
+from .weld_symbols import WeldTool
 
 
 class _ProjectLoadingDialog(QDialog):
@@ -238,6 +243,8 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(self.scene)
         self.project_sheet_workspace = ProjectSheetWorkspace(shell)
         self.project_sheet_workspace.steel_profile_rows_provider = self._steel_profile_table_rows
+        self.project_sheet_workspace.steel_plate_rows_provider = self._steel_plate_table_rows
+        self.project_sheet_workspace.accessory_rows_provider = self._accessory_table_rows
         self.view_stack.addWidget(self.project_sheet_workspace)
         shell_layout.addWidget(self.title_bar)
         shell_layout.addWidget(self.view_stack, 1)
@@ -250,6 +257,8 @@ class MainWindow(QMainWindow):
         self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
         self.project_sheet_detail_identifier_panel = ProjectSheetDetailIdentifierPanel(self)
         self.project_sheet_elevation_identifier_panel = ProjectSheetElevationIdentifierPanel(self)
+        self.project_weld_tool = WeldTool(self, self.project_sheet_workspace)
+        self.project_sheet_workspace.weld_tool = self.project_weld_tool
         self.project_sheet_workspace.selection_changed.connect(
             self._project_sheet_view_selected
         )
@@ -281,6 +290,8 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.identification_finished.connect(
             self._finish_project_view_identification
         )
+        self.project_sheet_workspace.member_break_finished.connect(self._finish_project_member_break)
+        self.project_sheet_workspace.member_break_step_changed.connect(self._project_member_break_step_changed)
         self.project_sheet_workspace.dimension_finished.connect(
             self._finish_project_view_dimension
         )
@@ -789,6 +800,8 @@ class MainWindow(QMainWindow):
         }:
             self.project_sheet_workspace.set_element_visibility_mode(None)
             self._finish_project_sheet_visibility(canceled=True)
+        if not active and getattr(self, "_command_mode", None) == "project_sheet_member_break":
+            self._finish_project_member_break(canceled=True)
         self._detailing_project_mode = bool(active)
         if self._detailing_project_mode and hasattr(self, "project_sheets_palette"):
             self.refresh_project_sheet_views()
@@ -834,6 +847,7 @@ class MainWindow(QMainWindow):
             [sheet_name] if sheet_name is not None
             else list(palette._sheet_names)
         )
+        component_signature = node_component_geometry_signature(self.model)
         state_changed = False
         refresh_jobs = []
         for current_sheet_name in sheet_names:
@@ -843,6 +857,7 @@ class MainWindow(QMainWindow):
                 if (
                     view.get("model_revision") == self.model.revision
                     and view.get("linework_version") == DETAILING_LINEWORK_VERSION
+                    and view.get("component_geometry_signature") == component_signature
                 ):
                     continue
                 projection = view.get("projection")
@@ -895,6 +910,11 @@ class MainWindow(QMainWindow):
 
         def start_refresh() -> None:
             snapshot = _ModelSnapshot(self.model)
+            signatures = getattr(self, "_sheet_linework_component_signatures", {})
+            signature = node_component_geometry_signature(snapshot)
+            for job in fresh:
+                signatures[(id(job[1]), revision, group_revision, tuple(job[4]))] = signature
+            self._sheet_linework_component_signatures = signatures
             source = _DetachedDetailingScene(self.scene)
             task = SheetLineworkTask(
                 self._sheet_linework_signals, snapshot, source, revision, group_revision, fresh,
@@ -909,7 +929,10 @@ class MainWindow(QMainWindow):
                                  projection, excluded_owners, segments, owners, success) -> None:
         pending = self._sheet_linework_pending
         excluded_owners = tuple(sorted({str(owner) for owner in excluded_owners}))
-        pending.discard((id(view), revision, group_revision, excluded_owners))
+        key = (id(view), revision, group_revision, excluded_owners)
+        pending.discard(key)
+        current_signature = node_component_geometry_signature(self.model)
+        result_signature = getattr(self, "_sheet_linework_component_signatures", {}).pop(key, current_signature)
         self.project_sheet_workspace.set_linework_updating(bool(pending))
         if not pending:
             self._sheet_views_updating_dialog.hide()
@@ -928,6 +951,11 @@ class MainWindow(QMainWindow):
                 or group_revision != self.model.verification_group_revision
                 or not any(item is view for item in views) or view.get("projection") != projection):
             return
+        if result_signature != current_signature:
+            self._queue_sheet_linework_upgrade([(
+                sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), current_hidden,
+            )])
+            return
         merged_segments = list(segments)
         merged_owners = [str(owner) for owner in owners]
         hidden_linework = view.get("hidden_linework", {})
@@ -939,6 +967,7 @@ class MainWindow(QMainWindow):
         view["segments"] = tuple(merged_segments)
         view["segment_owners"] = tuple(merged_owners)
         view["model_revision"] = revision
+        view["component_geometry_signature"] = result_signature
         view["linework_version"] = DETAILING_LINEWORK_VERSION
         if self.project_sheets_palette.sheet_selector.currentText() == sheet_name:
             view_index = next((
@@ -1439,6 +1468,39 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.update()
         self.project_sheet_workspace.layout_changed.emit()
 
+    def start_project_weld(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.project_weld_tool.start()
+
+    def start_project_member_break(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_member_break"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_member_break_mode(True)
+        self.history.append(
+            "> <b>Zig-zag</b> <span style='color:#57606a'>(Selecione uma vista da folha)</span>"
+        )
+
+    def _project_member_break_step_changed(self, _step: int) -> None:
+        self.history.append(
+            "> <b>Zig-zag</b> <span style='color:#57606a'>"
+            "(Selecione a barra pela face, perto da extremidade desejada; "
+            "clique novamente para remover; Esc cancela)</span>"
+        )
+
+    def _finish_project_member_break(self, canceled: bool = False) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self.project_sheet_workspace.set_member_break_mode(False)
+        self._command_mode = None
+        self._store_detailing_state()
+
     def start_project_view_identification(self) -> None:
         if not self._detailing_project_mode:
             return
@@ -1489,6 +1551,23 @@ class MainWindow(QMainWindow):
             self._steel_profiles_table_cache = cached
         return cached[1]
 
+    def _steel_plate_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, self.model.calculation_properties_revision,
+               node_component_geometry_signature(self.model))
+        cached = getattr(self, "_steel_plates_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, steel_plate_rows(self.model))
+            self._steel_plates_table_cache = cached
+        return cached[1]
+
+    def _accessory_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, node_component_geometry_signature(self.model))
+        cached = getattr(self, "_accessories_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, component_accessory_rows(self.model))
+            self._accessories_table_cache = cached
+        return cached[1]
+
     def open_project_sheet_tables(self) -> None:
         palette = self.project_sheets_palette
         if not self._detailing_project_mode or not palette.sheet_selector.currentText():
@@ -1496,6 +1575,7 @@ class MainWindow(QMainWindow):
         dialog = InsertSheetTableDialog(
             self, palette._sheet_names, palette.sheet_selector.currentText(),
             palette._sheet_settings, palette._project_settings, self._steel_profile_table_rows(),
+            self._steel_plate_table_rows(), self._accessory_table_rows(),
         )
         dialog.move(self.geometry().center() - dialog.rect().center())
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_table is None:
@@ -1503,7 +1583,7 @@ class MainWindow(QMainWindow):
         sheet_name, kind = dialog.result_table
         settings = palette._sheet_settings[sheet_name]
         scope = palette._project_settings if kind == "project_revisions" else settings
-        if kind != "steel_profiles" and not isinstance(scope.get(kind), list):
+        if kind not in {"steel_profiles", "steel_plates", "accessories"} and not isinstance(scope.get(kind), list):
             scope[kind] = initial_revision_rows()
         settings.setdefault("tables", []).append({"kind": kind})
         palette.sheet_selector.setCurrentText(sheet_name)
@@ -2271,11 +2351,22 @@ class MainWindow(QMainWindow):
         dialog.move(self.geometry().center() - dialog.rect().center())
         return dialog.exec() == QDialog.DialogCode.Accepted
 
+    def _manage_project_sheets_from_settings(self, operation: str, sheet_label: str) -> dict:
+        palette = self.project_sheets_palette
+        if sheet_label in palette._sheet_names:
+            palette.sheet_selector.setCurrentText(sheet_label)
+        if operation == "add":
+            palette._add_sheet()
+        elif operation == "remove":
+            palette._remove_sheet()
+        return {"names": list(palette._sheet_names), "settings": palette._sheet_settings,
+                "active": palette.sheet_selector.currentText()}
+
     def open_project_sheet_settings(self) -> None:
         sheet_name = self.project_sheets_palette.sheet_selector.currentText()
         settings = self.project_sheets_palette._sheet_settings.get(sheet_name)
-        if not sheet_name or settings is None:
-            return
+        if settings is None:
+            settings = default_project_sheet_settings("")
         dialog = ProjectSheetSettingsDialog(
             sheet_name,
             settings,
@@ -2285,6 +2376,7 @@ class MainWindow(QMainWindow):
             rename_sheet_callback=self.project_sheets_palette._rename_sheet,
             sheet_settings=self.project_sheets_palette._sheet_settings,
             sheet_names=self.project_sheets_palette._sheet_names,
+            manage_sheets_callback=self._manage_project_sheets_from_settings,
         )
         dialog.move(self.geometry().center() - dialog.rect().center())
         if (
@@ -2295,6 +2387,10 @@ class MainWindow(QMainWindow):
             self.project_sheets_palette._sheet_settings.update(dialog.result_sheet_settings or {})
             self.project_sheets_palette._project_settings = dialog.result_project_settings
             sheet_name = dialog._active_sheet_label
+            if not sheet_name:
+                self.project_sheets_palette._on_sheet_selected("")
+                self._store_detailing_state()
+                return
             self.project_sheet_workspace.set_sheet_settings(
                 sheet_name,
                 self.project_sheets_palette._sheet_settings[sheet_name],
@@ -4134,6 +4230,15 @@ class MainWindow(QMainWindow):
         )
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and getattr(self, "_command_mode", None) == "project_sheet_member_break"
+            and event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            if event.key() == Qt.Key.Key_Escape:
+                self._finish_project_member_break(canceled=True)
+            event.accept()
+            return True
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
         if (
@@ -5948,6 +6053,9 @@ class MainWindow(QMainWindow):
         self.scene.set_measurement_mode(False)
 
     def cancel_member_placement(self) -> None:
+        workspace = getattr(self, "project_sheet_workspace", None)
+        if workspace is not None and workspace.cancel_member_break_drag():
+            return
         """Cancel the active graphical geometry launch."""
         workspace = self.project_sheet_workspace
         if workspace._annotation_mode is not None:
@@ -5958,6 +6066,12 @@ class MainWindow(QMainWindow):
         self.member_placement_editor.hide()
         if self._command_mode == "stair_custom_geometry_placement":
             self._cancel_stair_custom_geometry_capture()
+            return
+        if self._command_mode == "project_sheet_weld":
+            self.project_weld_tool.finish()
+            return
+        if self._command_mode == "project_sheet_member_break":
+            self._finish_project_member_break(canceled=True)
             return
         if self._command_mode == "project_sheet_detail_identifier":
             self.project_sheet_workspace.set_detail_identifier_mode(False)

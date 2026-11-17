@@ -7,15 +7,28 @@ import math
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QTextDocument
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QFrame, QHBoxLayout, QLineEdit,
-    QHeaderView, QLabel, QListWidget, QListWidgetItem, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 TABLE_TITLES = {
     "sheet_revisions": "Revisões da folha",
     "project_revisions": "Revisões do projeto",
     "steel_profiles": "Lista de perfis de aço",
+    "steel_plates": "Lista de chapas de aço",
+    "accessories": "Lista de acessórios",
 }
 REVISION_COLUMNS = ("#", "Alteração", "Responsável", "Data")
 
@@ -150,30 +163,52 @@ class RevisionTableLayout:
         painter.restore()
 
 
+class AccessoriesTableLayout(RevisionTableLayout):
+    """Accessory names and integer counts, sharing the sheet table grid."""
+
+    def __init__(self, rows: list[dict], width_mm: float, font: QFont):
+        super().__init__("accessories", [], width_mm, font)
+        self._widths = [width_mm * 0.8, width_mm * 0.2]
+        values = [("NOME", "QUANTIDADE")]
+        values.extend((row["name"], str(row["quantity"])) for row in rows)
+        self._rows = []
+        for row in values:
+            docs = [self._document(value, width, Qt.AlignLeft if column == 0 else Qt.AlignCenter)
+                    for column, (value, width) in enumerate(zip(row, self._widths))]
+            height = max(8.0, max(doc.size().height() / self._units for doc in docs) + 2 * self._padding)
+            self._rows.append((height, docs))
+        self.height_mm = self._title_height + sum(height for height, _docs in self._rows)
+
+
 class SteelProfilesTableLayout(RevisionTableLayout):
     """The same physical table grid, with existing section contours and totals."""
+
+    _kind = "steel_profiles"
+    _name_key = "profile"
+    _name_heading = "PERFIL"
+    _show_icons = True
 
     def __init__(self, rows: list[dict], width_mm: float, font: QFont):
         from osa.sections.geometry import section_shape
 
-        super().__init__("steel_profiles", [], width_mm, font)
+        super().__init__(self._kind, [], width_mm, font)
         self._widths = [width_mm * ratio for ratio in (0.30, 0.17, 0.17, 0.19, 0.17)]
         self._rows = []
         self._cell_leading = {}
         self._icons = []
-        values = [("PERFIL", "MATERIAL", "PESO LINEAR\nkg/m", "COMPRIMENTO\nm", "PESO TOTAL\nkg")]
-        values.extend((row["profile"], row["material"], _table_number(row["linear_mass"]),
+        values = [(self._name_heading, "MATERIAL", "PESO LINEAR\nkg/m", "COMPRIMENTO\nm", "PESO TOTAL\nkg")]
+        values.extend((row[self._name_key], row["material"], _table_number(row["linear_mass"]),
                        _table_number(row["length"]), _table_number(row["total_mass"])) for row in rows)
         for row_index, values_row in enumerate(values):
             docs = []
             for column, (value, width) in enumerate(zip(values_row, self._widths)):
-                leading = 6.0 if row_index > 0 and column == 0 else 0.0
+                leading = 6.0 if self._show_icons and row_index > 0 and column == 0 else 0.0
                 self._cell_leading[row_index, column] = leading
                 docs.append(self._document(value, width - leading,
                                            Qt.AlignLeft if row_index > 0 and column == 0 else Qt.AlignCenter))
             height = max(8.0, max(doc.size().height() / self._units for doc in docs) + 2 * self._padding)
             self._rows.append((height, docs))
-        for row in rows:
+        for row in rows if self._show_icons else ():
             try:
                 shape = section_shape(row["family"], dict(row["geometry"]))
             except (ValueError, KeyError, ZeroDivisionError):
@@ -235,6 +270,15 @@ class SteelProfilesTableLayout(RevisionTableLayout):
                 painter.restore()
             y += height
         painter.restore()
+
+
+class SteelPlatesTableLayout(SteelProfilesTableLayout):
+    """Plate quantities with the same width, columns and global total as profiles."""
+
+    _kind = "steel_plates"
+    _name_key = "plate"
+    _name_heading = "CHAPA"
+    _show_icons = False
 
 
 DIALOG_STYLE = (
@@ -348,11 +392,14 @@ class _TableTypeButton(QPushButton):
 
 
 class InsertSheetTableDialog(QDialog):
-    def __init__(self, parent, sheet_names, active_sheet, sheet_settings, project_settings, steel_rows=None):
+    def __init__(self, parent, sheet_names, active_sheet, sheet_settings, project_settings,
+                 steel_rows=None, plate_rows=None, accessory_rows=None):
         super().__init__(parent)
         self.resize(1040, 600)
         self.result_table = None
         self._steel_rows = steel_rows or []
+        self._plate_rows = plate_rows or []
+        self._accessory_rows = accessory_rows or []
         self._settings = sheet_settings
         self._project_settings = project_settings
         self._sheet_name = active_sheet if active_sheet in sheet_names else next(iter(sheet_names), "")
@@ -420,6 +467,18 @@ class InsertSheetTableDialog(QDialog):
         if kind == "steel_profiles":
             self.preview.layout_data = SteelProfilesTableLayout(self._steel_rows, 175.0, self.font())
             self.scope_hint.setText("Perfis de aço do modelo, agrupados por perfil e material. Comprimentos em metros e pesos em quilogramas.")
+        elif kind == "steel_plates":
+            self.preview.layout_data = SteelPlatesTableLayout(self._plate_rows, 175.0, self.font())
+            self.scope_hint.setText(
+                "Chapas de aço das placas e dos componentes do modelo, agrupadas por dimensão, espessura e material. "
+                "Comprimentos em metros e pesos em quilogramas. Placas não retangulares usam comprimento equivalente pela área."
+            )
+        elif kind == "accessories":
+            self.preview.layout_data = AccessoriesTableLayout(self._accessory_rows, 175.0, self.font())
+            self.scope_hint.setText(
+                "Acessórios dos componentes do modelo, agrupados pelo nome. "
+                "Fixadores usam a identidade informada ou uma descrição automática com dimensões e material."
+            )
         else:
             rows = revision_rows_for(self._settings[self._sheet_name], self._project_settings, kind)
             self.preview.layout_data = RevisionTableLayout(kind, rows, 175.0, self.font())

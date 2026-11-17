@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QFrame
 
+from osa.domain.node_components import node_component_geometry_signature
 from osa.rendering.detailing_2d import prepare_surface_data, visible_segments_from_meshes
 from osa.rendering.batched_renderer import _clip_line_mesh_outside_cutters, _transformed_points
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
@@ -123,6 +124,7 @@ class DetailingViewPreview(QFrame):
         cache_key = (
             id(model),
             getattr(model, "revision", None),
+            node_component_geometry_signature(model),
             plane,
             coordinate_key,
             float(upper_offset_cm),
@@ -315,6 +317,7 @@ class DetailingViewPreview(QFrame):
         cache_key = (
             id(model),
             getattr(model, "revision", None),
+            node_component_geometry_signature(model),
             plane,
             coordinate_key,
             float(settings.get("upper_offset_cm", 50.0)),
@@ -396,7 +399,7 @@ class DetailingViewPreview(QFrame):
         cache_owner = getattr(self, "_mesh_cache_owner", model)
         detail_scene = getattr(self, "_detail_scene", None)
         cache_key = (
-            id(cache_owner), getattr(model, "revision", None),
+            id(cache_owner), getattr(model, "revision", None), node_component_geometry_signature(model),
             id(detail_scene) if detail_scene is not None else None,
         )
         if cache_key == self._model_cache_key:

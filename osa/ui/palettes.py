@@ -1016,11 +1016,6 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.addItems(self._sheet_names)
         self.sheet_selector.currentTextChanged.connect(self._on_sheet_selected)
         layout.addWidget(self.sheet_selector)
-        self.add_sheet_button = self._action_button("plus.svg", "Adicionar folha", self._add_sheet)
-        layout.addWidget(self.add_sheet_button)
-        self.remove_sheet_button = self._action_button("minus.svg", "Remover folha", self._remove_sheet)
-        self.remove_sheet_button.setEnabled(True)
-        layout.addWidget(self.remove_sheet_button)
         self.settings_button = self._action_button(
             "settings.svg", "Configurar projeto", window.open_project_sheet_settings,
         )
@@ -1041,17 +1036,25 @@ class ProjectSheetsPalette(QFrame):
         )
         self.elevation_identifier_button.setIconSize(QSize(21, 21))
         self.hide_view_elements_button = self._action_button(
-            "lightbulb-off.svg", "Ocultar elemento da vista",
+            "lightbulb-off.svg", "Ocultar elemento",
             lambda: window.start_project_sheet_visibility("hide"),
         )
         self.reveal_view_elements_button = self._action_button(
-            "lightbulb.svg", "Reexibir elemento oculto da vista",
+            "lightbulb.svg", "Reexibir elemento",
             lambda: window.start_project_sheet_visibility("reveal"),
         )
         self.reveal_all_view_elements_button = self._action_button(
-            "lightbulb-all.svg", "Reexibir todos os elementos da vista",
+            "lightbulb-all.svg", "Reexibir todos elementos",
             lambda: window.start_project_sheet_visibility("reveal_all"),
         )
+        self.weld_button = self._action_button(
+            "weld.svg", "Marca de solda", window.start_project_weld,
+        )
+        self.weld_button.setIconSize(QSize(21, 21))
+        self.member_break_button = self._action_button(
+            "member-break.svg", "Zig-zag", window.start_project_member_break,
+        )
+        self.member_break_button.setIconSize(QSize(21, 21))
         self.dimension_button = self._action_button(
             "dimension.svg", "Cota alinhada", window.start_project_view_dimension,
         )
@@ -1087,24 +1090,29 @@ class ProjectSheetsPalette(QFrame):
         self.manage_views_button.setIconSize(QSize(21, 21))
         layout.addWidget(self.manage_views_button)
         self.component_details_button = self._action_button(
-            "component.svg", "Adicionar detalhes de componentes",
+            "component.svg", "Adicionar detalhe",
             window.open_component_details,
         )
         self.component_details_button.setIconSize(QSize(21, 21))
         layout.addWidget(self.component_details_button)
-        layout.addWidget(self.identify_button)
-        layout.addWidget(self.detail_identifier_button)
-        layout.addWidget(self.elevation_identifier_button)
-        layout.addWidget(self.hide_view_elements_button)
-        layout.addWidget(self.reveal_view_elements_button)
-        layout.addWidget(self.reveal_all_view_elements_button)
-        layout.addWidget(self.dimension_button)
-        layout.addWidget(self.orthogonal_dimension_button)
+        self.visibility_group_button = self._group_button("lightbulb.svg", "Visualização", (
+            self.hide_view_elements_button, self.reveal_view_elements_button, self.reveal_all_view_elements_button,
+        ))
+        self.model_elements_group_button = self._group_button("tag.svg", "Elementos do modelo", (
+            self.identify_button, self.detail_identifier_button, self.elevation_identifier_button, self.member_break_button, self.weld_button,
+        ))
+        self.dimensions_group_button = self._group_button("dimension.svg", "Cotas", (
+            self.dimension_button, self.orthogonal_dimension_button,
+        ))
+        self.drawing_group_button = self._group_button("draw-line.svg", "Desenho", (
+            self.sheet_line_button, self.sheet_rectangle_button, self.sheet_circle_button,
+        ))
+        layout.addWidget(self.visibility_group_button)
+        layout.addWidget(self.model_elements_group_button)
+        layout.addWidget(self.dimensions_group_button)
+        layout.addWidget(self.drawing_group_button)
         layout.addWidget(self.sheet_text_button)
         layout.addWidget(self.sheet_table_button)
-        layout.addWidget(self.sheet_line_button)
-        layout.addWidget(self.sheet_rectangle_button)
-        layout.addWidget(self.sheet_circle_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 
@@ -1116,6 +1124,26 @@ class ProjectSheetsPalette(QFrame):
         button.setToolTip(tooltip)
         button.setAccessibleName(tooltip)
         button.clicked.connect(callback)
+        return button
+
+    def _group_button(self, icon_filename: str, tooltip: str, tools) -> QToolButton:
+        button = self._action_button(icon_filename, tooltip, lambda: None)
+        button.setIconSize(QSize(21, 21))
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+        menu = QMenu(button)
+        menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(
+            "QMenu { background: #ffffff; border: 1px solid #d0d7de; padding: 5px; color: #24292f; }"
+            "QMenu::item { padding: 7px 28px 7px 10px; }"
+            "QMenu::item:selected { background: #eaeef2; }"
+            "QMenu::item:disabled { color: #8c959f; }"
+        )
+        for tool in tools:
+            action = menu.addAction(tool.icon(), tool.toolTip())
+            action.triggered.connect(tool.click)
+            tool.hide()
+        button.setMenu(menu)
         return button
 
     def set_project_mode(self, active: bool) -> None:
@@ -1168,8 +1196,7 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.blockSignals(False)
         has_sheets = bool(self._sheet_names)
         self.sheet_selector.setEnabled(has_sheets)
-        self.remove_sheet_button.setEnabled(has_sheets)
-        self.settings_button.setEnabled(has_sheets)
+        self.settings_button.setEnabled(True)
         self._on_sheet_selected(self.sheet_selector.currentText())
 
     def _on_sheet_selected(self, sheet_name: str) -> None:
@@ -1264,7 +1291,6 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.addItem(sheet_label)
         self.sheet_selector.setCurrentText(sheet_label)
         self.sheet_selector.setEnabled(True)
-        self.remove_sheet_button.setEnabled(True)
         self.settings_button.setEnabled(True)
         self._window._store_detailing_state()
 
@@ -1359,8 +1385,7 @@ class ProjectSheetsPalette(QFrame):
         self.sheet_selector.removeItem(index)
         has_sheets = bool(self._sheet_names)
         self.sheet_selector.setEnabled(has_sheets)
-        self.remove_sheet_button.setEnabled(has_sheets)
-        self.settings_button.setEnabled(has_sheets)
+        self.settings_button.setEnabled(True)
         if not has_sheets:
             self._on_sheet_selected("")
         else:

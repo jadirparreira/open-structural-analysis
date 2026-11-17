@@ -1524,6 +1524,11 @@ class StructureScene(QWidget):
                 plate_actor.SetObjectName(f"node-component:{name}")
                 self._node_component_actors.append(plate_actor)
                 self._node_component_pick_actors.append(plate_actor)
+                if not wood.n_points:
+                    self._node_component_face_actors[name] = (plate_actor,)
+                    self._node_component_plate_actors[name] = plate_actor
+                    self._node_component_hover_meshes[name] = plate
+                    continue
                 wood_actor = self.plotter.add_mesh(
                     wood, color=STAIR_WOOD_COLOR, edge_color=STAIR_WOOD_EDGE_COLOR,
                     show_edges=False, pickable=False,
@@ -2375,6 +2380,8 @@ class StructureScene(QWidget):
                         )),
                     )
                     for part_name, component_mesh in component_meshes:
+                        if not component_mesh.n_points:
+                            continue
                         mesh = component_mesh.extract_surface(
                             algorithm="dataset_surface",
                         ).triangulate().clean()

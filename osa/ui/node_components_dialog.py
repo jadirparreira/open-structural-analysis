@@ -13,6 +13,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -40,8 +41,8 @@ from osa.rendering.node_component_renderer import (
     STAIR_WOOD_EDGE_COLOR,
     append_polydata_meshes,
     base_plate_component_meshes,
-    stair_wood_edge_mesh,
     stair_plate_mesh,
+    stair_wood_edge_mesh,
     stair_wood_mesh,
 )
 from osa.rendering.solid_member_renderer import SolidMemberRenderer
@@ -50,6 +51,17 @@ from osa.sections import section_shape
 from .detailing_viewport import _DetachedDetailingScene
 from .property_panel import CompactDoubleSpinBox, PropertyPanel
 
+
+class _ComponentComboBox(QComboBox):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class _ComponentSpinBox(CompactDoubleSpinBox):
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 _PARAMETER_LABELS = {
     "largura_mm": "Dimensão A",
     "comprimento_mm": "Dimensão B",
@@ -57,6 +69,7 @@ _PARAMETER_LABELS = {
     "deslocamento_b_mm": "Deslocamento B",
     "espessura_mm": "Espessura da chapa",
     "rotacao_deg": "Rotação da chapa",
+    "identificacao_fixador": "Identidade do fixador",
     "fixador": "Tipo de fixador",
     "distancia_a_mm": "Distância da borda",
     "comprimento_fixador_mm": "Comprimento do fixador",
@@ -66,6 +79,8 @@ _PARAMETER_LABELS = {
     "diametro_mm": "Diâmetro da barra",
     "fixadores_lado_a": "Fixadores lado A",
     "fixadores_lado_b": "Fixadores lado B",
+    "material_chapa": "Material da chapa",
+    "material_fixador": "Material do fixador",
     "plano": "Plano",
     "madeira_largura_mm": "Dimensão A",
     "madeira_comprimento_mm": "Dimensão B",
@@ -199,14 +214,14 @@ class ComponentPreview(QWidget):
         if self._component_id == "stair_plate":
             width = max(
                 float(p.get("largura_mm", 200.0)),
-                float(p.get("madeira_largura_mm", 280.0)),
+                float(p.get("madeira_largura_mm", 280.0)) if p.get("madeira_ativa", True) else 0.0,
             ) / 1000.0
             length = max(
                 float(p.get("comprimento_mm", 300.0)),
-                float(p.get("madeira_comprimento_mm", 800.0)),
+                float(p.get("madeira_comprimento_mm", 800.0)) if p.get("madeira_ativa", True) else 0.0,
             ) / 1000.0
             outline = p.get("madeira_geometria_mm")
-            if outline:
+            if outline and p.get("madeira_ativa", True):
                 outline_points = np.asarray(outline, dtype=float) / 1000.0
                 width = max(width, float(np.ptp(outline_points[:, 0])))
                 length = max(length, float(np.ptp(outline_points[:, 1])))
@@ -227,14 +242,16 @@ class ComponentPreview(QWidget):
                 show_edges=False, smooth_shading=False,
                 lighting=False, pickable=True,
             )
-            self._wood_actor.SetObjectName("component-preview-wood")
+            if self._wood_actor is not None:
+                self._wood_actor.SetObjectName("component-preview-wood")
             self._wood_edge_actor = self._set_preview_mesh_actor(
                 self._wood_edge_actor,
                 stair_wood_edge_mesh(p, (0.0, 0.0, 0.0)),
                 color=STAIR_WOOD_EDGE_COLOR, line_width=1.2,
                 render_lines_as_tubes=True, lighting=False, pickable=False,
             )
-            self._wood_edge_actor.SetObjectName("component-preview-wood-edges")
+            if self._wood_edge_actor is not None:
+                self._wood_edge_actor.SetObjectName("component-preview-wood-edges")
             if not self._camera_initialized:
                 plotter.view_vector((-1.0, -1.0, 1.0), viewup=(0.0, 0.0, 1.0), render=False)
                 plotter.reset_camera()
@@ -323,6 +340,10 @@ class ComponentPreview(QWidget):
         plotter.render()
 
     def _set_preview_mesh_actor(self, actor, mesh, **style):
+        if not mesh.n_points:
+            if actor is not None:
+                actor.SetVisibility(False)
+            return actor
         if actor is None:
             actor = self.plotter.add_mesh(
                 mesh, reset_camera=False, render=False, **style,
@@ -814,8 +835,11 @@ class NodeComponentsDialog(QDialog):
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { "
             "background: transparent; }"
-            "QComboBox#fastenerSelector::drop-down { width: 0px; border: 0; }"
-            "QComboBox#fastenerSelector::down-arrow { image: none; }"
+            "QComboBox#fastenerSelector::drop-down, QComboBox#planeSelector::drop-down, "
+            "QComboBox#plateMaterialSelector::drop-down, QComboBox#fastenerMaterialSelector::drop-down "
+            "{ width: 0px; border: 0; }"
+            "QComboBox#fastenerSelector::down-arrow, QComboBox#planeSelector::down-arrow, "
+            "QComboBox#plateMaterialSelector::down-arrow, QComboBox#fastenerMaterialSelector::down-arrow { image: none; }"
             "QLabel#componentParameterName { color: #57606a; font-size: 12px; "
             "font-weight: 600; padding: 0; }"
             "QPushButton#closeProperties { min-height: 34px; padding: 4px 14px; "
@@ -1007,6 +1031,7 @@ class NodeComponentsDialog(QDialog):
         self.details_title.setText(definition.name)
         description = (
             "O topo da madeira coincide com o nó; a chapa de aço fica embaixo. "
+            "Desativar a madeira mantém a posição da chapa. "
             "A rotação da chapa de aço também orienta o degrau."
             if component_id == "stair_plate" else
             "Chapa retangular posicionada no plano selecionado no nó."
@@ -1022,13 +1047,20 @@ class NodeComponentsDialog(QDialog):
         custom_outline = tuple(values.get("madeira_geometria_mm", ()))
         visible_parameters = [
             (key, default) for key, default in parameters
-            if key not in {"perna_mm", "rotacao_gancho_deg"}
-            or values.get("fixador") == "Gancho"
+            if key != "madeira_ativa" and (
+                key not in {"perna_mm", "rotacao_gancho_deg"}
+                or values.get("fixador") == "Gancho"
+            )
         ]
         row, column = 0, 0
         active_section = None
         for key, default in visible_parameters:
             section = "Degrau de madeira" if key.startswith("madeira_") else "Chapa de aço"
+            if self._draft_component_id == "base_plate" and key not in {
+                "largura_mm", "comprimento_mm", "deslocamento_a_mm", "deslocamento_b_mm",
+                "espessura_mm", "rotacao_deg", "material_chapa", "plano",
+            }:
+                section = "Fixador"
             if section != active_section:
                 if column:
                     row += 1
@@ -1037,6 +1069,12 @@ class NodeComponentsDialog(QDialog):
                 heading_layout = QHBoxLayout(heading_row)
                 heading_layout.setContentsMargins(0, 0, 0, 0)
                 heading_layout.setSpacing(6)
+                if section == "Degrau de madeira":
+                    wood_toggle = QCheckBox(heading_row)
+                    wood_toggle.setAccessibleName("Degrau de madeira")
+                    wood_toggle.setChecked(bool(values.get("madeira_ativa", True)))
+                    wood_toggle.toggled.connect(self._stair_wood_toggled)
+                    heading_layout.addWidget(wood_toggle)
                 heading = QLabel(section, heading_row)
                 heading.setObjectName("propertySection")
                 heading_layout.addWidget(heading)
@@ -1055,7 +1093,7 @@ class NodeComponentsDialog(QDialog):
                         "QToolButton:pressed { background: #d0d7de; }"
                         "QToolButton:disabled { color: #8c959f; background: #f6f8fa; }"
                     )
-                    remove_button.setEnabled(bool(custom_outline))
+                    remove_button.setEnabled(bool(custom_outline) and bool(values.get("madeira_ativa", True)))
                     remove_button.setToolTip("Remover geometria personalizada")
                     remove_button.setAccessibleName("Remover geometria personalizada do degrau")
                     remove_button.clicked.connect(self._remove_stair_custom_geometry)
@@ -1073,6 +1111,7 @@ class NodeComponentsDialog(QDialog):
                         "QToolButton:pressed { background: #d0d7de; }"
                         "QToolButton:disabled { color: #8c959f; background: #f6f8fa; }"
                     )
+                    draw_button.setEnabled(bool(values.get("madeira_ativa", True)))
                     draw_button.setToolTip("Desenhar geometria personalizada do degrau")
                     draw_button.setAccessibleName("Desenhar geometria personalizada do degrau")
                     draw_button.clicked.connect(self._request_stair_custom_geometry)
@@ -1091,6 +1130,7 @@ class NodeComponentsDialog(QDialog):
                     )
                     self._custom_outline_input = QLineEdit(coordinate_text, self.parameters_widget)
                     self._custom_outline_input.setReadOnly(True)
+                    self._custom_outline_input.setEnabled(bool(values.get("madeira_ativa", True)))
                     self._custom_outline_input.setAccessibleName(
                         "Coordenadas do degrau personalizado, em metros"
                     )
@@ -1135,11 +1175,36 @@ class NodeComponentsDialog(QDialog):
                 group_layout.addWidget(label_row)
             else:
                 group_layout.addWidget(label)
-            if key in {"fixador", "plano"}:
-                field = QComboBox(field_group)
-                field.setObjectName("fastenerSelector" if key == "fixador" else "planeSelector")
-                field.addItems(_FIXADORES if key == "fixador" else BASE_PLATE_PLANES)
+            if key == "identificacao_fixador":
+                field = QLineEdit(str(values.get(key, default)), field_group)
+                field.setObjectName("fastenerIdentification")
+                field.setAccessibleName(label.text())
+                field.setStyleSheet(
+                    "QLineEdit { min-height: 30px; border: 1px solid #d0d7de; border-radius: 6px; "
+                    "padding: 2px 9px; background: #ffffff; color: #57606a; }"
+                    "QLineEdit:focus { border-color: #0969da; }"
+                )
+                field.textChanged.connect(
+                    lambda text, parameter_key=key: self._draft_parameters.update({parameter_key: text})
+                )
+                group_layout.addWidget(field)
+                self._inputs[key] = field
+            elif key in {"fixador", "plano", "material_chapa", "material_fixador"}:
+                field = _ComponentComboBox(field_group)
+                field.setObjectName({
+                    "fixador": "fastenerSelector", "plano": "planeSelector", "material_chapa": "plateMaterialSelector",
+                    "material_fixador": "fastenerMaterialSelector",
+                }[key])
+                if key in {"material_chapa", "material_fixador"}:
+                    field.addItems([
+                        name for name in self.window.model.materials
+                        if self.window.model.material_types.get(name, "Aço") == "Aço"
+                    ])
+                else:
+                    field.addItems(_FIXADORES if key == "fixador" else BASE_PLATE_PLANES)
                 field.setCurrentText(str(values.get(key, default)))
+                if key in {"material_chapa", "material_fixador"}:
+                    self._draft_parameters[key] = field.currentText()
                 field.setAccessibleName(label.text())
                 field.currentTextChanged.connect(
                     self._fixador_changed if key == "fixador" else self._input_changed
@@ -1147,8 +1212,8 @@ class NodeComponentsDialog(QDialog):
                 group_layout.addWidget(field)
                 self._inputs[key] = field
             else:
-                field = CompactDoubleSpinBox(field_group)
-                field.setDecimals(1)
+                field = _ComponentSpinBox(field_group)
+                field.setDecimals(2 if key == "espessura_mm" else 1)
                 if key in {"fixadores_lado_a", "fixadores_lado_b"}:
                     field.setDecimals(0)
                     field.setRange(2.0, 100.0)
@@ -1203,11 +1268,18 @@ class NodeComponentsDialog(QDialog):
                     self._hook_rotation_unit_label.hide()
                 group_layout.addWidget(unit_box)
                 self._inputs[key] = field
-            self.parameters_layout.addWidget(field_group, row, column)
-            column += 1
-            if column == 2:
+            if key.startswith("madeira_"):
+                field_group.setEnabled(bool(values.get("madeira_ativa", True)))
+            if key == "identificacao_fixador":
+                self.parameters_layout.addWidget(field_group, row, 0, 1, 2)
                 row += 1
                 column = 0
+            else:
+                self.parameters_layout.addWidget(field_group, row, column)
+                column += 1
+                if column == 2:
+                    row += 1
+                    column = 0
 
         self.parameters_layout.activate()
         QTimer.singleShot(0, self._update_parameter_content_minimum_height)
@@ -1231,6 +1303,8 @@ class NodeComponentsDialog(QDialog):
         for key, field in self._inputs.items():
             if isinstance(field, QComboBox):
                 self._draft_parameters[key] = field.currentText()
+            elif isinstance(field, QLineEdit):
+                self._draft_parameters[key] = field.text()
             elif isinstance(field, CompactDoubleSpinBox):
                 value = field.value()
                 if key == "rotacao_gancho_deg":
@@ -1245,6 +1319,14 @@ class NodeComponentsDialog(QDialog):
                     ] = value
                 else:
                     self._draft_parameters[key] = value
+        self._update_preview()
+
+    def _stair_wood_toggled(self, enabled: bool) -> None:
+        self._input_changed()
+        self._draft_parameters["madeira_ativa"] = enabled
+        self.preview._camera_initialized = False
+        if self._current_definition is not None:
+            self._show_parameters(self._current_definition.parameters, self._draft_parameters)
         self._update_preview()
 
     def _preview_hook_selected(self, index: int) -> None:

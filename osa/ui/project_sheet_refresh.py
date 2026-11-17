@@ -34,15 +34,35 @@ class SheetLineworkTask(QRunnable):
                 return
             segments, owners, success = (), (), False
             try:
-                DetailingViewPreview.set_view(
-                    calculator, self.model, projection["plane"], projection["coordinate"],
-                    upper_offset_cm=float(projection.get("upper_offset_cm", 50.0)),
-                    lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
-                    orientation=str(projection.get("orientation", "Superior para inferior")),
-                    rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
-                    excluded_owners=excluded_owners,
-                )
-                segments, owners = tuple(calculator._segments_2d), tuple(calculator._segment_sources)
+                group = view.get("component_detail_group")
+                if isinstance(group, dict) and group.get("component_id") == "base_plate":
+                    from .dialogs import ComponentDetailsDialog
+
+                    nodes = [name for name in group.get("members", ())
+                             if name in self.model.nodes and self.model.nodes[name].component is not None]
+                    if not nodes:
+                        raise ValueError("O componente do detalhe não está disponível.")
+                    parameters = dict(self.model.nodes[nodes[0]].component.parameters)
+                    generated = ComponentDetailsDialog._build_group_views(
+                        self.model, self.source._marker_radius_current, {"nodes": nodes, "parameters": parameters},
+                    )
+                    direction = next(key for _name, title, key in ComponentDetailsDialog._VIEW_DEFINITIONS
+                                     if title.casefold() == str(group.get("direction", "")).casefold())
+                    data = generated[direction]
+                    filtered = [(line, owner) for line, owner in zip(data["segments"], data["segment_owners"])
+                                if owner not in excluded_owners]
+                    segments = tuple(line for line, _owner in filtered)
+                    owners = tuple(owner for _line, owner in filtered)
+                else:
+                    DetailingViewPreview.set_view(
+                        calculator, self.model, projection["plane"], projection["coordinate"],
+                        upper_offset_cm=float(projection.get("upper_offset_cm", 50.0)),
+                        lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
+                        orientation=str(projection.get("orientation", "Superior para inferior")),
+                        rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
+                        excluded_owners=excluded_owners,
+                    )
+                    segments, owners = tuple(calculator._segments_2d), tuple(calculator._segment_sources)
                 # Do not replace an existing drawing with an empty result if
                 # the projection pipeline silently failed.
                 success = bool(segments) or not had_segments or bool(excluded_owners)

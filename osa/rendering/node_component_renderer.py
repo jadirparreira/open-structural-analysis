@@ -284,6 +284,8 @@ def stair_wood_mesh(
     parameters: dict[str, object], origin: tuple[float, float, float],
 ) -> pv.PolyData:
     """Build the wooden tread whose top face coincides with the node reference."""
+    if not parameters.get("madeira_ativa", True):
+        return pv.PolyData()
     outline, thickness, rotation, displacement_a, displacement_b = _stair_wood_outline_data(
         parameters,
     )
@@ -313,6 +315,8 @@ def stair_wood_edge_mesh(
     parameters: dict[str, object], origin: tuple[float, float, float],
 ) -> pv.PolyData:
     """Build only the tread's outer perimeter and vertical corner lines."""
+    if not parameters.get("madeira_ativa", True):
+        return pv.PolyData()
     outline, thickness, rotation, displacement_a, displacement_b = _stair_wood_outline_data(
         parameters,
     )

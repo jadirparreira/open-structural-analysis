@@ -605,6 +605,8 @@ class StructuralModel:
                 if not math.isfinite(value):
                     raise ValueError("Os deslocamentos da chapa de base devem ser finitos.")
                 normalized.append((key, value))
+            normalized.append(("material_fixador", str(values.get("material_fixador", "SAE 1020")).strip()))
+            normalized.append(("identificacao_fixador", str(values.get("identificacao_fixador", "")).strip()))
             normalized.append(("fixador", fixador))
             for key in ("fixadores_lado_a", "fixadores_lado_b"):
                 raw_count = float(values.get(key, 2))
@@ -625,6 +627,7 @@ class StructuralModel:
             plane = str(values.get("plano", "XY+"))
             if plane not in BASE_PLATE_PLANES:
                 raise ValueError("Selecione um plano válido para a chapa de base/topo.")
+            normalized.append(("material_chapa", str(values.get("material_chapa", "ASTM A36")).strip()))
             normalized.append(("plano", plane))
             if fixador == "Gancho":
                 leg = float(values.get("perna_mm", 200.0))
@@ -670,7 +673,8 @@ class StructuralModel:
             component = NodeComponentAssignment(component.component_id, tuple(normalized))
         elif component is not None and component.component_id == "stair_plate":
             values = dict(component.parameters)
-            normalized = []
+            normalized = [("madeira_ativa", bool(values.get("madeira_ativa", True))),
+                          ("material_chapa", str(values.get("material_chapa", "ASTM A36")).strip())]
             for key, default in (
                 ("largura_mm", 200.0), ("comprimento_mm", 300.0),
                 ("espessura_mm", 6.3),
@@ -719,7 +723,7 @@ class StructuralModel:
                 normalized.append(("madeira_geometria_mm", outline))
             rotation = float(values.get("rotacao_deg", 0.0))
             if not math.isfinite(rotation):
-                raise ValueError("A rotação da chapa degrau deve ser finita.")
+                raise ValueError("A rotação da chapa de degrau deve ser finita.")
             normalized.append(("rotacao_deg", round(rotation % 360.0, 1)))
             component = NodeComponentAssignment(component.component_id, tuple(normalized))
         previous = self.nodes[name]

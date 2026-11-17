@@ -346,3 +346,46 @@ def test_applied_component_uses_constant_actor_count(qt_app):
     finally:
         scene.close()
         preview.shutdown()
+
+
+def test_stair_wood_toggle_preserves_dimensions_and_applies_plate_only(qt_app):
+    from PySide6.QtWidgets import QCheckBox
+
+    model = _model_with_connected_bars()
+    window = QWidget()
+    window.model = model
+    dialog = NodeComponentsDialog(window, "N0")
+    scene = StructureScene()
+    try:
+        dialog.component_list.setCurrentRow(2)
+        dialog._inputs["madeira_espessura_mm"].setValue(35.0)
+        plate_bounds = dialog.preview._plate_actor.GetMapper().GetInput().GetBounds()
+        toggle = dialog.parameters_widget.findChild(QCheckBox)
+        assert toggle.isChecked()
+        toggle.setChecked(False)
+        qt_app.processEvents()
+        assert dialog._draft_parameters["madeira_ativa"] is False
+        assert not dialog._inputs["madeira_espessura_mm"].isEnabled()
+        assert not dialog.preview._wood_actor.GetVisibility()
+        assert not dialog.preview._wood_edge_actor.GetVisibility()
+        assert dialog.preview._plate_actor.GetMapper().GetInput().GetBounds() == pytest.approx(plate_bounds)
+
+        node = model.update_node_component(
+            "N0", NodeComponentAssignment("stair_plate", tuple(dialog._draft_parameters.items())),
+        )
+        assert dict(node.component.parameters)["madeira_ativa"] is False
+        scene.render_model(model)
+        assert len(scene._node_component_actors) == 1
+        assert len(scene._node_component_face_actors["N0"]) == 1
+        assert scene._node_component_plate_actors["N0"].GetMapper().GetInput().GetBounds() == pytest.approx(
+            plate_bounds,
+        )
+
+        dialog.parameters_widget.findChild(QCheckBox).setChecked(True)
+        assert dialog._inputs["madeira_espessura_mm"].value() == 35.0
+        assert dialog.preview._wood_actor.GetVisibility()
+        assert dialog.preview._plate_actor.GetMapper().GetInput().GetBounds()[5] == pytest.approx(-0.035)
+    finally:
+        scene.close()
+        dialog.reject()
+        window.close()

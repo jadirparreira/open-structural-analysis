@@ -11,6 +11,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 
+from osa.rendering.member_breaks import member_break_linework
+
 from .common import (
     QCheckBox,
     QColor,
@@ -30,7 +32,7 @@ from .common import (
     QWidget,
 )
 from .property_panel import CompactDoubleSpinBox, MixedCheckBox
-from .sheet_tables import RevisionTableLayout, SteelProfilesTableLayout, revision_rows_for
+from .sheet_tables import AccessoriesTableLayout, RevisionTableLayout, SteelPlatesTableLayout, SteelProfilesTableLayout, revision_rows_for
 from .window_frame import WindowFrame
 
 PAPER_SIZES_MM = {
@@ -56,6 +58,7 @@ class _SegmentSpatialGrid:
         self._cells: dict[tuple[int, int], list[int]] = {}
         self._overflow: list[int] = []
         self.owner_points: dict[str, list[tuple[float, float]]] = {}
+        self._owner_faces = None
         owner_values = owners if len(owners) == len(normalized) else ()
         if owner_values:
             for (start, end), owner in zip(normalized, owner_values):
@@ -84,6 +87,40 @@ class _SegmentSpatialGrid:
             for grid_x in range(x0, x1 + 1):
                 for grid_y in range(y0, y1 + 1):
                     self._cells.setdefault((grid_x, grid_y), []).append(index)
+
+    def owner_faces(self):
+        """Cache projected member silhouettes for picking inside their faces."""
+        if self._owner_faces is not None:
+            return self._owner_faces
+        faces = {}
+        for owner, points in self.owner_points.items():
+            points = sorted(set(points))
+            if len(points) < 3:
+                continue
+
+            def cross(first, second, third):
+                return ((second[0] - first[0]) * (third[1] - first[1])
+                        - (second[1] - first[1]) * (third[0] - first[0]))
+
+            lower, upper = [], []
+            for point in points:
+                while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+                    lower.pop()
+                lower.append(point)
+            for point in reversed(points):
+                while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+                    upper.pop()
+                upper.append(point)
+            hull = lower[:-1] + upper[:-1]
+            if len(hull) < 3:
+                continue
+            path = QPainterPath(QPointF(*hull[0]))
+            for point in hull[1:]:
+                path.lineTo(QPointF(*point))
+            path.closeSubpath()
+            faces[owner] = path
+        self._owner_faces = faces
+        return faces
 
     def _cell(self, coordinate: float) -> int:
         return math.floor(coordinate / self.cell_size)
@@ -778,6 +815,11 @@ def default_project_settings() -> dict:
         "detail_identifier_leader_length_mm": 5.0,
         "detail_identifier_text_height_mm": 3.0,
         "detail_identifier_custom_colors": [],
+        "weld_line_color": "#ff0000",
+        "weld_text_color": "#000000",
+        "weld_symbol_color": "#000000",
+        "weld_text_height_mm": 3.0,
+        "weld_custom_colors": [],
         "elevation_identifier_symbol_color": "#ff0000",
         "elevation_identifier_text_color": "#000000",
         "elevation_identifier_text_height_mm": 3.0,
@@ -797,6 +839,8 @@ class ProjectSheetWorkspace(QWidget):
     layout_changed = Signal()
     element_identification_requested = Signal(int, str, object)
     identification_finished = Signal(bool)
+    member_break_finished = Signal(bool)
+    member_break_step_changed = Signal(int)
     dimension_finished = Signal(bool)
     dimension_step_changed = Signal(int)
     detail_identifier_finished = Signal(bool)
@@ -846,6 +890,8 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_table_hit_rects: dict[int, QRectF] = {}
         self._sheet_table_layouts = {}
         self.steel_profile_rows_provider = lambda: []
+        self.steel_plate_rows_provider = lambda: []
+        self.accessory_rows_provider = lambda: []
         self._selected_sheet_table: int | None = None
         self._drag_sheet_table: int | None = None
         self._table_drag_raw_bounds: QRectF | None = None
@@ -881,6 +927,7 @@ class ProjectSheetWorkspace(QWidget):
         self._view_content_bounds: dict[int, QRectF] = {}
         self._view_title_hit_rects: dict[int, QRectF] = {}
         self._component_group_hit_rects: dict[str, QRectF] = {}
+        self._component_group_paper_frames = {}
         self._component_group_title_hit_rects: dict[str, QRectF] = {}
         self._selected_component_detail_group: str | None = None
         self._drag_component_detail_group: str | None = None
@@ -921,6 +968,11 @@ class ProjectSheetWorkspace(QWidget):
         self._elevation_identifier_point: tuple[float, float] | None = None
         self._elevation_identifier_hover_projected: tuple[float, float] | None = None
         self._elevation_identifier_preview_direction: tuple[float, float] | None = None
+        self._selected_member_break = None
+        self._drag_member_break = None
+        self._member_break_mode = False
+        self._member_break_view_index = None
+        self._break_linework_cache = {}
         self._dimension_mode = False
         self._element_visibility_mode: str | None = None
         self._element_visibility_pending: set[str] = set()
@@ -1037,6 +1089,15 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_views(self, views, *, clear_selection: bool = False) -> None:
+        self._component_group_paper_frames.clear()
+        if hasattr(self, "weld_tool"):
+            self.weld_tool.reset()
+        if self._member_break_mode:
+            self.set_member_break_mode(False)
+            self.member_break_finished.emit(True)
+        self._break_linework_cache.clear()
+        self._selected_member_break = None
+        self._drag_member_break = None
         if self._element_visibility_mode is not None:
             self.set_element_visibility_mode(None)
             self.element_visibility_finished.emit(True)
@@ -1086,6 +1147,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_text_mode(self, active: bool) -> None:
+        self._member_break_mode = False
         if active:
             self._selected_sheet_table = None
         self._annotation_mode = "text" if active else None
@@ -1107,6 +1169,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_line_mode(self, active: bool, kind: str = "line") -> None:
+        self._member_break_mode = False
         if kind not in {"line", "rectangle", "circle"}:
             raise ValueError("Tipo de desenho inválido")
         if active:
@@ -1271,6 +1334,10 @@ class ProjectSheetWorkspace(QWidget):
         self, group_id: str, *, view_override: tuple[int, QRectF] | None = None,
         title_override: QRectF | None = None,
     ) -> QRectF:
+        if view_override is None and title_override is None:
+            cached = self._component_group_hit_rects.get(str(group_id))
+            if cached is not None:
+                return QRectF(cached)
         bounds = QRectF()
         for index, view in enumerate(self._sheet_views):
             metadata = view.get("component_detail_group")
@@ -1290,7 +1357,37 @@ class ProjectSheetWorkspace(QWidget):
             bounds = bounds.united(title_bounds)
         if bounds.isNull():
             return bounds
-        return bounds.adjusted(-10.0, -10.0, 10.0, 10.0).intersected(self._drawing_area)
+        gap = 5.0 * self._sheet_pixels_per_mm
+        return bounds.adjusted(-gap, -gap, gap, gap).intersected(self._drawing_area)
+
+    def _stable_component_group_frame(self, group_id, indices, content_bounds, inner, scale):
+        """Keep a detail frame in paper coordinates across zoom/pan/resize.
+
+        Screen hit tolerances and rounded font metrics must not resize the
+        frame when only navigation changes. Refit it when its content changes.
+        """
+        signature = (
+            self._sheet_name,
+            round(inner.width() / scale, 6), round(inner.height() / scale, 6),
+            repr(self._project_settings),
+            tuple((id(self._sheet_views[i].get("segments")),
+                   id(self._sheet_views[i].get("segment_owners")),
+                   repr({key: value for key, value in self._sheet_views[i].items()
+                         if key not in {"segments", "segment_owners"}})) for i in indices),
+        )
+        cached = self._component_group_paper_frames.get(group_id)
+        if cached is None or cached[0] != signature:
+            gap = 5.0 * scale
+            fitted = content_bounds.adjusted(-gap, -gap, gap, gap)
+            paper = QRectF((fitted.left() - inner.left()) / scale,
+                           (fitted.top() - inner.top()) / scale,
+                           fitted.width() / scale, fitted.height() / scale)
+            self._component_group_paper_frames[group_id] = signature, paper
+        else:
+            paper = cached[1]
+        return QRectF(inner.left() + paper.left() * scale,
+                      inner.top() + paper.top() * scale,
+                      paper.width() * scale, paper.height() * scale).intersected(inner)
 
     def set_component_detail_group_identity(self, identity: str) -> None:
         group_id = self._selected_component_detail_group
@@ -1436,6 +1533,7 @@ class ProjectSheetWorkspace(QWidget):
         return True
 
     def set_identification_mode(self, active: bool, view_index: int | None = None) -> None:
+        self._member_break_mode = False
         self._dimension_mode = False
         self._detail_identifier_mode = False
         self._elevation_identifier_mode = False
@@ -1452,6 +1550,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_dimension_mode(self, active: bool, dimension_type: str | None = None) -> None:
+        self._member_break_mode = False
         if dimension_type is not None:
             if dimension_type not in {"aligned", "orthogonal"}:
                 raise ValueError("Tipo de cota desconhecido.")
@@ -1479,6 +1578,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_detail_identifier_mode(self, active: bool) -> None:
+        self._member_break_mode = False
         self._dimension_mode = False
         self._identification_mode = False
         self._elevation_identifier_mode = False
@@ -1498,6 +1598,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_elevation_identifier_mode(self, active: bool) -> None:
+        self._member_break_mode = False
         self._dimension_mode = False
         self._identification_mode = False
         self._detail_identifier_mode = False
@@ -1689,6 +1790,7 @@ class ProjectSheetWorkspace(QWidget):
         self.detail_identifier_finished.emit(canceled)
 
     def set_element_visibility_mode(self, mode: str | None) -> None:
+        self._member_break_mode = False
         if mode not in {None, "hide", "reveal", "reveal_all"}:
             raise ValueError("Modo de visibilidade desconhecido.")
         self._dimension_mode = False
@@ -1776,6 +1878,9 @@ class ProjectSheetWorkspace(QWidget):
         background_painter = QPainter(self)
         background_painter.fillRect(self.rect(), QColor("#f6f8fa"))
         background_painter.end()
+        weld_tool = getattr(self, "weld_tool", None)
+        if weld_tool is not None and weld_tool.paint_drag():
+            return
         if (self._annotation_background is not None
                 and self._annotation_background.deviceIndependentSize() != self.size()):
             self._annotation_background = None
@@ -2233,11 +2338,13 @@ class ProjectSheetWorkspace(QWidget):
             for slot, index in enumerate(indices):
                 group_slots[index] = (slot, len(indices))
         for index, view in enumerate(self._sheet_views):
-            segments = view.get("segments", ())
+            segments = self._display_linework(view)[0]
             if not segments:
                 continue
-            owners = view.get("segment_owners", ())
+            owners = self._display_linework(view)[1]
             hidden_owners = {str(owner) for owner in view.get("hidden_owners", ())}
+            symbols = self._member_break_symbols(view)
+            symbol_segments = {segment for lines in symbols.values() for segment in lines}
             hidden_key = tuple(sorted(hidden_owners))
             cached = self._view_linework.get(index)
             if cached is None or cached[0] is not segments or cached[1] != hidden_key:
@@ -2245,13 +2352,17 @@ class ProjectSheetWorkspace(QWidget):
                 hidden_path = QPainterPath()
                 points = []
                 hidden_points = []
-                min_x = min_y = math.inf
-                max_x = max_y = -math.inf
+                # Keep the view's origin fixed when a break trims an end.
+                source_points = [point for segment in view.get("segments", ()) for point in segment]
+                min_x = min(point[0] for point in source_points)
+                max_x = max(point[0] for point in source_points)
+                min_y = min(point[1] for point in source_points)
+                max_y = max(point[1] for point in source_points)
                 for segment_index, (start, end) in enumerate(segments):
+                    if symbol_segments and (tuple(start), tuple(end)) in symbol_segments:
+                        continue
                     x1, y1 = float(start[0]), float(start[1])
                     x2, y2 = float(end[0]), float(end[1])
-                    min_x, max_x = min(min_x, x1, x2), max(max_x, x1, x2)
-                    min_y, max_y = min(min_y, y1, y2), max(max_y, y1, y2)
                     owner = str(owners[segment_index]) if len(owners) == len(segments) else ""
                     target_path = hidden_path if owner in hidden_owners else path
                     target_points = hidden_points if owner in hidden_owners else points
@@ -2400,6 +2511,22 @@ class ProjectSheetWorkspace(QWidget):
             painter.drawPath(path)
             if points:
                 painter.drawPoints(points)
+            for mark_index, lines in symbols.items():
+                mark = view["member_breaks"][mark_index]
+                if mark["owner"] in hidden_owners:
+                    continue
+                selected = self._selected_member_break == (index, mark_index)
+                symbol_pen = QPen(QColor("#ff0000"), 2.0 if selected else 1.2)
+                symbol_pen.setCosmetic(True)
+                painter.setPen(symbol_pen)
+                for first, last in lines:
+                    painter.drawLine(QPointF(*first), QPointF(*last))
+                if selected:
+                    painter.setBrush(QColor("#ffffff"))
+                    radius = 3.0 / model_to_pixels
+                    for point in (lines[0][0], lines[-1][1]):
+                        painter.drawEllipse(QPointF(*point), radius, radius)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
             if self._element_visibility_mode == "reveal":
                 hidden_pen = QPen(QColor("#afb8c1"), 1.0)
                 hidden_pen.setCosmetic(True)
@@ -2417,10 +2544,13 @@ class ProjectSheetWorkspace(QWidget):
                     (index, owner) for owner in self._element_visibility_pending
                 )
             if (
-                (self._identification_mode or self._element_visibility_mode in {"hide", "reveal"})
+                (self._identification_mode or self._member_break_mode
+                 or self._element_visibility_mode in {"hide", "reveal"})
                 and visibility_highlight_owners and len(owners) == len(segments)
             ):
                 for segment_index, (start, end) in enumerate(segments):
+                    if symbol_segments and (tuple(start), tuple(end)) in symbol_segments:
+                        continue
                     owner = str(owners[segment_index])
                     if (index, owner) not in visibility_highlight_owners:
                         continue
@@ -2511,6 +2641,10 @@ class ProjectSheetWorkspace(QWidget):
                         round(self._detail_identifier_snap_screen.y() - symbol.height() / 2),
                         symbol,
                     )
+            if hasattr(self, "weld_tool"):
+                weld_bounds = self.weld_tool.draw(painter, index)
+                if not weld_bounds.isEmpty():
+                    view_bounds = view_bounds.united(weld_bounds)
             self._view_content_bounds[index] = QRectF(view_bounds)
             label_offset = view.get("label_offset_mm", (0.0, 0.0))
             try:
@@ -2646,7 +2780,7 @@ class ProjectSheetWorkspace(QWidget):
             bounds = bounds.united(title_rect)
             if bounds.isNull():
                 continue
-            bounds = bounds.adjusted(-10.0, -10.0, 10.0, 10.0).intersected(inner)
+            bounds = self._stable_component_group_frame(group_id, indices, bounds, inner, scale)
             self._component_group_hit_rects[group_id] = bounds
             painter.save()
             frame_pen = QPen(QColor("#000000"), 1.0, Qt.PenStyle.DashLine)
@@ -2719,19 +2853,35 @@ class ProjectSheetWorkspace(QWidget):
         stack_height = 0.0
         for index, table in enumerate(self._settings.get("tables", ())):
             kind = table.get("kind")
-            if kind not in {"sheet_revisions", "project_revisions", "steel_profiles"}:
+            if kind not in {"sheet_revisions", "project_revisions", "steel_profiles", "steel_plates", "accessories"}:
                 continue
-            rows = (self.steel_profile_rows_provider() if kind == "steel_profiles"
-                    else revision_rows_for(self._settings, self._project_settings, kind))
+            if kind == "steel_profiles":
+                rows = self.steel_profile_rows_provider()
+            elif kind == "steel_plates":
+                rows = self.steel_plate_rows_provider()
+            elif kind == "accessories":
+                rows = self.accessory_rows_provider()
+            else:
+                rows = revision_rows_for(self._settings, self._project_settings, kind)
             font = QFont(self.font())
-            fields = (("profile", "family", "geometry", "material", "linear_mass", "length", "total_mass")
-                      if kind == "steel_profiles" else ("number", "change", "responsible", "date"))
+            if kind == "accessories":
+                fields = ("name", "quantity")
+            elif kind in {"steel_profiles", "steel_plates"}:
+                fields = ("profile", "plate", "family", "geometry", "material", "linear_mass", "length", "total_mass")
+            else:
+                fields = ("number", "change", "responsible", "date")
             signature = (kind, width_mm, font.toString(),
                          tuple(tuple(row.get(key, "") for key in fields) for row in rows))
             cached = self._sheet_table_layouts.get(index)
             if cached is None or cached[0] != signature:
-                layout = (SteelProfilesTableLayout(rows, width_mm, font) if kind == "steel_profiles"
-                          else RevisionTableLayout(kind, rows, width_mm, font))
+                if kind == "steel_profiles":
+                    layout = SteelProfilesTableLayout(rows, width_mm, font)
+                elif kind == "steel_plates":
+                    layout = SteelPlatesTableLayout(rows, width_mm, font)
+                elif kind == "accessories":
+                    layout = AccessoriesTableLayout(rows, width_mm, font)
+                else:
+                    layout = RevisionTableLayout(kind, rows, width_mm, font)
                 self._sheet_table_layouts[index] = (signature, layout)
             else:
                 layout = cached[1]
@@ -2976,6 +3126,30 @@ class ProjectSheetWorkspace(QWidget):
 
     def _table_snap_segments(self):
         segments = self._sheet_reference_segments()
+        for index, bounds in self._sheet_table_hit_rects.items():
+            if index == self._drag_sheet_table:
+                continue
+            corners = (bounds.topLeft(), bounds.topRight(), bounds.bottomRight(), bounds.bottomLeft())
+            segments.extend((corners[i], corners[(i + 1) % 4]) for i in range(4))
+            cached = self._sheet_table_layouts.get(index)
+            if cached is None:
+                continue
+            layout = cached[1]
+            scale = bounds.width() / layout.width_mm
+            x = bounds.left()
+            footer_height = getattr(layout, "_footer_height", 0.0)
+            for width in layout._widths[:-1]:
+                x += width * scale
+                segments.append((QPointF(x, bounds.top() + layout._title_height * scale),
+                                 QPointF(x, bounds.bottom() - footer_height * scale)))
+            y = bounds.top() + layout._title_height * scale
+            for height, _docs in layout._rows:
+                segments.append((QPointF(bounds.left(), y), QPointF(bounds.right(), y)))
+                y += height * scale
+            if footer_height:
+                segments.append((QPointF(bounds.left(), y), QPointF(bounds.right(), y)))
+                split = bounds.right() - layout._widths[-1] * scale
+                segments.append((QPointF(split, y), QPointF(split, bounds.bottom())))
         for view_index, annotations in [(None, self._sheet_lines)] + [
             (index, view.get("sheet_lines", ())) for index, view in enumerate(self._sheet_views)
         ]:
@@ -2986,7 +3160,7 @@ class ProjectSheetWorkspace(QWidget):
             if view_index not in self._view_draw_data:
                 continue
             grid = self._segment_grid_for_view(view_index)
-            owners = view.get("segment_owners", ())
+            owners = self._display_linework(view)[1]
             hidden = {str(owner) for owner in view.get("hidden_owners", ())}
             for index, (a, b) in enumerate(grid.segments):
                 if len(owners) == len(grid.segments) and str(owners[index]) in hidden:
@@ -3049,7 +3223,7 @@ class ProjectSheetWorkspace(QWidget):
             projected = self._projected_point_at(view_index, position)
             draw_data = self._view_draw_data.get(view_index)
             if projected is not None and draw_data is not None and draw_data[4] > 1e-12:
-                owners = view.get("segment_owners", ())
+                owners = self._display_linework(view)[1]
                 hidden = {str(owner) for owner in view.get("hidden_owners", ())}
                 for index in grid.query(*projected, 12.0 / draw_data[4]):
                     if len(owners) == len(grid.segments) and str(owners[index]) in hidden:
@@ -3490,7 +3664,7 @@ class ProjectSheetWorkspace(QWidget):
             except (TypeError, ValueError):
                 return None
         fixed_index = {"XY": 2, "XZ": 1, "YZ": 0}.get(plane)
-        segments = view.get("segments", ())
+        segments = self._display_linework(view)[0]
         axes_key = tuple(
             (direction, tuple(
                 (str(axis.label), float(axis.value)) for axis in axes.get(direction, ())
@@ -3874,10 +4048,177 @@ class ProjectSheetWorkspace(QWidget):
             center_y - (position.y() - target_y) / model_to_pixels,
         )
 
+    def _member_break_axis(self, view, owner):
+        model = getattr(self.window(), "model", None)
+        # Component details saved by earlier versions use bare member names.
+        name = owner.removeprefix("bar:")
+        member = model.bars.get(name) if model is not None else None
+        if member is None:
+            return None
+        endpoints = []
+        for name in (member.start_node, member.end_node):
+            node = model.nodes[name]
+            point = self._project_world_point(view, (node.x, node.y, node.z))
+            if point is None:
+                return None
+            endpoints.append(point)
+        dx, dy = (endpoints[1][i] - endpoints[0][i] for i in range(2))
+        length = math.hypot(dx, dy)
+        return (dx / length, dy / length) if length > 1e-9 else None
+
+    def _display_linework(self, view):
+        segments, owners = view.get("segments", ()), view.get("segment_owners", ())
+        marks = view.get("member_breaks", ())
+        if not marks:
+            return segments, owners
+        key = id(view)
+        signature = repr(marks)
+        cached = self._break_linework_cache.get(key)
+        if cached is None or cached[0] is not segments or cached[1] is not owners or cached[2] != signature:
+            effective_marks = [dict(mark, axis=self._member_break_axis(view, mark.get("owner", ""))
+                                    or mark.get("axis", ())) for mark in marks]
+            decorated, sources, symbols = member_break_linework(segments, owners, effective_marks, return_symbols=True)
+            cached = segments, owners, signature, (decorated, sources), symbols
+            self._break_linework_cache[key] = cached
+        return cached[3]
+
+    def _member_break_symbols(self, view):
+        if not view.get("member_breaks"):
+            return {}
+        self._display_linework(view)
+        return self._break_linework_cache[id(view)][4]
+
+    def _member_break_at(self, position):
+        best = None
+        for index, view in enumerate(self._sheet_views):
+            draw_data = self._view_draw_data.get(index)
+            if draw_data is None:
+                continue
+            cx, cy, tx, ty, scale = draw_data
+            for mark_index, lines in self._member_break_symbols(view).items():
+                if view["member_breaks"][mark_index]["owner"] in view.get("hidden_owners", ()):
+                    continue
+                distance = min(self._distance_to_segment(
+                    position, QPointF(tx + (first[0] - cx) * scale, ty - (first[1] - cy) * scale),
+                    QPointF(tx + (last[0] - cx) * scale, ty - (last[1] - cy) * scale),
+                )[0] for first, last in lines)
+                if distance <= 8.0 and (best is None or distance < best[0]):
+                    best = distance, index, mark_index
+        return best[1:] if best else None
+
+    def _member_break_axis_range(self, view, mark):
+        axis = self._member_break_axis(view, mark["owner"]) or mark["axis"]
+        values = [sum(point[i] * axis[i] for i in range(2))
+                  for segment, owner in zip(view["segments"], view["segment_owners"])
+                  if owner == mark["owner"] for point in segment]
+        return axis, min(values), max(values)
+
+    def cancel_member_break_drag(self):
+        if self._drag_member_break is None:
+            return False
+        index, mark_index, original, _cursor, _position = self._drag_member_break
+        self._sheet_views[index]["member_breaks"][mark_index] = original
+        self._drag_member_break = None
+        self.invalidate_view_geometry(index)
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
+        return True
+
+    def set_member_break_mode(self, active: bool) -> None:
+        self._member_break_mode = bool(active)
+        self._member_break_view_index = None
+        self._hover_owners.clear()
+        if active:
+            self._selected_member_break = None
+            self._annotation_mode = None
+            self._dimension_mode = False
+            self._identification_mode = False
+            self._element_visibility_mode = None
+            self._detail_identifier_mode = False
+            self._elevation_identifier_mode = False
+            self.select_view(None)
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor))
+        self.update()
+
+    def _member_break_target_at(self, position: QPointF, index: int):
+        if self._stamp_rect.contains(position):
+            return None
+        cursor = self._projected_point_at(index, position)
+        if cursor is None:
+            return None
+        view = self._sheet_views[index]
+        model = getattr(self.window(), "model", None)
+        if model is None:
+            return None
+        hidden = set(view.get("hidden_owners", ()))
+        grid = self._segment_grid_for_view(index)
+        candidates = []
+        point = QPointF(*cursor)
+        # Include the face interior, even far from every visible edge.
+        for owner, face in grid.owner_faces().items():
+            if owner in hidden or owner.removeprefix("bar:") not in model.bars:
+                continue
+            if face.contains(point):
+                candidates.append(owner)
+        edge_target = self._element_at(position, view_index=index)
+        if edge_target is not None:
+            owner = edge_target[5]
+            if (owner not in hidden and owner.removeprefix("bar:") in model.bars
+                    and (not candidates or owner in candidates)):
+                return owner, cursor
+        if not candidates:
+            return None
+        # Where silhouettes overlap, prefer the visible outline nearest the click.
+        def distance(owner):
+            return min(
+                self._distance_to_segment(point, QPointF(*start), QPointF(*end))[0]
+                for (start, end), source in zip(grid.segments, self._display_linework(view)[1])
+                if source == owner
+            )
+        return min(candidates, key=distance), cursor
+
+    def _member_break_click(self, position: QPointF) -> None:
+        view_hit = self._annotation_view_at(position)
+        if self._member_break_view_index is None or (
+            view_hit is not None and view_hit != self._member_break_view_index
+        ):
+            if view_hit is not None:
+                self._member_break_view_index = view_hit
+                self.select_view(view_hit)
+                self.member_break_step_changed.emit(1)
+            return
+        index = self._member_break_view_index
+        target = self._member_break_target_at(position, index)
+        if target is None:
+            return
+        owner, cursor = target
+        view = self._sheet_views[index]
+        axis = self._member_break_axis(view, owner)
+        if axis is None:
+            return
+        points = [point for segment, source in zip(view.get("segments", ()), view.get("segment_owners", ()))
+                  if source == owner for point in segment]
+        if not points:
+            return
+        stations = [point[0] * axis[0] + point[1] * axis[1] for point in points]
+        station = cursor[0] * axis[0] + cursor[1] * axis[1]
+        end = int(station > (min(stations) + max(stations)) / 2.0)
+        marks = view.setdefault("member_breaks", [])
+        existing = next((mark for mark in marks if mark.get("owner") == owner and mark.get("end") == end), None)
+        if existing is not None:
+            marks.remove(existing)
+        else:
+            marks.append({"owner": owner, "end": end, "axis": list(axis)})
+        self.invalidate_view_geometry(index)
+        self._annotation_background = None
+        self.update()
+        self.layout_changed.emit()
+
     def _segment_grid_for_view(self, view_index: int) -> _SegmentSpatialGrid:
         view = self._sheet_views[view_index]
-        segments = view.get("segments", ())
-        owners = view.get("segment_owners", ())
+        segments = self._display_linework(view)[0]
+        owners = self._display_linework(view)[1]
         cached = self._view_segment_grids.get(view_index)
         if cached is None or cached[0] is not segments or cached[1] is not owners:
             grid = _SegmentSpatialGrid(segments, owners)
@@ -3917,8 +4258,8 @@ class ProjectSheetWorkspace(QWidget):
             segment_grid = self._segment_grid_for_view(index)
             view = self._sheet_views[index]
             hidden_owners = {str(owner) for owner in view.get("hidden_owners", ())}
-            segments = view.get("segments", ())
-            owners = view.get("segment_owners", ())
+            segments = self._display_linework(view)[0]
+            owners = self._display_linework(view)[1]
             cache_key = (
                 index,
                 id(segments),
@@ -4449,7 +4790,7 @@ class ProjectSheetWorkspace(QWidget):
             center_x, center_y, target_x, target_y, model_to_pixels = draw_data
             grid = self._segment_grid_for_view(index)
             segments = grid.segments
-            owners = view.get("segment_owners", ())
+            owners = self._display_linework(view)[1]
             if model_to_pixels <= 1e-12:
                 continue
             projected_cursor = (
@@ -4591,6 +4932,29 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._member_break_mode:
+                self._member_break_click(event.position())
+                event.accept()
+                return
+            if not any((self._annotation_mode, self._dimension_mode, self._identification_mode,
+                        self._detail_identifier_mode, self._elevation_identifier_mode, self._element_visibility_mode)):
+                hit = self._member_break_at(event.position())
+                self._selected_member_break = hit
+                if hit is not None:
+                    index, mark_index = hit
+                    self.select_view(index)
+                    mark = self._sheet_views[index]["member_breaks"][mark_index]
+                    axis, bottom, top = self._member_break_axis_range(self._sheet_views[index], mark)
+                    lines = self._member_break_symbols(self._sheet_views[index])[mark_index]
+                    points = [lines[0][0], *(line[1] for line in lines)]
+                    station = sum(sum(p[i] * axis[i] for i in range(2)) for p in points) / len(points)
+                    cursor = self._projected_point_at(index, event.position())
+                    self._drag_member_break = index, mark_index, dict(mark), cursor, (station - bottom) / (top - bottom)
+                    self.setFocus(Qt.FocusReason.MouseFocusReason)
+                    self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                    self.update()
+                    event.accept()
+                    return
             if self._annotation_mode is not None:
                 self._sheet_annotation_click(event.position(), event.modifiers())
                 event.accept()
@@ -5092,6 +5456,27 @@ class ProjectSheetWorkspace(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._drag_member_break is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            index, mark_index, _original, start, initial = self._drag_member_break
+            view = self._sheet_views[index]
+            mark = view["member_breaks"][mark_index]
+            axis, bottom, top = self._member_break_axis_range(view, mark)
+            cursor = self._projected_point_at(index, event.position())
+            if cursor is not None and top - bottom > 1e-12:
+                delta = sum((cursor[i] - start[i]) * axis[i] for i in range(2)) / (top - bottom)
+                lower, upper = 0.02, 0.98
+                for other_index, other in enumerate(view["member_breaks"]):
+                    if other_index != mark_index and other["owner"] == mark["owner"]:
+                        other_position = other.get("position", 0.02 if other["end"] == 0 else 0.98)
+                        if mark["end"] == 0:
+                            upper = min(upper, other_position - 0.03)
+                        else:
+                            lower = max(lower, other_position + 0.03)
+                mark["position"] = max(lower, min(upper, initial + delta))
+                self.invalidate_view_geometry(index)
+                self.update()
+            event.accept()
+            return
         if self._drag_sheet_table is not None and event.buttons() & Qt.MouseButton.LeftButton:
             index = self._drag_sheet_table
             bounds = self._sheet_table_hit_rects.get(index)
@@ -5686,22 +6071,29 @@ class ProjectSheetWorkspace(QWidget):
         )
         if (
             self._identification_mode
+            or self._member_break_mode
             or self._element_visibility_mode in {"hide", "reveal"}
         ) and not dragging_identification:
             self._last_identification_position = event.position()
             visibility_mode = self._element_visibility_mode in {"hide", "reveal"}
             target = None
-            if not visibility_mode or self._selected_view_index is not None:
+            if not (visibility_mode or self._member_break_mode) or self._selected_view_index is not None:
                 target = self._element_at(
                     event.position(),
-                    view_index=self._selected_view_index if visibility_mode else None,
+                    view_index=self._selected_view_index if visibility_mode or self._member_break_mode else None,
                 )
+            if self._member_break_mode:
+                hit = (self._member_break_target_at(event.position(), self._member_break_view_index)
+                       if self._member_break_view_index is not None else None)
+                target = (0.0, self._member_break_view_index, hit[0], hit[1], set(), hit[0]) if hit else None
             raw_target = (target[1], target[5]) if target is not None and target[5] else None
             if self._identification_mode and raw_target != self._hover_raw_target:
                 self._identification_pick_member = False
                 target = self._element_at(event.position())
                 raw_target = (target[1], target[5]) if target is not None and target[5] else None
-            hover_owners = target[4] if target is not None else set()
+            hover_owners = set()
+            if target is not None:
+                hover_owners = {(target[1], target[5])} if self._member_break_mode else target[4]
             if hover_owners != self._hover_owners or raw_target != self._hover_raw_target:
                 self._hover_owners = set(hover_owners)
                 self._hover_raw_target = raw_target
@@ -5823,6 +6215,13 @@ class ProjectSheetWorkspace(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_member_break is not None:
+            self._drag_member_break = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_sheet_table is not None:
             self._drag_sheet_table = None
             self._table_drag_raw_bounds = None
@@ -6005,6 +6404,27 @@ class ProjectSheetWorkspace(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.cancel_member_break_drag():
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Delete and self._selected_member_break is not None:
+            index, mark_index = self._selected_member_break
+            self._sheet_views[index]["member_breaks"].pop(mark_index)
+            self._selected_member_break = None
+            self._drag_member_break = None
+            self.invalidate_view_geometry(index)
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
+        if self._member_break_mode and event.key() == Qt.Key.Key_Escape:
+            self.set_member_break_mode(False)
+            self.member_break_finished.emit(True)
+            event.accept()
+            return
+        if self._member_break_mode and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.accept()
+            return
         if self._annotation_mode is not None and event.key() == Qt.Key.Key_Escape:
             canceled_mode = self._annotation_mode
             self.set_sheet_text_mode(False) if canceled_mode == "text" else self.set_sheet_line_mode(False)
