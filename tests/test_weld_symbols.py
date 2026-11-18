@@ -543,3 +543,30 @@ def test_contours_follow_weld_face_and_correct_convexity(kind, contour, side):
         displacement = midpoint - (first + last)/2
         projection = displacement.x()*outward.x() + displacement.y()*outward.y()
         assert projection * (1 if contour == 'convex' else -1) > 0
+
+
+def test_drag_arrow_tip_snaps_and_keeps_reference_line_fixed_and_escape_restores(scene):
+    app, window, sheet, tool, view, paint = scene
+    mark = dict(DEFAULTS, point=(.8, 0), offset_mm=(18, -16))
+    view['weld_marks'] = [mark]
+    paint()
+    original = tuple(mark['point'])
+    anchor = sheet._screen_point(0, original)
+    elbow = anchor + QPointF(*mark['offset_mm']) * sheet._sheet_pixels_per_mm
+    target = sheet._screen_point(0, (1., .1))
+    QTest.mousePress(sheet, Qt.MouseButton.LeftButton, pos=anchor.toPoint())
+    assert tool.drag[3] and tool._drag_background is not None
+    QTest.mouseMove(sheet, (target+QPointF(1, 1)).toPoint())
+    assert mark['point'] == pytest.approx((1., .1))
+    actual_elbow = sheet._screen_point(0, mark['point']) + QPointF(*mark['offset_mm']) * sheet._sheet_pixels_per_mm
+    assert actual_elbow.x() == pytest.approx(elbow.x())
+    assert actual_elbow.y() == pytest.approx(elbow.y())
+    assert tool._drag_background is not None
+    QTest.keyClick(sheet, Qt.Key.Key_Escape)
+    assert mark['point'] == original and mark['offset_mm'] == (18, -16)
+    paint()
+    QTest.mousePress(sheet, Qt.MouseButton.LeftButton, pos=anchor.toPoint())
+    QTest.mouseMove(sheet, target.toPoint())
+    QTest.mouseRelease(sheet, Qt.MouseButton.LeftButton, pos=target.toPoint())
+    assert mark['point'] == pytest.approx((1., .1))
+    assert tool.drag is None and tool._drag_background is None

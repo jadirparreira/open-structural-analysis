@@ -1064,6 +1064,14 @@ class ProjectSheetsPalette(QFrame):
             window.start_project_view_orthogonal_dimension,
         )
         self.orthogonal_dimension_button.setIconSize(QSize(21, 21))
+        self.angular_dimension_button = self._action_button(
+            "dimension-angular.svg", "Cota angular", window.start_project_view_angular_dimension,
+        )
+        self.level_dimension_button = self._action_button(
+            "dimension-level.svg", "Cota de nível", window.start_project_view_level_dimension,
+        )
+        self.angular_dimension_button.setIconSize(QSize(21, 21))
+        self.level_dimension_button.setIconSize(QSize(21, 21))
         self.sheet_text_button = self._action_button(
             "square-text.svg", "Inserir texto na folha", window.start_project_sheet_text,
         )
@@ -1084,6 +1092,10 @@ class ProjectSheetsPalette(QFrame):
             "draw-circle.svg", "Desenhar círculo na folha", window.start_project_sheet_circle,
         )
         self.sheet_circle_button.setIconSize(QSize(21, 21))
+        self.sheet_image_button = self._action_button(
+            "image.svg", "Inserir imagem na folha", window.start_project_sheet_image,
+        )
+        self.sheet_image_button.setIconSize(QSize(21, 21))
         self.manage_views_button = self._action_button(
             "scan-square.svg", "Adicionar vistas", window.open_detailing_views,
         )
@@ -1102,17 +1114,19 @@ class ProjectSheetsPalette(QFrame):
             self.identify_button, self.detail_identifier_button, self.elevation_identifier_button, self.member_break_button, self.weld_button,
         ))
         self.dimensions_group_button = self._group_button("dimension.svg", "Cotas", (
-            self.dimension_button, self.orthogonal_dimension_button,
+            self.dimension_button, self.orthogonal_dimension_button, self.angular_dimension_button, self.level_dimension_button,
         ))
         self.drawing_group_button = self._group_button("draw-line.svg", "Desenho", (
             self.sheet_line_button, self.sheet_rectangle_button, self.sheet_circle_button,
+        ))
+        self.insert_group_button = self._group_button("image.svg", "Inserir", (
+            self.sheet_image_button, self.sheet_text_button, self.sheet_table_button,
         ))
         layout.addWidget(self.visibility_group_button)
         layout.addWidget(self.model_elements_group_button)
         layout.addWidget(self.dimensions_group_button)
         layout.addWidget(self.drawing_group_button)
-        layout.addWidget(self.sheet_text_button)
-        layout.addWidget(self.sheet_table_button)
+        layout.addWidget(self.insert_group_button)
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 

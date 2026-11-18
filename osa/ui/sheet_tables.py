@@ -169,11 +169,11 @@ class AccessoriesTableLayout(RevisionTableLayout):
     def __init__(self, rows: list[dict], width_mm: float, font: QFont):
         super().__init__("accessories", [], width_mm, font)
         self._widths = [width_mm * 0.8, width_mm * 0.2]
-        values = [("NOME", "QUANTIDADE")]
+        values = [("ITEM", "QUANTIDADE")]
         values.extend((row["name"], str(row["quantity"])) for row in rows)
         self._rows = []
-        for row in values:
-            docs = [self._document(value, width, Qt.AlignLeft if column == 0 else Qt.AlignCenter)
+        for row_index, row in enumerate(values):
+            docs = [self._document(value, width, Qt.AlignLeft if row_index > 0 and column == 0 else Qt.AlignCenter)
                     for column, (value, width) in enumerate(zip(row, self._widths))]
             height = max(8.0, max(doc.size().height() / self._units for doc in docs) + 2 * self._padding)
             self._rows.append((height, docs))

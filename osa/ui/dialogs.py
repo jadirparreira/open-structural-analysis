@@ -25,7 +25,9 @@ from osa.domain.node_components import node_component_geometry_signature
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
+from osa.services.base_plate_details import ensure_base_plate_annotations, arrange_base_plate_views
 
+from .special_dimensions import SPECIAL_DIMENSION_DEFAULTS
 from .common import *
 from .detailing_viewport import DetailingViewViewport
 from .detailing_preview import (
@@ -108,6 +110,7 @@ class ProjectSheetTextDialog(QDialog):
             ("align-left.svg", "Alinhar à esquerda", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignLeft), False),
             ("align-center.svg", "Centralizar", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignHCenter), False),
             ("align-right.svg", "Alinhar à direita", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignRight), False),
+            ("align-justify.svg", "Justificado", lambda _checked=False: self.editor.setAlignment(Qt.AlignmentFlag.AlignJustify), False),
             ("list.svg", "Lista com marcadores", self._toggle_bullets, False),
         )
         for filename, tooltip, callback, checkable in controls:
@@ -1593,6 +1596,7 @@ class ComponentDetailsDialog(QDialog):
         )
         detail_solids = detail_scene.detailing_view_solid_meshes(model)
         half_limit = cls.CONNECTED_MEMBER_LIMIT_MM / 2000.0
+        connection_points = []
         for name, solid in detail_solids:
             if name not in connected_members:
                 continue
@@ -1613,6 +1617,25 @@ class ComponentDetailsDialog(QDialog):
             clipped = pv.wrap(clipper.GetOutput()).copy(deep=True)
             if not clipped.n_points or not clipped.n_cells:
                 continue
+            # Sample the connected profile at the plate face, not at the cropped cap.
+            member = model.bars.get(name)
+            if member is not None:
+                other_name = member.end_node if member.start_node == node_name else member.start_node
+                other = model.nodes[other_name]
+                direction = (np.asarray((other.x, other.y, other.z)) - origin) @ frame.T
+                face = float(parameters.get("espessura_mm", 20.0))/1000 if direction[2] >= 0 else 0.
+                section = clipped.slice(normal=(0, 0, 1), origin=(0, 0, face))
+                px0, px1, py0, py1, _pz0, _pz1 = component_meshes[0].bounds
+                if section.n_points:
+                    section = section.clip_box((px0, px1, py0, py1, face-1e-5, face+1e-5), invert=False)
+                points = np.asarray(section.points)
+                if not len(points):
+                    all_points = np.asarray(clipped.points)
+                    distances = np.abs(all_points[:, 2] - face)
+                    points = all_points[(distances <= distances.min() + 1e-6)
+                                        & (all_points[:, 0] >= px0-1e-6) & (all_points[:, 0] <= px1+1e-6)
+                                        & (all_points[:, 1] >= py0-1e-6) & (all_points[:, 1] <= py1+1e-6)]
+                connection_points.extend(points.tolist())
             meshes.append(clipped)
             owners.append(name)
 
@@ -1693,7 +1716,8 @@ class ComponentDetailsDialog(QDialog):
                     "unit": "mm", "decimal_places": 0,
                 })
             else:
-                rod_points = np.asarray(component_meshes[1].points, dtype=float)
+                rod_points = min((np.asarray(rod.points, dtype=float) for rod in rods),
+                                 key=lambda points: float(np.mean(points @ np.asarray(right))))
                 rod_projected = np.column_stack((rod_points @ np.asarray(right), rod_points @ np.asarray(view_up)))
                 rod_center_x = float((rod_projected[:, 0].min() + rod_projected[:, 0].max()) / 2.0)
                 rod_lower_y = float(rod_projected[:, 1].min())
@@ -1701,13 +1725,24 @@ class ComponentDetailsDialog(QDialog):
                 dimensions = [{
                     "start": (rod_center_x, plate_lower_y),
                     "end": (rod_center_x, rod_lower_y),
-                    "offset": (margin * 2.0, 0.0), "orthogonal_axis": "y",
+                    "offset": (float(plate_min[0]) - rod_center_x - margin * 2.0, 0.0), "orthogonal_axis": "y",
                     "unit": "mm", "decimal_places": 0,
                 }]
             result[key] = {
                 "segments": segments,
                 "segment_owners": segment_owners,
                 "dimensions": tuple(dimensions),
+                "component_annotation_geometry": {
+                    "plate_bounds": (*map(float, plate_min), *map(float, plate_max)),
+                    "body_bounds": (
+                        min(p[0] for line in segments for p in line),
+                        min(p[1] for line in segments for p in line),
+                        max(p[0] for line in segments for p in line),
+                        max(p[1] for line in segments for p in line),
+                    ),
+                    "weld_points": tuple((float(np.dot(point, right)), float(np.dot(point, view_up)))
+                                         for point in connection_points),
+                },
                 "coordinate": (
                     world_origin,
                     tuple(world_origin[i] + right_world[i] for i in range(3)),
@@ -1764,6 +1799,7 @@ class ComponentDetailsDialog(QDialog):
                 },
                 "scale_denominator": 10.0,
                 "identifications": [],
+                "component_annotation_geometry": data.get("component_annotation_geometry"),
                 "component_detail_group": {
                     "id": group_id,
                     "component_id": "base_plate", "parameter_key": group_id,
@@ -1777,6 +1813,24 @@ class ComponentDetailsDialog(QDialog):
                 "dimensions": tuple(data.get("dimensions", ())),
             }
             self.result_views.append(view)
+        palette = getattr(self._window, "project_sheets_palette", None)
+        project = getattr(palette, "_project_settings", {})
+        ensure_base_plate_annotations(self._window.model, self.result_views,
+                                      float(project.get("view_element_text_height_mm", 3.)))
+        if not self._editing_group_id:
+            from .project_sheet import PAPER_SIZES_MM
+            sheet_name = palette.sheet_selector.currentText() if palette is not None else ""
+            sheet = getattr(palette, "_sheet_settings", {}).get(sheet_name, {})
+            width, height = PAPER_SIZES_MM.get(sheet.get("paper_size", "A3"),
+                (float(sheet.get("custom_width_mm", 420)), float(sheet.get("custom_height_mm", 297))))
+            width, height = ((max(width, height), min(width, height)) if sheet.get("orientation", "Paisagem") == "Paisagem"
+                             else (min(width, height), max(width, height)))
+            width -= float(sheet.get("margin_left_mm", 25)) + float(sheet.get("margin_right_mm", 10))
+            height -= float(sheet.get("margin_top_mm", 10)) + float(sheet.get("margin_bottom_mm", 10))
+            reserved_top = 80. if sheet.get("title_block_visible", True) and sheet.get("title_block_position") == "Superior" else 0.
+            reserved_bottom = 80. if sheet.get("title_block_visible", True) and not reserved_top else 0.
+            arrange_base_plate_views(self.result_views, max(80, width-20), max(80, height),
+                                     reserved_top, reserved_bottom)
         self.accept()
 
 
@@ -3805,7 +3859,7 @@ class ProjectSheetSettingsDialog(QDialog):
 
     def _unit_input(
         self, parent: QWidget, value: float, minimum: float, maximum: float,
-        decimals: int = 0,
+        decimals: int = 0, unit: str = "mm",
     ) -> tuple[QFrame, QDoubleSpinBox]:
         box = QFrame(parent)
         box.setObjectName("unitValueBox")
@@ -3826,7 +3880,7 @@ class ProjectSheetSettingsDialog(QDialog):
         control.setKeyboardTracking(False)
         control.setValue(float(value))
         row.addWidget(control, 1)
-        row.addWidget(QLabel("mm", box))
+        row.addWidget(QLabel(unit, box))
         return box, control
 
     @staticmethod
@@ -4180,6 +4234,42 @@ class ProjectSheetSettingsDialog(QDialog):
         form.addRow("Posição do valor da cota", self.dimension_text_position_combo)
         form.addRow("Unidade do valor da cota", self.dimension_unit_combo)
         form.addRow("Unidades decimais da cota", self.dimension_decimal_places_spin)
+        self._special_dimension_inputs = {}
+        for kind, title in (("angular", "Cota angular — graus"), ("level", "Cota de nível — metros")):
+            subtitle = QLabel(title)
+            subtitle.setObjectName("propertySection")
+            form.addRow(subtitle)
+            prefix = kind+"_dimension_"
+            fields = [("text_height_mm", "Altura do texto", "mm", .5, 30.),
+                      ("terminator_height_mm", "Altura da seta", "mm", .5, 15.),
+                      ("min_radius_mm", "Raio mínimo do arco", "mm", 1., 200.)] if kind == "angular" else [
+                      ("text_height_mm", "Altura do texto", "mm", .5, 30.),
+                      ("symbol_height_mm", "Altura do símbolo", "mm", .5, 30.),
+                      ("line_length_mm", "Comprimento mínimo da chamada", "mm", 3., 200.),
+                      ("reference_m", "Elevação de referência (zero)", "m", -1e6, 1e6)]
+            for suffix, label, unit, minimum, maximum in fields:
+                key = prefix+suffix
+                box, spin = self._unit_input(page, self._project_settings.get(key, SPECIAL_DIMENSION_DEFAULTS[key]), minimum, maximum, decimals=3 if suffix == "reference_m" else 1, unit=unit)
+                if suffix == "reference_m":
+                    spin.setDecimals(3)
+                    spin.setValue(float(self._project_settings.get(key, 0.)))
+                self._special_dimension_inputs[key] = spin
+                form.addRow(label, box)
+            key = prefix+"decimal_places"
+            spin = QSpinBox(page); spin.setRange(0, 8)
+            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            spin.setValue(int(self._project_settings.get(key, SPECIAL_DIMENSION_DEFAULTS[key])))
+            self._special_dimension_inputs[key] = spin
+            form.addRow("Casas decimais", spin)
+            for suffix, label in (("text_color", "Cor do texto"), ("line_color", "Cor das linhas e símbolos")):
+                key = prefix+suffix
+                self._dimension_color_values[key] = self._project_settings.get(key, SPECIAL_DIMENSION_DEFAULTS[key])
+                button = QPushButton(page)
+                button.setFixedSize(64, 30)
+                button.clicked.connect(lambda _checked=False, color_key=key: self._choose_dimension_color(color_key))
+                self._dimension_color_buttons[key] = button
+                self._set_dimension_color_button(key)
+                form.addRow(label, button)
         layout.addLayout(form)
         layout.addStretch(1)
         scroll.setWidget(page)
@@ -4513,6 +4603,7 @@ class ProjectSheetSettingsDialog(QDialog):
             "view_element_text_height_mm": self.view_element_text_height_spin.value(),
             "view_section_text_height_mm": self.view_section_text_height_spin.value(),
             "dimension_text_height_mm": self.dimension_text_height_spin.value(),
+            **{key: spin.value() for key, spin in self._special_dimension_inputs.items()},
             **self._dimension_color_values,
             "dimension_custom_colors": list(self._dimension_custom_colors),
             "dimension_terminator_height_mm": self.dimension_terminator_height_spin.value(),

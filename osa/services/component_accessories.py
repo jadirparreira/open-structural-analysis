@@ -13,8 +13,8 @@ def _dimension(value, *, diameter=False, comma=False) -> str:
     return text.replace(".", ",") if comma else text
 
 
-def _base_plate_accessories(parameters):
-    count = len(base_plate_anchor_offsets(parameters))
+def base_plate_fastener_name(parameters):
+    """The shared identity/fallback name used by takeoffs and detail labels."""
     diameter = parameters.get("diametro_mm", 16.0)
     identity = str(parameters.get("identificacao_fixador", "")).strip()
     if not identity:
@@ -26,6 +26,13 @@ def _base_plate_accessories(parameters):
         if parameters.get("fixador") == "Gancho":
             dimensions.append(_dimension(parameters.get("perna_mm", 200.0)))
         identity = f"Barra Redonda Ø {' x '.join(dimensions)} {material}"
+    return identity
+
+
+def _base_plate_accessories(parameters):
+    count = len(base_plate_anchor_offsets(parameters))
+    diameter = parameters.get("diametro_mm", 16.0)
+    identity = base_plate_fastener_name(parameters)
     nominal_diameter = _dimension(diameter, diameter=True, comma=True)
     return (
         (identity, count),

@@ -139,7 +139,7 @@ def test_table_has_only_name_and_quantity_and_supports_insertion_and_snap(app):
     add_component(model, "N")
     rows = component_accessory_rows(model)
     layout = AccessoriesTableLayout(rows, 175, QFont())
-    assert [doc.toPlainText() for doc in layout._rows[0][1]] == ["NOME", "QUANTIDADE"]
+    assert [doc.toPlainText() for doc in layout._rows[0][1]] == ["ITEM", "QUANTIDADE"]
     assert len(layout._rows) == 1 + len(rows)
     assert not hasattr(layout, "_footer_total")
     assert layout.width_mm == SteelPlatesTableLayout([], 175, QFont()).width_mm

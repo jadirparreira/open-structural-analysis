@@ -180,6 +180,7 @@ def draw_weld(painter, anchor, mark, scale, selected=False, settings=None):
         painter.setPen(QPen(QColor("#0969da"), 1.0))
         painter.setBrush(QColor("#ffffff"))
         painter.drawEllipse(elbow, 3, 3)
+        painter.drawRect(QRectF(anchor.x()-3, anchor.y()-3, 6, 6))
     painter.restore()
     return hit
 
@@ -622,6 +623,7 @@ class WeldTool(QObject):
                 if self.drag:
                     vi, mi = self.selected
                     ws._sheet_views[vi]["weld_marks"][mi]["offset_mm"] = self.drag[1]
+                    ws._sheet_views[vi]["weld_marks"][mi]["point"] = self.drag[2]
                 self.reset()
                 ws.update()
                 return True
@@ -660,7 +662,9 @@ class WeldTool(QObject):
                     ws.select_view(hit[0])
                     self.selected = hit
                     mark = ws._sheet_views[hit[0]]["weld_marks"][hit[1]]
-                    self.drag = (QPointF(pos), tuple(mark["offset_mm"]))
+                    anchor = ws._screen_point(hit[0], mark["point"])
+                    tip = anchor is not None and (pos-anchor).manhattanLength() <= 9
+                    self.drag = (QPointF(pos), tuple(mark["offset_mm"]), tuple(mark["point"]), tip)
                     self.panel.load(mark)
                     self._hide_other_panels()
                     self.panel.show()
@@ -687,7 +691,19 @@ class WeldTool(QObject):
         if et == QEvent.Type.MouseMove and self.drag and event.buttons() & Qt.MouseButton.LeftButton:
             delta = (event.position() - self.drag[0]) / max(ws._sheet_pixels_per_mm, 0.01)
             vi, mi = self.selected
-            ws._sheet_views[vi]["weld_marks"][mi]["offset_mm"] = (self.drag[1][0] + delta.x(), self.drag[1][1] + delta.y())
+            mark = ws._sheet_views[vi]["weld_marks"][mi]
+            if self.drag[3]:
+                snap = ws._dimension_snap_at(event.position(), vi)
+                point = snap[2] if snap is not None else ws._projected_point_at(vi, event.position())
+                if point is not None:
+                    original_anchor = ws._screen_point(vi, self.drag[2])
+                    anchor = ws._screen_point(vi, point)
+                    scale = max(ws._sheet_pixels_per_mm, .01)
+                    mark["point"] = tuple(point)
+                    mark["offset_mm"] = (self.drag[1][0] + (original_anchor.x()-anchor.x())/scale,
+                                         self.drag[1][1] + (original_anchor.y()-anchor.y())/scale)
+            else:
+                mark["offset_mm"] = (self.drag[1][0] + delta.x(), self.drag[1][1] + delta.y())
             self._refresh_drag_picture()
             return True
         if et == QEvent.Type.MouseButtonRelease and self.drag and event.button() == Qt.MouseButton.LeftButton:

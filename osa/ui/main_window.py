@@ -104,6 +104,10 @@ from .subtractions_panel import SubtractionsPanel
 from .verification_worker import VerificationWorker
 from .window_frame import TitleBar, WindowFrame
 from .weld_symbols import WeldTool
+from osa.services.base_plate_details import (
+    COMPONENT_IDENTIFIER_KINDS, component_identifier, update_component_identifier,
+    ensure_base_plate_annotations,
+)
 
 
 class _ProjectLoadingDialog(QDialog):
@@ -242,6 +246,7 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(self.home)
         self.view_stack.addWidget(self.scene)
         self.project_sheet_workspace = ProjectSheetWorkspace(shell)
+        self.project_sheet_workspace.export_button.clicked.connect(self.export_project_pdf)
         self.project_sheet_workspace.steel_profile_rows_provider = self._steel_profile_table_rows
         self.project_sheet_workspace.steel_plate_rows_provider = self._steel_plate_table_rows
         self.project_sheet_workspace.accessory_rows_provider = self._accessory_table_rows
@@ -851,6 +856,10 @@ class MainWindow(QMainWindow):
         state_changed = False
         refresh_jobs = []
         for current_sheet_name in sheet_names:
+            state_changed |= ensure_base_plate_annotations(
+                self.model, palette._sheet_views.get(current_sheet_name, ()),
+                float(getattr(palette, "_project_settings", {}).get("view_element_text_height_mm", 3.)),
+            )
             for view in palette._sheet_views.get(current_sheet_name, ()):
                 if self._refresh_project_view_identifications(view):
                     state_changed = True
@@ -1306,7 +1315,9 @@ class MainWindow(QMainWindow):
         name = ""
         section = ""
 
-        if kind in {"bar", "bar_group"}:
+        if kind in COMPONENT_IDENTIFIER_KINDS:
+            identity, _quantity = component_identifier(self.model, kind, element)
+        elif kind in {"bar", "bar_group"}:
             member_names = tuple(
                 member for member in element.split("|") if member
             ) if kind == "bar_group" else (element,)
@@ -1397,6 +1408,9 @@ class MainWindow(QMainWindow):
         self._store_detailing_state()
 
     def _update_project_identification_text(self, identification: dict) -> None:
+        if identification.get("kind") in COMPONENT_IDENTIFIER_KINDS:
+            update_component_identifier(self.model, identification)
+            return
         properties = self._project_sheet_identification_properties(identification)
         primary = (
             properties["name"] if identification.get("show_name")
@@ -1617,6 +1631,31 @@ class MainWindow(QMainWindow):
             self.project_sheet_workspace.update()
             self._store_detailing_state()
 
+    def start_project_sheet_image(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Inserir imagem na folha", "", "Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff)",
+        )
+        if not filename:
+            return
+        try:
+            from .sheet_images import image_annotation
+            annotation = image_annotation(filename)
+        except (ValueError, OSError) as error:
+            self.show_error(f"Não foi possível inserir a imagem: {error}")
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_image"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_image_mode(annotation)
+        self.history.append(
+            "> <b>Inserir imagem</b> <span style='color:#57606a'>"
+            "(Clique na folha para posicionar a imagem; Esc cancela)</span>"
+        )
+
     def start_project_sheet_text(self) -> None:
         if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
             return
@@ -1696,14 +1735,14 @@ class MainWindow(QMainWindow):
         self.history.append(f"> <b>Inserir texto</b> <span style='color:#8c959f'>({message})</span>")
 
     def _project_sheet_annotation_finished(self, kind: str, canceled: bool) -> None:
-        if kind in {"line", "rectangle", "circle"}:
+        if kind in {"line", "rectangle", "circle", "image"}:
             self._command_mode = None
             app = QApplication.instance()
             if app is not None:
                 app.removeEventFilter(self)
             self._store_detailing_state()
             message = "Operação cancelada" if canceled else "Concluído"
-            title = {"line": "Desenhar linha", "rectangle": "Desenhar retângulo", "circle": "Desenhar círculo"}[kind]
+            title = {"line": "Desenhar linha", "rectangle": "Desenhar retângulo", "circle": "Desenhar círculo", "image": "Inserir imagem"}[kind]
             self.history.append(
                 f"> <b>{title}</b> <span style='color:#8c959f'>({message})</span>"
             )
@@ -1828,6 +1867,12 @@ class MainWindow(QMainWindow):
     def start_project_view_orthogonal_dimension(self) -> None:
         self._start_project_view_dimension("orthogonal")
 
+    def start_project_view_angular_dimension(self) -> None:
+        self._start_project_view_dimension("angular")
+
+    def start_project_view_level_dimension(self) -> None:
+        self._start_project_view_dimension("level")
+
     def _start_project_view_dimension(self, dimension_type: str) -> None:
         if not self._detailing_project_mode:
             return
@@ -1837,22 +1882,19 @@ class MainWindow(QMainWindow):
         self._command_mode = f"project_sheet_{dimension_type}_dimension"
         self.project_sheet_workspace.set_identification_mode(False)
         self.project_sheet_workspace.set_dimension_mode(True, dimension_type)
-        label = "Cota alinhada" if dimension_type == "aligned" else "Cota ortogonal"
-        self.history.append(
-            f"> <b>{label}</b> <span style='color:#57606a'>"
-            "(Selecione o ponto inicial da cota)</span>"
-        )
+        label = {"aligned": "Cota alinhada", "orthogonal": "Cota ortogonal", "angular": "Cota angular", "level": "Cota de nível"}[dimension_type]
+        prompt = {"angular": "Selecione o vértice do ângulo",
+                  "level": "Selecione o ponto cuja elevação será medida"}.get(dimension_type, "Selecione o ponto inicial da cota")
+        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>")
 
     def _project_view_dimension_step_changed(self, step: int) -> None:
         if self._command_mode not in {
             "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
         }:
             return
-        label = (
-            "Cota alinhada"
-            if self._command_mode == "project_sheet_aligned_dimension"
-            else "Cota ortogonal"
-        )
+        label = {"project_sheet_aligned_dimension": "Cota alinhada", "project_sheet_orthogonal_dimension": "Cota ortogonal",
+                 "project_sheet_angular_dimension": "Cota angular", "project_sheet_level_dimension": "Cota de nível"}[self._command_mode]
         placement_prompt = "Clique na posição da linha de cota"
         if self._command_mode == "project_sheet_orthogonal_dimension":
             placement_prompt = (
@@ -1863,18 +1905,21 @@ class MainWindow(QMainWindow):
             1: "Selecione o ponto final da cota",
             2: placement_prompt,
         }.get(step, "Selecione o ponto inicial da cota")
-        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt})</span>")
+        if self._command_mode == "project_sheet_angular_dimension":
+            prompt = {0: "Selecione o vértice do ângulo", 1: "Selecione um ponto no primeiro lado",
+                      2: "Selecione um ponto no segundo lado", 3: "Clique na posição do arco da cota"}.get(step, prompt)
+        elif self._command_mode == "project_sheet_level_dimension":
+            prompt = {0: "Selecione o ponto cuja elevação será medida", 1: "Clique na posição da chamada de nível"}.get(step, prompt)
+        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>")
 
     def _finish_project_view_dimension(self, canceled: bool = False) -> None:
         if self._command_mode not in {
             "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
         }:
             return
-        label = (
-            "Cota alinhada"
-            if self._command_mode == "project_sheet_aligned_dimension"
-            else "Cota ortogonal"
-        )
+        label = {"project_sheet_aligned_dimension": "Cota alinhada", "project_sheet_orthogonal_dimension": "Cota ortogonal",
+                 "project_sheet_angular_dimension": "Cota angular", "project_sheet_level_dimension": "Cota de nível"}[self._command_mode]
         self._command_mode = None
         self._store_detailing_state()
         message = "Lançamento cancelado" if canceled else "Cota lançada"
@@ -1913,6 +1958,20 @@ class MainWindow(QMainWindow):
             )
             return
         source = str(name)
+        if source.startswith("componente:chapa_base:"):
+            nodes = view.get("component_detail_group", {}).get("members", ())
+            if not nodes:
+                return
+            kind = "component_plate" if source.rsplit(":", 1)[-1] == "0" else "component_fastener"
+            if any(item.get("kind") == kind and item.get("element") == nodes[0]
+                   for item in view.get("identifications", ())):
+                return
+            identification = dict(kind=kind, element=nodes[0], projected_point=projected_point)
+            self._update_project_identification_text(identification)
+            view.setdefault("identifications", []).append(identification)
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+            return
         kind, separator, owner_name = source.partition(":")
         group_members: tuple[str, ...] = ()
         custom_name = ""
@@ -4244,7 +4303,7 @@ class MainWindow(QMainWindow):
         if (
             event.type() == QEvent.Type.KeyPress
             and event.key() == Qt.Key.Key_Escape
-            and self._command_mode in {"project_sheet_text", "project_sheet_line", "project_sheet_rectangle", "project_sheet_circle"}
+            and self._command_mode in {"project_sheet_text", "project_sheet_line", "project_sheet_rectangle", "project_sheet_circle", "project_sheet_image"}
         ):
             if self._command_mode == "project_sheet_text":
                 dialog = getattr(self, "_active_sheet_text_dialog", None)
@@ -4257,7 +4316,7 @@ class MainWindow(QMainWindow):
             else:
                 kind = self.project_sheet_workspace._annotation_mode
                 self.project_sheet_workspace.set_sheet_line_mode(False)
-                if kind in {"line", "rectangle", "circle"}:
+                if kind in {"line", "rectangle", "circle", "image"}:
                     self.project_sheet_workspace.annotation_finished.emit(kind, True)
             event.accept()
             return True
@@ -6054,6 +6113,8 @@ class MainWindow(QMainWindow):
 
     def cancel_member_placement(self) -> None:
         workspace = getattr(self, "project_sheet_workspace", None)
+        if workspace is not None and workspace.cancel_identification_resize():
+            return
         if workspace is not None and workspace.cancel_member_break_drag():
             return
         """Cancel the active graphical geometry launch."""
@@ -6082,6 +6143,7 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode in {
             "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
         }:
             self.project_sheet_workspace.set_dimension_mode(False)
             self._finish_project_view_dimension(canceled=True)
@@ -6973,6 +7035,35 @@ class MainWindow(QMainWindow):
         if selected_path.suffix.casefold() != ".osa":
             selected_path = selected_path.with_suffix(".osa")
         self._save_model_to(selected_path)
+
+    def export_project_pdf(self) -> None:
+        workspace = self.project_sheet_workspace
+        if not workspace._linework_update_label.isHidden():
+            self.show_error("Aguarde a atualização das vistas antes de exportar a folha.")
+            return
+        directory = (self.current_path.parent if self.current_path else Path.home())
+        directory = Path(self._program_settings.value("detailing/pdfDirectory", str(directory)))
+        suggested = directory / f"{workspace._sheet_name}.pdf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Exportar projeto para PDF", str(suggested), "Arquivo PDF (*.pdf)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.casefold() != ".pdf":
+            path = path.with_suffix(".pdf")
+            if path.exists() and QMessageBox.question(
+                self, "Substituir arquivo", f"O arquivo {path.name} já existe. Deseja substituí-lo?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            from .project_sheet_pdf import export_sheet_pdf
+            export_sheet_pdf(workspace, path)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.show_error(f"Não foi possível exportar o PDF: {error}")
+            return
+        self._program_settings.setValue("detailing/pdfDirectory", str(path.parent))
+        DetailingExportSuccessDialog(self, "Arquivo PDF exportado com sucesso").exec()
 
     def export_model_dxf(self) -> None:
         """Exporta o modelo unifilar para DXF, sem a geometria dos sólidos."""

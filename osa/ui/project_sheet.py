@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import math
+import base64
+from .special_dimensions import SPECIAL_DIMENSION_DEFAULTS, make_dimension, dimension_layout, draw_dimension, angular_geometry
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Signal
 from PySide6.QtGui import (
     QCursor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPicture,
-    QPixmap, QRegion, QTextCharFormat, QTextCursor, QTextDocument,
+    QPixmap, QRegion, QTextCharFormat, QTextCursor, QTextDocument, QTextBlockFormat, QTransform,
 )
 from PySide6.QtSvg import QSvgRenderer
 
@@ -796,6 +798,7 @@ def default_project_settings() -> dict:
         "view_scale_text_height_mm": 3.0,
         "view_element_text_height_mm": 3.0,
         "view_section_text_height_mm": 2.5,
+        **SPECIAL_DIMENSION_DEFAULTS,
         "dimension_text_height_mm": 3.0,
         "dimension_terminator_height_mm": 3.0,
         "dimension_unit": "cm",
@@ -880,6 +883,11 @@ class ProjectSheetWorkspace(QWidget):
             "background: #ffffff; color: #57606a; border: 1px solid #d0d7de; padding: 6px;"
         )
         self._linework_update_label.hide()
+        self.export_button = QPushButton("Exportar projeto", self)
+        self.export_button.setObjectName("primaryButton")
+        self.export_button.setToolTip("Exportar a folha ativa para PDF")
+        self.export_button.setAccessibleName("Exportar projeto para PDF")
+        self.export_button.adjustSize()
         self._sheet_name = "01 - Folha Geral"
         self._settings = default_project_sheet_settings(self._sheet_name)
         self._project_settings = default_project_settings()
@@ -899,6 +907,8 @@ class ProjectSheetWorkspace(QWidget):
         self._sheet_text_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._sheet_text_handle_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._sheet_line_hit_rects: dict[tuple[int, int], QRectF] = {}
+        self._sheet_image_cache = {}
+        self._pending_sheet_image = None
         self._selected_sheet_text: tuple[int, int] | None = None
         self._selected_sheet_line: tuple[int, int] | None = None
         self._sheet_line_handle_hit_rects: dict[tuple[int, int, int], QRectF] = {}
@@ -934,6 +944,8 @@ class ProjectSheetWorkspace(QWidget):
         self._drag_component_detail_label: str | None = None
         self._axis_line_bounds: dict[tuple[int, str], QRectF] = {}
         self._view_dimension_bounds: dict[tuple[int, int], QRectF] = {}
+        self._identification_resize_handles = {}
+        self._drag_identification_resize = None
         self._identification_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._detail_identifier_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._detail_identifier_handle_hit_rects: dict[tuple[int, int, str], QRectF] = {}
@@ -1060,6 +1072,7 @@ class ProjectSheetWorkspace(QWidget):
         self._linework_update_label.adjustSize()
         self._linework_update_label.move(max(0, self.width() - self._linework_update_label.width() - 20), 14)
         self._linework_update_label.setVisible(updating)
+        self.export_button.setEnabled(not updating)
         if updating:
             self._linework_update_label.raise_()
 
@@ -1089,6 +1102,8 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_views(self, views, *, clear_selection: bool = False) -> None:
+        self._drag_identification_resize = None
+        self._identification_resize_handles.clear()
         self._component_group_paper_frames.clear()
         if hasattr(self, "weld_tool"):
             self.weld_tool.reset()
@@ -1140,13 +1155,20 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_annotations(self, texts, lines) -> None:
+        self._sheet_image_cache.clear()
         self._sheet_texts = texts if isinstance(texts, list) else list(texts or ())
         self._sheet_lines = lines if isinstance(lines, list) else list(lines or ())
         self._selected_sheet_text = None
         self._selected_sheet_line = None
         self.update()
 
+    def set_sheet_image_mode(self, annotation: dict) -> None:
+        self.set_sheet_text_mode(True)
+        self._pending_sheet_image = dict(annotation)
+        self._annotation_mode = "image"
+
     def set_sheet_text_mode(self, active: bool) -> None:
+        self._pending_sheet_image = None
         self._member_break_mode = False
         if active:
             self._selected_sheet_table = None
@@ -1169,6 +1191,7 @@ class ProjectSheetWorkspace(QWidget):
         self.update()
 
     def set_sheet_line_mode(self, active: bool, kind: str = "line") -> None:
+        self._pending_sheet_image = None
         self._member_break_mode = False
         if kind not in {"line", "rectangle", "circle"}:
             raise ValueError("Tipo de desenho inválido")
@@ -1552,7 +1575,7 @@ class ProjectSheetWorkspace(QWidget):
     def set_dimension_mode(self, active: bool, dimension_type: str | None = None) -> None:
         self._member_break_mode = False
         if dimension_type is not None:
-            if dimension_type not in {"aligned", "orthogonal"}:
+            if dimension_type not in {"aligned", "orthogonal", "angular", "level"}:
                 raise ValueError("Tipo de cota desconhecido.")
             self._dimension_type = dimension_type
         self._dimension_mode = bool(active)
@@ -1873,6 +1896,46 @@ class ProjectSheetWorkspace(QWidget):
             self.layout_changed.emit()
         self._finish_element_visibility_mode(False)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.export_button.adjustSize()
+        self.export_button.move(max(0, self.width()-self.export_button.width()-24),
+                                max(0, self.height()-self.export_button.height()-24))
+        self.export_button.raise_()
+
+    def paper_size_mm(self) -> tuple[float, float]:
+        paper_size = self._settings.get("paper_size", "A3")
+        if paper_size == "Personalizado":
+            paper_width, paper_height = (
+                float(self._settings.get("custom_width_mm", 420.0)),
+                float(self._settings.get("custom_height_mm", 297.0)),
+            )
+        else:
+            paper_width, paper_height = PAPER_SIZES_MM.get(paper_size, PAPER_SIZES_MM["A3"])
+        if self._settings.get("orientation") == "Retrato":
+            paper_width, paper_height = min(paper_width, paper_height), max(paper_width, paper_height)
+        else:
+            paper_width, paper_height = max(paper_width, paper_height), min(paper_width, paper_height)
+        return paper_width, paper_height
+
+    def paint_sheet(self, painter: QPainter, sheet: QRectF, scale: float) -> None:
+        """Shared sheet drawing for the workspace and vector PDF export."""
+        self._sheet_pixels_per_mm = scale
+        self._paper_rect = sheet
+        inner = sheet.adjusted(
+            self._settings.get("margin_left_mm", 25.0) * scale,
+            self._settings.get("margin_top_mm", 10.0) * scale,
+            -self._settings.get("margin_right_mm", 10.0) * scale,
+            -self._settings.get("margin_bottom_mm", 10.0) * scale,
+        )
+        painter.setPen(QColor("#000000"))
+        painter.drawRect(inner)
+        self._draw_sheet_views(painter, inner, scale)
+        if not self._suppress_sheet_annotations:
+            self._draw_sheet_annotations(painter, scale)
+        if self._settings.get("title_block_visible", True):
+            self._draw_title_block(painter, inner, scale)
+
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         background_painter = QPainter(self)
@@ -1951,18 +2014,7 @@ class ProjectSheetWorkspace(QWidget):
             painter = QPainter(self)
             painter.drawPixmap(-self._navigation_cache_margin, self._navigation_pixmap)
             return
-        paper_size = self._settings.get("paper_size", "A3")
-        if paper_size == "Personalizado":
-            paper_width, paper_height = (
-                float(self._settings.get("custom_width_mm", 420.0)),
-                float(self._settings.get("custom_height_mm", 297.0)),
-            )
-        else:
-            paper_width, paper_height = PAPER_SIZES_MM.get(paper_size, PAPER_SIZES_MM["A3"])
-        if self._settings.get("orientation") == "Retrato":
-            paper_width, paper_height = min(paper_width, paper_height), max(paper_width, paper_height)
-        else:
-            paper_width, paper_height = max(paper_width, paper_height), min(paper_width, paper_height)
+        paper_width, paper_height = self.paper_size_mm()
         margin_x = max(32.0, self.width() * 0.1)
         margin_y = max(32.0, self.height() * 0.1)
         available_width = max(0.0, self.width() - 2 * margin_x)
@@ -1992,19 +2044,7 @@ class ProjectSheetWorkspace(QWidget):
         painter.fillRect(sheet, QColor("#ffffff"))
         painter.setPen(QColor("#d0d7de"))
         painter.drawRect(sheet)
-        inner = sheet.adjusted(
-            self._settings.get("margin_left_mm", 25.0) * scale,
-            self._settings.get("margin_top_mm", 10.0) * scale,
-            -self._settings.get("margin_right_mm", 10.0) * scale,
-            -self._settings.get("margin_bottom_mm", 10.0) * scale,
-        )
-        painter.setPen(QColor("#000000"))
-        painter.drawRect(inner)
-        self._draw_sheet_views(painter, inner, scale)
-        if not self._suppress_sheet_annotations:
-            self._draw_sheet_annotations(painter, scale)
-        if self._settings.get("title_block_visible", True):
-            self._draw_title_block(painter, inner, scale)
+        self.paint_sheet(painter, sheet, scale)
         painter.end()
         self._refresh_dragged_item_bounds()
         if direct_zoom or partial_annotation:
@@ -2199,6 +2239,9 @@ class ProjectSheetWorkspace(QWidget):
 
     def _dimension_screen_bounds(self, view_index: int, dimension: dict) -> QRectF | None:
         """Cheap conservative bounds for invalidating a moving dimension."""
+        if dimension.get("kind") in {"angular", "level"}:
+            layout = dimension_layout(self, view_index, dimension, self.font())
+            return layout['bounds'] if layout else None
         try:
             first = tuple(float(value) for value in dimension["start"])
             second = tuple(float(value) for value in dimension["end"])
@@ -2275,6 +2318,7 @@ class ProjectSheetWorkspace(QWidget):
             self._view_title_hit_rects = {}
             self._component_group_hit_rects = {}
             self._component_group_title_hit_rects = {}
+            self._identification_resize_handles = {}
             self._identification_hit_rects = {}
             self._detail_identifier_hit_rects = {}
             self._detail_identifier_handle_hit_rects = {}
@@ -2303,6 +2347,7 @@ class ProjectSheetWorkspace(QWidget):
         self._view_title_hit_rects = {}
         self._component_group_hit_rects = {}
         self._component_group_title_hit_rects = {}
+        self._identification_resize_handles = {}
         self._identification_hit_rects = {}
         self._detail_identifier_hit_rects = {}
         self._detail_identifier_handle_hit_rects = {}
@@ -2395,13 +2440,18 @@ class ProjectSheetWorkspace(QWidget):
                     index, (int(group.get("offset", 0)), max(1, int(group.get("view_count", 6)))),
                 )
                 extra_offset = group.get("offset_delta", (0.0, 0.0))
+                paper_offset = group.get("paper_offset_mm")
+                slot_offset = (offset_index - (view_count - 1) / 2.0) * 0.13 if paper_offset is None else 0.
                 target_x = drawing_area.left() + (
-                    float(group_position[0]) + (offset_index - (view_count - 1) / 2.0) * 0.13
-                    + float(extra_offset[0])
+                    float(group_position[0]) + slot_offset + float(extra_offset[0])
                 ) * drawing_area.width()
+                if paper_offset is not None:
+                    target_x += float(paper_offset[0]) * scale
                 target_y = drawing_area.top() + (
                     float(group_position[1]) + float(extra_offset[1])
                 ) * drawing_area.height()
+                if paper_offset is not None:
+                    target_y += float(paper_offset[1]) * scale
             else:
                 target_x = drawing_area.left() + float(position[0]) * drawing_area.width()
                 target_y = drawing_area.top() + float(position[1]) * drawing_area.height()
@@ -2492,13 +2542,44 @@ class ProjectSheetWorkspace(QWidget):
                 top = -rendered_lines[0][3]
                 total_height = sum(line[2] for line in rendered_lines)
                 bottom = total_height - rendered_lines[0][3]
+                document = None
+                if "width_mm" in identification:
+                    # Physical layout units keep wrapping identical at every zoom.
+                    dpi_scale = self._sheet_text_layout_device.logicalDpiY() / 25.4
+                    document = QTextDocument()
+                    document.documentLayout().setPaintDevice(self._sheet_text_layout_device)
+                    document.setUseDesignMetrics(True)
+                    document.setDocumentMargin(0)
+                    cursor = QTextCursor(document)
+                    block = QTextBlockFormat()
+                    block.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                    cursor.setBlockFormat(block)
+                    if identification.get("unwrapped_text") is not None:
+                        raw_runs = [[{"text": identification["unwrapped_text"], "role": "element"}]]
+                    for line_index, raw_line in enumerate(raw_runs):
+                        if line_index:
+                            cursor.insertBlock(block)
+                        for run in raw_line:
+                            role = run.get("role", "element")
+                            height = float(self._project_settings.get(
+                                "view_section_text_height_mm" if role == "section" else "view_element_text_height_mm",
+                                2.5 if role == "section" else 3.))
+                            font = QFont(painter.font())
+                            font.setPointSizeF(height * 72 / 25.4)
+                            fmt = QTextCharFormat()
+                            fmt.setFont(font)
+                            cursor.insertText(str(run.get("text", "")), fmt)
+                    text_width = max(5., float(identification["width_mm"])) * scale
+                    document.setTextWidth(text_width / scale * dpi_scale)
+                    bottom = top + max(float(identification.get("height_mm", 0.))*scale,
+                                       document.size().height()/dpi_scale*scale)
                 anchor = QPointF(anchor_x, baseline_y)
                 rotation = float(identification.get("text_rotation_degrees", 0.0))
                 label_rect = self._rotated_text_rect(
                     anchor, text_width, top, bottom, rotation,
                 )
                 identification_rects.append(
-                    (identification_index, anchor, rendered_lines, text_width, label_rect, rotation)
+                    (identification_index, anchor, rendered_lines, text_width, label_rect, rotation, document, top, bottom)
                 )
                 self._identification_hit_rects[(index, identification_index)] = label_rect.adjusted(
                     -4.0, -3.0, 4.0, 3.0,
@@ -2666,7 +2747,9 @@ class ProjectSheetWorkspace(QWidget):
             view_bounds = view_bounds.united(name_label_rect).united(scale_label_rect)
             if self._dimension_mode and index == self._dimension_hover_view_index:
                 preview = None
-                if (
+                if self._dimension_type in {"angular", "level"}:
+                    preview = self._dimension_preview
+                elif (
                     len(self._dimension_points) == 1
                     and self._dimension_hover_projected is not None
                 ):
@@ -2711,7 +2794,7 @@ class ProjectSheetWorkspace(QWidget):
                     -3.0, -2.0, 3.0, 2.0,
                 ))
                 painter.restore()
-            for identification_index, anchor, lines, text_width, label_rect, rotation in identification_rects:
+            for identification_index, anchor, lines, text_width, label_rect, rotation, document, top, bottom in identification_rects:
                 if (
                     index == self._selected_view_index
                     and identification_index in self._selected_identification_indices
@@ -2721,10 +2804,23 @@ class ProjectSheetWorkspace(QWidget):
                     painter.setPen(selection_pen)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(label_rect.adjusted(-3.0, -2.0, 3.0, 2.0))
+                    transform = QTransform().translate(anchor.x(), anchor.y()).rotate(rotation)
+                    corner = transform.map(QPointF(text_width/2, bottom))
+                    handle = QRectF(corner.x()-4, corner.y()-4, 8, 8)
+                    painter.setBrush(QColor("#ffffff"))
+                    painter.drawRect(handle)
+                    self._identification_resize_handles[(index, identification_index)] = (
+                        handle.adjusted(-3, -3, 3, 3), text_width/scale, (bottom-top)/scale)
                     painter.setPen(QColor("#000000"))
                 painter.save()
                 painter.translate(anchor)
                 painter.rotate(rotation)
+                if document is not None:
+                    painter.translate(-text_width/2, top)
+                    painter.scale(scale/dpi_scale, scale/dpi_scale)
+                    document.drawContents(painter)
+                    painter.restore()
+                    continue
                 baseline_offset = 0
                 for rendered_runs, line_width, line_height, _line_ascent in lines:
                     run_x = -line_width / 2.0
@@ -2924,6 +3020,9 @@ class ProjectSheetWorkspace(QWidget):
         self, painter: QPainter, annotation: dict, view_index: int | None,
         text_index: int, scale: float,
     ) -> None:
+        if annotation.get("kind") == "image":
+            self._draw_sheet_image(painter, annotation, view_index, text_index, scale)
+            return
         anchor = self._sheet_annotation_screen_point(annotation, view_index)
         if anchor is None:
             return
@@ -2969,6 +3068,32 @@ class ProjectSheetWorkspace(QWidget):
         painter.setPen(QColor("#000000"))
         document.drawContents(painter, document_rect)
         painter.restore()
+        self._draw_sheet_annotation_frame(painter, rect, view_index, text_index)
+
+    def _draw_sheet_image(self, painter, annotation, view_index, text_index, scale):
+        anchor = self._sheet_annotation_screen_point(annotation, view_index)
+        if anchor is None:
+            return
+        data = annotation.get("image_data", "")
+        image = self._sheet_image_cache.get(data)
+        if image is None:
+            image = QImage()
+            try:
+                image.loadFromData(base64.b64decode(data, validate=True))
+            except (ValueError, TypeError):
+                return
+            if image.isNull():
+                return
+            self._sheet_image_cache[data] = image
+        rect = QRectF(anchor.x(), anchor.y(), max(1., float(annotation.get("width_mm", 50.)))*scale,
+                      max(1., float(annotation.get("height_mm", 25.)))*scale)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawImage(rect, image)
+        painter.restore()
+        self._draw_sheet_annotation_frame(painter, rect, view_index, text_index)
+
+    def _draw_sheet_annotation_frame(self, painter, rect, view_index, text_index):
         key = (view_index if view_index is not None else -1, text_index)
         self._sheet_text_hit_rects[key] = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
         if self._selected_sheet_text == key:
@@ -3110,7 +3235,7 @@ class ProjectSheetWorkspace(QWidget):
         if self._settings.get("title_block_visible", True):
             add_rect(self._stamp_rect)
             stamp = self._stamp_rect
-            row_height = stamp.height() / 5.0
+            row_height = 10.0 * self._sheet_pixels_per_mm
             main_split = stamp.left() + stamp.width() * 0.78
             for row in range(1, 5):
                 y = stamp.top() + row * row_height
@@ -3121,13 +3246,15 @@ class ProjectSheetWorkspace(QWidget):
             row_five = stamp.top() + 4.0 * row_height
             segments.append((QPointF(right_split, row_four), QPointF(right_split, row_five)))
             left_mid = stamp.left() + (main_split - stamp.left()) / 2.0
-            segments.append((QPointF(left_mid, row_five), QPointF(left_mid, stamp.bottom())))
+            segments.append((QPointF(left_mid, row_five), QPointF(left_mid, row_five+row_height)))
+            logos_top = stamp.top() + 5*row_height
+            segments.append((QPointF(stamp.left(), logos_top), QPointF(stamp.right(), logos_top)))
         return segments
 
-    def _table_snap_segments(self):
-        segments = self._sheet_reference_segments()
+    def _table_reference_segments(self, excluded_table=None):
+        segments = []
         for index, bounds in self._sheet_table_hit_rects.items():
-            if index == self._drag_sheet_table:
+            if index == excluded_table:
                 continue
             corners = (bounds.topLeft(), bounds.topRight(), bounds.bottomRight(), bounds.bottomLeft())
             segments.extend((corners[i], corners[(i + 1) % 4]) for i in range(4))
@@ -3150,6 +3277,11 @@ class ProjectSheetWorkspace(QWidget):
                 segments.append((QPointF(bounds.left(), y), QPointF(bounds.right(), y)))
                 split = bounds.right() - layout._widths[-1] * scale
                 segments.append((QPointF(split, y), QPointF(split, bounds.bottom())))
+        return segments
+
+    def _table_snap_segments(self):
+        segments = self._sheet_reference_segments()
+        segments.extend(self._table_reference_segments(self._drag_sheet_table))
         for view_index, annotations in [(None, self._sheet_lines)] + [
             (index, view.get("sheet_lines", ())) for index, view in enumerate(self._sheet_views)
         ]:
@@ -3213,11 +3345,10 @@ class ProjectSheetWorkspace(QWidget):
         self, position: QPointF, view_index: int | None, origin: QPointF | None = None,
     ) -> tuple[QPointF, str] | None:
         """Only endpoints, midpoints, crossings and perpendiculars from the origin."""
-        segments = []
+        segments = self._sheet_reference_segments()
+        segments.extend(self._table_reference_segments())
         circles = []
-        if view_index is None:
-            segments.extend(self._sheet_reference_segments())
-        elif 0 <= view_index < len(self._sheet_views):
+        if view_index is not None and 0 <= view_index < len(self._sheet_views):
             view = self._sheet_views[view_index]
             grid = self._segment_grid_for_view(view_index)
             projected = self._projected_point_at(view_index, position)
@@ -3234,7 +3365,7 @@ class ProjectSheetWorkspace(QWidget):
                 for first, second in self._axis_dimension_snap_segments.get(view_index, ()):
                     segments.append((self._screen_point(view_index, first),
                                      self._screen_point(view_index, second)))
-        else:
+        elif view_index is not None:
             return None
         annotations = (self._sheet_lines if view_index is None
                        else self._sheet_views[view_index].get("sheet_lines", ()))
@@ -3313,6 +3444,17 @@ class ProjectSheetWorkspace(QWidget):
         return self._constrain_line_endpoint(first_screen, position, free)
 
     def _sheet_annotation_click(self, point: QPointF, modifiers: Qt.KeyboardModifier) -> None:
+        if self._annotation_mode == "image":
+            if not self._paper_rect.contains(point) or self._pending_sheet_image is None:
+                return
+            # Logos and sheet images belong to the paper, including the carimbo.
+            anchor = self._annotation_anchor(point, None)
+            if anchor is None:
+                return
+            annotation = dict(self._pending_sheet_image, anchor=anchor)
+            self.add_sheet_text(annotation)
+            self.annotation_finished.emit("image", False)
+            return
         if self._annotation_mode == "text":
             view_index = self._annotation_view_at(point)
             anchor = self._annotation_anchor(point, view_index)
@@ -3992,7 +4134,7 @@ class ProjectSheetWorkspace(QWidget):
         if not self._settings.get("title_block_visible", True):
             return QRectF()
         block_width = min(175.0 * scale, inner.width())
-        block_height = 50.0 * scale
+        block_height = 80.0 * scale
         top = (
             inner.top()
             if self._settings.get("title_block_position") == "Superior"
@@ -4417,6 +4559,54 @@ class ProjectSheetWorkspace(QWidget):
             if scene.snap_type_enabled(kind)
         }
 
+    def _special_dimension_input(self, position, clicked):
+        required = 3 if self._dimension_type == "angular" else 1
+        old = self._dimension_preview_bounds
+        old_snap = self._dimension_snap_screen
+        if len(self._dimension_points) < required:
+            snap = self._dimension_snap_at(position, self._dimension_view_index)
+            self._dimension_snap_screen = snap[3] if snap else None
+            self._dimension_snap_kind = snap[4] if snap else None
+            self._dimension_hover_view_index = snap[1] if snap else None
+            if clicked and snap:
+                point = tuple(float(v) for v in snap[2])
+                if any(math.dist(point, other) < 1e-9 for other in self._dimension_points):
+                    return
+                if self._dimension_view_index is None:
+                    self._dimension_view_index = snap[1]
+                    self.select_view(snap[1])
+                if self._dimension_type == "level":
+                    from .special_dimensions import elevation
+                    if elevation(self, snap[1], point) is None:
+                        return
+                if self._dimension_type == "angular" and len(self._dimension_points) == 2:
+                    vertex, start = self._dimension_points
+                    trial = dict(vertex=vertex, start=start, end=point, offset=(point[0]-vertex[0], point[1]-vertex[1]))
+                    if angular_geometry(trial) is None:
+                        return
+                self._dimension_points.append(point)
+                self.dimension_step_changed.emit(len(self._dimension_points))
+        else:
+            vi = self._dimension_view_index
+            self._dimension_hover_view_index = vi
+            cursor = self._projected_point_at(vi, position)
+            self._dimension_preview = make_dimension(self, vi, self._dimension_points, cursor) if cursor else None
+            self._dimension_preview_bounds = self._dimension_screen_bounds(vi, self._dimension_preview) if self._dimension_preview else None
+            self._dimension_snap_screen = None
+            if clicked and self._dimension_preview:
+                self._sheet_views[vi].setdefault("dimensions", []).append(self._dimension_preview)
+                self.layout_changed.emit()
+                self.set_dimension_mode(True, self._dimension_type)
+                self.dimension_step_changed.emit(0)
+                return
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        regions = [old, self._dimension_preview_bounds]
+        for point in (old_snap, self._dimension_snap_screen):
+            if point is not None:
+                regions.append(QRectF(point.x()-16, point.y()-16, 32, 32))
+        if any(region is not None for region in regions):
+            self._update_annotation_regions(*regions)
+
     def _dimension_from_screen_point(self, view_index: int, position: QPointF):
         if len(self._dimension_points) != 2:
             return None
@@ -4485,6 +4675,8 @@ class ProjectSheetWorkspace(QWidget):
         self, view_index: int, dimension: dict, tolerance: float = 4.0,
     ) -> dict:
         """Snap a dimension line to a nearby parallel dimension in the same view."""
+        if dimension.get("kind") in {"angular", "level"}:
+            return dimension
         draw_data = self._view_draw_data.get(view_index)
         if draw_data is None or draw_data[4] <= 0:
             return dimension
@@ -4509,7 +4701,7 @@ class ProjectSheetWorkspace(QWidget):
         )
         best = None
         for other in self._sheet_views[view_index].get("dimensions", ()):
-            if other is dimension:
+            if other is dimension or other.get("kind") in {"angular", "level"}:
                 continue
             try:
                 other_line = self._dimension_line_points(other)
@@ -4550,6 +4742,8 @@ class ProjectSheetWorkspace(QWidget):
         self, painter: QPainter, view_index: int, dimension: dict,
         dimension_index: int | None = None,
     ) -> QRectF | None:
+        if dimension.get("kind") in {"angular", "level"}:
+            return draw_dimension(self, painter, view_index, dimension, dimension_index)
         try:
             first = tuple(float(value) for value in dimension["start"])
             second = tuple(float(value) for value in dimension["end"])
@@ -4921,9 +5115,36 @@ class ProjectSheetWorkspace(QWidget):
         super().update()
         event.accept()
 
+    def cancel_identification_resize(self):
+        if self._drag_identification_resize is None:
+            return False
+        vi, ii, _start, original, *_rest = self._drag_identification_resize
+        item = self._sheet_views[vi]["identifications"][ii]
+        item.clear()
+        item.update(original)
+        self._drag_identification_resize = None
+        self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
+        return True
+
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.MouseButton.MiddleButton:
             self._ensure_navigation_geometry()
+        if event.button() == Qt.MouseButton.LeftButton and not any((
+            self._annotation_mode, self._dimension_mode, self._identification_mode,
+            self._detail_identifier_mode, self._elevation_identifier_mode,
+            self._element_visibility_mode, self._member_break_mode,
+        )):
+            for (vi, ii), (handle, width, height) in self._identification_resize_handles.items():
+                if vi == self._selected_view_index and handle.contains(event.position()):
+                    item = self._sheet_views[vi]["identifications"][ii]
+                    point = item.get("projected_point") or self._project_world_point(self._sheet_views[vi], item.get("world_point", ()))
+                    self._drag_identification_resize = (vi, ii, QPointF(event.position()), dict(item), width, height, tuple(point))
+                    self._annotation_background = None
+                    self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+                    self.setFocus(Qt.FocusReason.MouseFocusReason)
+                    event.accept()
+                    return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._annotation_background = None
             self._pan_anchor = event.position()
@@ -5058,6 +5279,10 @@ class ProjectSheetWorkspace(QWidget):
                 event.accept()
                 return
             if self._dimension_mode:
+                if self._dimension_type in {"angular", "level"}:
+                    self._special_dimension_input(event.position(), True)
+                    event.accept()
+                    return
                 if len(self._dimension_points) < 2:
                     snap = self._dimension_snap_at(
                         event.position(), self._dimension_view_index,
@@ -5456,6 +5681,20 @@ class ProjectSheetWorkspace(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._drag_identification_resize is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            vi, ii, start, original, width, height, point = self._drag_identification_resize
+            item = self._sheet_views[vi]["identifications"][ii]
+            angle = float(item.get("text_rotation_degrees", 0.))
+            delta = QTransform().rotate(-angle).map(event.position()-start) / max(self._sheet_pixels_per_mm, .01)
+            new_width = max(5., width + delta.x())
+            item["width_mm"] = new_width
+            item["height_mm"] = max(3., height + delta.y())
+            shift = QTransform().rotate(angle).map(QPointF((new_width-width)/2, 0))
+            factor = float(self._sheet_views[vi].get("scale_denominator", 10)) / 1000
+            item["projected_point"] = (point[0]+shift.x()*factor, point[1]-shift.y()*factor)
+            self.update()
+            event.accept()
+            return
         if self._drag_member_break is not None and event.buttons() & Qt.MouseButton.LeftButton:
             index, mark_index, _original, start, initial = self._drag_member_break
             view = self._sheet_views[index]
@@ -5522,6 +5761,10 @@ class ProjectSheetWorkspace(QWidget):
             super().update()
             event.accept()
             return
+        if self._annotation_mode == "image":
+            self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            event.accept()
+            return
         if self._drag_sheet_text_handle is not None and event.buttons() & Qt.MouseButton.LeftButton:
             key = self._drag_sheet_text_handle
             if self._drag_position is not None:
@@ -5529,12 +5772,23 @@ class ProjectSheetWorkspace(QWidget):
                 self._drag_position = event.position()
                 annotation = self._annotation_for_text_key(key)
                 if annotation is not None and self._sheet_pixels_per_mm > 1e-9:
-                    annotation["width_mm"] = max(
-                        10.0, float(annotation.get("width_mm", 50.0)) + delta.x() / self._sheet_pixels_per_mm,
-                    )
-                    annotation["height_mm"] = max(
-                        5.0, float(annotation.get("height_mm", 25.0)) + delta.y() / self._sheet_pixels_per_mm,
-                    )
+                    if annotation.get("kind") == "image":
+                        width = float(annotation["width_mm"])
+                        height = float(annotation["height_mm"])
+                        dx, dy = delta.x()/self._sheet_pixels_per_mm, delta.y()/self._sheet_pixels_per_mm
+                        growth = dx/width if abs(dx/width) >= abs(dy/height) else dy/height
+                        ratio = max(5./width, 1.+growth)
+                        annotation["width_mm"] = width*ratio
+                        annotation["height_mm"] = height*ratio
+                        delta = QPointF((width*ratio-width)*self._sheet_pixels_per_mm,
+                                        (height*ratio-height)*self._sheet_pixels_per_mm)
+                    else:
+                        annotation["width_mm"] = max(
+                            10.0, float(annotation.get("width_mm", 50.0)) + delta.x() / self._sheet_pixels_per_mm,
+                        )
+                        annotation["height_mm"] = max(
+                            5.0, float(annotation.get("height_mm", 25.0)) + delta.y() / self._sheet_pixels_per_mm,
+                        )
                     old_bounds = self._drag_sheet_text_bounds
                     self._drag_sheet_text_bounds = (
                         old_bounds.adjusted(0.0, 0.0, delta.x(), delta.y())
@@ -5702,6 +5956,10 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if self._dimension_mode:
+            if self._dimension_type in {"angular", "level"}:
+                self._special_dimension_input(event.position(), False)
+                event.accept()
+                return
             old_preview_bounds = self._dimension_preview_bounds
             old_snap_screen = self._dimension_snap_screen
             old_snap_kind = self._dimension_snap_kind
@@ -5980,7 +6238,14 @@ class ProjectSheetWorkspace(QWidget):
                         other = tuple(float(value) for value in dimension[other_name])
                         candidate = tuple(float(value) for value in candidate)
                         if math.hypot(candidate[0] - other[0], candidate[1] - other[1]) > 1e-9:
+                            if dimension.get("kind") == "angular":
+                                trial = dict(dimension, **{endpoint_name: candidate})
+                                if angular_geometry(trial) is None:
+                                    event.accept()
+                                    return
                             dimension[endpoint_name] = candidate
+                            if dimension.get("kind") == "level":
+                                dimension["end"] = candidate
                             self._drag_position = event.position()
                             self.update()
             event.accept()
@@ -5996,6 +6261,14 @@ class ProjectSheetWorkspace(QWidget):
                     and draw_data[4] > 0
                 ):
                     dimension = dimensions[dimension_index]
+                    if dimension.get("kind") in {"angular", "level"}:
+                        delta = event.position()-self._drag_position
+                        self._drag_position = event.position()
+                        offset = dimension["offset"]
+                        dimension["offset"] = (offset[0]+delta.x()/draw_data[4], offset[1]-delta.y()/draw_data[4])
+                        self.update()
+                        event.accept()
+                        return
                     offset = tuple(float(value) for value in dimension["offset"])
                     old_bounds = self._drag_dimension_current_bounds or self._dimension_bounds.get(
                         (view_index, dimension_index),
@@ -6215,6 +6488,13 @@ class ProjectSheetWorkspace(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_identification_resize is not None:
+            self._drag_identification_resize = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_member_break is not None:
             self._drag_member_break = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
@@ -6393,6 +6673,9 @@ class ProjectSheetWorkspace(QWidget):
             if text_hit is not None:
                 annotation = self._annotation_for_text_key(text_hit)
                 if annotation is not None:
+                    if annotation.get("kind") == "image":
+                        event.accept()
+                        return
                     self._selected_sheet_text = text_hit
                     self.text_editor_requested.emit({
                         **annotation,
@@ -6404,6 +6687,9 @@ class ProjectSheetWorkspace(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.cancel_identification_resize():
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Escape and self.cancel_member_break_drag():
             event.accept()
             return
@@ -6446,6 +6732,9 @@ class ProjectSheetWorkspace(QWidget):
         if self._dimension_mode and event.key() in (
             Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
         ):
+            if self._dimension_type in {"angular", "level"} and event.key() != Qt.Key.Key_Escape:
+                event.accept()
+                return
             self.set_dimension_mode(False)
             self.dimension_finished.emit(event.key() == Qt.Key.Key_Escape)
             event.accept()
@@ -6529,7 +6818,7 @@ class ProjectSheetWorkspace(QWidget):
         right_width = block_width * 0.22
         left_width = block_width - right_width
         row_height = 10.0 * scale
-        block_height = row_height * 5
+        block_height = row_height * 8
         top = inner.top() if self._settings.get("title_block_position") == "Superior" else inner.bottom() - block_height
         left = inner.right() - block_width
         right = left + left_width
@@ -6597,6 +6886,16 @@ class ProjectSheetWorkspace(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 sheet_value,
             )
+
+        # Three additional rows for office and client visual identities. The
+        # full eight-row block still ends exactly at the sheet's inner border.
+        logo_top = top + 5*row_height
+        painter.drawRect(QRectF(left, logo_top, left_width, 3*row_height))
+        client_logo = QRectF(right, logo_top, right_width, 3*row_height)
+        painter.drawRect(client_logo)
+        painter.setFont(property_font)
+        painter.drawText(client_logo.adjusted(4., 2., -4., 0.),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "Cliente")
 
     def _paper_size_label(self) -> str:
         size = self._settings.get("paper_size", "A3")
