@@ -79,12 +79,18 @@ class StructuralModel:
     def add_plate(
         self, contour, *, name: str | None = None, supports=(), color="#6e7781",
         thickness_mm=100.0, material: str | None = None, positioning_displacement=0.0,
-        edge_positioning=(),
+        edge_positioning=(), restrictions=(False, False, False),
+        restriction_stiffness=(0.0, 0.0, 0.0),
+        restriction_directions=("=", "=", "="),
+        allow_warped=False,
     ) -> Plate:
         from osa.services.plate_contour import plate_contour
 
         points = tuple(tuple(point) for point in contour)
-        ordered = plate_contour(zip(points, points[1:] + points[:1]))
+        ordered = plate_contour(
+            zip(points, points[1:] + points[:1]),
+            allow_warped=allow_warped,
+        )
         if name is None:
             number = 1
             while f"P{number}" in self.plates:
@@ -109,14 +115,57 @@ class StructuralModel:
             )
         if not isinstance(material, str) or not material.strip():
             raise ValueError("A placa deve possuir um material válido.")
+        if self.material_types and self.material_types.get(material) != "Concreto":
+            raise ValueError("Placas devem usar um material do tipo Concreto.")
         positioning_displacement = float(positioning_displacement)
         if not math.isfinite(positioning_displacement):
             raise ValueError("O deslocamento de posicionamento deve ser finito.")
         edge_positioning = self._validated_plate_edge_positioning(edge_positioning, supports)
-        plate = Plate(
-            name, ordered, supports, color.lower(), thickness_mm, material,
-            positioning_displacement, edge_positioning,
+        restrictions = self._validated_plate_restrictions(restrictions)
+        restriction_stiffness = self._validated_plate_restriction_stiffness(
+            restriction_stiffness,
         )
+        restriction_directions = self._validated_plate_restriction_directions(
+            restriction_directions,
+        )
+        new_nodes: dict[str, Node] = {}
+        vertex_nodes = []
+        next_node_index = 1
+        for point in ordered:
+            existing_name = next(
+                (
+                    node.name for node in self.nodes.values()
+                    if math.dist(point, (node.x, node.y, node.z)) <= self.coordinate_tolerance
+                ),
+                None,
+            )
+            if existing_name is None:
+                existing_name = next(
+                    (
+                        node.name for node in new_nodes.values()
+                        if math.dist(point, (node.x, node.y, node.z)) <= self.coordinate_tolerance
+                    ),
+                    None,
+                )
+            if existing_name is None:
+                while f"N{next_node_index}" in self.nodes or f"N{next_node_index}" in new_nodes:
+                    next_node_index += 1
+                existing_name = f"N{next_node_index}"
+                next_node_index += 1
+                coordinates = self._coordinates(*point)
+                new_nodes[existing_name] = Node(existing_name, *coordinates)
+            vertex_nodes.append(existing_name)
+        plate = Plate(
+            name=name, contour=ordered, supports=supports, color=color.lower(),
+            thickness_mm=thickness_mm, material=material,
+            positioning_displacement=positioning_displacement,
+            edge_positioning=edge_positioning,
+            restrictions=restrictions,
+            restriction_stiffness=restriction_stiffness,
+            restriction_directions=restriction_directions,
+            vertex_nodes=tuple(vertex_nodes),
+        )
+        self.nodes.update(new_nodes)
         self.plates[name] = plate
         self._touch()
         return plate
@@ -124,6 +173,8 @@ class StructuralModel:
     def update_plate(
         self, name: str, *, color=None, thickness_mm=None, material=None,
         positioning_displacement=None, edge_positioning=None,
+        restrictions=None, restriction_stiffness=None,
+        restriction_directions=None,
     ) -> None:
         plate = self.plates[name]
         if color is None:
@@ -136,6 +187,8 @@ class StructuralModel:
         material = plate.material if material is None else str(material).strip()
         if not material:
             raise ValueError("A placa deve possuir um material válido.")
+        if self.material_types and self.material_types.get(material) != "Concreto":
+            raise ValueError("Placas devem usar um material do tipo Concreto.")
         displacement = (
             plate.positioning_displacement if positioning_displacement is None
             else float(positioning_displacement)
@@ -146,13 +199,52 @@ class StructuralModel:
             plate.edge_positioning if edge_positioning is None
             else self._validated_plate_edge_positioning(edge_positioning, plate.supports)
         )
+        restrictions = (
+            plate.restrictions if restrictions is None
+            else self._validated_plate_restrictions(restrictions)
+        )
+        restriction_stiffness = (
+            plate.restriction_stiffness if restriction_stiffness is None
+            else self._validated_plate_restriction_stiffness(restriction_stiffness)
+        )
+        restriction_directions = (
+            plate.restriction_directions if restriction_directions is None
+            else self._validated_plate_restriction_directions(restriction_directions)
+        )
         updated = replace(
             plate, color=color.lower(), thickness_mm=thickness, material=material,
             positioning_displacement=displacement, edge_positioning=edges,
+            restrictions=restrictions, restriction_stiffness=restriction_stiffness,
+            restriction_directions=restriction_directions,
         )
         if updated != plate:
             self.plates[name] = updated
             self._touch()
+
+    @staticmethod
+    def _validated_plate_restrictions(values):
+        values = tuple(values)
+        if len(values) != 3:
+            raise ValueError("Informe as restrições da placa para Dx, Dy e Dz.")
+        if any(not isinstance(value, bool) for value in values):
+            raise ValueError("As restrições Dx, Dy e Dz devem ser verdadeiras ou falsas.")
+        return values
+
+    @staticmethod
+    def _validated_plate_restriction_stiffness(values):
+        values = tuple(float(value) for value in values)
+        if len(values) != 3 or any(not math.isfinite(value) or value < 0.0 for value in values):
+            raise ValueError(
+                "As rigidezes de mola distribuídas de Dx, Dy e Dz devem ser não negativas e finitas."
+            )
+        return values
+
+    @staticmethod
+    def _validated_plate_restriction_directions(values):
+        values = tuple(values)
+        if len(values) != 3 or any(value not in {"-", "=", "+"} for value in values):
+            raise ValueError("O sentido das molas Dx, Dy e Dz deve ser -, = ou +.")
+        return values
 
     @staticmethod
     def _validated_plate_edge_positioning(values, supports):
@@ -302,13 +394,76 @@ class StructuralModel:
     def remove_plate(self, name: str) -> None:
         if name not in self.plates:
             raise ValueError("Placa não encontrada.")
+        vertex_nodes = self.plates[name].vertex_nodes
         del self.plates[name]
         self.plate_display_names.pop(name, None)
         self._remove_detail_subtraction_references("plate", name)
         for action_name, action in tuple(self.actions.items()):
             if action.target == name:
                 del self.actions[action_name]
+        self._delete_orphan_nodes(vertex_nodes)
         self._touch()
+
+    def related_plates(self, name: str) -> tuple[str, ...]:
+        """Return plates that share a boundary edge or boundary bar with a plate."""
+        if name not in self.plates:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        plate = self.plates[name]
+        support_set = set(plate.supports)
+        related = []
+        for other_name, other in self.plates.items():
+            if other_name == name:
+                continue
+            if support_set.intersection(other.supports) or self._plate_contours_share_edge(
+                plate.contour, other.contour,
+            ):
+                related.append(other_name)
+        return tuple(related)
+
+    @staticmethod
+    def _plate_contours_share_edge(first, second, tolerance=1e-8) -> bool:
+        def edges(contour):
+            return zip(contour, (*contour[1:], contour[0]))
+
+        def overlap_length(a0, a1, b0, b1):
+            axis = tuple(a1[index] - a0[index] for index in range(3))
+            other = tuple(b1[index] - b0[index] for index in range(3))
+            length = math.sqrt(sum(value * value for value in axis))
+            other_length = math.sqrt(sum(value * value for value in other))
+            if length <= tolerance or other_length <= tolerance:
+                return 0.0
+
+            cross = (
+                axis[1] * other[2] - axis[2] * other[1],
+                axis[2] * other[0] - axis[0] * other[2],
+                axis[0] * other[1] - axis[1] * other[0],
+            )
+            if math.sqrt(sum(value * value for value in cross)) > tolerance * length * other_length:
+                return 0.0
+
+            offset = tuple(b0[index] - a0[index] for index in range(3))
+            distance_cross = (
+                offset[1] * axis[2] - offset[2] * axis[1],
+                offset[2] * axis[0] - offset[0] * axis[2],
+                offset[0] * axis[1] - offset[1] * axis[0],
+            )
+            if math.sqrt(sum(value * value for value in distance_cross)) / length > tolerance:
+                return 0.0
+
+            unit = tuple(value / length for value in axis)
+            projections = (
+                0.0,
+                length,
+                sum(offset[index] * unit[index] for index in range(3)),
+                sum((b1[index] - a0[index]) * unit[index] for index in range(3)),
+            )
+            return min(max(projections), length) - max(min(projections), 0.0)
+
+        return any(
+            overlap_length(a0, a1, b0, b1) > tolerance
+            for a0, a1 in edges(first)
+            for b0, b1 in edges(second)
+        )
 
     def _touch(self) -> None:
         self.revision += 1
@@ -478,12 +633,8 @@ class StructuralModel:
     def update_node(self, name: str, x: float, y: float, z: float) -> Node:
         if name not in self.nodes:
             raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
-        coordinates = self.node_coordinates(x, y, z)
-        self._ensure_unique_coordinates(coordinates, ignore=name)
-        node = replace(self.nodes[name], x=coordinates[0], y=coordinates[1], z=coordinates[2])
-        self.nodes[name] = node
-        self._touch()
-        return node
+        self.update_nodes_coordinates({name: (x, y, z)})
+        return self.nodes[name]
 
     def set_node_display_name(self, name: str, value: str) -> None:
         if name not in self.nodes:
@@ -508,17 +659,15 @@ class StructuralModel:
     def update_nodes_coordinates(
         self, changes: dict[str, tuple[float, float, float]],
     ) -> None:
-        """Apply a coordinate edit to several nodes as one validated change."""
+        """Apply node edits and follow shared plate boundary vertices atomically."""
         if not changes:
             return
         for name in changes:
             if name not in self.nodes:
                 raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
-        final = {
-            name: self.node_coordinates(*changes[name]) if name in changes
-            else (node.x, node.y, node.z)
-            for name, node in self.nodes.items()
-        }
+        final = {name: (node.x, node.y, node.z) for name, node in self.nodes.items()}
+        for name, coordinates in changes.items():
+            final[name] = self.node_coordinates(*coordinates)
         for name in changes:
             coordinates = final[name]
             for other_name, other in final.items():
@@ -527,9 +676,88 @@ class StructuralModel:
                     for a, b in zip(coordinates, other)
                 ):
                     raise DuplicateNodeCoordinatesError("Já existe um nó nessa coordenada.")
+
+        moved_nodes = {
+            name for name in changes
+            if final[name] != (self.nodes[name].x, self.nodes[name].y, self.nodes[name].z)
+        }
+        updated_plate_contours = {}
+        if moved_nodes:
+            from osa.services.plate_contour import plate_contour
+
+            for plate in self.plates.values():
+                vertex_node_names = plate.vertex_nodes
+                vertex_names_by_coordinate = {
+                    tuple(point): node_name
+                    for point, node_name in zip(plate.contour, vertex_node_names)
+                }
+                supported_nodes = set()
+                for kind, element_name in plate.supports:
+                    elements = self.bars if kind == "bar" else self.rigid_bars
+                    element = elements.get(element_name)
+                    if element is not None:
+                        supported_nodes.update((element.start_node, element.end_node))
+                for node_name in supported_nodes:
+                    node = self.nodes[node_name]
+                    vertex_names_by_coordinate.setdefault(
+                        (node.x, node.y, node.z), node_name,
+                    )
+                affected_nodes = moved_nodes & set(vertex_names_by_coordinate.values())
+                if not affected_nodes:
+                    continue
+
+                moved_vertices = {
+                    point: final[node_name]
+                    for point, node_name in vertex_names_by_coordinate.items()
+                    if node_name in affected_nodes
+                }
+                contour = tuple(
+                    moved_vertices.get(tuple(point), tuple(point))
+                    for point in plate.contour
+                )
+                if contour == plate.contour:
+                    continue
+                try:
+                    ordered_contour = plate_contour(
+                        zip(contour, (*contour[1:], contour[0])),
+                    )
+                except ValueError as error:
+                    if "coplanares" in str(error):
+                        node_name = ", ".join(sorted(affected_nodes))
+                        raise ValueError(
+                            f"Não é possível mover o nó {node_name}: a alteração deixaria a "
+                            f"placa '{plate.name}' empenada. Mantenha os vértices da placa "
+                            "no mesmo plano."
+                        ) from error
+                    raise ValueError(
+                        f"A alteração do nó tornaria inválido o contorno da placa "
+                        f"'{plate.name}': {error}"
+                    ) from error
+                node_names_by_updated_coordinate = {
+                    moved_vertices.get(point, point): node_name
+                    for point, node_name in vertex_names_by_coordinate.items()
+                }
+                updated_vertex_nodes = tuple(
+                    node_names_by_updated_coordinate[tuple(point)]
+                    for point in ordered_contour
+                    if tuple(point) in node_names_by_updated_coordinate
+                )
+                if len(updated_vertex_nodes) != len(ordered_contour):
+                    raise ValueError(
+                        f"Não foi possível manter os nós dos vértices da placa "
+                        f"'{plate.name}' associados ao contorno atualizado."
+                    )
+                updated_plate_contours[plate.name] = (
+                    ordered_contour, updated_vertex_nodes,
+                )
+
         for name in changes:
             self.nodes[name] = replace(self.nodes[name], x=final[name][0],
                                        y=final[name][1], z=final[name][2])
+        for name, (contour, vertex_nodes) in updated_plate_contours.items():
+            self.plates[name] = replace(
+                self.plates[name], contour=contour, vertex_nodes=vertex_nodes,
+            )
         self._touch()
 
     def remove_node(self, name: str) -> None:
@@ -540,8 +768,15 @@ class StructuralModel:
             rigid.name for rigid in self.rigid_bars.values()
             if name in (rigid.start_node, rigid.end_node)
         )
+        connected.extend(
+            plate.name for plate in self.plates.values()
+            if name in plate.vertex_nodes
+        )
         if connected:
-            raise ValueError(f"O nó '{name}' pertence às barras: {', '.join(connected)}. Remova-as primeiro.")
+            raise ValueError(
+                f"O nó '{name}' está conectado a elementos: {', '.join(connected)}. "
+                "Remova-os primeiro."
+            )
         del self.nodes[name]
         self._remove_actions_for_target(name)
         self._touch()
@@ -565,6 +800,16 @@ class StructuralModel:
         if any(not math.isfinite(value) or value < 0.0 for value in values):
             raise ValueError("As rigidezes de mola devem ser números não negativos.")
         node = replace(self.nodes[name], support_stiffness=values)
+        self.nodes[name] = node
+        self._touch()
+        return node
+
+    def update_node_support_directions(self, name: str, directions: tuple[str, ...]) -> Node:
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        if len(directions) != 6 or any(value not in {"-", "=", "+"} for value in directions):
+            raise ValueError("Informe seis sentidos válidos para as molas do nó.")
+        node = replace(self.nodes[name], support_directions=tuple(directions))
         self.nodes[name] = node
         self._touch()
         return node
@@ -1550,7 +1795,7 @@ class StructuralModel:
         removing_bars: set[str] | None = None,
         removing_rigid_bars: set[str] | None = None,
     ) -> tuple[str, ...]:
-        """Find candidate nodes with no remaining structural or rigid members."""
+        """Find candidate nodes unused by remaining bars, rigid bars, or plates."""
         removed_bars = removing_bars or set()
         removed_rigid_bars = removing_rigid_bars or set()
         connected = {
@@ -1564,6 +1809,11 @@ class StructuralModel:
             for name, rigid in self.rigid_bars.items()
             if name not in removed_rigid_bars
             for node_name in (rigid.start_node, rigid.end_node)
+        )
+        connected.update(
+            node_name
+            for plate in self.plates.values()
+            for node_name in plate.vertex_nodes
         )
         return tuple(
             name for name in dict.fromkeys(candidates)

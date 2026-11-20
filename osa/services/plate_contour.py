@@ -18,13 +18,15 @@ def plate_contour(
     segments: Iterable[tuple[Sequence[float], Sequence[float]]],
     *,
     close_automatically: bool = False,
+    allow_warped: bool = False,
     tolerance: float = 1e-8,
 ) -> tuple[Point, ...]:
     """Ordena as arestas em um único polígono plano simples.
 
     Quando solicitado, conecta sucessivamente os extremos mais próximos de
     componentes distintos e, por fim, fecha a cadeia resultante. Contornos
-    ramificados, degenerados, não planos ou que se cruzam são recusados.
+    ramificados, degenerados ou que se cruzam são recusados. A planicidade é
+    exigida por padrão; ``allow_warped`` é usado ao atualizar placas por nós.
     """
     if not math.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("A tolerância deve ser positiva e finita.")
@@ -111,7 +113,7 @@ def plate_contour(
     _, singular, basis = np.linalg.svd(centered, full_matrices=False)
     if len(singular) < 2 or singular[1] <= tolerance:
         raise ValueError("O contorno é degenerado.")
-    if np.max(np.abs(centered @ basis[-1])) > tolerance:
+    if not allow_warped and np.max(np.abs(centered @ basis[-1])) > tolerance:
         raise ValueError("As extremidades do contorno não são coplanares.")
     xy = centered @ basis[:2].T
 

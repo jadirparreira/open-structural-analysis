@@ -505,7 +505,10 @@ def prepare_scene_geometry(
     grid_renderer = GridRenderer()
     if progress is not None:
         progress("Preparando a grade da cena…")
-    grid_renderer.update(model.nodes.values(), model.axes, reference_plane, plane_level)
+    grid_renderer.update(
+        model.nodes.values(), model.axes, reference_plane, plane_level,
+        plates=model.plates.values(),
+    )
     return PreparedSceneGeometry(
         member_batch, node_batch, rigid_names, rigid_mesh,
         member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,

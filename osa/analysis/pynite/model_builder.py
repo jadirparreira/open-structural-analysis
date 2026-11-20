@@ -33,6 +33,9 @@ class ModelBuilder:
         target._osa_plate_elements = {}
         target._osa_original_node_names = set(source.nodes)
         rotationally_unconnected = self._rotationally_unconnected_nodes(source)
+        node_fixed_supports = {}
+        node_spring_stiffness = {}
+        node_spring_directions = {}
         for node in source.nodes.values():
             target.add_node(node.name, node.x, node.y, node.z)
             supports = list(node.supports)
@@ -51,12 +54,20 @@ class ModelBuilder:
                 supports[index] and stiffness[index] <= 0.0
                 for index in range(6)
             ]
+            node_fixed_supports[node.name] = fixed_supports
+            node_spring_stiffness[node.name] = [
+                stiffness[index] if supports[index] and stiffness[index] > 0.0 else 0.0
+                for index in range(6)
+            ]
+            node_spring_directions[node.name] = [
+                {
+                    None if node.support_directions[index] == "="
+                    else node.support_directions[index]
+                } if value > 0.0 else set()
+                for index, value in enumerate(node_spring_stiffness[node.name])
+            ]
             if any(fixed_supports):
                 target.def_support(node.name, *fixed_supports)
-
-            for index, dof in enumerate(("DX", "DY", "DZ", "RX", "RY", "RZ")):
-                if supports[index] and stiffness[index] > 0.0:
-                    target.def_support_spring(node.name, dof, stiffness[index])
         for material_name, values in source.materials.items():
             elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values[:4]
             target.add_material(
@@ -78,6 +89,9 @@ class ModelBuilder:
             if existing is None:
                 existing = f"FE::N{index}"
                 target.add_node(existing, *coordinates)
+                node_fixed_supports[existing] = [False] * 6
+                node_spring_stiffness[existing] = [0.0] * 6
+                node_spring_directions[existing] = [set() for _ in range(6)]
             plate_node_names.append(existing)
         for plate in source.plates.values():
             if plate.material not in source.materials:
@@ -96,6 +110,53 @@ class ModelBuilder:
                 plate_elements.append((element_name, node_names, coordinates))
             target._osa_plate_elements[plate.name] = tuple(plate_elements)
 
+        restrained_nodes = set()
+        for plate in source.plates.values():
+            if not any(plate.restrictions):
+                continue
+            tributary_areas = {}
+            for connectivity in plate_mesh.elements[plate.name]:
+                points = np.asarray([plate_mesh.nodes[index] for index in connectivity], dtype=float)
+                area = 0.5 * float(np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0])))
+                area += 0.5 * float(np.linalg.norm(np.cross(points[2] - points[0], points[3] - points[0])))
+                for node_index in connectivity:
+                    tributary_areas[node_index] = tributary_areas.get(node_index, 0.0) + area / 4.0
+            for node_index, tributary_area in tributary_areas.items():
+                node_name = plate_node_names[node_index]
+                for dof in range(3):
+                    if not plate.restrictions[dof]:
+                        continue
+                    spring_coefficient = plate.restriction_stiffness[dof]
+                    if spring_coefficient > 0.0:
+                        # A distributed foundation coefficient (kN/m³) times
+                        # the node's tributary area (m²) gives a PyNite spring
+                        # stiffness in kN/m.
+                        node_spring_stiffness[node_name][dof] += (
+                            spring_coefficient * tributary_area
+                        )
+                        node_spring_directions[node_name][dof].add(
+                            None if plate.restriction_directions[dof] == "="
+                            else plate.restriction_directions[dof]
+                        )
+                    else:
+                        node_fixed_supports[node_name][dof] = True
+                        restrained_nodes.add(node_name)
+        for node_name in restrained_nodes:
+            target.def_support(node_name, *node_fixed_supports[node_name])
+        dofs = ("DX", "DY", "DZ", "RX", "RY", "RZ")
+        for node_name, stiffnesses in node_spring_stiffness.items():
+            for index, stiffness in enumerate(stiffnesses):
+                if stiffness > 0.0 and not node_fixed_supports[node_name][index]:
+                    directions = node_spring_directions[node_name][index]
+                    if len(directions) > 1:
+                        raise ValueError(
+                            f"O nó '{node_name}' recebeu molas incompatíveis no mesmo "
+                            f"grau de liberdade {dofs[index]} (bilateral e/ou sentidos opostos)."
+                        )
+                    direction = next(iter(directions), None)
+                    target.def_support_spring(
+                        node_name, dofs[index], stiffness, direction=direction,
+                    )
         supported_bars = {
             name for plate in source.plates.values()
             for kind, name in plate.supports if kind == "bar"

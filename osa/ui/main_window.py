@@ -63,6 +63,8 @@ from .import_dialogs import ImportReportDialog, PrjImportDialog
 from .loading_indicator import LoadingIndicator
 from .mcp_dispatcher import McpQtDispatcher
 from .member_placement_panel import MemberPlacementEditor
+from .plate_placement_panel import PlatePlacementEditor
+from .plate_section_panel import PlateSectionPanel
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
@@ -367,6 +369,7 @@ class MainWindow(QMainWindow):
         self._plate_segments = []
         self._plate_manual_segments = []
         self._plate_manual_start = None
+        self._plate_point_vertices = []
         self._plate_saved_endpoint_snap = None
         self.scene.element_clicked.connect(self.select_element)
         self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
@@ -505,6 +508,7 @@ class MainWindow(QMainWindow):
         self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.plate_section_panel = PlateSectionPanel(self)
         self.subtractions_panel = SubtractionsPanel(self)
         self._detail_subtraction_visible_refs: set[tuple[str, str, str, str]] = set()
         self.displacement_panel = DisplacementPanel(self)
@@ -532,6 +536,10 @@ class MainWindow(QMainWindow):
         })
         self.section_panel = self.section_panels["W Laminado"]
         self.member_placement_editor = MemberPlacementEditor(self)
+        self.plate_placement_editor = PlatePlacementEditor(self)
+        self.plate_placement_editor.placement_mode_switch.kind_changed.connect(
+            self._plate_placement_mode_changed
+        )
         self.history = CommandHistory(self)
         self.command_bar = CommandBar(self)
         self.scene.plotter.installEventFilter(self)
@@ -4251,6 +4259,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "member_placement_editor"):
             self.member_placement_editor.reposition()
+        if hasattr(self, "plate_placement_editor") and self.plate_placement_editor.isVisible():
+            self.plate_placement_editor.reposition()
         if hasattr(self, "palette"):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
@@ -4308,6 +4318,8 @@ class MainWindow(QMainWindow):
             self.history.reposition()
         if hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.section_panel.reposition()
+        if hasattr(self, "plate_section_panel") and self.plate_section_panel.isVisible():
+            self.plate_section_panel.reposition()
         if hasattr(self, "subtractions_panel") and self.subtractions_panel.isVisible():
             self.subtractions_panel.reposition()
         if hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
@@ -4329,6 +4341,33 @@ class MainWindow(QMainWindow):
             if button is not None: button.setChecked(False)
         else:
             self.show_section_panel(section, button)
+
+    def toggle_plate_section_panel(self, button=None) -> None:
+        if self.plate_section_panel.isVisible():
+            self.close_plate_section_panel(button)
+            return
+        selected = self.selected
+        if selected is None or selected[0] != "plate" or selected[1] not in self.model.plates:
+            if button is not None:
+                button.setChecked(False)
+            return
+        self.properties.close_color_palette()
+        self.close_section_panel(self.properties._section_settings_button)
+        self.close_displacement_panel(self.properties._displacement_settings_button)
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
+        self.plate_section_panel.configure_for_plate(selected[1])
+        self.plate_section_panel.layout().activate()
+        self.plate_section_panel.adjustSize()
+        self.plate_section_panel.reposition()
+        self.plate_section_panel.show()
+        self.plate_section_panel.raise_()
+        if button is not None:
+            button.setChecked(True)
+
+    def close_plate_section_panel(self, button=None) -> None:
+        self.plate_section_panel.hide()
+        if button is not None:
+            button.setChecked(False)
 
     def toggle_displacement_panel(self, button=None) -> None:
         """Show or hide the selected member's positioning editor."""
@@ -4529,6 +4568,10 @@ class MainWindow(QMainWindow):
         self.section_panel.hide()
         if button is not None:
             button.setChecked(False)
+        if hasattr(self, "plate_section_panel") and self.plate_section_panel.isVisible():
+            self.close_plate_section_panel(
+                self.properties._plate_section_settings_button,
+            )
 
     def close_displacement_panel(self, button=None) -> None:
         """Hide the displacement editor and restore its trigger state."""
@@ -4823,6 +4866,7 @@ class MainWindow(QMainWindow):
                 button.setChecked(False)
             return
         self.properties.close_color_palette()
+        self.close_plate_section_panel(self.properties._plate_section_settings_button)
         self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_displacement_panel(self.properties._displacement_settings_button)
         for candidate in self.section_panels.values():
@@ -4913,6 +4957,7 @@ class MainWindow(QMainWindow):
     def _remember_last_command(self, callback) -> None:
         """Keep the most recently started graphical command for Enter to repeat."""
         self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
         self._last_command_callback = callback
 
     def start_member_placement(self) -> None:
@@ -5451,6 +5496,9 @@ class MainWindow(QMainWindow):
         if mode == "plate_selection":
             self._finish_plate_selection()
             return
+        if mode == "plate_point_placement":
+            self._finish_plate_point_contour()
+            return
         if mode not in {
             "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "action_selection", "verification_group_selection",
@@ -5613,12 +5661,81 @@ class MainWindow(QMainWindow):
         self._plate_segments = []
         self._plate_manual_segments = []
         self._plate_manual_start = None
-        self._command_mode = "plate_selection"
-        self.history.append(
-            "> <b>Adicionar placa</b> <span style='color:#57606a'>"
-            "(Selecione as barras do contorno; ENTER conclui e ESC cancela)</span>"
-        )
+        self._plate_point_vertices = []
+        self.plate_placement_editor.show_for_model(self.model)
+        self._plate_placement_mode_changed(self.plate_placement_editor.placement_mode)
         self.scene.plotter.setFocus()
+
+    def _plate_placement_mode_changed(self, mode: str) -> None:
+        """Switch between the existing boundary-bar flow and coordinate drawing."""
+        if self._command_mode not in {None, "plate_selection", "plate_point_placement"}:
+            return
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self.scene.set_plate_manual_segments([])
+        self.scene.set_member_preview_start(None)
+        self.clear_selection()
+        if mode == "exact":
+            self._command_mode = "plate_point_placement"
+            self.scene.set_member_placement_mode(True)
+            prompt = "Clique nos vértices externos da placa; ENTER fecha o contorno"
+        else:
+            self._command_mode = "plate_selection"
+            self.scene.set_member_placement_mode(False)
+            prompt = "Selecione as barras do contorno; ENTER conclui"
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>({prompt}; ESC cancela)</span>"
+        )
+
+    def _plate_point_placement_point(self, point) -> None:
+        coordinates = tuple(float(value) for value in point)
+        if self._plate_point_vertices:
+            if math.dist(coordinates, self._plate_point_vertices[-1]) <= 1e-8:
+                self.history.append(
+                    "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                    "(Cada vértice precisa ser diferente do anterior)</span>"
+                )
+                return
+            if len(self._plate_point_vertices) >= 3 and math.dist(
+                coordinates, self._plate_point_vertices[0]
+            ) <= 0.002:
+                self._finish_plate_point_contour()
+                return
+        self._plate_point_vertices.append(coordinates)
+        self._plate_manual_segments = list(zip(
+            self._plate_point_vertices, self._plate_point_vertices[1:]
+        ))
+        self.scene.set_plate_manual_segments(self._plate_manual_segments)
+        self.scene.set_member_preview_start(coordinates)
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>"
+            f"(Vértice {len(self._plate_point_vertices)} definido; ENTER fecha o contorno)</span>"
+        )
+
+    def _finish_plate_point_contour(self) -> None:
+        if len(self._plate_point_vertices) < 3:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Defina pelo menos três vértices e pressione ENTER para fechar)</span>"
+            )
+            return
+        segments = list(zip(
+            self._plate_point_vertices,
+            (*self._plate_point_vertices[1:], self._plate_point_vertices[0]),
+        ))
+        try:
+            contour = plate_contour(segments)
+            contour = tuple(self.model.node_coordinates(*point) for point in contour)
+            contour = plate_contour(zip(contour, (*contour[1:], contour[0])))
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._create_plate(contour)
 
     def _plate_add_selection(self, kind: str, name: str) -> None:
         target = (kind, name)
@@ -5756,12 +5873,33 @@ class MainWindow(QMainWindow):
         self._create_plate(contour)
 
     def _create_plate(self, contour) -> None:
+        material = self.plate_placement_editor.material
+        if not material:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Selecione um material de concreto)</span>"
+            )
+            return
         try:
-            plate = self.model.add_plate(contour, supports=self._plate_selection)
+            supports = self._plate_selection if self._command_mode == "plate_selection" else ()
+            plate = self.model.add_plate(
+                contour,
+                supports=supports,
+                material=material,
+                thickness_mm=self.plate_placement_editor.thickness_mm.value(),
+                restrictions=self.plate_placement_editor.restrictions,
+                restriction_stiffness=(
+                    self.plate_placement_editor.restriction_stiffness
+                ),
+                restriction_directions=(
+                    self.plate_placement_editor.restriction_directions
+                ),
+            )
         except ValueError as error:
             self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
             return
         self._command_mode = None
+        self.plate_placement_editor.hide()
         self._restore_plate_snap()
         self.scene.set_member_preview_start(None)
         self.scene.set_member_placement_mode(False)
@@ -5976,6 +6114,9 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode == "plate_manual":
             self._plate_manual_point(tuple(float(value) for value in point))
+            return
+        if self._command_mode == "plate_point_placement":
+            self._plate_point_placement_point(tuple(float(value) for value in point))
             return
         if self._command_mode != "member_placement":
             return
@@ -6236,6 +6377,7 @@ class MainWindow(QMainWindow):
             workspace.annotation_finished.emit(kind, True)
             return
         self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
         if self._command_mode == "stair_custom_geometry_placement":
             self._cancel_stair_custom_geometry_capture()
             return
@@ -6273,13 +6415,14 @@ class MainWindow(QMainWindow):
             self.project_sheet_workspace.set_element_visibility_mode(None)
             self._finish_project_sheet_visibility(canceled=True)
             return
-        if self._command_mode in {"plate_selection", "plate_manual"}:
+        if self._command_mode in {"plate_selection", "plate_manual", "plate_point_placement"}:
             self._command_mode = None
             self._restore_plate_snap()
             self._plate_selection = []
             self._plate_segments = []
             self._plate_manual_segments = []
             self._plate_manual_start = None
+            self._plate_point_vertices = []
             self.scene.set_member_preview_start(None)
             self.scene.set_member_placement_mode(False)
             self.scene.set_plate_manual_segments([])
@@ -7098,6 +7241,8 @@ class MainWindow(QMainWindow):
         self._plate_segments = []
         self._plate_manual_segments = []
         self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self.plate_placement_editor.hide()
         self.member_placement_editor.reset()
         self.reference_panel.hide()
         self.split_member_dialog.hide()
@@ -7319,6 +7464,7 @@ class MainWindow(QMainWindow):
         try:
             self.axes_panel.discard()
             self.reference_panel.hide()
+            self.plate_placement_editor.hide()
             self.member_placement_editor.reset()
             with self._model_access_lock:
                 loaded_model.revision = self.model.revision + 1

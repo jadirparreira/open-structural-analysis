@@ -6,7 +6,7 @@ import base64
 import math
 
 from PySide6.QtCore import QBuffer, QIODevice, QPointF, QSize, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 
 from osa.domain import StructuralModel
 
@@ -44,12 +44,44 @@ class ThumbnailService:
                 if start is not None and end is not None:
                     segments.append((start, end, "#6e7781", 2.2))
 
+            view = cls._normalize(cls._view_direction)
+            plate_polygons = []
+            for plate in model.plates.values():
+                if len(plate.contour) < 3:
+                    continue
+                world_points = tuple(
+                    tuple(float(coordinate) for coordinate in point)
+                    for point in plate.contour
+                )
+                projected_polygon = tuple(cls._project(point) for point in world_points)
+                depth = sum(
+                    sum(point[index] * view[index] for index in range(3))
+                    for point in world_points
+                ) / len(world_points)
+                plate_polygons.append((depth, projected_polygon))
+            # The view vector points from the model toward the camera, so a
+            # lower depth is farther away. Paint far faces first so nearer
+            # plates hide their fills and edges as they do in the 3D view.
+            plate_polygons.sort(key=lambda item: item[0])
             projected = [cls._project(point) for point in points.values()]
             projected.extend(cls._project(point) for segment in segments for point in segment[:2])
+            projected.extend(
+                point for _depth, polygon in plate_polygons for point in polygon
+            )
             if not projected:
                 cls._draw_empty_state(painter, image.size())
             else:
                 transform = cls._fit_transform(projected, image.width(), image.height())
+                for _depth, polygon in plate_polygons:
+                    screen_polygon = QPolygonF([
+                        cls._to_screen(point, transform) for point in polygon
+                    ])
+                    painter.setPen(QPen(
+                        QColor("#6e7781"), 2.2, Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin,
+                    ))
+                    painter.setBrush(QColor("#e8edf2"))
+                    painter.drawPolygon(screen_polygon)
                 for start, end, color, width in segments:
                     painter.setPen(QPen(QColor(color), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                     painter.drawLine(cls._to_screen(cls._project(start), transform), cls._to_screen(cls._project(end), transform))

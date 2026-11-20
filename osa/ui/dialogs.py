@@ -845,8 +845,6 @@ class ErrorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Dados inválidos")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setFixedWidth(500)
-        self.setMinimumHeight(240)
         self.setStyleSheet(
             "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
             "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
@@ -878,6 +876,9 @@ class ErrorDialog(QDialog):
         message_label = QLabel(message)
         message_label.setObjectName("dialogMessage")
         message_label.setWordWrap(True)
+        longest_line = max(message.splitlines() or [message], key=message_label.fontMetrics().horizontalAdvance)
+        natural_width = message_label.fontMetrics().horizontalAdvance(longest_line) + 64
+        self.setFixedWidth(max(360, min(620, natural_width)))
         content.addWidget(message_label)
         footer = QHBoxLayout()
         footer.addStretch()
@@ -887,7 +888,7 @@ class ErrorDialog(QDialog):
         close_button.clicked.connect(self.accept)
         footer.addWidget(close_button)
         content.addLayout(footer)
-        outer.addLayout(content, 1)
+        outer.addLayout(content)
         self.adjustSize()
 
 

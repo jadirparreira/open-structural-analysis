@@ -127,7 +127,21 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
                             curve_tags[edge_key] = tag
                         loop_curves.append(tag if first_key < second_key else -tag)
                 loop = gmsh.model.geo.addCurveLoop(loop_curves)
-                surface_tags[plate.name] = gmsh.model.geo.addPlaneSurface([loop])
+                points = np.asarray(contour, dtype=float)
+                centered = points - points[0]
+                _, _, basis = np.linalg.svd(centered, full_matrices=False)
+                warped = bool(np.max(np.abs(centered @ basis[-1])) > 1e-8)
+                if warped:
+                    if len(contour) != 4 or len(loop_curves) != 4:
+                        raise ValueError(
+                            f"A placa '{plate.name}' ficou empenada após a edição de um nó e possui "
+                            "mais de quatro arestas de contorno."
+                        )
+                    # A surface filling follows the four boundary curves in 3D;
+                    # a plane surface would reject a valid, node-driven warp.
+                    surface_tags[plate.name] = gmsh.model.geo.addSurfaceFilling([loop])
+                else:
+                    surface_tags[plate.name] = gmsh.model.geo.addPlaneSurface([loop])
 
             gmsh.model.geo.synchronize()
             for point_key, tag in point_tags.items():

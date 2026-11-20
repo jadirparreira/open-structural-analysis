@@ -39,6 +39,8 @@ class Node:
     # Translational stiffnesses use kN/m; rotational stiffnesses use kN·m/rad.
     support_stiffness: tuple[float, float, float, float, float, float] = (0.0,) * 6
     component: NodeComponentAssignment | None = None
+    # Direction of support springs: '-' and '+' are unilateral; '=' is bilateral.
+    support_directions: tuple[str, str, str, str, str, str] = ("=",) * 6
 
     @property
     def support(self) -> Support:
@@ -152,6 +154,14 @@ class Plate:
     edge_positioning: tuple[tuple[str, float, float], ...] = ()
     # References to solids subtracted from this plate in detailing only.
     detail_subtractions: tuple[tuple[str, str], ...] = ()
+    # Global translational restraints applied over the full plate surface.
+    restrictions: tuple[bool, bool, bool] = (False, False, False)
+    # Distributed spring coefficients in kN/m³ (foundation modulus).
+    restriction_stiffness: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Global displacement direction: negative, bilateral, or positive.
+    restriction_directions: tuple[str, str, str] = ("=", "=", "=")
+    # Structural node identity at every contour vertex, in contour order.
+    vertex_nodes: tuple[str, ...] = ()
 
 
 # Compatibilidade pública com o nome utilizado até agora.

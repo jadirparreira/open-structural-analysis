@@ -836,6 +836,7 @@ class StructureScene(QWidget):
             self._grid_actor = self._grid_renderer.render(
                 self.plotter, model.nodes.values(), model.axes,
                 self._reference_plane_mode, self._reference_plane_z,
+                plates=model.plates.values(),
             )
         else:
             self._grid_actor = self._grid_renderer.render_current(self.plotter)
@@ -1057,6 +1058,11 @@ class StructureScene(QWidget):
             # A subtraction changes the topology of the target solid and can
             # also change plate actors. Rebuild the complete solid batches so
             # incremental member updates cannot restore the uncut source mesh.
+            self.render_model(model)
+            return
+        if model.plates != self._rendered_plates:
+            # Plate contours and their vertex nodes share geometry, so rebuild
+            # the plate actors, node batches and reference grid together.
             self.render_model(model)
             return
         if model.verification_group_revision != self._rendered_verification_group_revision:
@@ -2215,7 +2221,12 @@ class StructureScene(QWidget):
             for index in range(count):
                 lines.extend((2, index, index + count))
         else:
-            mesh = pv.PolyData(points, face).triangulate()
+            centered = points - points[0]
+            _, _, basis = np.linalg.svd(centered, full_matrices=False)
+            warped = np.max(np.abs(centered @ basis[-1])) > 1e-8
+            mesh = self._plate_fe_surface_mesh(plate) if warped else None
+            if mesh is None:
+                mesh = pv.PolyData(points, face).triangulate()
             edge_points = points
             lines = [count + 1, *range(count), 0]
         edges = pv.PolyData(edge_points)
@@ -2554,9 +2565,7 @@ class StructureScene(QWidget):
             return None
         connectivity = plate_mesh.elements.get(plate.name, ())
         edge_pairs = set()
-        node_indices = set()
         for quad in connectivity:
-            node_indices.update(int(index) for index in quad)
             for start, end in zip(quad, (quad[1], quad[2], quad[3], quad[0])):
                 edge_pairs.add((min(start, end), max(start, end)))
         if not edge_pairs:
@@ -2565,13 +2574,43 @@ class StructureScene(QWidget):
             [value for start, end in sorted(edge_pairs) for value in (2, start, end)],
             dtype=np.int64,
         )
+        nodes = self._plate_fe_display_nodes(plate, connectivity)
+        return pv.PolyData(nodes, lines=lines)
+
+    def _plate_fe_surface_mesh(self, plate):
+        plate_mesh = self._plate_fe_mesh_data
+        if plate_mesh is None:
+            return None
+        connectivity = plate_mesh.elements.get(plate.name, ())
+        if not connectivity:
+            return None
+        node_indices = np.asarray(
+            sorted({int(index) for quad in connectivity for index in quad}),
+            dtype=np.intp,
+        )
+        nodes = self._plate_fe_display_nodes(plate, connectivity)[node_indices]
+        local_indices = {int(index): local for local, index in enumerate(node_indices)}
+        faces = np.asarray(
+            [
+                (4, *(local_indices[int(index)] for index in quad))
+                for quad in connectivity
+            ],
+            dtype=np.int64,
+        ).ravel()
+        return pv.PolyData(nodes, faces=faces).triangulate()
+
+    def _plate_fe_display_nodes(self, plate, connectivity):
+        plate_mesh = self._plate_fe_mesh_data
         nodes = np.asarray(plate_mesh.nodes, dtype=float).copy()
+        node_indices = {
+            int(index) for quad in connectivity for index in quad
+        }
         displayed_contour = self._plate_display_contour(plate)
         displacement = displayed_contour[0] - np.asarray(plate.contour[0], dtype=float)
         if np.any(displacement):
             indices = np.fromiter(sorted(node_indices), dtype=np.intp)
             nodes[indices] += displacement
-        return pv.PolyData(nodes, lines=lines)
+        return nodes
 
     def update_plate_rendering(self, name: str, *, render: bool = True) -> None:
         if name not in self._plate_actors or name not in self._model.plates:
@@ -4594,6 +4633,12 @@ class StructureScene(QWidget):
             [(node.x, node.y, node.z) for node in visible_model.nodes.values()],
             dtype=float,
         ).reshape((-1, 3))
+        plate_vertices = np.asarray(
+            [point for plate in visible_model.plates.values() for point in plate.contour],
+            dtype=float,
+        ).reshape((-1, 3))
+        if len(plate_vertices):
+            node_points = np.unique(np.concatenate((node_points, plate_vertices)), axis=0)
         centers = []
         center_elements = []
         for member in visible_model.bars.values():
@@ -7589,6 +7634,7 @@ class StructureScene(QWidget):
         self._grid_renderer.update(
             self._model.nodes.values(), self._model.axes,
             self._reference_plane_mode, self._reference_plane_z,
+            plates=self._model.plates.values(),
         )
         self._reference_axes_renderer.mesh = self._reference_axes_renderer.build(
             self._model.axes, self._grid_renderer.bounds,

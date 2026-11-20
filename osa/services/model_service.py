@@ -285,6 +285,9 @@ class ModelService:
     def update_support_stiffness(self, name: str, stiffness: tuple[float, ...]):
         return self.model.update_node_support_stiffness(name, stiffness)
 
+    def update_support_directions(self, name: str, directions: tuple[str, ...]):
+        return self.model.update_node_support_directions(name, directions)
+
     def update_member_nodes(self, name: str, start_node: str, end_node: str):
         return self.model.update_bar(name, start_node, end_node)
 
@@ -440,6 +443,10 @@ class ModelService:
                     if node_name in (rigid.start_node, rigid.end_node)
                     and rigid.name not in rigid_bar_set
                 ],
+                "plates": [
+                    plate.name for plate in self.model.plates.values()
+                    if node_name in plate.vertex_nodes
+                ],
             }
             for node_name in nodes
             if any(
@@ -450,6 +457,9 @@ class ModelService:
                 node_name in (rigid.start_node, rigid.end_node)
                 and rigid.name not in rigid_bar_set
                 for rigid in self.model.rigid_bars.values()
+            ) or any(
+                node_name in plate.vertex_nodes
+                for plate in self.model.plates.values()
             )
         ]
         affected_nodes = tuple(

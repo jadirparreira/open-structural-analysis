@@ -181,11 +181,19 @@ class ProjectSerializer:
             if yield_control is not None and index % 128 == 0:
                 yield_control()
             coordinates = candidate._coordinates(item["x"], item["y"], item["z"])
+            support_directions = tuple(
+                item.get("support_directions", ("=",) * 6)
+            )
+            if len(support_directions) != 6 or any(
+                direction not in {"-", "=", "+"} for direction in support_directions
+            ):
+                raise ValueError("Os sentidos das molas do nó são inválidos.")
             node = Node(
                 item["name"], *coordinates,
                 tuple(bool(value) for value in item.get("supports", (False,) * 6)),
                 tuple(float(value) for value in item.get("support_stiffness", (0.0,) * 6)),
                 _node_component(item.get("component")),
+                support_directions,
             )
             cell = _coordinate_cell(coordinates, cell_width)
             for delta in neighbors:
@@ -265,20 +273,6 @@ class ProjectSerializer:
         ):
             raise ValueError("Os nomes dos elementos de verificação são inválidos.")
         candidate.verification_element_names = dict(raw_names)
-        raw_node_names = data.get("node_display_names", {})
-        if not isinstance(raw_node_names, dict) or any(
-            not isinstance(name, str) or name not in candidate.nodes or not isinstance(value, str)
-            for name, value in raw_node_names.items()
-        ):
-            raise ValueError("Os nomes personalizados dos nós são inválidos.")
-        candidate.node_display_names = dict(raw_node_names)
-        raw_plate_names = data.get("plate_display_names", {})
-        if not isinstance(raw_plate_names, dict) or any(
-            not isinstance(name, str) or name not in candidate.plates or not isinstance(value, str)
-            for name, value in raw_plate_names.items()
-        ):
-            raise ValueError("Os nomes personalizados das placas são inválidos.")
-        candidate.plate_display_names = dict(raw_plate_names)
         raw_groups = data.get("verification_element_groups", [])
         if not isinstance(raw_groups, list):
             raise ValueError("Os grupos de elementos de verificação são inválidos.")
@@ -324,7 +318,30 @@ class ProjectSerializer:
                                 thickness_mm=item.get("thickness_mm", 100.0),
                                 material=item.get("material"),
                                 positioning_displacement=item.get("positioning_displacement", 0.0),
-                                edge_positioning=item.get("edge_positioning", ()))
+                                edge_positioning=item.get("edge_positioning", ()),
+                                restrictions=item.get("restrictions", (False, False, False)),
+                                restriction_stiffness=item.get(
+                                    "restriction_stiffness", (0.0, 0.0, 0.0),
+                                ),
+                                restriction_directions=item.get(
+                                    "restriction_directions", ("=", "=", "="),
+                                ),
+                                allow_warped=True)
+
+        raw_node_names = data.get("node_display_names", {})
+        if not isinstance(raw_node_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.nodes or not isinstance(value, str)
+            for name, value in raw_node_names.items()
+        ):
+            raise ValueError("Os nomes personalizados dos nós são inválidos.")
+        candidate.node_display_names = dict(raw_node_names)
+        raw_plate_names = data.get("plate_display_names", {})
+        if not isinstance(raw_plate_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.plates or not isinstance(value, str)
+            for name, value in raw_plate_names.items()
+        ):
+            raise ValueError("Os nomes personalizados das placas são inválidos.")
+        candidate.plate_display_names = dict(raw_plate_names)
 
         for name, cuts in saved_bar_subtractions:
             candidate.update_detail_subtractions("bar", name, cuts)

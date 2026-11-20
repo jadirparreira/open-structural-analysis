@@ -23,13 +23,19 @@ class GridRenderer:
         self._plane = "XY"
         self._offset = 0.0
         self._nodes: tuple[object, ...] = ()
+        self._plates: tuple[object, ...] = ()
         self._axes = {}
         self.mesh = self._mesh_for_bounds(self._bounds, self._footprint_bounds, self._plane, self._offset)
 
-    def update(self, nodes: Iterable[object], axes=None, plane: str = "XY", offset: float = 0.0) -> None:
+    def update(
+        self, nodes: Iterable[object], axes=None, plane: str = "XY",
+        offset: float = 0.0, plates: Iterable[object] = (),
+    ) -> None:
         """Rebuild only when the active plane footprint or level changes."""
         nodes = tuple(nodes)
+        plates = tuple(plates)
         self._nodes = nodes
+        self._plates = plates
         self._axes = axes or {}
         self._plane = plane.upper()
         self._offset = float(offset)
@@ -39,13 +45,26 @@ class GridRenderer:
         z_axis_values = tuple(float(axis.value) for axis in axes.get("Z", ()))
         if self._plane == "XZ":
             positions = tuple((float(node.x), float(node.z)) for node in nodes)
+            plate_positions = tuple(
+                (float(point[0]), float(point[2]))
+                for plate in plates for point in plate.contour
+            )
             axis_u_values, axis_v_values = x_axis_values, z_axis_values
         elif self._plane == "YZ":
             positions = tuple((float(node.y), float(node.z)) for node in nodes)
+            plate_positions = tuple(
+                (float(point[1]), float(point[2]))
+                for plate in plates for point in plate.contour
+            )
             axis_u_values, axis_v_values = y_axis_values, z_axis_values
         else:
             positions = tuple((float(node.x), float(node.y)) for node in nodes)
+            plate_positions = tuple(
+                (float(point[0]), float(point[1]))
+                for plate in plates for point in plate.contour
+            )
             axis_u_values, axis_v_values = x_axis_values, y_axis_values
+        positions = (*positions, *plate_positions)
         if positions:
             us, vs = zip(*positions)
             footprint_bounds = (
@@ -122,7 +141,7 @@ class GridRenderer:
 
     def set_plane(self, plane: str, offset: float) -> None:
         """Change orientation and level using the cached footprint."""
-        self.update(self._nodes, self._axes, plane, offset)
+        self.update(self._nodes, self._axes, plane, offset, self._plates)
 
     @classmethod
     def _mesh_for_bounds(
@@ -186,9 +205,9 @@ class GridRenderer:
 
     def render(
         self, plotter, nodes: Iterable[object], axes=None,
-        plane: str = "XY", offset: float = 0.0,
+        plane: str = "XY", offset: float = 0.0, plates: Iterable[object] = (),
     ) -> None:
-        self.update(nodes, axes, plane, offset)
+        self.update(nodes, axes, plane, offset, plates)
         return self.render_current(plotter)
 
     def render_current(self, plotter):
