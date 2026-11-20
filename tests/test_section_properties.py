@@ -190,23 +190,34 @@ def test_rounded_tube_properties_match_the_rounded_section_geometry():
 
 
 @pytest.mark.parametrize(
-    ("family", "geometry", "expected_area", "expected_j"),
+    ("family", "geometry", "sharp_area", "bends"),
     (
-        ("U Formado", {"d": 100, "bf": 50, "t": 2}, 392.0, 522.6666666667),
-        ("C Formado", {"d": 100, "bf": 50, "t": 2, "c": 10}, 432.0, 576.0),
-        ("Z Formado", {"d": 100, "bf": 50, "t": 2}, 392.0, 522.6666666667),
-        ("L Formado", {"d": 60, "bf": 50, "t": 2}, 216.0, 288.0),
-        ("Cartola Formado", {"d": 100, "bf": 60, "t": 2, "c": 10}, 544.0, 725.3333333333),
+        ("U Formado", {"d": 100, "bf": 50, "t": 2}, 392.0, 2),
+        ("C Formado", {"d": 100, "bf": 50, "t": 2, "c": 10}, 432.0, 4),
+        # Z bf extends from the outside web face; hat c from the outside web.
+        ("Z Formado", {"d": 100, "bf": 50, "t": 2}, 400.0, 2),
+        ("L Formado", {"d": 60, "bf": 50, "t": 2}, 216.0, 1),
+        ("Cartola Formado", {"d": 100, "bf": 60, "t": 2, "c": 10}, 552.0, 4),
     ),
 )
-def test_formed_profiles_use_non_overlapping_rectangular_walls(
-    family, geometry, expected_area, expected_j
-):
-    properties = calculate_section_properties(family, geometry, 7850)
+def test_formed_profiles_use_circular_bends(family, geometry, sharp_area, bends):
+    from math import pi
 
-    assert properties.area_mm2 == pytest.approx(expected_area)
-    assert properties.j_mm4 == pytest.approx(expected_j)
-    assert properties.mass_kg_m == pytest.approx(expected_area * 1e-6 * 7850)
+    # Quarter annulus replaces two intersecting rectangular strips at a bend.
+    t = geometry["t"]
+    expected_area = sharp_area - bends * (3 - 3*pi/4) * t*t
+    properties = calculate_section_properties(family, geometry, 7850)
+    assert properties.area_mm2 == pytest.approx(expected_area, rel=5e-5)
+    assert properties.j_mm4 == pytest.approx(expected_area*t*t/3, rel=5e-5)
+    assert properties.mass_kg_m == pytest.approx(expected_area * 1e-6 * 7850, rel=5e-5)
+
+
+def test_formed_u_matches_nbr6355_table_a2():
+    # U 100x50x2, r=2 mm, ABNT NBR 6355:2012, Table A.2.
+    properties = calculate_section_properties("U Formado", {"d": 100, "bf": 50, "t": 2})
+    assert properties.area_cm2 == pytest.approx(3.87, rel=.002)
+    assert properties.iy_cm4 == pytest.approx(61.59, rel=.002)
+    assert properties.iz_cm4 == pytest.approx(9.71, rel=.002)
 
 
 def test_formed_profile_axes_follow_the_section_symmetry():
@@ -216,9 +227,9 @@ def test_formed_profile_axes_follow_the_section_symmetry():
     l = calculate_section_properties("L Formado", {"d": 60, "bf": 50, "t": 2})
     hat = calculate_section_properties("Cartola Formado", {"d": 100, "bf": 60, "t": 2, "c": 10})
 
-    assert u.centroid_z_mm == pytest.approx(50.0)
-    assert c.centroid_z_mm == pytest.approx(50.0)
-    assert z.centroid_z_mm == pytest.approx(50.0)
+    assert u.centroid_z_mm == pytest.approx(0.0, abs=1e-10)
+    assert c.centroid_z_mm == pytest.approx(0.0, abs=1e-10)
+    assert z.centroid_z_mm == pytest.approx(0.0, abs=1e-10)
     assert z.iyz_mm4 != pytest.approx(0.0)
     assert l.iyz_mm4 != pytest.approx(0.0)
     assert hat.centroid_y_mm == pytest.approx(0.0)
@@ -285,3 +296,22 @@ def test_pynite_builder_adds_rigid_bar_with_coherent_finite_properties():
     )
     assert rigid_material.rho == pytest.approx(0.0)
     assert rigid.name in target.members
+
+
+@pytest.mark.parametrize("family", ["U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado"])
+def test_rounded_formed_properties_scale_without_svg_coordinate_quantization(family):
+    geometry = {"d": 100., "bf": 50., "t": 2., "c": 15.}
+    props = calculate_section_properties(family, geometry)
+    small = calculate_section_properties(family, {key: value/1000 for key, value in geometry.items()})
+    assert small.area_mm2 == pytest.approx(props.area_mm2/1e6, rel=1e-7)
+    assert small.iy_mm4 == pytest.approx(props.iy_mm4/1e12, rel=1e-7)
+
+
+def test_c_formed_rejects_overlapping_corner_bends():
+    with pytest.raises(ValueError, match="bf >= 4t"):
+        calculate_section_properties("C Formado", {"d": 100., "bf": 6., "t": 2., "c": 15.})
+
+
+def test_legacy_formed_radius_cannot_be_silently_ignored():
+    with pytest.raises(ValueError, match="raio interno r=t"):
+        calculate_section_properties("C Formado", {"d": 100., "bf": 50., "t": 2., "c": 15., "r": 4.})

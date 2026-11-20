@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+from itertools import pairwise
 from math import sqrt
 
 from osa.sections.contours import (
-    i_contour_points, l_contour_points, polygon_properties, u_contour_points, w_contour_points,
+    i_contour_points,
+    polygon_properties,
+    u_contour_points,
+    w_contour_points,
 )
 from osa.verification.elements import VerificationElement, verification_elements
 from osa.verification.restraints import restraint_lengths
@@ -233,7 +237,7 @@ def _plastic_modulus_asymmetric(points, axis: int) -> float:
         breaks = [low, *(value for value in coordinates if low < value < position), position]
         return sum(
             width_at((start + end) / 2.0) * (end - start)
-            for start, end in zip(breaks, breaks[1:])
+            for start, end in pairwise(breaks)
         )
 
     area_total = polygon_properties(points)[0]
@@ -248,7 +252,7 @@ def _plastic_modulus_asymmetric(points, axis: int) -> float:
 
     breaks = sorted({low, high, neutral_axis, *coordinates})
     modulus = 0.0
-    for start, end in zip(breaks, breaks[1:]):
+    for start, end in pairwise(breaks):
         if end <= start:
             continue
         width_1 = width_at(start + (end - start) / 4.0)
@@ -341,6 +345,36 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         _safe_round_bar_properties(member) if profile_type == "Barra Circular" else
         _u_properties(member) if profile_type == "U Laminado" else {}
     )
+    from osa.verification.cold_formed_member import FAMILIES as cold_families
+    if profile_type in cold_families:
+        from osa.verification.cold_formed_member import section as cold_section
+        try:
+            formed = cold_section(member)
+            geometry = {**member.geometry_dict(), "area": formed["Ag_cm2"],
+                        "Iy": formed["Iy_cm4"], "Iz": formed["Iz_cm4"],
+                        "Wy": formed["Wy_cm3"], "Wz": formed["Wz_cm3"],
+                        "ry": formed["ry_cm"], "rz": formed["rz_cm"], "It": formed["It_cm4"],
+                        "Iyz": formed["Iyz_cm4"], "I1": formed["I1_cm4"], "I2": formed["I2_cm4"],
+                        "alpha": formed["alpha_deg"],
+                        "r": formed["r_mm"]}
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            geometry = {}
+    if profile_type in {"Tubular Circular", "Tubular Quadrado", "Tubular Retangular"}:
+        if profile_type == "Tubular Circular":
+            from osa.verification.circular_tube import section
+        else:
+            from osa.verification.rectangular_tube import section
+        try:
+            tube = section(member)
+            geometry = {"D": tube.get("D_mm"), "b_mm": tube.get("b_mm"), "h_mm": tube.get("h_mm"),
+                        "t": tube["t_mm"], "t_mm": tube["t_mm"], "area": tube["Ag_cm2"],
+                        "Iy": tube["Iy_cm4"], "Iz": tube["Iz_cm4"],
+                        "Wy": tube["Wy_cm3"], "Wz": tube["Wz_cm3"],
+                        "Zy": tube["Zy_cm3"], "Zz": tube["Zz_cm3"],
+                        "ry": tube["ry_cm"], "rz": tube["rz_cm"], "It": tube["It_cm4"],
+                        "Cw": 0. if profile_type == "Tubular Circular" else None}
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            geometry = {}
     group_members = tuple(group.get("members", ())) if group else tuple(member_names)
     selected_result = next((
         model.verification_results.get(element.key)
@@ -382,7 +416,8 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
     material_values = model.materials.get(member.material, ())
 
     def value(key: str, scale: float = 1.0):
-        return geometry[key] * scale if key in geometry else None
+        item = geometry.get(key)
+        return item * scale if item is not None else None
 
     material = {}
     if len(material_values) >= 6:
@@ -393,10 +428,15 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
             "fy_kn_m2": material_values[4], "fu_kn_m2": material_values[5],
         }
     gross_area_cm2 = geometry.get("area")
-    net_area_cm2 = gross_area_cm2  # O modelo ainda não armazena furos ou recortes.
-    net_area_factor = 1.0  # Valor inicial conforme a rotina de referência enviada.
+    tension_parameters = (checks.get("axial_tension") or {}).get("parameters") or {}
+    explicit_connection = profile_type in cold_families or profile_type in {
+        "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado",
+        "Tubular Circular", "Tubular Quadrado", "Tubular Retangular",
+    }
+    net_area_cm2 = tension_parameters.get("An_cm2") if explicit_connection else gross_area_cm2
+    net_area_factor = tension_parameters.get("Ct") if explicit_connection else 1.0
     effective_area_cm2 = (
-        net_area_factor * net_area_cm2 if net_area_cm2 is not None else None
+        net_area_factor * net_area_cm2 if net_area_cm2 is not None and net_area_factor is not None else None
     )
     return {
         "element_name": element_name,
@@ -405,6 +445,9 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         "section": member.profile or "",
         **({"verification_summary": selected_result} if profile_type in {
             "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado",
+            "Tubular Circular",
+            "Tubular Quadrado", "Tubular Retangular",
+            *cold_families,
         } else {}),
         **({
             "w_restraint_notes": tuple(
@@ -414,8 +457,13 @@ def calculation_memory(model, member_names: tuple[str, ...]) -> dict:
         } if profile_type in {"W Laminado", "HP Laminado"} else {}),
         "material": member.material or "",
         "geometric_parameters": {
-            "b_mm": value("b_mm"), "t_mm": value("t_mm"),
+            "D_mm": value("D"),
+            "b_mm": value("b_mm"), "t_mm": value("t_mm") if profile_type not in cold_families else value("t"),
             "h_mm": value("h_mm"),
+            **({"c_mm": value("c"), "r_mm": value("r"), "Iyz_cm4": value("Iyz"),
+                "I1_cm4": value("I1"), "I2_cm4": value("I2"), "alpha_deg": value("alpha"),
+                "angle_deg": 45 if profile_type == "Z45 Formado" else 90 if profile_type == "Z90 Formado" else None}
+               if profile_type in cold_families else {}),
             "d_mm": value("d"), "bf_mm": value("bf"),
             "tw_mm": value("tw"), "tf_mm": value("tf"),
             **({"r_mm": value("r")} if profile_type in {

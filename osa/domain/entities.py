@@ -9,6 +9,8 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .local_force_inputs import BearingRegion
+
 
 @dataclass(frozen=True, slots=True)
 class Support:
@@ -115,12 +117,16 @@ class Member:
     # por uma mola rotacional equivalente; 100% libera a rotação.
     rotation_flexibility_percent: tuple[int, int, int, int, int, int] = (0,) * 6
     # Overrides used only by member verification, in native units: lengths in
-    # metres and Ct/Cb dimensionless. Missing entries retain automatic values.
+    # metres, net areas An/An0 in cm², MRD critical forces in kN and moments
+    # in kN·m; Ct/Cb dimensionless. MRD value -1 explicitly records absent mode.
     calculation_property_overrides: tuple[tuple[str, float], ...] = ()
     # References to solids subtracted from this member in detailing only.
     detail_subtractions: tuple[tuple[str, str], ...] = ()
     # Face-plane cuts that remove one protruding end, only in detailing.
     detail_end_cuts: tuple[DetailEndCut, ...] = ()
+    bearing_regions: tuple[BearingRegion, ...] = ()
+    bearing_basis: str | None = None
+    warping_restraints: tuple[str | None, str | None] = (None, None)
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)

@@ -72,6 +72,14 @@ class ProcessingPanel(QFrame):
 
     def set_stage(self, stage: str) -> None:
         keys = tuple(key for key, _text in self.steps)
+        if stage in {'second_order', 'effective_stiffness', 'reduced_stiffness'}:
+            messages = {'second_order': 'Resolvendo a análise de segunda ordem (P–Δ)',
+                        'effective_stiffness': 'Iterando a rigidez efetiva dos formados em serviço',
+                        'reduced_stiffness': 'Resolvendo os ELU com EA e EI reduzidos'}
+            self._set_step('solve', 'active')
+            self._set_step('results', 'pending')
+            self.status.setText(messages[stage] + '…')
+            return
         if stage not in keys:
             return
         active_index = keys.index(stage)

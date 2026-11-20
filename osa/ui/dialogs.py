@@ -1142,7 +1142,7 @@ class SettingsDialog(QDialog):
                 section_row.addWidget(section_material, 1)
                 page_layout.addLayout(section_row)
                 section_catalog = {
-                    "Aço": ["W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Circular", "Barra Quadrada", "Barra Retangular"],
+                    "Aço": ["W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado", "U Formado", "C Formado", "Z Formado", "Z45 Formado", "Z90 Formado", "L Formado", "Cartola Formado", "Tubular Circular", "Tubular Quadrado", "Tubular Retangular", "Barra Circular", "Barra Quadrada", "Barra Retangular"],
                     "Concreto": ["Retangular", "Circular", "Tipo L", "Tipo T", "Tipo I", "Tipo U", "Tipo +", "Retangular Vazado", "Circular Vazado"],
                     "Madeira": ["Circular", "Quadrada", "Retangular"],
                 }
@@ -1221,11 +1221,16 @@ class _ComponentDetailPreview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._segments = ()
+        self._rotation_degrees = 0
         self.setMinimumSize(140, 112)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_segments(self, segments) -> None:
         self._segments = tuple(segments or ())
+        self.update()
+
+    def set_rotation(self, degrees: int) -> None:
+        self._rotation_degrees = int(degrees) % 360
         self.update()
 
     def paintEvent(self, _event) -> None:
@@ -1245,23 +1250,28 @@ class _ComponentDetailPreview(QWidget):
         width = max(max_x - min_x, 1e-9)
         height = max(max_y - min_y, 1e-9)
         margin = 12.0
-        scale = min(
-            max(1.0, self.width() - 2 * margin) / width,
-            max(1.0, self.height() - 2 * margin) / height,
+        rotated_width, rotated_height = (
+            (height, width) if self._rotation_degrees % 180 else (width, height)
         )
+        scale = min(max(1.0, self.width() - 2 * margin) / rotated_width,
+                    max(1.0, self.height() - 2 * margin) / rotated_height)
         center_x = (min_x + max_x) / 2.0
         center_y = (min_y + max_y) / 2.0
         path = QPainterPath()
+        painter.save()
+        painter.translate(self.width() / 2.0, self.height() / 2.0)
+        painter.rotate(self._rotation_degrees)
         for start, end in self._segments:
             path.moveTo(
-                self.width() / 2.0 + (start[0] - center_x) * scale,
-                self.height() / 2.0 - (start[1] - center_y) * scale,
+                (start[0] - center_x) * scale,
+                -(start[1] - center_y) * scale,
             )
             path.lineTo(
-                self.width() / 2.0 + (end[0] - center_x) * scale,
-                self.height() / 2.0 - (end[1] - center_y) * scale,
+                (end[0] - center_x) * scale,
+                -(end[1] - center_y) * scale,
             )
         painter.drawPath(path)
+        painter.restore()
 
 
 class _ComponentDetailWorkerSignals(QObject):
@@ -1313,6 +1323,7 @@ class ComponentDetailsDialog(QDialog):
         self._groups = self._collect_component_groups()
         self._editing_group_id = str(editing_group_id) if editing_group_id else None
         self._existing_views_by_direction = {}
+        self._preview_rotations: dict[tuple[object, str], int] = {}
         if self._editing_group_id:
             for view in existing_views:
                 metadata = view.get("component_detail_group")
@@ -1322,8 +1333,30 @@ class ComponentDetailsDialog(QDialog):
             target_key = next((
                 key for key in self._groups
                 if hashlib.sha1(repr(key).encode("utf-8")).hexdigest()[:12] == self._editing_group_id
+                or any(
+                    hashlib.sha1(repr(legacy_key).encode("utf-8")).hexdigest()[:12]
+                    == self._editing_group_id
+                    for legacy_key in self._groups[key]["legacy_parameter_keys"]
+                )
+                or any(
+                    hashlib.sha1(repr(node_name).encode("utf-8")).hexdigest()[:12]
+                    == self._editing_group_id
+                    for node_name in self._groups[key]["nodes"]
+                )
             ), None)
             self._groups = ({target_key: self._groups[target_key]} if target_key is not None else {})
+            if target_key is not None:
+                for view in self._existing_views_by_direction.values():
+                    metadata = view.get("component_detail_group", {})
+                    direction_name = str(metadata.get("direction", "")).casefold()
+                    direction_key = next((
+                        direction for _key, title, direction in self._VIEW_DEFINITIONS
+                        if title.casefold() == direction_name
+                    ), None)
+                    if direction_key is not None:
+                        self._preview_rotations[(target_key, direction_key)] = int(
+                            metadata.get("preview_rotation_degrees", 0)
+                        ) % 360
         self._active_group_key = None
         self._group_views_cache = {}
         self._generation = 0
@@ -1399,22 +1432,45 @@ class ComponentDetailsDialog(QDialog):
         self._cards_grid.setContentsMargins(0, 0, 0, 0)
         self._cards_grid.setSpacing(10)
         self._cards = {}
+        self._card_rotate_buttons = {}
         for index, (key, title_text, direction_key) in enumerate(self._VIEW_DEFINITIONS):
             card = QFrame()
             card.setObjectName("componentDetailCard")
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(10, 8, 10, 8)
             card_layout.setSpacing(5)
+            card_header = QHBoxLayout()
+            card_header.setContentsMargins(0, 0, 0, 0)
+            card_header.setSpacing(6)
             checkbox = QCheckBox(title_text)
             checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
             checkbox.setEnabled(False)
             checkbox.toggled.connect(self._update_add_button)
-            card_layout.addWidget(checkbox)
+            card_header.addWidget(checkbox)
+            card_header.addStretch(1)
+            rotate_button = QToolButton(card)
+            rotate_button.setFixedSize(34, 34)
+            rotate_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            rotate_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "rotate-cw.svg")))
+            rotate_button.setIconSize(QSize(18, 18))
+            rotate_button.setToolTip("Girar a prévia em 90°")
+            rotate_button.setAccessibleName(f"Girar prévia {title_text} em 90 graus")
+            rotate_button.setEnabled(False)
+            rotate_button.setStyleSheet(
+                "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+                "QToolButton:hover { background: #eaeef2; }"
+            )
+            rotate_button.clicked.connect(
+                lambda _checked=False, direction=direction_key: self._rotate_preview(direction)
+            )
+            card_header.addWidget(rotate_button)
+            card_layout.addLayout(card_header)
             preview = _ComponentDetailPreview(card)
             card_layout.addWidget(preview, 1)
             row, column = divmod(index, 3)
             self._cards_grid.addWidget(card, row, column)
             self._cards[key] = (checkbox, preview, direction_key)
+            self._card_rotate_buttons[key] = rotate_button
         for index in range(3):
             self._cards_grid.setColumnStretch(index, 1)
         self._cards_grid.setRowStretch(0, 1)
@@ -1451,6 +1507,7 @@ class ComponentDetailsDialog(QDialog):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setAutoDefault(False)
+            button.setToolTip(group.get("members_tooltip", group["label"]))
             layout = QVBoxLayout(button)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(1)
@@ -1474,20 +1531,56 @@ class ComponentDetailsDialog(QDialog):
         groups = {}
         model = getattr(self._window, "model", None)
         display_names = getattr(model, "node_display_names", {})
+
+        def freeze(value):
+            if isinstance(value, dict):
+                return tuple(sorted((str(key), freeze(item)) for key, item in value.items()))
+            if isinstance(value, (list, tuple)):
+                return tuple(freeze(item) for item in value)
+            if isinstance(value, set):
+                return tuple(sorted((freeze(item) for item in value), key=repr))
+            if hasattr(value, "item"):
+                try:
+                    return freeze(value.item())
+                except (TypeError, ValueError):
+                    pass
+            return value
+
         for node_name, node in getattr(model, "nodes", {}).items():
             assignment = getattr(node, "component", None)
             if assignment is None or assignment.component_id != "base_plate":
                 continue
             parameters = dict(assignment.parameters)
+            full_parameter_key = tuple(sorted(
+                (str(key), freeze(value)) for key, value in parameters.items()
+            ))
+            parameter_key = tuple(
+                (key, value) for key, value in full_parameter_key
+                if key.casefold() != "plano"
+            )
             identity = str(node.name)
             display_name = str(display_names.get(node_name, "")).strip()
             label = f"{identity} · {display_name}" if display_name else identity
-            groups[str(node_name)] = {
-                "parameters": parameters,
-                "nodes": [str(node_name)],
-                "label": label,
-                "component_label": "Chapa de base/topo",
-            }
+            if parameter_key not in groups:
+                groups[parameter_key] = {
+                    "parameters": parameters,
+                    "nodes": [],
+                    "labels": [],
+                    "label": label,
+                    "component_label": "Chapa de base/topo",
+                    "legacy_parameter_keys": set(),
+                }
+            groups[parameter_key]["legacy_parameter_keys"].add(full_parameter_key)
+            groups[parameter_key]["nodes"].append(str(node_name))
+            groups[parameter_key]["labels"].append(label)
+        for group in groups.values():
+            members = group.pop("labels")
+            if len(members) > 1:
+                group["label"] = f"{members[0]} ({len(members)}x)"
+                group["component_label"] = f"Chapa de base/topo · {len(members)} nós"
+                group["members_tooltip"] = "\n".join(members)
+            else:
+                group["members_tooltip"] = members[0] if members else ""
         return groups
 
     def _select_group(self, key) -> None:
@@ -1505,6 +1598,8 @@ class ComponentDetailsDialog(QDialog):
         self.component_list.setCurrentItem(group["item"])
         for checkbox, _preview, _direction in self._cards.values():
             checkbox.setEnabled(False)
+        for button in self._card_rotate_buttons.values():
+            button.setEnabled(False)
         if key not in self._group_views_cache:
             self._loading_key = key
             self._loading_label.setText("Carregando visualização do componente…")
@@ -1538,6 +1633,8 @@ class ComponentDetailsDialog(QDialog):
     def _display_group_views(self, views) -> None:
         for name, (_checkbox, preview, direction_key) in self._cards.items():
             preview.set_segments(views[direction_key]["segments"])
+            preview.set_rotation(self._preview_rotations.get((self._active_group_key, direction_key), 0))
+            self._card_rotate_buttons[name].setEnabled(True)
         for name, (checkbox, _preview, _direction) in self._cards.items():
             if self._editing_group_id:
                 direction_name = next(
@@ -1550,6 +1647,112 @@ class ComponentDetailsDialog(QDialog):
         self._loading_label.hide()
         self._grid_host.show()
         self._update_add_button()
+
+    def _rotate_preview(self, direction_key: str) -> None:
+        if self._active_group_key is None or not self._views_ready:
+            return
+        rotation_key = (self._active_group_key, direction_key)
+        rotation = (self._preview_rotations.get(rotation_key, 0) + 90) % 360
+        self._preview_rotations[rotation_key] = rotation
+        card_key = next(
+            key for key, (_checkbox, _preview, direction) in self._cards.items()
+            if direction == direction_key
+        )
+        self._cards[card_key][1].set_rotation(rotation)
+
+    @staticmethod
+    def _rotate_xy_clockwise(point):
+        return (float(point[1]), -float(point[0]))
+
+    @classmethod
+    def _rotate_component_view_data(cls, source: dict, rotation_degrees: int) -> dict:
+        data = copy.deepcopy(source)
+        quarter_turns = (int(rotation_degrees) // 90) % 4
+        rotate = cls._rotate_xy_clockwise
+        for _ in range(quarter_turns):
+            data["segments"] = tuple(
+                (rotate(start), rotate(end)) for start, end in data.get("segments", ())
+            )
+            dimensions = []
+            for original in data.get("dimensions", ()):
+                dimension = dict(original)
+                for key in ("start", "end"):
+                    if dimension.get(key) is not None:
+                        dimension[key] = rotate(dimension[key])
+                if dimension.get("orthogonal_axis") in {"x", "y"}:
+                    dimension["orthogonal_axis"] = "y" if dimension["orthogonal_axis"] == "x" else "x"
+                dimensions.append(dimension)
+            data["dimensions"] = tuple(dimensions)
+            geometry = data.get("component_annotation_geometry")
+            if isinstance(geometry, dict):
+                geometry = dict(geometry)
+                for key in ("plate_bounds", "body_bounds"):
+                    bounds = geometry.get(key)
+                    if bounds is not None and len(bounds) == 4:
+                        x0, y0, x1, y1 = (float(value) for value in bounds)
+                        corners = [rotate(point) for point in ((x0, y0), (x0, y1), (x1, y0), (x1, y1))]
+                        geometry[key] = (
+                            min(point[0] for point in corners), min(point[1] for point in corners),
+                            max(point[0] for point in corners), max(point[1] for point in corners),
+                        )
+                if geometry.get("weld_points") is not None:
+                    geometry["weld_points"] = tuple(rotate(point) for point in geometry["weld_points"])
+                data["component_annotation_geometry"] = geometry
+            coordinate = data.get("coordinate")
+            if coordinate is not None and len(coordinate) == 3:
+                origin, right_point, up_point = coordinate
+                origin = tuple(float(value) for value in origin)
+                right = tuple(float(right_point[i]) - origin[i] for i in range(3))
+                up = tuple(float(up_point[i]) - origin[i] for i in range(3))
+                data["coordinate"] = (
+                    origin,
+                    tuple(origin[i] + up[i] for i in range(3)),
+                    tuple(origin[i] - right[i] for i in range(3)),
+                )
+        geometry = data.get("component_annotation_geometry")
+        plate_bounds = geometry.get("plate_bounds") if isinstance(geometry, dict) else None
+        if plate_bounds is not None and len(plate_bounds) == 4:
+            plate_min_x, plate_min_y = float(plate_bounds[0]), float(plate_bounds[1])
+            normalized_dimensions = []
+            for original in data.get("dimensions", ()):
+                dimension = dict(original)
+                axis = dimension.get("orthogonal_axis")
+                if axis in {"x", "y"}:
+                    offset = dimension.get("offset", (0.0, 0.0))
+                    distance = math.hypot(float(offset[0]), float(offset[1]))
+                    start = tuple(float(value) for value in dimension["start"])
+                    end = tuple(float(value) for value in dimension["end"])
+                    if axis == "x":
+                        dimension["start"] = (start[0], plate_min_y)
+                        dimension["end"] = (end[0], plate_min_y)
+                        dimension["offset"] = (0.0, -distance)
+                    else:
+                        dimension["start"] = (plate_min_x, start[1])
+                        dimension["end"] = (plate_min_x, end[1])
+                        dimension["offset"] = (-distance, 0.0)
+                normalized_dimensions.append(dimension)
+            data["dimensions"] = tuple(normalized_dimensions)
+        return data
+
+    @classmethod
+    def _rotate_existing_component_view(cls, view: dict, rotation_degrees: int) -> dict:
+        result = copy.deepcopy(view)
+        projection = result.get("projection", {})
+        data = cls._rotate_component_view_data({
+            "segments": result.get("segments", ()),
+            "dimensions": result.get("dimensions", ()),
+            "coordinate": projection.get("coordinate"),
+            "component_annotation_geometry": result.get("component_annotation_geometry"),
+        }, rotation_degrees)
+        result["segments"] = data["segments"]
+        result["dimensions"] = data["dimensions"]
+        result["component_annotation_geometry"] = data.get("component_annotation_geometry")
+        if data.get("coordinate") is not None:
+            result.setdefault("projection", {})["coordinate"] = data["coordinate"]
+        metadata = result.get("component_detail_group")
+        if isinstance(metadata, dict):
+            metadata["preview_rotation_degrees"] = int(rotation_degrees) % 360
+        return result
 
     @staticmethod
     def _basis_for_parameters(parameters):
@@ -1716,11 +1919,15 @@ class ComponentDetailsDialog(QDialog):
                     "unit": "mm", "decimal_places": 0,
                 })
             else:
-                rod_points = min((np.asarray(rod.points, dtype=float) for rod in rods),
+                local_rods = component_meshes[1:1 + len(rods)]
+                rod_points = min((np.asarray(rod.points, dtype=float) for rod in local_rods),
                                  key=lambda points: float(np.mean(points @ np.asarray(right))))
                 rod_projected = np.column_stack((rod_points @ np.asarray(right), rod_points @ np.asarray(view_up)))
-                rod_center_x = float((rod_projected[:, 0].min() + rod_projected[:, 0].max()) / 2.0)
                 rod_lower_y = float(rod_projected[:, 1].min())
+                bottom_points = rod_projected[
+                    np.isclose(rod_projected[:, 1], rod_lower_y, atol=1e-7),
+                ]
+                rod_center_x = float(bottom_points[:, 0].mean())
                 plate_lower_y = float(plate_min[1])
                 dimensions = [{
                     "start": (rod_center_x, plate_lower_y),
@@ -1780,9 +1987,29 @@ class ComponentDetailsDialog(QDialog):
         for view_slot, (key, title, direction_key) in enumerate(selected_definitions):
             preserved = self._existing_views_by_direction.get(title.casefold())
             if preserved is not None:
+                preserved_metadata = preserved.get("component_detail_group", {})
+                current_rotation = int(preserved_metadata.get("preview_rotation_degrees", 0)) % 360
+                desired_rotation = self._preview_rotations.get(
+                    (self._active_group_key, direction_key), current_rotation,
+                )
+                preserved = self._rotate_existing_component_view(
+                    preserved, (desired_rotation - current_rotation) % 360,
+                )
+                metadata = preserved.setdefault("component_detail_group", {})
+                metadata.update({
+                    "id": group_id,
+                    "parameter_key": group_id,
+                    "members": tuple(group["nodes"]),
+                    "direction": title,
+                    "offset": view_slot,
+                    "view_count": len(selected_definitions),
+                    "preview_rotation_degrees": desired_rotation,
+                })
+                preserved["detail_view_key"] = f"component:base_plate:{group_id}:{direction_key}"
                 self.result_views.append(preserved)
                 continue
-            data = generated[direction_key]
+            rotation = self._preview_rotations.get((self._active_group_key, direction_key), 0)
+            data = self._rotate_component_view_data(generated[direction_key], rotation)
             identity = existing_identity or group["label"]
             view = {
                 "name": f'{group["label"]} - {title}',
@@ -1805,6 +2032,7 @@ class ComponentDetailsDialog(QDialog):
                     "component_id": "base_plate", "parameter_key": group_id,
                     "members": tuple(group["nodes"]), "direction": title,
                     "title": identity, "identity": identity,
+                    "preview_rotation_degrees": rotation,
                     "group_position": existing_metadata.get("group_position", (0.5, 0.53)),
                     "offset": view_slot,
                     "view_count": len(selected_definitions),
@@ -3637,7 +3865,7 @@ class ProjectSheetSettingsDialog(QDialog):
         navigation.setFixedWidth(170)
         navigation.setSpacing(8)
         navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota", "Detalhe", "Elevação", "Solda"))
+        navigation.addItems(("Projeto", "Folha", "Carimbo", "Tipografia", "Cota", "Detalhe", "Corte", "Elevação", "Solda"))
         pages = QStackedWidget(self)
         pages.addWidget(self._build_project_data_settings())
         pages.addWidget(self._build_sheet_settings())
@@ -3645,6 +3873,7 @@ class ProjectSheetSettingsDialog(QDialog):
         pages.addWidget(self._build_view_settings())
         pages.addWidget(self._build_dimension_settings())
         pages.addWidget(self._build_detail_identifier_settings())
+        pages.addWidget(self._build_section_settings())
         pages.addWidget(self._build_elevation_identifier_settings())
         pages.addWidget(self._build_weld_settings())
         navigation.currentRowChanged.connect(pages.setCurrentIndex)
@@ -4390,6 +4619,67 @@ class ProjectSheetSettingsDialog(QDialog):
                 self._detail_identifier_custom_colors = list(picker.custom_colors)
                 self._set_detail_identifier_color_button(key)
 
+    def _build_section_settings(self) -> QWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Corte")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Defina a aparência dos identificadores de corte em todas as folhas do projeto.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        defaults = {"section_line_color": "#ff0000", "section_text_color": "#000000"}
+        self._section_color_values = {}
+        for key, default in defaults.items():
+            color = QColor(str(self._project_settings.get(key, default)))
+            self._section_color_values[key] = color.name(QColor.NameFormat.HexRgb) if color.isValid() else default
+        self._section_custom_colors = []
+        for value in self._project_settings.get("section_custom_colors", ()):
+            color = QColor(str(value)) if value else QColor()
+            self._section_custom_colors.append(color.name(QColor.NameFormat.HexRgb) if color.isValid() else None)
+        self._section_custom_colors = self._section_custom_colors[:_DimensionColorDialog.CUSTOM_SLOT_COUNT]
+        self._section_custom_colors.extend([None] * (_DimensionColorDialog.CUSTOM_SLOT_COUNT - len(self._section_custom_colors)))
+        self._section_color_buttons = {}
+        form = QFormLayout()
+        for key, label in (("section_line_color", "Cor das linhas"), ("section_text_color", "Cor do texto")):
+            button = QToolButton(page)
+            button.setFixedSize(34, 34)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.clicked.connect(lambda _checked=False, color_key=key: self._choose_section_color(color_key))
+            self._section_color_buttons[key] = button
+            self._set_section_color_button(key)
+            form.addRow(label, button)
+        self.section_text_height_box, self.section_text_height_spin = self._unit_input(
+            page, self._project_settings.get("section_text_height_mm", 3.0), 0.5, 100.0, decimals=1,
+        )
+        form.addRow("Altura do texto", self.section_text_height_box)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        scroll.setWidget(page)
+        return scroll
+
+    def _set_section_color_button(self, key: str) -> None:
+        color = self._section_color_values[key]
+        self._section_color_buttons[key].setStyleSheet(
+            f"QToolButton {{ background: {color}; border: 1px solid #8c959f; border-radius: 5px; }}"
+            "QToolButton:hover { border: 2px solid #0969da; }"
+        )
+
+    def _choose_section_color(self, key: str) -> None:
+        picker = _DimensionColorDialog(self._section_color_values[key], self._section_custom_colors, self)
+        if picker.exec() == QDialog.DialogCode.Accepted:
+            selected = QColor(picker.selected_color)
+            if selected.isValid():
+                self._section_color_values[key] = selected.name(QColor.NameFormat.HexRgb)
+                self._section_custom_colors = list(picker.custom_colors)
+                self._set_section_color_button(key)
+
     def _build_elevation_identifier_settings(self) -> QWidget:
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -4617,6 +4907,9 @@ class ProjectSheetSettingsDialog(QDialog):
             "detail_identifier_custom_colors": list(self._detail_identifier_custom_colors),
             "detail_identifier_leader_length_mm": self.detail_identifier_leader_length_spin.value(),
             "detail_identifier_text_height_mm": self.detail_identifier_text_height_spin.value(),
+            **self._section_color_values,
+            "section_custom_colors": list(self._section_custom_colors),
+            "section_text_height_mm": self.section_text_height_spin.value(),
             **self._weld_color_values,
             "weld_custom_colors": list(self._weld_custom_colors),
             "weld_text_height_mm": self.weld_text_height_spin.value(),

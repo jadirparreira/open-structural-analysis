@@ -170,8 +170,10 @@ def _export_node(document, node: _Node, equations: dict[str, str]) -> None:
             run.font.color.rgb = RGBColor.from_string("24292F" if node.tag == "h2" else "57606A")
     elif node.tag == "p":
         paragraph = document.add_paragraph()
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
         style = node.attributes.get("style", "")
+        centered = node.attributes.get("align", "").lower() == "center" or bool(
+            re.search(r"(?:^|;)\s*text-align\s*:\s*center\b", style, re.IGNORECASE))
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if centered else WD_ALIGN_PARAGRAPH.LEFT
         bold = bool(re.search(r"(?:^|;)\s*font-weight\s*:\s*(?:bold|[6-9]00)\b", style, re.IGNORECASE))
         _append_inline(paragraph, node.children, equations, bold=bold)
     elif node.tag == "table":
@@ -225,7 +227,7 @@ def export_calculation_memorial_docx(
     normal_style.font.color.rgb = RGBColor.from_string("57606A")
     normal_style._element.rPr.rFonts.set(qn("w:eastAsia"), "Arial")
     document.core_properties.title = "Memorial de cálculo de elemento estrutural"
-    document.core_properties.subject = "Verificações estruturais conforme ABNT NBR 8800"
+    document.core_properties.subject = "Verificações estruturais conforme normas brasileiras"
     for child in parser.root.children:
         if isinstance(child, _Node):
             _export_node(document, child, equation_latex)

@@ -115,6 +115,25 @@ class ModelBuilder:
                 source.materials[member.material][3] / 9.80665e-3,
                 mirror_z=member.section_mirrored,
             )
+            # The section supplied to PyNite uses principal inertias, so its
+            # local axes must be aligned with the corresponding principal axes.
+            principal_angle = properties.principal_axis_angle_deg
+            if abs(properties.i_major_mm4 - properties.i_minor_mm4) <= 1e-10 * properties.i_major_mm4:
+                principal_angle = 0.0
+            if abs(principal_angle) <= 1e-9:
+                principal_angle = 0.0
+            releases = list(member.releases)
+            for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
+                releases[index] = releases[index] or percent >= 100
+            if abs(principal_angle) > 1e-9:
+                asymmetric_releases = any(releases[a] != releases[b] for a, b in
+                                          ((2, 4), (3, 5), (8, 10), (9, 11)))
+                semi_rigid_bending = any(0 < value < 100 for value in member.rotation_flexibility_percent[2:])
+                if asymmetric_releases or semi_rigid_bending:
+                    raise ValueError(
+                        f"A barra '{member.name}' possui eixos principais inclinados: liberações "
+                        "assimétricas ou ligações semirrígidas de flexão ainda não são suportadas."
+                    )
             section_name = f"section::{member.name}"
             target.add_section(
                 section_name,
@@ -127,16 +146,14 @@ class ModelBuilder:
                 properties.i_minor_mm4 * 1e-12,
                 properties.j_mm4 * 1e-12,
             )
-            releases = list(member.releases)
-            for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
-                releases[index] = releases[index] or percent >= 100
             stations = self._mesh_stations(
                 source, member.start_node, member.end_node, plate_node_names, plate_mesh.nodes,
                 member.name in supported_bars,
             )
             self._add_member_segments(
                 target, source, member.name, stations, member.material, section_name,
-                member.rotation, releases, target._osa_member_segments,
+                member.rotation + principal_angle, releases, target._osa_member_segments,
+                principal_angle=principal_angle,
             )
         for rigid in source.rigid_bars.values():
             properties = calculate_rigid_bar_properties(source, rigid)
@@ -195,12 +212,14 @@ class ModelBuilder:
         return tuple(ordered)
 
     @staticmethod
-    def _add_member_segments(target, source, original_name, stations, material, section, rotation, releases, mapping):
+    def _add_member_segments(target, source, original_name, stations, material, section, rotation, releases, mapping,
+                             principal_angle=0.0):
         rows = []
         for index, ((start_ratio, start_node), (end_ratio, end_node)) in enumerate(pairwise(stations)):
             name = original_name if index == 0 else f"{original_name}::FE{index + 1}"
             target.add_member(name, start_node, end_node, material, section)
             analysis_member = target.members[name]
+            analysis_member._osa_principal_angle = principal_angle
             member = source.bars.get(original_name)
             if member is not None:
                 basis = member_basis(source.nodes[member.start_node], source.nodes[member.end_node], rotation)

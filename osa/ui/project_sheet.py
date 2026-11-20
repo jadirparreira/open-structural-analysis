@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QTimer, Signal
 from PySide6.QtGui import (
-    QCursor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPicture,
+    QBrush, QCursor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPicture,
     QPixmap, QRegion, QTextCharFormat, QTextCursor, QTextDocument, QTextBlockFormat, QTransform,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -746,6 +746,15 @@ class ProjectSheetElevationIdentifierPanel(QFrame):
         self.raise_()
 
 
+class ProjectSheetSectionPanel(ProjectSheetDetailIdentifierPanel):
+    """Inspector for a section cut placed on a project sheet."""
+
+    def __init__(self, window) -> None:
+        super().__init__(window)
+        self.findChild(QLabel, "propertyTitle").setText("Corte")
+        self.identity_input.setAccessibleName("Identidade do corte")
+
+
 def default_project_sheet_settings(sheet_name: str) -> dict:
     sheet_number, separator, title = sheet_name.partition(" - ")
     if not separator:
@@ -828,6 +837,12 @@ def default_project_settings() -> dict:
         "elevation_identifier_text_height_mm": 3.0,
         "elevation_identifier_direction_snap_degrees": 45.0,
         "elevation_identifier_custom_colors": [],
+        "section_line_color": "#ff0000",
+        "section_text_color": "#000000",
+        "section_text_height_mm": 3.0,
+        "section_arrow_length_mm": 7.0,
+        "section_arrow_width_mm": 5.0,
+        "section_custom_colors": [],
     }
 
 
@@ -838,7 +853,9 @@ class ProjectSheetWorkspace(QWidget):
     identification_selection_changed = Signal(object)
     detail_identifier_selection_changed = Signal(object)
     elevation_identifier_selection_changed = Signal(object)
+    section_selection_changed = Signal(object)
     remove_view_requested = Signal(int)
+    remove_component_detail_group_requested = Signal(str)
     layout_changed = Signal()
     element_identification_requested = Signal(int, str, object)
     identification_finished = Signal(bool)
@@ -848,6 +865,8 @@ class ProjectSheetWorkspace(QWidget):
     dimension_step_changed = Signal(int)
     detail_identifier_finished = Signal(bool)
     detail_identifier_step_changed = Signal(int)
+    section_finished = Signal(bool)
+    section_step_changed = Signal(int)
     elevation_identifier_finished = Signal(bool)
     elevation_identifier_step_changed = Signal(int)
     element_visibility_finished = Signal(bool)
@@ -932,6 +951,7 @@ class ProjectSheetWorkspace(QWidget):
         self._selected_identification_indices: set[int] = set()
         self._selected_detail_identifier: tuple[int, int] | None = None
         self._selected_elevation_identifier: tuple[int, int] | None = None
+        self._selected_section: tuple[int, int] | None = None
         self._view_hit_rects: dict[int, QRectF] = {}
         self._view_geometry_bounds: dict[int, QRectF] = {}
         self._view_content_bounds: dict[int, QRectF] = {}
@@ -949,6 +969,8 @@ class ProjectSheetWorkspace(QWidget):
         self._identification_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._detail_identifier_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._detail_identifier_handle_hit_rects: dict[tuple[int, int, str], QRectF] = {}
+        self._section_hit_rects: dict[tuple[int, int], QRectF] = {}
+        self._section_handle_hit_rects: dict[tuple[int, int, str], QRectF] = {}
         self._elevation_identifier_hit_rects: dict[tuple[int, int], QRectF] = {}
         self._elevation_identifier_bounds: dict[tuple[int, int], QRectF] = {}
         self._view_draw_data: dict[int, tuple[float, float, float, float, float]] = {}
@@ -969,6 +991,12 @@ class ProjectSheetWorkspace(QWidget):
         self._selected_dimension: tuple[int, int] | None = None
         self._identification_mode = False
         self._detail_identifier_mode = False
+        self._section_mode = False
+        self._section_view_index: int | None = None
+        self._section_start: tuple[float, float] | None = None
+        self._section_end: tuple[float, float] | None = None
+        self._section_direction: int | None = None
+        self._section_hover_projected: tuple[float, float] | None = None
         self._detail_identifier_view_index: int | None = None
         self._detail_identifier_center: tuple[float, float] | None = None
         self._detail_identifier_hover_projected: tuple[float, float] | None = None
@@ -1026,6 +1054,8 @@ class ProjectSheetWorkspace(QWidget):
         self._drag_identification_index: int | None = None
         self._drag_detail_identifier: tuple[int, int] | None = None
         self._drag_detail_identifier_handle: tuple[int, int, str] | None = None
+        self._drag_section: tuple[int, int] | None = None
+        self._drag_section_handle: tuple[int, int, str] | None = None
         self._drag_elevation_identifier: tuple[int, int] | None = None
         self._drag_elevation_identifier_bounds: QRectF | None = None
         self._drag_identification_indices: tuple[int, ...] = ()
@@ -1122,6 +1152,9 @@ class ProjectSheetWorkspace(QWidget):
         if self._detail_identifier_mode:
             self.set_detail_identifier_mode(False)
             self.detail_identifier_finished.emit(True)
+        if self._section_mode:
+            self.set_section_mode(False)
+            self.section_finished.emit(True)
         if self._elevation_identifier_mode:
             self.set_elevation_identifier_mode(False)
             self.elevation_identifier_finished.emit(True)
@@ -1134,15 +1167,28 @@ class ProjectSheetWorkspace(QWidget):
         self._selected_view_title_index = None
         self._selected_axis_endpoints.clear()
         if clear_selection or (
+            self._selected_component_detail_group is not None
+            and not any(
+                str((view.get("component_detail_group") or {}).get("id"))
+                == self._selected_component_detail_group
+                for view in self._sheet_views
+            )
+        ):
+            self._selected_component_detail_group = None
+            self._drag_component_detail_group = None
+            self._drag_component_detail_label = None
+        if clear_selection or (
             self._selected_view_index is not None
             and self._selected_view_index >= len(self._sheet_views)
         ):
             self._selected_view_index = None
             self._selected_detail_identifier = None
+            self._selected_section = None
             self._selected_elevation_identifier = None
             self._selected_identification_index = None
             self._selected_identification_indices.clear()
             self.detail_identifier_selection_changed.emit(None)
+            self.section_selection_changed.emit(None)
             self.elevation_identifier_selection_changed.emit(None)
             self.identification_selection_changed.emit(None)
             self.selection_changed.emit(None)
@@ -1183,6 +1229,7 @@ class ProjectSheetWorkspace(QWidget):
             self._dimension_mode = False
             self._identification_mode = False
             self._detail_identifier_mode = False
+            self._section_mode = False
             self._elevation_identifier_mode = False
             self._element_visibility_mode = None
         self.setCursor(QCursor(Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor))
@@ -1208,6 +1255,7 @@ class ProjectSheetWorkspace(QWidget):
             self._dimension_mode = False
             self._identification_mode = False
             self._detail_identifier_mode = False
+            self._section_mode = False
             self._elevation_identifier_mode = False
             self._element_visibility_mode = None
         self.setCursor(QCursor(Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor))
@@ -1319,18 +1367,24 @@ class ProjectSheetWorkspace(QWidget):
     def select_view(self, index: int | None) -> None:
         if index is not None and not 0 <= index < len(self._sheet_views):
             index = None
+        had_group_selection = self._selected_component_detail_group is not None
+        if index is not None:
+            self._selected_component_detail_group = None
         appearance_changed = (
             index != self._selected_view_index
             or bool(self._selected_identification_indices)
             or self._selected_identification_index is not None
+            or had_group_selection
         )
         if index != self._selected_view_index:
             self._selected_dimension = None
             self._selected_detail_identifier = None
+            self._selected_section = None
             self._selected_elevation_identifier = None
             self._selected_view_title_index = None
             self._selected_axis_endpoints.clear()
             self.detail_identifier_selection_changed.emit(None)
+            self.section_selection_changed.emit(None)
             self.elevation_identifier_selection_changed.emit(None)
         self._selected_view_index = index
         self._selected_identification_index = None
@@ -1518,6 +1572,23 @@ class ProjectSheetWorkspace(QWidget):
         self.layout_changed.emit()
         return True
 
+    def delete_selected_section(self) -> bool:
+        selected = self._selected_section
+        if selected is None:
+            return False
+        view_index, section_index = selected
+        if not 0 <= view_index < len(self._sheet_views):
+            return False
+        sections = self._sheet_views[view_index].get("sections", [])
+        if not 0 <= section_index < len(sections):
+            return False
+        sections.pop(section_index)
+        self._selected_section = None
+        self.section_selection_changed.emit(None)
+        self.update()
+        self.layout_changed.emit()
+        return True
+
     def delete_selected_elevation_identifier(self) -> bool:
         selected = self._selected_elevation_identifier
         if selected is None:
@@ -1559,6 +1630,7 @@ class ProjectSheetWorkspace(QWidget):
         self._member_break_mode = False
         self._dimension_mode = False
         self._detail_identifier_mode = False
+        self._section_mode = False
         self._elevation_identifier_mode = False
         self._element_visibility_mode = None
         self._identification_mode = bool(active)
@@ -1590,6 +1662,7 @@ class ProjectSheetWorkspace(QWidget):
         self._dimension_snap_kind = None
         self._identification_mode = False
         self._detail_identifier_mode = False
+        self._section_mode = False
         self._elevation_identifier_mode = False
         self._element_visibility_mode = None
         self._hover_owners.clear()
@@ -1607,6 +1680,7 @@ class ProjectSheetWorkspace(QWidget):
         self._elevation_identifier_mode = False
         self._element_visibility_mode = None
         self._detail_identifier_mode = bool(active)
+        self._section_mode = False
         self._detail_identifier_view_index = None
         self._detail_identifier_center = None
         self._detail_identifier_hover_projected = None
@@ -1620,11 +1694,30 @@ class ProjectSheetWorkspace(QWidget):
             self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update()
 
+    def set_section_mode(self, active: bool) -> None:
+        self._member_break_mode = False
+        self._dimension_mode = False
+        self._identification_mode = False
+        self._detail_identifier_mode = False
+        self._elevation_identifier_mode = False
+        self._element_visibility_mode = None
+        self._section_mode = bool(active)
+        self._section_view_index = None
+        self._section_start = None
+        self._section_end = None
+        self._section_direction = None
+        self._section_hover_projected = None
+        self.setCursor(QCursor(Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor))
+        if active:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.update()
+
     def set_elevation_identifier_mode(self, active: bool) -> None:
         self._member_break_mode = False
         self._dimension_mode = False
         self._identification_mode = False
         self._detail_identifier_mode = False
+        self._section_mode = False
         self._element_visibility_mode = None
         self._elevation_identifier_mode = bool(active)
         self._elevation_identifier_view_index = None
@@ -1746,6 +1839,79 @@ class ProjectSheetWorkspace(QWidget):
             number += 1
         return f"DET {self._alphabetic_detail_suffix(number)}"
 
+    def _next_section_name(self) -> str:
+        used = set()
+        for view in self._sheet_views:
+            for section in view.get("sections", ()):
+                if isinstance(section, dict):
+                    used.add(str(section.get("name", "")).strip().upper())
+        number = 1
+        while self._alphabetic_detail_suffix(number) in used:
+            number += 1
+        return self._alphabetic_detail_suffix(number)
+
+    @staticmethod
+    def _snap_section_endpoint(start, end):
+        dx, dy = float(end[0]) - float(start[0]), float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            return tuple(end)
+        angle = round(math.atan2(dy, dx) / (math.pi / 4.0)) * (math.pi / 4.0)
+        return (float(start[0]) + math.cos(angle) * length,
+                float(start[1]) + math.sin(angle) * length)
+
+    def _section_click(self, position: QPointF) -> None:
+        view_index = self._section_view_index
+        if view_index is None:
+            view_hit = next((index for index, rect in reversed(tuple(self._view_hit_rects.items()))
+                             if rect.contains(position)), None)
+            if view_hit is not None:
+                self._section_view_index = view_hit
+                self.select_view(view_hit)
+                self.section_step_changed.emit(1)
+            self.update()
+            return
+        if not 0 <= view_index < len(self._sheet_views):
+            self._section_view_index = None
+            return
+        snap = self._dimension_snap_at(position, view_index)
+        projected = snap[2] if snap is not None else self._projected_point_at(view_index, position)
+        if projected is None:
+            return
+        projected = (float(projected[0]), float(projected[1]))
+        if self._section_start is None:
+            self._section_start = projected
+            self.section_step_changed.emit(2)
+        elif self._section_end is None:
+            endpoint = self._snap_section_endpoint(self._section_start, projected)
+            if math.dist(self._section_start, endpoint) <= 1e-9:
+                return
+            self._section_end = endpoint
+            self._section_direction = 1
+            self.section_step_changed.emit(4)
+        else:
+            start, end = self._section_start, self._section_end
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            side = -dy * (projected[0] - (start[0] + end[0]) / 2.0) + dx * (projected[1] - (start[1] + end[1]) / 2.0)
+            if abs(side) <= 1e-9:
+                return
+            view = self._sheet_views[view_index]
+            view.setdefault("sections", []).append({
+                "name": self._next_section_name(), "start": start, "end": end,
+                "direction": 1 if side > 0 else -1,
+            })
+            self._section_start = self._section_end = None
+            self._section_direction = None
+            self.section_step_changed.emit(1)
+            self.layout_changed.emit()
+        self.update()
+
+    def _finish_section_mode(self, canceled: bool) -> None:
+        if not self._section_mode:
+            return
+        self.set_section_mode(False)
+        self.section_finished.emit(canceled)
+
     def _detail_identifier_click(self, position: QPointF) -> None:
         view_index = self._detail_identifier_view_index
         if view_index is None:
@@ -1819,6 +1985,7 @@ class ProjectSheetWorkspace(QWidget):
         self._dimension_mode = False
         self._identification_mode = False
         self._detail_identifier_mode = False
+        self._section_mode = False
         self._elevation_identifier_mode = False
         self._element_visibility_mode = mode
         self._element_visibility_pending.clear()
@@ -2322,6 +2489,8 @@ class ProjectSheetWorkspace(QWidget):
             self._identification_hit_rects = {}
             self._detail_identifier_hit_rects = {}
             self._detail_identifier_handle_hit_rects = {}
+            self._section_hit_rects = {}
+            self._section_handle_hit_rects = {}
             self._elevation_identifier_hit_rects = {}
             self._elevation_identifier_bounds = {}
             self._axis_endpoint_hit_rects = {}
@@ -2351,6 +2520,8 @@ class ProjectSheetWorkspace(QWidget):
         self._identification_hit_rects = {}
         self._detail_identifier_hit_rects = {}
         self._detail_identifier_handle_hit_rects = {}
+        self._section_hit_rects = {}
+        self._section_handle_hit_rects = {}
         self._elevation_identifier_hit_rects = {}
         self._elevation_identifier_bounds = {}
         self._dimension_text_hit_rects = {}
@@ -2673,6 +2844,30 @@ class ProjectSheetWorkspace(QWidget):
                 )
                 if identifier_bounds is not None:
                     view_bounds = view_bounds.united(identifier_bounds)
+            for section_index, section in enumerate(view.get("sections", ())):
+                if not isinstance(section, dict):
+                    continue
+                section_bounds = self._draw_section(painter, index, section, section_index)
+                if section_bounds is not None:
+                    view_bounds = view_bounds.united(section_bounds)
+            if (self._section_mode and self._section_view_index == index
+                    and self._section_start is not None and self._section_end is None
+                    and self._section_hover_projected is not None):
+                draw_data = self._view_draw_data.get(index)
+                if draw_data is not None and draw_data[4] > 1e-12:
+                    vx, vy, tx, ty, model_to_pixels = draw_data
+                    a, b = self._section_start, self._section_hover_projected
+                    start_screen = QPointF(tx + (a[0] - vx) * model_to_pixels,
+                                           ty - (a[1] - vy) * model_to_pixels)
+                    end_screen = QPointF(tx + (b[0] - vx) * model_to_pixels,
+                                         ty - (b[1] - vy) * model_to_pixels)
+                    preview_pen = QPen(QColor(str(self._project_settings.get("section_line_color", "#ff0000"))), 1.0)
+                    preview_pen.setCosmetic(True)
+                    preview_pen.setStyle(Qt.PenStyle.DashLine)
+                    painter.save()
+                    painter.setPen(preview_pen)
+                    painter.drawLine(start_screen, end_screen)
+                    painter.restore()
             for identifier_index, identifier in enumerate(view.get("elevation_identifiers", ())):
                 if not isinstance(identifier, dict):
                     continue
@@ -2722,6 +2917,14 @@ class ProjectSheetWorkspace(QWidget):
                         round(self._detail_identifier_snap_screen.y() - symbol.height() / 2),
                         symbol,
                     )
+            if (self._section_mode and self._section_view_index == index
+                    and self._section_start is not None and self._section_end is not None
+                    and self._section_direction is not None):
+                preview = {"name": self._next_section_name(), "start": self._section_start,
+                           "end": self._section_end, "direction": self._section_direction}
+                section_bounds = self._draw_section(painter, index, preview, None)
+                if section_bounds is not None:
+                    view_bounds = view_bounds.united(section_bounds)
             if hasattr(self, "weld_tool"):
                 weld_bounds = self.weld_tool.draw(painter, index)
                 if not weld_bounds.isEmpty():
@@ -3663,6 +3866,116 @@ class ProjectSheetWorkspace(QWidget):
         painter.restore()
         return bounds.adjusted(-2.0, -2.0, 2.0, 2.0)
 
+    def _draw_section(self, painter: QPainter, view_index: int, section: dict,
+                      section_index: int | None) -> QRectF | None:
+        draw_data = self._view_draw_data.get(view_index)
+        if draw_data is None or draw_data[4] <= 1e-12:
+            return None
+        try:
+            start = tuple(float(v) for v in section["start"])
+            end = tuple(float(v) for v in section["end"])
+            direction = 1 if int(section.get("direction", 1)) >= 0 else -1
+        except (KeyError, TypeError, ValueError):
+            return None
+        vx, vy, tx, ty, model_to_pixels = draw_data
+        def screen(point):
+            return QPointF(tx + (point[0] - vx) * model_to_pixels,
+                           ty - (point[1] - vy) * model_to_pixels)
+        first, second = screen(start), screen(end)
+        dx, dy = second.x() - first.x(), second.y() - first.y()
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return None
+        # Project-space positive side is visually upward for a horizontal cut.
+        nx, ny = dy / length, -dx / length
+        nx *= direction
+        ny *= direction
+        arrow_length = max(1.0, float(self._project_settings.get("section_arrow_length_mm", 7.0))
+                           * 0.5 * self._sheet_pixels_per_mm)
+        half_width = max(1.5, float(self._project_settings.get("section_arrow_width_mm", 5.0)) * self._sheet_pixels_per_mm / 2.0)
+        text_height = max(0.5, float(self._project_settings.get("section_text_height_mm", 3.0)))
+        font = QFont(painter.font())
+        font.setPixelSize(max(1, round(text_height * self._sheet_pixels_per_mm)))
+        metrics = QFontMetrics(font)
+        name = str(section.get("name", "A"))
+        line_pen = QPen(QColor(str(self._project_settings.get("section_line_color", "#ff0000"))), 1.0)
+        line_pen.setCosmetic(True)
+        center_pen = QPen(line_pen)
+        center_pen.setStyle(Qt.PenStyle.DashLine)
+        hatch_brush = QBrush(QColor(str(self._project_settings.get("section_line_color", "#ff0000"))),
+                             Qt.BrushStyle.BDiagPattern)
+        text_color = QColor(str(self._project_settings.get("section_text_color", "#000000")))
+        painter.save()
+        painter.setPen(center_pen)
+        painter.drawLine(first, second)
+        painter.setPen(line_pen)
+        painter.setBrush(hatch_brush)
+        arrow_bounds = []
+        text_rects = []
+        for base in (first, second):
+            tip = QPointF(base.x() + nx * arrow_length, base.y() + ny * arrow_length)
+            left = QPointF(base.x() + dx / length * half_width, base.y() + dy / length * half_width)
+            right = QPointF(base.x() - dx / length * half_width, base.y() - dy / length * half_width)
+            path = QPainterPath(tip)
+            path.lineTo(left)
+            path.lineTo(right)
+            path.closeSubpath()
+            painter.drawPath(path)
+            arrow_bounds.append(
+                QRectF(tip, left).united(QRectF(tip, right)).adjusted(-2.0, -2.0, 2.0, 2.0)
+            )
+            text_gap = 2.0 * self._sheet_pixels_per_mm
+            text_center = QPointF(base.x() - nx * (metrics.height() / 2 + text_gap),
+                                  base.y() - ny * (metrics.height() / 2 + text_gap))
+            text_width, text_height_pixels = metrics.horizontalAdvance(name), metrics.height()
+            angle = math.degrees(math.atan2(dy, dx))
+            if angle > 90.0:
+                angle -= 180.0
+            elif angle < -90.0:
+                angle += 180.0
+            angle_radians = math.radians(angle)
+            bounds_width = abs(math.cos(angle_radians)) * text_width + abs(math.sin(angle_radians)) * text_height_pixels
+            bounds_height = abs(math.sin(angle_radians)) * text_width + abs(math.cos(angle_radians)) * text_height_pixels
+            text_rect = QRectF(text_center.x() - bounds_width / 2.0,
+                               text_center.y() - bounds_height / 2.0,
+                               bounds_width, bounds_height)
+            text_rects.append(text_rect)
+            painter.save()
+            painter.translate(text_center)
+            painter.rotate(angle)
+            painter.setPen(text_color)
+            painter.setFont(font)
+            painter.drawText(QRectF(-text_width / 2.0, -text_height_pixels / 2.0,
+                                    text_width, text_height_pixels),
+                             Qt.AlignmentFlag.AlignCenter, name)
+            painter.restore()
+            painter.setPen(line_pen)
+        bounds = QRectF(first, second).normalized()
+        for arrow_bound in arrow_bounds:
+            bounds = bounds.united(arrow_bound)
+        for rect in text_rects:
+            bounds = bounds.united(rect)
+        if section_index is not None:
+            key = (view_index, section_index)
+            self._section_hit_rects[key] = bounds.adjusted(-5, -5, 5, 5)
+            if self._selected_section == key:
+                frame_pen = QPen(QColor("#0969da"), 1.5)
+                frame_pen.setCosmetic(True)
+                painter.setPen(frame_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                frame = bounds.adjusted(-5, -5, 5, 5)
+                painter.drawRect(frame)
+                radius, hit_radius = 4.0, 9.0
+                for handle, point in (("start", first), ("end", second)):
+                    painter.setBrush(QColor("#ffffff"))
+                    painter.drawEllipse(point, radius, radius)
+                    self._section_handle_hit_rects[(view_index, section_index, handle)] = QRectF(
+                        point.x() - hit_radius, point.y() - hit_radius,
+                        hit_radius * 2, hit_radius * 2)
+                bounds = bounds.united(frame)
+        painter.restore()
+        return bounds.adjusted(-2, -2, 2, 2)
+
     def _draw_elevation_identifier(
         self, painter: QPainter, view_index: int, identifier: dict,
         identifier_index: int | None,
@@ -4277,6 +4590,7 @@ class ProjectSheetWorkspace(QWidget):
             self._identification_mode = False
             self._element_visibility_mode = None
             self._detail_identifier_mode = False
+            self._section_mode = False
             self._elevation_identifier_mode = False
             self.select_view(None)
             self.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -5132,7 +5446,7 @@ class ProjectSheetWorkspace(QWidget):
             self._ensure_navigation_geometry()
         if event.button() == Qt.MouseButton.LeftButton and not any((
             self._annotation_mode, self._dimension_mode, self._identification_mode,
-            self._detail_identifier_mode, self._elevation_identifier_mode,
+            self._detail_identifier_mode, self._section_mode, self._elevation_identifier_mode,
             self._element_visibility_mode, self._member_break_mode,
         )):
             for (vi, ii), (handle, width, height) in self._identification_resize_handles.items():
@@ -5158,7 +5472,7 @@ class ProjectSheetWorkspace(QWidget):
                 event.accept()
                 return
             if not any((self._annotation_mode, self._dimension_mode, self._identification_mode,
-                        self._detail_identifier_mode, self._elevation_identifier_mode, self._element_visibility_mode)):
+                        self._detail_identifier_mode, self._section_mode, self._elevation_identifier_mode, self._element_visibility_mode)):
                 hit = self._member_break_at(event.position())
                 self._selected_member_break = hit
                 if hit is not None:
@@ -5183,7 +5497,7 @@ class ProjectSheetWorkspace(QWidget):
             table_hit = next((index for index, rect in reversed(tuple(self._sheet_table_hit_rects.items()))
                               if rect.contains(event.position())), None)
             if table_hit is not None and not any((self._dimension_mode, self._identification_mode,
-                                                 self._detail_identifier_mode, self._elevation_identifier_mode,
+            self._detail_identifier_mode, self._section_mode, self._elevation_identifier_mode,
                                                  self._element_visibility_mode)):
                 self._selected_sheet_table = table_hit
                 self._selected_sheet_text = None
@@ -5274,6 +5588,10 @@ class ProjectSheetWorkspace(QWidget):
                 self._detail_identifier_click(event.position())
                 event.accept()
                 return
+            if self._section_mode:
+                self._section_click(event.position())
+                event.accept()
+                return
             if self._elevation_identifier_mode:
                 self._elevation_identifier_click(event.position(), event.modifiers())
                 event.accept()
@@ -5333,9 +5651,46 @@ class ProjectSheetWorkspace(QWidget):
                 return
             self._selected_detail_identifier = None
             self.detail_identifier_selection_changed.emit(None)
+            self._selected_section = None
+            self.section_selection_changed.emit(None)
             self._selected_elevation_identifier = None
             self.elevation_identifier_selection_changed.emit(None)
             selected_view = self._selected_view_index
+            section_handle_hit = next((
+                key for key, rect in reversed(tuple(self._section_handle_hit_rects.items()))
+                if rect.contains(event.position())
+            ), None)
+            if section_handle_hit is not None:
+                view_index, section_index, _handle = section_handle_hit
+                self.select_view(view_index)
+                self._selected_section = (view_index, section_index)
+                self.section_selection_changed.emit(
+                    self._sheet_views[view_index].get("sections", ())[section_index]
+                )
+                self._drag_section_handle = section_handle_hit
+                self._drag_position = event.position()
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.update()
+                event.accept()
+                return
+            section_hit = next((
+                key for key, rect in reversed(tuple(self._section_hit_rects.items()))
+                if rect.contains(event.position())
+            ), None)
+            if section_hit is not None:
+                self.select_view(section_hit[0])
+                self._selected_section = section_hit
+                self.section_selection_changed.emit(
+                    self._sheet_views[section_hit[0]].get("sections", ())[section_hit[1]]
+                )
+                self._drag_section = section_hit
+                self._drag_position = event.position()
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self.update()
+                event.accept()
+                return
             dimension_endpoint_hit = next((
                 key for key, rect in reversed(tuple(self._dimension_endpoint_hit_rects.items()))
                 if key[0] == selected_view and rect.contains(event.position())
@@ -5896,7 +6251,7 @@ class ProjectSheetWorkspace(QWidget):
         if (
             self._dimension_mode or self._identification_mode
             or self._element_visibility_mode or self._detail_identifier_mode
-            or self._elevation_identifier_mode
+            or self._section_mode or self._elevation_identifier_mode
         ):
             self._ensure_navigation_geometry()
         if self._detail_identifier_mode:
@@ -5933,6 +6288,24 @@ class ProjectSheetWorkspace(QWidget):
                 Qt.CursorShape.PointingHandCursor if snap is not None
                 else Qt.CursorShape.CrossCursor
             ))
+            self.update()
+            event.accept()
+            return
+        if self._section_mode:
+            view_index = self._section_view_index
+            projected = None
+            if view_index is not None:
+                snap = self._dimension_snap_at(event.position(), view_index)
+                projected = snap[2] if snap is not None else self._projected_point_at(view_index, event.position())
+            if projected is not None:
+                projected = tuple(float(value) for value in projected)
+                if self._section_start is not None and self._section_end is None:
+                    projected = self._snap_section_endpoint(self._section_start, projected)
+                    self._section_hover_projected = projected
+                elif self._section_start is not None and self._section_end is not None:
+                    dx, dy = self._section_end[0] - self._section_start[0], self._section_end[1] - self._section_start[1]
+                    side = -dy * (projected[0] - (self._section_start[0] + self._section_end[0]) / 2.0) + dx * (projected[1] - (self._section_start[1] + self._section_end[1]) / 2.0)
+                    self._section_direction = 1 if side >= 0 else -1
             self.update()
             event.accept()
             return
@@ -6131,6 +6504,37 @@ class ProjectSheetWorkspace(QWidget):
                     QRectF(next_frame) if next_frame is not None else None
                 )
             self._update_annotation_regions(*dirty_regions)
+            event.accept()
+            return
+        if self._drag_section is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            view_index, section_index = self._drag_section
+            draw_data = self._view_draw_data.get(view_index)
+            sections = self._sheet_views[view_index].get("sections", ()) if view_index < len(self._sheet_views) else ()
+            if draw_data is not None and draw_data[4] > 1e-12 and section_index < len(sections):
+                section = sections[section_index]
+                delta = event.position() - self._drag_position
+                dx, dy = delta.x() / draw_data[4], -delta.y() / draw_data[4]
+                section["start"] = (section["start"][0] + dx, section["start"][1] + dy)
+                section["end"] = (section["end"][0] + dx, section["end"][1] + dy)
+                self._drag_position = event.position()
+                self.update()
+            event.accept()
+            return
+        if self._drag_section_handle is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            view_index, section_index, handle_name = self._drag_section_handle
+            if 0 <= view_index < len(self._sheet_views):
+                sections = self._sheet_views[view_index].get("sections", ())
+                if 0 <= section_index < len(sections):
+                    snap = self._dimension_snap_at(event.position(), view_index)
+                    candidate = snap[2] if snap is not None else self._projected_point_at(view_index, event.position())
+                    if candidate is not None:
+                        section = sections[section_index]
+                        other = section["end"] if handle_name == "start" else section["start"]
+                        snapped = self._snap_section_endpoint(other, candidate)
+                        if math.dist(other, snapped) > 1e-9:
+                            section[handle_name] = snapped
+                            self._drag_position = event.position()
+                            self.update()
             event.accept()
             return
         if self._drag_detail_identifier is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -6488,6 +6892,22 @@ class ProjectSheetWorkspace(QWidget):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_section is not None:
+            self._drag_section = None
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_section_handle is not None:
+            self._drag_section_handle = None
+            self._drag_position = None
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+            self.update()
+            self.layout_changed.emit()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._drag_identification_resize is not None:
             self._drag_identification_resize = None
             self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
@@ -6723,6 +7143,12 @@ class ProjectSheetWorkspace(QWidget):
             self._finish_detail_identifier_mode(event.key() == Qt.Key.Key_Escape)
             event.accept()
             return
+        if self._section_mode and event.key() in (
+            Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
+        ):
+            self._finish_section_mode(event.key() == Qt.Key.Key_Escape)
+            event.accept()
+            return
         if self._elevation_identifier_mode and event.key() in (
             Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape,
         ):
@@ -6772,6 +7198,9 @@ class ProjectSheetWorkspace(QWidget):
         if event.key() == Qt.Key.Key_Delete and self.delete_selected_detail_identifier():
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Delete and self.delete_selected_section():
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Delete and self.delete_selected_elevation_identifier():
             event.accept()
             return
@@ -6779,6 +7208,16 @@ class ProjectSheetWorkspace(QWidget):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete and self.delete_selected_sheet_line():
+            event.accept()
+            return
+        if (
+            event.key() == Qt.Key.Key_Delete
+            and self._selected_component_detail_group is not None
+            and self._selected_view_index is None
+        ):
+            self.remove_component_detail_group_requested.emit(
+                self._selected_component_detail_group,
+            )
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete and self._selected_view_index is not None:

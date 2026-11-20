@@ -141,3 +141,11 @@ def test_memorial_equation_paragraphs_are_centered():
     )
     dialog.close()
     app.processEvents()
+
+
+def test_docx_equations_keep_the_html_center_alignment(tmp_path):
+    marker = "OSA_EQUATION_OBJECT_0000_END"
+    target = export_calculation_memorial_docx(
+        f'<p align="center" style="text-align:center">{marker}</p>',
+        {marker: r"N_{Rd}=A_gf_y/1{,}10"}, tmp_path/"centralizado.docx")
+    assert Document(target).paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER

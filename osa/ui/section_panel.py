@@ -24,6 +24,7 @@ from osa.sections.contours import (
     u_svg_path,
     w_svg_path,
     z_formed_svg_path,
+    z_stiffened_svg_path,
 )
 
 
@@ -44,7 +45,7 @@ class SectionPanel(QFrame):
         self._section_mirrored = False
         self._decimals = {
             "d": 0, "bf": 0, "tw": 2, "tf": 2,
-            "b": 0, "t": 2, "c": 0, "D": 0, "De": 0, "Di": 0, "h": 0,
+            "b": 0, "t": 2, "c": 0, "r": 2, "D": 0, "De": 0, "Di": 0, "h": 0,
             "weight": 1, "area": 1,
             "Iy": 0, "Iz": 0, "J": 2,
         }
@@ -145,7 +146,7 @@ class SectionPanel(QFrame):
         # conventional mathematical subscripts in the property labels.
         label_markup = {"d": "d", "bf": "b<sub>f</sub>",
                         "tw": "t<sub>w</sub>", "tf": "t<sub>f</sub>",
-                        "b": "b", "t": "t", "c": "c", "D": "D",
+                        "b": "b", "t": "t", "c": "c", "r": "r", "D": "D",
                         "De": "D<sub>e</sub>", "Di": "D<sub>i</sub>",
                         "h": "h"}
         label_tooltips = {
@@ -156,12 +157,13 @@ class SectionPanel(QFrame):
             "b": "Largura da aba da cantoneira",
             "t": "Espessura da cantoneira",
             "c": "Comprimento do enrijecedor",
+            "r": "Raio interno de dobra",
             "D": "Diâmetro externo",
             "De": "Diâmetro externo",
             "Di": "Diâmetro interno",
             "h": "Altura externa",
         }
-        for label in ("d", "bf", "tw", "tf", "b", "t", "c", "D", "De", "Di", "h"):
+        for label in ("d", "bf", "tw", "tf", "b", "t", "c", "r", "D", "De", "Di", "h"):
             box, field = self._unit_box("mm")
             label_widget = QLabel(label_markup[label])
             label_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -696,7 +698,7 @@ class SectionPanel(QFrame):
             elif self._section_family in bar_families:
                 values[name] = round(values[name], 1)
             else:
-                values[name] = round(values[name], 2) if name == "t" else round(values[name])
+                values[name] = round(values[name], 2) if name in {"t", "r"} else round(values[name])
 
     def _switch_to_square_family(
         self, family: str, geometry: dict[str, float] | dict[str, dict[str, float]],
@@ -789,6 +791,8 @@ class SectionPanel(QFrame):
             "U Formado": "U",
             "C Formado": "C",
             "Z Formado": "Z",
+            "Z45 Formado": "Z45",
+            "Z90 Formado": "Z90",
             "L Formado": "L",
             "Cartola Formado": "Ω",
         }
@@ -796,14 +800,19 @@ class SectionPanel(QFrame):
         # C and Cartola include the stiffener length before the thickness in
         # their public designation, even though Cartola's input grid stores t
         # before c for the established visual layout.
-        names = ("d", "bf", "c", "t") if self._section_family in {"C Formado", "Cartola Formado"} else ("d", "bf", "t")
+        names = ("d", "bf", "c", "t") if self._section_family in {
+            "C Formado", "Cartola Formado", "Z45 Formado", "Z90 Formado",
+        } else ("d", "bf", "t")
         parts = []
         for name in names:
             value = float(values[name])
             decimals = 2 if name == "t" else 0
             text = f"{value:.{decimals}f}"
             parts.append(text)
-        return f"{prefix} {' x '.join(parts)}"
+        suffix = f" (r={float(values['r']):.2f})" if self._section_family in {
+            "Z45 Formado", "Z90 Formado",
+        } else ""
+        return f"{prefix} {' x '.join(parts)}{suffix}"
 
     def _format_value(self, value: float, parameter: str) -> str:
         """Format a section value with the precision used by its parameter."""
@@ -950,10 +959,12 @@ class SectionPanel(QFrame):
             "Retangular", "Circular", "Tipo L", "Tipo T", "Tipo I",
             "Tipo U", "Tipo +", "Retangular Vazado", "Circular Vazado",
         }
-        if not geometry and family in {"U Formado", "C Formado", "Z Formado", "L Formado", "Cartola Formado"}:
+        if not geometry and family in {"U Formado", "C Formado", "Z Formado", "Z45 Formado", "Z90 Formado", "L Formado", "Cartola Formado"}:
             geometry = {"d": 200.0, "bf": 80.0, "t": 6.0}
-            if family in {"C Formado", "Cartola Formado"}:
+            if family in {"C Formado", "Cartola Formado", "Z45 Formado", "Z90 Formado"}:
                 geometry["c"] = 40.0
+            if family in {"Z45 Formado", "Z90 Formado"}:
+                geometry["r"] = 6.0
         elif not geometry and family in {"Tubular Retangular", "Barra Retangular"}:
             # Give the initial rectangular preview a clearly rectangular
             # proportion before the user enters the actual dimensions.
@@ -1318,6 +1329,16 @@ class SectionPanel(QFrame):
                 thickness * profile_scale,
                 cx=canvas_w / 2.0,
                 cy=y0 + total_h / 2.0,
+            )
+        elif family in {"Z45 Formado", "Z90 Formado"} and {"d", "bf", "c", "t", "r"} <= geometry.keys():
+            depth, flange, lip, thickness, radius = (float(geometry[k]) for k in ("d", "bf", "c", "t", "r"))
+            profile_scale = min((canvas_w - 34.0) / (2.0 * (flange + lip)),
+                                (canvas_h - 28.0) / depth)
+            path = z_stiffened_svg_path(
+                depth * profile_scale, flange * profile_scale, lip * profile_scale,
+                thickness * profile_scale, radius * profile_scale,
+                45 if family == "Z45 Formado" else 90,
+                cx=canvas_w / 2.0, cy=y0 + total_h / 2.0,
             )
         elif family == "L Formado" and geometry and {"d", "bf", "t"} <= geometry.keys():
             depth = float(geometry["d"])

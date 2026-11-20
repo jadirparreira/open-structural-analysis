@@ -25,13 +25,18 @@ from osa.domain import (
     RigidBar,
     StructuralModel,
 )
+from osa.domain.local_force_inputs import BearingRegion
+from osa.domain.notional_inputs import NotionalPlan, NotionalStation
 from osa.domain.errors import DuplicateNodeCoordinatesError
+from osa.domain.stability_inputs import CRITICAL_PROPERTIES, stability_signature
 
 from .drawing_reference import dump_reference, load_reference
 
 FORMAT_V1 = "open-structural-analysis/v1"
 FORMAT_V2 = "open-structural-analysis/v2"
-ANALYSIS_AXES = "osa-z-up-v1"
+# Principal axes, local loads and rounded cold-formed properties changed.
+# Older forces must be recalculated while model data remain preserved.
+ANALYSIS_AXES = "osa-z-up-principal-rounded-v2"
 
 
 def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int, ...]:
@@ -89,6 +94,11 @@ class ProjectSerializer:
         data = {
             "format": FORMAT_V2,
             "analysis_axes": ANALYSIS_AXES,
+            "notional_plan": asdict(model.notional_plan) if model.notional_plan else None,
+            "analysis_options": {"second_order": model.second_order_analysis, "stiffness_factor": model.ultimate_stiffness_factor, "warping": model.warping_analysis},
+            "elastic_stability_basis": getattr(model, "_elastic_stability_basis", None) if any(
+                key in CRITICAL_PROPERTIES for member in model.bars.values()
+                for key, _ in member.calculation_property_overrides) else None,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "node_display_names": model.node_display_names,
             "plate_display_names": model.plate_display_names,
@@ -152,6 +162,9 @@ class ProjectSerializer:
             data.pop("bars", None)
 
         candidate = type(model)()
+        options = data.get("analysis_options", {})
+        candidate.update_analysis_options(second_order=options.get("second_order", False),
+                                          stiffness_factor=float(options.get("stiffness_factor", 1.)), warping=options.get("warping", False))
         saved_bar_subtractions = tuple(
             (item.get("name"), item.get("detail_subtractions", ()))
             for item in data.get("members", data.get("bars", ()))
@@ -245,6 +258,9 @@ class ProjectSerializer:
                 ),
                 section_mirrored=bool(item.get("section_mirrored", False)),
                 rotation_flexibility_percent=rotation_percent,
+                bearing_regions=tuple(BearingRegion(**region) for region in item.get("bearing_regions", ())),
+                bearing_basis=item.get("bearing_basis"),
+                warping_restraints=candidate._member_warping_restraints(item.get("warping_restraints", (None, None))),
                 calculation_property_overrides=tuple(
                     (str(key), candidate._calculation_property_value(str(key), float(value)))
                     for key, value in item.get("calculation_property_overrides", ())
@@ -462,8 +478,8 @@ class ProjectSerializer:
             }
             candidate.analysis_results = [
                 AnalysisResult(
-                    # Older analyses used PyNite's Y-up frame for local
-                    # properties. Keep their data, but require a fresh solve.
+                    # Preserve old results for inspection, requiring a fresh solve
+                    # when section properties/axis conventions changed.
                     int(item["model_revision"]) if data.get("analysis_axes") == ANALYSIS_AXES else -1,
                     item["load_reference"],
                     item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
@@ -473,6 +489,20 @@ class ProjectSerializer:
                 for item in data.get("results", ())
             ]
 
+        raw_plan = data.get('notional_plan')
+        if raw_plan is not None:
+            stations = tuple(NotionalStation(item['level'], item['upper_node'], item['base_node'],
+                tuple((str(combo), float(force)) for combo, force in item['gravity_kn'])) for item in raw_plan['stations'])
+            candidate.notional_plan = NotionalPlan(stations, tuple(raw_plan['actions']), tuple(raw_plan['combinations']),
+                raw_plan.get('basis'), raw_plan.get('allow_large_displacement', False))
+        saved_basis = data.get("elastic_stability_basis")
+        if saved_basis and saved_basis == stability_signature(candidate):
+            candidate._elastic_stability_basis = saved_basis
+        else:
+            candidate._invalidate_elastic_stability_inputs()
+            candidate._elastic_stability_basis = None
+        model._elastic_stability_basis = candidate._elastic_stability_basis
+        model._elastic_stability_signature_cache = None
         model.nodes = candidate.nodes
         model.node_display_names = candidate.node_display_names
         model.plate_display_names = candidate.plate_display_names
@@ -491,6 +521,10 @@ class ProjectSerializer:
         model.action_group_aliases = candidate.action_group_aliases
         model.selected_action_group = candidate.selected_action_group
         model.load_cases = candidate.load_cases
+        model.notional_plan = candidate.notional_plan
+        model.warping_analysis = candidate.warping_analysis
+        model.second_order_analysis = candidate.second_order_analysis
+        model.ultimate_stiffness_factor = candidate.ultimate_stiffness_factor
         model.load_combinations = candidate.load_combinations
         model.combination_groups_initialized = candidate.combination_groups_initialized
         model.analysis_results = candidate.analysis_results

@@ -7046,11 +7046,6 @@ class StructureScene(QWidget):
                 verification_name = group_name or ", ".join(element.member_names)
                 bar_identifier = group_name or ", ".join(element.member_names)
             result = getattr(self._model, "verification_results", {}).get(element.key)
-            is_w_profile = bool(element.member_names) and all(
-                member_name in self._model.bars
-                and self._model.bars[member_name].section in {"W Laminado", "HP Laminado"}
-                for member_name in element.member_names
-            )
             if not result:
                 rate = "N/D"
             elif result.get("status") == "not_applicable":
@@ -7065,7 +7060,7 @@ class StructureScene(QWidget):
             else:
                 utilization = result.get("utilization")
                 rate = (
-                    f"{float(utilization):.0%}{'' if is_w_profile else '*'}"
+                    f"{float(utilization):.0%}*"
                     if utilization is not None
                     else "X"
                 )
@@ -7658,7 +7653,10 @@ class StructureScene(QWidget):
                 # visually distinct from both checked and failed members.
                 color = _VERIFICATION_UNAVAILABLE_COLOR
             elif result.get("status") != "checked":
-                continue
+                if result.get("has_rejected_check") and result.get("utilization") is not None:
+                    color = self._utilization_band_color(result["utilization"])
+                else:
+                    continue
             elif result.get("utilization") is None:
                 color = _VERIFICATION_UNAVAILABLE_COLOR
             else:

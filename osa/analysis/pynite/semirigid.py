@@ -105,6 +105,7 @@ def _spring_stiffnesses(submember, source_member, endpoint: str) -> dict[int, fl
 def _patch_member(submember, springs: dict[int, float]) -> None:
     """Replace the member's local stiffness and fixed-end vector by condensed forms."""
 
+    submember._osa_end_springs = dict(springs)
     original_ke = submember.ke
     original_fer = submember.fer
     base_ke = np.asarray(original_ke(), dtype=float)

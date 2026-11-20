@@ -175,6 +175,20 @@ SECTION_PARAMETRIC_SPECS = {
         ("bf", "Largura da aba", "mm"),
         ("t", "Espessura da chapa", "mm"),
     ),
+    "Z45 Formado": (
+        ("d", "Altura externa da alma", "mm"),
+        ("bf", "Largura externa da aba", "mm"),
+        ("c", "Comprimento externo do enrijecedor a 45°", "mm"),
+        ("t", "Espessura da chapa", "mm"),
+        ("r", "Raio interno de dobra", "mm"),
+    ),
+    "Z90 Formado": (
+        ("d", "Altura externa da alma", "mm"),
+        ("bf", "Largura externa da aba", "mm"),
+        ("c", "Comprimento externo do enrijecedor a 90°", "mm"),
+        ("t", "Espessura da chapa", "mm"),
+        ("r", "Raio interno de dobra", "mm"),
+    ),
     "L Formado": (
         ("d", "Altura da aba vertical", "mm"),
         ("bf", "Largura da aba horizontal", "mm"),

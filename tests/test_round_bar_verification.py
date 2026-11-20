@@ -19,10 +19,10 @@ def _model(d=12.7, length=0.6, loads=None):
     model.update_bar_section("C1", "Barra Circular")
     model.update_member_profile("C1", f"RED {d:g}", {"d": d})
     model.analysis_results = [AnalysisResult(
-        model.revision, "ELU", member_results={"C1": {"samples": [loads or {
+        model.revision, "ELU", member_results={"C1": {"samples": [{"torque": 0., **(loads or {
             "x": 0.0, "axial": 7.0, "moment_y": 0.1, "moment_z": 0.1,
             "shear_y": 1.0, "shear_z": 1.0,
-        }]}}
+        })}]}}
     )]
     return model
 

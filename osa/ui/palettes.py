@@ -1030,6 +1030,10 @@ class ProjectSheetsPalette(QFrame):
             window.start_project_detail_identifier,
         )
         self.detail_identifier_button.setIconSize(QSize(21, 21))
+        self.section_button = self._action_button(
+            "section-cut.svg", "Corte", window.start_project_section,
+        )
+        self.section_button.setIconSize(QSize(21, 21))
         self.elevation_identifier_button = self._action_button(
             "elevation-identifier.svg", "Identificador de elevação",
             window.start_project_elevation_identifier,
@@ -1111,7 +1115,8 @@ class ProjectSheetsPalette(QFrame):
             self.hide_view_elements_button, self.reveal_view_elements_button, self.reveal_all_view_elements_button,
         ))
         self.model_elements_group_button = self._group_button("tag.svg", "Elementos do modelo", (
-            self.identify_button, self.detail_identifier_button, self.elevation_identifier_button, self.member_break_button, self.weld_button,
+            self.identify_button, self.detail_identifier_button, self.section_button,
+            self.elevation_identifier_button, self.member_break_button, self.weld_button,
         ))
         self.dimensions_group_button = self._group_button("dimension.svg", "Cotas", (
             self.dimension_button, self.orthogonal_dimension_button, self.angular_dimension_button, self.level_dimension_button,
@@ -1250,6 +1255,20 @@ class ProjectSheetsPalette(QFrame):
             return
         views.pop(index)
         self._window.project_sheet_workspace.set_sheet_views(views, clear_selection=True)
+        self._window._store_detailing_state()
+
+    def remove_component_detail_group_from_active_sheet(self, group_id: str) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        views = self._sheet_views.get(sheet_name, [])
+        remaining = [
+            view for view in views
+            if not isinstance(view.get("component_detail_group"), dict)
+            or str(view["component_detail_group"].get("id")) != str(group_id)
+        ]
+        if len(remaining) == len(views):
+            return
+        self._sheet_views[sheet_name] = remaining
+        self._window.project_sheet_workspace.set_sheet_views(remaining, clear_selection=True)
         self._window._store_detailing_state()
 
     def reposition(self) -> None:
@@ -2392,6 +2411,64 @@ class AnalysisTopPalette(QFrame):
         process_button.installEventFilter(self)
         layout.addWidget(process_button)
         self.process_button = process_button
+        self.analysis_options_button = QToolButton(self)
+        self.analysis_options_button.setText("P–Δ")
+        self.analysis_options_button.setAccessibleName("Método de análise estrutural")
+        self.analysis_options_button.setToolTip("Segunda ordem e rigidez EA/EI. As imperfeições geométricas/cargas nocionais devem ser modeladas explicitamente; convergência não comprova o atendimento integral de estabilidade.")
+        self.analysis_options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_menu = QMenu(self.analysis_options_button)
+        second_order = options_menu.addAction("Segunda ordem (P–Δ)")
+        second_order.setCheckable(True)
+        reduced = options_menu.addAction("EA e EI = 0,8 nos ELU")
+        reduced.setCheckable(True)
+        reduced.setToolTip("Redução das rigidezes EA e EI nos ELU; mantém J e molas de ligação. ELS usa rigidez efetiva sem esta redução. Confira a classificação estrutural e o procedimento normativo adotado.")
+        warping = options_menu.addAction("Análise dos formados (torção/empenamento)")
+        warping.setCheckable(True)
+        warping.setToolTip("Usa a matriz normal e o centro de torção coerentes no dimensionamento de serviço. Declare os vínculos A/B quando houver modo setorial. A cantoneira usa Cw=0 e Saint-Venant. A solução elástica não substitui a resistência ELU à torção/bimomento.")
+        def show_options():
+            with QSignalBlocker(second_order), QSignalBlocker(reduced), QSignalBlocker(warping):
+                second_order.setChecked(window.model.second_order_analysis)
+                reduced.setChecked(window.model.ultimate_stiffness_factor == .8)
+                warping.setChecked(window.model.warping_analysis)
+        def save_options():
+            window.model.update_analysis_options(second_order=second_order.isChecked(),
+                                                  stiffness_factor=.8 if reduced.isChecked() else 1.,
+                                                  warping=warping.isChecked())
+            window.refresh_analysis_palette()
+            window.refresh_scene()
+        restraints_action = options_menu.addAction("Vínculos de empenamento…")
+        def edit_warping_restraints():
+            from .warping_restraints_dialog import WarpingRestraintsDialog
+            dialog = WarpingRestraintsDialog(window.model, parent=window)
+            if dialog.exec():
+                window.refresh_analysis_palette()
+                window.refresh_scene()
+        restraints_action.triggered.connect(edit_warping_restraints)
+        bimoments_action = options_menu.addAction("Bimomentos nas extremidades…")
+        def edit_bimoments():
+            from .bimoment_dialog import BimomentDialog
+            dialog = BimomentDialog(window.model, window)
+            if dialog.exec():
+                window.refresh_analysis_palette()
+                window.refresh_action_palette()
+                window.refresh_scene()
+        bimoments_action.triggered.connect(edit_bimoments)
+        options_menu.addSeparator()
+        notionals_action = options_menu.addAction("Imperfeições e forças nocionais…")
+        def edit_notionals():
+            from .notional_dialog import NotionalDialog
+            dialog = NotionalDialog(window.model, window)
+            if dialog.exec():
+                window.refresh_analysis_palette()
+                window.refresh_action_palette()
+                window.refresh_scene()
+        notionals_action.triggered.connect(edit_notionals)
+        options_menu.aboutToShow.connect(show_options)
+        second_order.toggled.connect(save_options)
+        reduced.toggled.connect(save_options)
+        warping.toggled.connect(save_options)
+        self.analysis_options_button.setMenu(options_menu)
+        layout.addWidget(self.analysis_options_button)
         self.adjustSize()
 
     def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:

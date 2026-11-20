@@ -62,6 +62,10 @@ class StructuralModel:
         self.verification_results: dict[str, dict[str, object]] = {}
         self.verification_group_revision = 0
         self.calculation_properties_revision = 0
+        self.notional_plan = None
+        self.second_order_analysis = False
+        self.warping_analysis = False
+        self.ultimate_stiffness_factor = 1.0
         self._restraint_lengths_cache = None
         # Proveniência e pendências de conversores externos, persistidas no .osa.
         self.import_metadata: dict = {}
@@ -310,13 +314,37 @@ class StructuralModel:
                 del self.actions[action_name]
         self._touch()
 
+    def _invalidate_elastic_stability_inputs(self, member_names=None) -> None:
+        from .stability_inputs import CRITICAL_PROPERTIES
+
+        for name in tuple(self.bars) if member_names is None else member_names:
+            member = self.bars.get(name)
+            if member is None:
+                continue
+            values = tuple((key, value) for key, value in member.calculation_property_overrides
+                           if key not in CRITICAL_PROPERTIES)
+            if values != member.calculation_property_overrides:
+                self.bars[name] = replace(member, calculation_property_overrides=values)
+
     def _touch(self) -> None:
         self.revision += 1
+        self._elastic_stability_signature_cache = None
         for name, plate in tuple(self.plates.items()):
             supports = tuple((kind, bar) for kind, bar in plate.supports
                              if bar in (self.bars if kind == "bar" else self.rigid_bars))
             if supports != plate.supports:
                 self.plates[name] = replace(plate, supports=supports)
+        from .stability_inputs import CRITICAL_PROPERTIES, stability_signature
+
+        if any(key in CRITICAL_PROPERTIES for member in self.bars.values()
+               for key, _ in member.calculation_property_overrides):
+            try:
+                current_basis = stability_signature(self)
+            except (TypeError, ValueError, OverflowError):
+                current_basis = None
+            if not current_basis or getattr(self, "_elastic_stability_basis", None) != current_basis:
+                self._invalidate_elastic_stability_inputs()
+                self._elastic_stability_basis = None
         self.analysis_results.clear()
         self.verification_results.clear()
         self._restraint_lengths_cache = None
@@ -1182,6 +1210,7 @@ class StructuralModel:
     def _touch_verification_group(self, member_names: tuple[str, ...]) -> None:
         """Invalidate only verification results whose element identity changed."""
         affected = set(member_names)
+        self._invalidate_elastic_stability_inputs(member_names)
         for key in tuple(self.verification_results):
             if key.startswith("bar:") and key[4:] in affected:
                 del self.verification_results[key]
@@ -1626,11 +1655,24 @@ class StructuralModel:
             raise ValueError("O valor da propriedade de cálculo deve ser finito.")
         limits = {
             "Ly": (0.0, math.inf), "Lz": (0.0, math.inf),
+            "KL1": (0.0, math.inf), "KL2": (0.0, math.inf),
+            "KLt": (0.0, math.inf), "ForkSupports": (0.0, 1.0),
+            "DeltaY": (0.0, math.inf), "DeltaZ": (0.0, math.inf), "ServiceMeasure": (0.0, 3.0),
             "Lt": (0.0, math.inf), "Lb": (0.0, math.inf),
             "Ct": (0.0, 1.0), "Cb": (1.0, math.inf),
+            "An": (0.0, math.inf), "An0": (0.0, math.inf),
+            "LvY": (0.0, math.inf), "LvZ": (0.0, math.inf),
+            "NcrG": (0.0, math.inf), "NcrL": (0.0, math.inf), "NcrD": (0.0, math.inf), "McrGy": (0.0, math.inf), "McrLy": (0.0, math.inf), "McrDy": (0.0, math.inf), "McrGz": (0.0, math.inf), "McrLz": (0.0, math.inf), "McrDz": (0.0, math.inf),
         }
         if property_name not in limits:
             raise ValueError("Propriedade de cálculo desconhecida.")
+        if property_name == "ForkSupports" and value != 1.:
+            raise ValueError("A confirmação dos vínculos de garfo deve ser 1 ou removida.")
+        if property_name == "ServiceMeasure" and value not in (1., 2., 3.):
+            raise ValueError("A medição de serviço deve indicar flecha na corda, deslocamento entre extremidades ou absoluto.")
+        # Explicit MRD mode absence, recorded by the ∅ control (NBR 14762 C.2).
+        if property_name in {"NcrG", "NcrL", "NcrD", "McrGy", "McrLy", "McrDy", "McrGz", "McrLz", "McrDz"} and value == -1:
+            return value
         minimum, maximum = limits[property_name]
         if property_name == "Cb":
             if value < minimum:
@@ -1647,14 +1689,23 @@ class StructuralModel:
         """Set or clear one design-check override without invalidating analysis."""
         if name not in self.bars:
             raise EntityNotFoundError(f"Barra '{name}' não encontrado.")
-        if property_name not in {"Ly", "Lz", "Lt", "Lb", "Ct", "Cb"}:
+        if property_name not in {"Ly", "Lz", "Lt", "Lb", "KL1", "KL2", "KLt", "ForkSupports", "DeltaY", "DeltaZ", "ServiceMeasure", "Ct", "Cb", "An", "An0", "LvY", "LvZ", "NcrG", "NcrL", "NcrD", "McrGy", "McrLy", "McrDy", "McrGz", "McrLz", "McrDz"}:
             raise ValueError("Propriedade de cálculo desconhecida.")
+        from .stability_inputs import CRITICAL_PROPERTIES, stability_signature
+
+        if property_name in CRITICAL_PROPERTIES and value is not None:
+            cached = getattr(self, "_elastic_stability_signature_cache", None)
+            basis = cached[1] if cached is not None and cached[0] == self.revision else stability_signature(self)
+            self._elastic_stability_signature_cache = (self.revision, basis)
+            if getattr(self, "_elastic_stability_basis", None) not in (None, basis):
+                self._invalidate_elastic_stability_inputs()
+            self._elastic_stability_basis = basis
         overrides = dict(self.bars[name].calculation_property_overrides)
         if value is None:
             overrides.pop(property_name, None)
         else:
             overrides[property_name] = self._calculation_property_value(property_name, value)
-        ordered = tuple((key, overrides[key]) for key in ("Ly", "Lz", "Lt", "Lb", "Ct", "Cb")
+        ordered = tuple((key, overrides[key]) for key in ("Ly", "Lz", "Lt", "Lb", "KL1", "KL2", "KLt", "ForkSupports", "DeltaY", "DeltaZ", "ServiceMeasure", "Ct", "Cb", "An", "An0", "LvY", "LvZ", "NcrG", "NcrL", "NcrD", "McrGy", "McrLy", "McrDy", "McrGz", "McrLz", "McrDz")
                         if key in overrides)
         if ordered == self.bars[name].calculation_property_overrides:
             return self.bars[name]
@@ -1668,6 +1719,54 @@ class StructuralModel:
                 del self.verification_results[key]
             elif key.startswith("group:") and affected_names.intersection(key[6:].split("|")):
                 del self.verification_results[key]
+        self.view_revision += 1
+        return self.bars[name]
+
+    def update_analysis_options(self, *, second_order, stiffness_factor, warping=None):
+        if type(second_order) is not bool or not math.isfinite(stiffness_factor) or not 0 < stiffness_factor <= 1:
+            raise ValueError("Opções de análise inválidas.")
+        if warping is not None and type(warping) is not bool:
+            raise ValueError("A opção de análise com empenamento deve ser booleana.")
+        warping = self.warping_analysis if warping is None else warping
+        if (self.second_order_analysis, self.ultimate_stiffness_factor, self.warping_analysis) != (second_order, stiffness_factor, warping):
+            self.second_order_analysis, self.ultimate_stiffness_factor = second_order, float(stiffness_factor)
+            self.warping_analysis = warping
+            self._touch()
+
+    @staticmethod
+    def _member_warping_restraints(values):
+        values = tuple(values)
+        if len(values) != 2 or any(value not in (None, 'free', 'blocked', 'continuous') for value in values):
+            raise ValueError("Informe empenamento livre, impedido ou contínuo em cada extremidade.")
+        return values
+
+    def update_member_warping_restraints(self, name, values):
+        values = self._member_warping_restraints(values)
+        if self.bars[name].warping_restraints != values:
+            self.bars[name] = replace(self.bars[name], warping_restraints=values)
+            self._touch()
+        return self.bars[name]
+
+    def update_bar_bearing_regions(self, name, regions, *, reviewed=True):
+        from .local_force_inputs import BearingRegion
+        from .stability_inputs import stability_signature
+
+        if name not in self.bars:
+            raise EntityNotFoundError(f"Barra '{name}' não encontrada.")
+        regions = tuple(regions)
+        if any(not isinstance(region, BearingRegion) for region in regions):
+            raise ValueError("Regiões de contato inválidas.")
+        if len({region.name for region in regions}) != len(regions):
+            raise ValueError("Identificações de regiões duplicadas.")
+        member = self.bars[name]
+        a, b = self.nodes[member.start_node], self.nodes[member.end_node]
+        length = math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
+        if any(region.position_m > length+1e-9 for region in regions):
+            raise ValueError("Região de contato fora da barra.")
+        self.bars[name] = replace(member, bearing_regions=regions,
+                                  bearing_basis=stability_signature(self) if reviewed else None)
+        self.calculation_properties_revision += 1
+        self.verification_results.clear()
         self.view_revision += 1
         return self.bars[name]
 

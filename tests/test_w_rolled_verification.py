@@ -74,6 +74,69 @@ def test_compression_effective_web_width_excludes_both_fillets():
     assert props["web_width_mm"] == pytest.approx(170.0)
 
 
+def test_rolled_cb_is_calculated_from_moments_in_the_adopted_unbraced_interval():
+    from osa.verification.moment_gradient import moment_gradient_factor
+
+    stations = [(x, 1.0 - abs(2.0 * x - 1.0)) for x in (0., .25, .5, .75, 1.)]
+    assert moment_gradient_factor(stations, 0., 1.) == pytest.approx(12.5 / 9.5)
+    reversing = [(0., 1.), (.3, -1.), (.7, -1.), (1., 1.)]
+    assert moment_gradient_factor(reversing, 0., 1.) == pytest.approx(12.5 / 10.5)
+
+    model = make_w_model(length=3.0)
+    samples = [{
+        "x": 3.0 * index / 20,
+        "axial": 0.0,
+        "moment_y": 1.0 - abs(index / 10 - 1.0),
+        "moment_z": 0.0,
+        "shear_y": 0.0,
+        "shear_z": 0.0,
+        "torque": 0.0,
+    } for index in range(21)]
+    model.analysis_results = [AnalysisResult(
+        model.revision, "ELU", member_results={"W1": {"samples": samples}},
+    )]
+    checks = verify_model(model)["results"]["bar:W1"]["checks"]
+    flexion = checks["flexion_y"]
+    assert flexion["parameters"]["Cb"] > 1.0
+    assert flexion["parameters"]["Cb_method"].startswith("automático")
+    assert flexion["parameters"]["Cb_interval_m"] == pytest.approx((0.0, 3.0))
+
+    model.update_bar_calculation_property("W1", "Cb", 1.25)
+    manual = verify_model(model)["results"]["bar:W1"]["checks"]["flexion_y"]
+    assert manual["parameters"]["Cb"] == pytest.approx(1.25)
+    assert manual["parameters"]["Cb_method"] == "manual"
+
+    model.update_bar_calculation_property("W1", "Cb", None)
+    model.update_bar_calculation_property("W1", "Lb", 2.0)
+    manual_lb = verify_model(model)["results"]["bar:W1"]["checks"]["flexion_y"]
+    assert manual_lb["parameters"]["Cb"] == pytest.approx(1.0)
+    assert manual_lb["parameters"]["Cb_method"].startswith("fallback Lb definido manualmente")
+
+
+def test_rolled_cb_expression_is_shown_in_the_calculation_memorial():
+    from osa.memorial_data import calculation_memory
+
+    model = make_w_model(length=3.0)
+    samples = [{
+        "x": 3.0 * index / 20,
+        "axial": 0.0,
+        "moment_y": 1.0 - abs(index / 10 - 1.0),
+        "moment_z": 0.0,
+        "shear_y": 0.0,
+        "shear_z": 0.0,
+        "torque": 0.0,
+    } for index in range(21)]
+    model.analysis_results = [AnalysisResult(
+        model.revision, "ELU", member_results={"W1": {"samples": samples}},
+    )]
+    model.verification_results = verify_model(model)["results"]
+    equations = {}
+    CalculationMemorialDialog._render(
+        calculation_memory(model, ("W1",)), equation_latex=equations,
+    )
+    assert any("C_b" in str(latex) for latex in equations.values())
+
+
 def test_flexion_z_resistance_is_available_when_z_moment_is_zero():
     model = make_w_model()
     result = verify_model(model)["results"]["bar:W1"]
@@ -105,6 +168,29 @@ def test_small_shear_solver_residuals_do_not_mark_w_member_as_unverified():
 
     assert element["status"] == "checked"
     assert "scope_warnings" not in element
+
+
+@pytest.mark.parametrize("moment_y, rejected", [(1.0, False), (10000.0, True)])
+def test_torsion_does_not_change_member_approval_or_rejection(moment_y, rejected):
+    sample = {
+        "x": 1.0, "axial": 0.0, "moment_y": moment_y, "moment_z": 0.0,
+        "shear_y": 0.0, "shear_z": 0.0, "torque": 0.0,
+    }
+    without_torsion = make_w_model(sample=sample)
+    baseline = verify_model(without_torsion)
+
+    with_torsion = make_w_model(sample={**sample, "torque": 20.0})
+    verification = verify_model(with_torsion)
+    element = verification["results"]["bar:W1"]
+    reference = baseline["results"]["bar:W1"]
+
+    assert element["status"] == reference["status"]
+    assert element["torsion_summary"]["has_torsion"]
+    assert "torção não verificada" not in element["detail"]
+    assert verification["summary"]["approved"] == baseline["summary"]["approved"]
+    assert verification["summary"]["unverified"] == baseline["summary"]["unverified"]
+    assert verification["summary"]["rejected"] == baseline["summary"]["rejected"]
+    assert verification["summary"]["rejected"] == int(rejected)
 
 
 def test_recommended_slenderness_limit_does_not_change_the_check_status():

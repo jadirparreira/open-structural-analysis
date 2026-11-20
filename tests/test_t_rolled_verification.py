@@ -25,12 +25,29 @@ def _model(d=50.8, bf=50.8, tw=6.35, tf=6.35, length=1.0, loads=None):
     model.analysis_results = [AnalysisResult(
         model.revision,
         "ELU",
-        member_results={"T1": {"samples": [loads or {
+        member_results={"T1": {"samples": [{"torque": 0., **(loads or {
             "x": 0.0, "axial": 10.0, "moment_y": 1.0, "moment_z": 0.0,
-            "shear_y": 1.0, "shear_z": 0.0,
-        }]}},
+            "shear_y": 0.0, "shear_z": 1.0,
+        })}]}},
     )]
     return model
+
+
+def test_torsion_does_not_change_t_profile_status_and_is_explained_in_memorial():
+    baseline = verify_model(_model())
+    model = _model()
+    model.analysis_results[0].member_results["T1"]["samples"][0]["torque"] = 0.2
+    verification = verify_model(model)
+    element = verification["results"]["bar:T1"]
+
+    assert element["status"] == baseline["results"]["bar:T1"]["status"]
+    assert element["torsion_summary"]["has_torsion"]
+    assert verification["summary"]["approved"] == baseline["summary"]["approved"]
+    assert verification["summary"]["unverified"] == baseline["summary"]["unverified"]
+
+    model.verification_results = verification["results"]
+    memorial = CalculationMemorialDialog._render(calculation_memory(model, ("T1",)), {})
+    assert "O OSA não possui verificação de resistência à torção prevista para esta seção" in memorial
 
 
 def test_t_profile_runs_checks_and_renders_its_own_memorial():
@@ -46,7 +63,7 @@ def test_t_profile_runs_checks_and_renders_its_own_memorial():
     assert result["summary"]["without_routine"] == 0
     assert result["summary"]["unverified"] == 0
     assert math.isclose(
-        element["checks"]["shear_y"]["parameters"]["VRd_kn"], 43.99,
+        element["checks"]["shear_z"]["parameters"]["VRd_kn"], 43.99,
         rel_tol=2e-3,
     )
     assert PropertyPanel._has_verification_routine(panel_context, ("T1",))
@@ -57,8 +74,8 @@ def test_t_profile_runs_checks_and_renders_its_own_memorial():
         ("flexion_y", "MRd_kn_cm"), ("flexion_z", "MRd_kn_cm"),
         ("shear_y", "VRd_kn"), ("shear_z", "VRd_kn"),
     ):
-        capacity = element["checks"][name]["parameters"][capacity_key]
         if element["checks"][name]["status"] == "checked":
+            capacity = element["checks"][name]["parameters"][capacity_key]
             assert capacity > 0.0 and math.isfinite(capacity)
 
     model.verification_results = result["results"]
@@ -74,7 +91,7 @@ def test_t_profile_runs_checks_and_renders_its_own_memorial():
 def test_t_second_axis_bending_and_shear_have_finite_resistances():
     model = _model(loads={
         "x": 0.0, "axial": 0.0, "moment_y": 0.0, "moment_z": 2.0,
-        "shear_y": 0.0, "shear_z": 50.0,
+        "shear_y": 20.0, "shear_z": 50.0,
     })
     result = verify_model(model)
     element = result["results"]["bar:T1"]
@@ -85,19 +102,23 @@ def test_t_second_axis_bending_and_shear_have_finite_resistances():
     )
 
     assert element["status"] == "checked"
+    assert result["summary"]["unverified"] == 0
     assert result["summary"]["rejected"] == 1
-    assert element["checks"]["flexion_z"]["status"] == "checked"
-    assert math.isfinite(element["checks"]["flexion_z"]["utilization"])
-    assert element["checks"]["flexion_z"]["parameters"]["MRd_kn_cm"] > 0.0
+    assert element["checks"]["flexion_z"]["status"] == "not_checked"
+    assert element["checks"]["flexion_z"]["memorandum_only"]
+    assert "não possui verificação prevista" in element["checks"]["flexion_z"]["detail"]
+    assert "Limite de escopo — T Laminado" in html
     assert element["checks"]["shear_z"]["status"] == "checked"
+    assert element["checks"]["shear_y"]["memorandum_only"]
     assert math.isfinite(element["checks"]["shear_z"]["utilization"])
     assert element["checks"]["shear_z"]["parameters"]["VRd_kn"] > 0.0
-    assert math.isclose(element["checks"]["shear_z"]["parameters"]["VRd_kn"], 38.49,
+    assert math.isclose(element["checks"]["shear_z"]["parameters"]["VRd_kn"], 43.99,
                         rel_tol=2e-3)
     assert equations
     assert any(b"REPROVADO" in svg for svg in equations.values())
     assert "não inclui perfil T" not in html.lower()
     assert "não deve ser interpretado" not in html.lower()
+    assert "não determina Cb automaticamente" in html
 
 
 def test_t_extreme_geometries_return_finite_resistances():
@@ -116,9 +137,9 @@ def test_t_extreme_geometries_return_finite_resistances():
 
 def test_t_web_shear_and_compression_use_the_current_nbr_dimensions():
     model = _model(loads={"x": 0., "axial": 10., "moment_y": 1., "moment_z": 0.,
-                          "shear_y": 1., "shear_z": 0.})
+                          "shear_y": 0., "shear_z": 1.})
     checks = verify_model(model)["results"]["bar:T1"]["checks"]
-    shear = checks["shear_y"]["parameters"]
+    shear = checks["shear_z"]["parameters"]
     compression = checks["axial_compression"]["parameters"]
     assert math.isclose(shear["lambda"], 8.0)
     assert math.isclose(shear["Aw_cm2"], 5.08 * .635)
@@ -146,23 +167,20 @@ def test_t_combined_memory_matches_interaction_with_two_moments():
                           "shear_y": 1., "shear_z": 1.})
     model.verification_results = verify_model(model)["results"]
     check = model.verification_results["bar:T1"]["checks"]["flexocompressao"]
-    p = check["parameters"]
-    ratio_n = check["applied_kn"] / p["N_Rd_kn"]
-    moments = check["applied_my_kn_cm"] / p["My_Rd_kn_cm"] + check["applied_mz_kn_cm"] / p["Mz_Rd_kn_cm"]
-    expected = ratio_n + 8 / 9 * moments if ratio_n >= .2 else ratio_n / 2 + moments
-    assert math.isclose(check["utilization"], expected)
+    assert check["status"] == "not_checked"
+    assert check["memorandum_only"]
+    assert "falta de procedimento de flexão" in check["detail"]
     latex = {}
     html = CalculationMemorialDialog._render(calculation_memory(model, ("T1",)), {}, equation_latex=latex)
-    assert "hipótese com base na ABNT NBR 8800:2024" in html
-    assert any(r"M_{z,Sd}" in equation and r"M_{y,Sd}" in equation for equation in latex.values())
-    assert not any(r"\\infty" in equation for equation in latex.values())
+    assert "procedimento específico" in html
+    assert not any(r"\infty" in equation for equation in latex.values())
 
 
 def test_t_interaction_uses_moment_resistance_for_each_sample_sign():
     model = _model()
     model.analysis_results = [AnalysisResult(model.revision, "ELU", member_results={"T1": {"samples": [
-        {"x": 0., "axial": 0., "moment_y": 2., "moment_z": 0.},
-        {"x": 1., "axial": 70., "moment_y": -1., "moment_z": 0.},
+        {"x": 0., "axial": 0., "moment_y": 2., "moment_z": 0., "shear_y": 0., "shear_z": 0., "torque": 0.},
+        {"x": 1., "axial": 70., "moment_y": -1., "moment_z": 0., "shear_y": 0., "shear_z": 0., "torque": 0.},
     ]}})]
     checks = verify_model(model)["results"]["bar:T1"]["checks"]
     p = checks["flexion_y"]["parameters"]
@@ -185,7 +203,7 @@ def test_t_slenderness_recommendations_are_shown():
 
 def test_t_shear_outside_nbr_limit_is_not_verified():
     model = _model(d=600., bf=100., tw=2., tf=5.)
-    check = verify_model(model)["results"]["bar:T1"]["checks"]["shear_y"]
+    check = verify_model(model)["results"]["bar:T1"]["checks"]["shear_z"]
     assert check["status"] == "not_checked"
     assert "260" in check["detail"]
 

@@ -136,6 +136,23 @@ class ActionService:
         )
         return self.add_action(action)
 
+    def add_member_bimoment(self, target, end, value, load_case):
+        """Nodal work-conjugate load to theta', in kN m².
+
+        Internal B=-ECw*theta'': the end-A load equals internal B and the
+        end-B load has the opposite sign. Localized axial transfer at P
+        contributes the nodal load -F_axial*omega(P).
+        """
+        from math import isfinite
+
+        if target not in self.model.bars or end not in ('A', 'B') or not isfinite(value):
+            raise ValueError("Barra, extremidade ou bimomento inválido.")
+        index = 1
+        while f"Bimomento {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(f"Bimomento {index}", 'member_bimoment_'+end, target,
+                                     (float(value),), load_case))
+
     def add_member_selfweight(self, target: str, value: float, load_case: str) -> Action:
         self._remove_member_action(target, "member_distributed_force_Z", load_case)
         self._remove_member_action(target, "member_distributed_force_global_Z", load_case)

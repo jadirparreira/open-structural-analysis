@@ -7,15 +7,125 @@ com raios de dobra e detalhes próprios de cada família de seção.
 from __future__ import annotations
 
 import re
-from math import cos, pi, sin, tan
-
+from itertools import pairwise
+from math import atan2, ceil, cos, hypot, isfinite, pi, sin, sqrt, tan
 
 Point = tuple[float, float]
+
+
+def z_stiffened_points(d: float, bf: float, c: float, t: float, r: float,
+                        angle: int, arc_steps: int = 16) -> tuple[Point, ...]:
+    """Outline of a Z with equal edge stiffeners, in millimetres.
+
+    ``d``, ``bf`` and ``c`` are external dimensions, ``r`` is the inside
+    bend radius. The 45°/90° geometry follows NBR 6355:2012, figures A.4
+    and A.5, and its mean-line dimensions in A.2.1. Circular bends are
+    sampled for display and polygon properties; torsion is handled separately.
+    """
+    d, bf, c, t, r = map(float, (d, bf, c, t, r))
+    if angle not in (45, 90) or not all(isfinite(value) and value > 0 for value in (d, bf, c, t, r)):
+        raise ValueError("Dimensões e raio devem ser positivos; o ângulo deve ser 45° ou 90°.")
+    if d <= t:
+        raise ValueError("A altura do perfil Z deve ser maior que a espessura.")
+    alpha = angle * pi / 180.0
+    # NBR 6355, A.2.1: mean lengths bm and cm, measured from sharp
+    # intersections of the sheet's mean line.
+    bm = bf - (t if angle == 90 else t / sqrt(2.0))
+    cm = c - (t / 2.0 if angle == 90 else (sqrt(2.0) - 1.0) * t / 2.0)
+    if bm <= 0 or cm <= 0:
+        raise ValueError("Dimensões insuficientes para formar as dobras do perfil Z.")
+    h = (d - t) / 2.0
+    dx, dy = cm * cos(alpha), cm * sin(alpha)
+    vertices = [(-bm - dx, -h + dy), (-bm, -h), (0.0, -h),
+                (0.0, h), (bm, h), (bm + dx, h - dy)]
+    radius = r + t / 2.0
+
+    def direction(a: Point, b: Point) -> Point:
+        length = hypot(b[0] - a[0], b[1] - a[1])
+        return ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
+
+    directions = [direction(a, b) for a, b in pairwise(vertices)]
+    offsets: list[float] = []
+    turns: list[float] = []
+    for before, after in pairwise(directions):
+        turn = atan2(before[0] * after[1] - before[1] * after[0],
+                     before[0] * after[0] + before[1] * after[1])
+        turns.append(turn)
+        offsets.append(radius * tan(abs(turn) / 2.0))
+    lengths = [hypot(b[0] - a[0], b[1] - a[1]) for a, b in pairwise(vertices)]
+    cuts = [0.0, *offsets, 0.0]
+    if any(length <= cuts[i] + cuts[i + 1] for i, length in enumerate(lengths)):
+        raise ValueError("As dimensões não comportam os raios de dobra informados.")
+
+    # Build both faces from their shared mean-line tangent and its normal.
+    samples: list[tuple[Point, Point]] = [(vertices[0], directions[0])]
+    for i, vertex in enumerate(vertices[1:-1]):
+        before = directions[i]
+        turn = turns[i]
+        side = 1.0 if turn > 0 else -1.0
+        start = (vertex[0] - before[0] * offsets[i], vertex[1] - before[1] * offsets[i])
+        center = (start[0] - side * before[1] * radius,
+                  start[1] + side * before[0] * radius)
+        start_angle = atan2(start[1] - center[1], start[0] - center[0])
+        count = max(2, ceil(abs(turn) / (pi / 2.0) * arc_steps))
+        for step in range(count + 1):
+            a = start_angle + turn * step / count
+            point = (center[0] + radius * cos(a), center[1] + radius * sin(a))
+            tangent = (-side * sin(a), side * cos(a))
+            samples.append((point, tangent))
+    samples.append((vertices[-1], directions[-1]))
+    left = [(p[0] - v[1] * t / 2, p[1] + v[0] * t / 2) for p, v in samples]
+    right = [(p[0] + v[1] * t / 2, p[1] - v[0] * t / 2) for p, v in reversed(samples)]
+    return tuple(left + right)
+
+
+def z_stiffened_svg_path(d: float, bf: float, c: float, t: float, r: float,
+                         angle: int, cx: float = 0.0, cy: float = 0.0) -> str:
+    points = z_stiffened_points(d, bf, c, t, r, angle)
+    return "M " + " L ".join(f"{x + cx:.6f},{y + cy:.6f}" for x, y in points) + " Z"
 
 _SVG_PATH_TOKEN = re.compile(
     r"[A-Za-z]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 )
 _SVG_PATH_ARGUMENTS = {"M": 2, "L": 2, "H": 1, "V": 1, "A": 7, "Q": 4}
+
+
+def _circular_bends(path: str) -> str:
+    """Replace perpendicular quadratic corner sketches by true circular bends."""
+    tokens = _SVG_PATH_TOKEN.findall(path)
+    current = (0., 0.)
+    output = []
+    index = 0
+    while index < len(tokens):
+        command = tokens[index]
+        index += 1
+        if command == "Z":
+            output.append("Z")
+            continue
+        count = _SVG_PATH_ARGUMENTS[command]
+        values = [float(value) for value in tokens[index:index+count]]
+        index += count
+        if command == "Q":
+            control, end = tuple(values[:2]), tuple(values[2:])
+            incoming = (control[0]-current[0], control[1]-current[1])
+            outgoing = (end[0]-control[0], end[1]-control[1])
+            radius = hypot(*incoming)
+            if abs(radius-hypot(*outgoing)) > 1e-5 or abs(sum(a*b for a, b in zip(incoming, outgoing))) > 1e-5:
+                raise ValueError("A dobra requer tangentes perpendiculares e raios iguais.")
+            sweep = int(incoming[0]*outgoing[1]-incoming[1]*outgoing[0] > 0)
+            output.append(f"A {radius:.12g},{radius:.12g} 0 0 {sweep} {end[0]:.12g},{end[1]:.12g}")
+            current = end
+            continue
+        output.append(command + " " + " ".join(f"{v:.12g}" for v in values))
+        if command in {"M", "L"}:
+            current = tuple(values)
+        elif command == "H":
+            current = (values[0], current[1])
+        elif command == "V":
+            current = (current[0], values[0])
+        elif command == "A":
+            current = tuple(values[-2:])
+    return " ".join(output)
 
 
 def mirror_svg_path(path: str, axis_x: float) -> str:
@@ -426,11 +536,12 @@ def gerar_perfil_u_svg(
 
 
 def _formed_radius(t: float, d: float, bf: float) -> float:
-    """Return a compact bend radius for cold-formed sheet profiles."""
-    thickness = float(t)
-    if min(thickness, float(d), float(bf)) <= 0.0:
-        raise ValueError("As dimensões da seção formada devem ser maiores que zero.")
-    return max(0.8 * thickness, min(1.8 * thickness, 0.08 * min(float(d), float(bf))))
+    from math import isfinite
+
+    values = tuple(map(float, (t, d, bf)))
+    if not all(isfinite(value) and value > 0 for value in values):
+        raise ValueError("As dimensões da seção formada devem ser finitas e maiores que zero.")
+    return values[0]
 
 
 def u_formed_svg_path(
@@ -453,13 +564,13 @@ def u_formed_svg_path(
     y0, y1, y2, y3 = cy - d / 2.0, cy - d / 2.0 + t, cy + d / 2.0 - t, cy + d / 2.0
     r_inner = t
     r_outer = 2.0 * t
-    return (
-        f"M {x0 + r_outer:.2f},{y0:.2f} H {x2:.2f} V {y1:.2f} "
-        f"H {x1 + r_inner:.2f} Q {x1:.2f},{y1:.2f} {x1:.2f},{y1 + r_inner:.2f} "
-        f"V {y2 - r_inner:.2f} Q {x1:.2f},{y2:.2f} {x1 + r_inner:.2f},{y2:.2f} "
-        f"H {x2:.2f} V {y3:.2f} H {x0 + r_outer:.2f} "
-        f"Q {x0:.2f},{y3:.2f} {x0:.2f},{y3 - r_outer:.2f} V {y0 + r_outer:.2f} "
-        f"Q {x0:.2f},{y0:.2f} {x0 + r_outer:.2f},{y0:.2f} Z"
+    return _circular_bends(
+        f"M {x0 + r_outer:.9g},{y0:.9g} H {x2:.9g} V {y1:.9g} "
+        f"H {x1 + r_inner:.9g} Q {x1:.9g},{y1:.9g} {x1:.9g},{y1 + r_inner:.9g} "
+        f"V {y2 - r_inner:.9g} Q {x1:.9g},{y2:.9g} {x1 + r_inner:.9g},{y2:.9g} "
+        f"H {x2:.9g} V {y3:.9g} H {x0 + r_outer:.9g} "
+        f"Q {x0:.9g},{y3:.9g} {x0:.9g},{y3 - r_outer:.9g} V {y0 + r_outer:.9g} "
+        f"Q {x0:.9g},{y0:.9g} {x0 + r_outer:.9g},{y0:.9g} Z"
     )
 
 
@@ -477,25 +588,25 @@ def c_formed_svg_path(
     flange and lip transitions.
     """
     d, bf, c, t = map(float, (d, bf, c, t))
-    radius = _formed_radius(t, d, bf)
-    if d <= 2.0 * (t + c) or bf <= t + radius or c <= 0.0:
-        raise ValueError("A seção C formada requer d > 2(t + c), bf > t + r e c > 0.")
+    _formed_radius(t, d, bf)
+    if d <= 2.0 * (t + c) or bf < 4*t or c < t:
+        raise ValueError("A seção C formada requer d > 2(t + c), bf >= 4t e c >= t.")
     x0, x1, x2 = cx - bf / 2.0, cx - bf / 2.0 + t, cx + bf / 2.0
     y0, y1, y2, y3 = cy - d / 2.0, cy - d / 2.0 + t, cy + d / 2.0 - t, cy + d / 2.0
     r_inner = t
     r_outer = 2.0 * t
-    return (
-        f"M {x0 + r_outer:.2f},{y0:.2f} H {x2 - r_outer:.2f} "
-        f"Q {x2:.2f},{y0:.2f} {x2:.2f},{y0 + r_outer:.2f} "
-        f"V {y1 + c:.2f} H {x2 - t:.2f} "
-        f"V {y1 + r_inner:.2f} Q {x2 - t:.2f},{y1:.2f} {x2 - t - r_inner:.2f},{y1:.2f} "
-        f"H {x1 + r_inner:.2f} Q {x1:.2f},{y1:.2f} {x1:.2f},{y1 + r_inner:.2f} "
-        f"V {y2 - r_inner:.2f} Q {x1:.2f},{y2:.2f} {x1 + r_inner:.2f},{y2:.2f} "
-        f"H {x2 - t - r_inner:.2f} Q {x2 - t:.2f},{y2:.2f} {x2 - t:.2f},{y2 - r_inner:.2f} "
-        f"V {y2 - c:.2f} H {x2:.2f} "
-        f"V {y3 - r_outer:.2f} Q {x2:.2f},{y3:.2f} {x2 - r_outer:.2f},{y3:.2f} "
-        f"H {x0 + r_outer:.2f} Q {x0:.2f},{y3:.2f} {x0:.2f},{y3 - r_outer:.2f} "
-        f"V {y0 + r_outer:.2f} Q {x0:.2f},{y0:.2f} {x0 + r_outer:.2f},{y0:.2f} Z"
+    return _circular_bends(
+        f"M {x0 + r_outer:.9g},{y0:.9g} H {x2 - r_outer:.9g} "
+        f"Q {x2:.9g},{y0:.9g} {x2:.9g},{y0 + r_outer:.9g} "
+        f"V {y1 + c:.9g} H {x2 - t:.9g} "
+        f"V {y1 + r_inner:.9g} Q {x2 - t:.9g},{y1:.9g} {x2 - t - r_inner:.9g},{y1:.9g} "
+        f"H {x1 + r_inner:.9g} Q {x1:.9g},{y1:.9g} {x1:.9g},{y1 + r_inner:.9g} "
+        f"V {y2 - r_inner:.9g} Q {x1:.9g},{y2:.9g} {x1 + r_inner:.9g},{y2:.9g} "
+        f"H {x2 - t - r_inner:.9g} Q {x2 - t:.9g},{y2:.9g} {x2 - t:.9g},{y2 - r_inner:.9g} "
+        f"V {y2 - c:.9g} H {x2:.9g} "
+        f"V {y3 - r_outer:.9g} Q {x2:.9g},{y3:.9g} {x2 - r_outer:.9g},{y3:.9g} "
+        f"H {x0 + r_outer:.9g} Q {x0:.9g},{y3:.9g} {x0:.9g},{y3 - r_outer:.9g} "
+        f"V {y0 + r_outer:.9g} Q {x0:.9g},{y0:.9g} {x0 + r_outer:.9g},{y0:.9g} Z"
     )
 
 
@@ -519,23 +630,23 @@ def z_formed_svg_path(
     r_outer = 2.0 * t
     return (
         # 1 -> 2 -> 3: mesa superior e dobra externa de raio 2t
-        f"M {x_left - bf:.2f},{y0:.2f} H {x_right - r_outer:.2f} "
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {x_right:.2f},{y0 + r_outer:.2f} "
+        f"M {x_left - bf:.9g},{y0:.9g} H {x_right - r_outer:.9g} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {x_right:.9g},{y0 + r_outer:.9g} "
         # 3 -> 4: face externa da alma
-        f"V {y2 - r_inner:.2f} "
+        f"V {y2 - r_inner:.9g} "
         # 4 -> 5: dobra interna inferior de raio t
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {x_right + r_inner:.2f},{y2:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {x_right + r_inner:.9g},{y2:.9g} "
         # 5 -> 6 -> 7: mesa inferior e ponta reta
-        f"H {x_right + bf:.2f} V {y3:.2f} "
+        f"H {x_right + bf:.9g} V {y3:.9g} "
         # 7 -> 8 -> 9: face inferior e dobra externa de raio 2t
-        f"H {x_left + r_outer:.2f} "
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {x_left:.2f},{y3 - r_outer:.2f} "
+        f"H {x_left + r_outer:.9g} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {x_left:.9g},{y3 - r_outer:.9g} "
         # 9 -> 10: face interna da alma
-        f"V {y1 + r_inner:.2f} "
+        f"V {y1 + r_inner:.9g} "
         # 10 -> 11: dobra interna superior de raio t
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {x_left - r_inner:.2f},{y1:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {x_left - r_inner:.9g},{y1:.9g} "
         # 11 -> 12 -> 1: mesa superior interna e ponta reta
-        f"H {x_left - bf:.2f} V {y0:.2f} Z"
+        f"H {x_left - bf:.9g} V {y0:.9g} Z"
     )
 
 
@@ -549,17 +660,17 @@ def l_formed_svg_path(
     """Build the rounded unequal-angle L cold-formed section outline."""
     d, bf, t = map(float, (d, bf, t))
     _formed_radius(t, d, bf)
-    if d <= t or bf <= t:
-        raise ValueError("A seção L formada requer d > t e bf > t.")
+    if d <= 2*t or bf <= 2*t:
+        raise ValueError("A seção L formada requer d > 2t e bf > 2t.")
     x0, x1, x2 = cx - bf / 2.0, cx - bf / 2.0 + t, cx + bf / 2.0
     y0, y1 = cy - d / 2.0, cy + d / 2.0
     r_inner = t
     r_outer = 2.0 * t
-    return (
-        f"M {x0:.2f},{y0:.2f} H {x1:.2f} V {y1 - t - r_inner:.2f} "
-        f"Q {x1:.2f},{y1 - t:.2f} {x1 + r_inner:.2f},{y1 - t:.2f} "
-        f"H {x2:.2f} V {y1:.2f} H {x0 + r_outer:.2f} "
-        f"Q {x0:.2f},{y1:.2f} {x0:.2f},{y1 - r_outer:.2f} V {y0:.2f} Z"
+    return _circular_bends(
+        f"M {x0:.9g},{y0:.9g} H {x1:.9g} V {y1 - t - r_inner:.9g} "
+        f"Q {x1:.9g},{y1 - t:.9g} {x1 + r_inner:.9g},{y1 - t:.9g} "
+        f"H {x2:.9g} V {y1:.9g} H {x0 + r_outer:.9g} "
+        f"Q {x0:.9g},{y1:.9g} {x0:.9g},{y1 - r_outer:.9g} V {y0:.9g} Z"
     )
 
 
@@ -584,41 +695,41 @@ def cartola_formed_svg_path(
     y2 = y3 - t
     return (
         # 1 -> 2: aba inferior esquerda, face interna
-        f"M {xl - c:.2f},{y2:.2f} H {xl - t:.2f} "
+        f"M {xl - c:.9g},{y2:.9g} H {xl - t:.9g} "
         # 2 -> 3: arco interno de raio t, subindo
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {xl:.2f},{y2 - t:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {xl:.9g},{y2 - t:.9g} "
         # 3 -> 4: alma esquerda, face externa
-        f"V {y0 + r_outer:.2f} "
+        f"V {y0 + r_outer:.9g} "
         # 4 -> 5: arco externo superior esquerdo de raio 2t
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {xl + 2.0 * t:.2f},{y0:.2f} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {xl + 2.0 * t:.9g},{y0:.9g} "
         # 5 -> 6: mesa superior externa
-        f"H {xr - r_outer:.2f} "
+        f"H {xr - r_outer:.9g} "
         # 6 -> 7: arco externo superior direito de raio 2t
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {xr:.2f},{y0 + r_outer:.2f} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {xr:.9g},{y0 + r_outer:.9g} "
         # 7 -> 8: alma direita, face externa
-        f"V {y2 - t:.2f} "
+        f"V {y2 - t:.9g} "
         # 8 -> 9: arco interno inferior direito de raio t
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {xr + t:.2f},{y2:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {xr + t:.9g},{y2:.9g} "
         # 9 -> 10 -> 11: aba direita e ponta reta
-        f"H {xr + c:.2f} V {y3:.2f} "
+        f"H {xr + c:.9g} V {y3:.9g} "
         # 11 -> 12: face externa da aba inferior direita
-        f"H {xr + t:.2f} "
+        f"H {xr + t:.9g} "
         # 12 -> 13: arco externo inferior direito de raio 2t
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {xr - t:.2f},{y3 - r_outer:.2f} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {xr - t:.9g},{y3 - r_outer:.9g} "
         # 13 -> 14: alma direita, face interna
-        f"V {y1 + t:.2f} "
+        f"V {y1 + t:.9g} "
         # 14 -> 15: arco interno superior direito de raio t
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {xr - 2.0 * t:.2f},{y1:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {xr - 2.0 * t:.9g},{y1:.9g} "
         # 15 -> 16: mesa superior interna
-        f"H {xl + 2.0 * t:.2f} "
+        f"H {xl + 2.0 * t:.9g} "
         # 16 -> 17: arco interno superior esquerdo de raio t, descendo
-        f"A {r_inner:.2f},{r_inner:.2f} 0 0 0 {xl + t:.2f},{y1 + t:.2f} "
+        f"A {r_inner:.9g},{r_inner:.9g} 0 0 0 {xl + t:.9g},{y1 + t:.9g} "
         # 17 -> 18: alma esquerda, face interna
-        f"V {y3 - r_outer:.2f} "
+        f"V {y3 - r_outer:.9g} "
         # 18 -> 19: arco externo inferior esquerdo de raio 2t
-        f"A {r_outer:.2f},{r_outer:.2f} 0 0 1 {xl - t:.2f},{y3:.2f} "
+        f"A {r_outer:.9g},{r_outer:.9g} 0 0 1 {xl - t:.9g},{y3:.9g} "
         # 19 -> 20 -> 1: aba esquerda e fechamento pela ponta reta
-        f"H {xl - c:.2f} V {y2:.2f} Z"
+        f"H {xl - c:.9g} V {y2:.9g} Z"
     )
 
 
@@ -642,7 +753,6 @@ def u_contour_points(
     x_tip = x_outer + bf
     half_d = d / 2.0
     y_top = half_d
-    y_bottom = -half_d
     free_width = bf - tw - radius - tip_radius
     rise = free_width * tan(angle_deg * pi / 180.0)
     top_inner = half_d - tf - rise
@@ -1035,8 +1145,8 @@ def polygon_properties(points: tuple[Point, ...]) -> tuple[float, float, float, 
     cz = sum((z0 + z1) * value for value, ((x0, z0), (x1, z1)) in zip(cross, zip(points, points[1:] + points[:1]))) / (3.0 * signed_twice_area)
     iz_origin = sum(value * (x0 * x0 + x0 * x1 + x1 * x1) for value, ((x0, z0), (x1, z1)) in zip(cross, zip(points, points[1:] + points[:1]))) / 12.0
     iy_origin = sum(value * (z0 * z0 + z0 * z1 + z1 * z1) for value, ((x0, z0), (x1, z1)) in zip(cross, zip(points, points[1:] + points[:1]))) / 12.0
-    iyz_origin = sum(value * (2.0 * x0 * z1 + x0 * z0 + x1 * z0 + 2.0 * x1 * z1) for value, ((x0, z0), (x1, z1)) in zip(cross, zip(points, points[1:] + points[:1]))) / 24.0
+    iyz_origin = sum(value * (2.0 * x0 * z0 + x0 * z1 + x1 * z0 + 2.0 * x1 * z1) for value, ((x0, z0), (x1, z1)) in zip(cross, zip(points, points[1:] + points[:1]))) / 24.0
     iy = abs(iy_origin - area * cz * cz)
     iz = abs(iz_origin - area * cy * cy)
-    iyz = iyz_origin - area * cy * cz
+    iyz = (iyz_origin - area * cy * cz) * (1.0 if area > 0 else -1.0)
     return abs(area), cy, cz, iy, iz, iyz

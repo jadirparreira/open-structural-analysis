@@ -24,10 +24,10 @@ def _model(b=100.0, t=10.0, length=3.0, loads=None):
     model.analysis_results = [AnalysisResult(
         model.revision,
         "ELU",
-        member_results={"L1": {"samples": [loads or {
+        member_results={"L1": {"samples": [{"torque": 0., **(loads or {
             "x": 0.0, "axial": 10.0, "moment_y": 1.0, "moment_z": 0.5,
             "shear_y": 1.0, "shear_z": 1.0,
-        }]}},
+        })}]}},
     )]
     return model
 
@@ -44,8 +44,8 @@ def test_equal_leg_l_section_runs_all_checks_and_produces_l_memorial():
     assert result["summary"]["without_routine"] == 0
     assert result["summary"]["unverified"] == 0
     assert element["status"] == "checked"
-    assert all(check["status"] != "not_checked" for check in element["checks"].values())
-    for key in ("axial_compression", "flexion_y", "flexion_z", "shear_y", "shear_z"):
+    assert element["checks"]["axial_compression"]["status"] == "checked"
+    for key in ("axial_compression",):
         capacity_keys = {
             "axial_compression": "Nc_Rd_kn", "flexion_y": "MRd_kn_cm",
             "flexion_z": "MRd_kn_cm", "shear_y": "VRd_kn", "shear_z": "VRd_kn",
@@ -61,7 +61,9 @@ def test_equal_leg_l_section_runs_all_checks_and_produces_l_memorial():
     assert "Cortante em Y" in html
     assert "Cortante em Z" in html
     assert "resistência estimada para cantoneira isolada" not in html
-    assert "Flexão em Y — hipótese para cantoneira simples" in html
+    assert "Flexão em Y — cantoneira simples" in html
+    assert "Limite de escopo — L Laminado" in html
+    assert "não possui verificações previstas para esses esforços" in html
     assert "interação preliminar com capacidades estimadas" not in html
     assert "não implementada" not in html.lower()
 
@@ -96,7 +98,11 @@ def test_missing_l_dimensions_are_reported_as_input_error_without_exception():
     assert "geometria da seção incompleta" in html
 
 
-def test_nonzero_torsion_does_not_add_commentary_to_l_memorial():
+def test_nonzero_torsion_does_not_add_another_pending_check_and_appears_in_memorial():
+    loads = {"x": 0.0, "axial": 0.0, "moment_y": 0.0,
+             "moment_z": 0.0, "shear_y": 0.0, "shear_z": 0.0,
+             "torque": 0.0}
+    baseline = verify_model(_model(loads=loads))
     model = _model(loads={"x": 0.0, "axial": 0.0, "moment_y": 0.0,
                           "moment_z": 0.0, "shear_y": 0.0, "shear_z": 0.0,
                           "torque": 0.25})
@@ -104,40 +110,33 @@ def test_nonzero_torsion_does_not_add_commentary_to_l_memorial():
     model.verification_results = result["results"]
     html = CalculationMemorialDialog._render(calculation_memory(model, ("L1",)), {})
 
-    assert "momento torsor solicitante" not in html
-    assert "5.5.2.3" not in html
-    assert "não deve ser interpretado como aprovação" not in html
+    assert result["results"]["bar:L1"]["status"] == baseline["results"]["bar:L1"]["status"]
+    assert result["summary"]["unverified"] == baseline["summary"]["unverified"]
+    assert "solicitação de torção não verificada" not in result["results"]["bar:L1"]["detail"]
+    assert "5.5.2.3" in html
+    assert "O OSA não possui verificação de resistência à torção prevista para esta seção" in html
     assert "Flexão em Y" in html
     assert "4. Verificações" in html
 
 
-def test_mcalc_plastic_example_for_both_axes_with_independent_section_values():
-    # L 100x10 mm: split into non-overlapping rectangles, with the plastic
-    # neutral axis at 9.5 mm from the outside edge; Z = 45.475 cm³.
+def test_mcalc_example_is_not_used_as_normative_single_angle_resistance():
     checks = verify_model(_model())["results"]["bar:L1"]["checks"]
     for axis in ("y", "z"):
-        flex = checks[f"flexion_{axis}"]["parameters"]
-        shear = checks[f"shear_{axis}"]["parameters"]
-        assert flex["Z_cm3"] == pytest.approx(45.475)
-        assert flex["W_cm3"] == pytest.approx(25.24046740467405)
-        assert flex["lambda_p"] == pytest.approx(1.12 * math.sqrt(20000 / 25))
-        assert flex["lambda_r"] == pytest.approx(1.40 * math.sqrt(20000 / 25))
-        assert flex["Mpl_kn_cm"] == pytest.approx(45.475 * 25)
-        assert flex["MRd_kn_cm"] == pytest.approx(45.475 * 25 / 1.1)
-        assert flex["Mcr_kn_cm"] == pytest.approx(.69 * 20000 * flex["W_cm3"] / 10**2)
-        assert shear["kv"] == 5.0
-        assert shear["Aw_cm2"] == 10.0
-        assert shear["VRd_kn"] == pytest.approx(.60 * 10 * 25 / 1.1)
+        for kind in ("flexion", "shear"):
+            item = checks[f"{kind}_{axis}"]
+            assert item["status"] == "not_checked"
+            assert "exemplo" in item["detail"]
+            assert "MRd_kn_cm" not in item["parameters"]
+            assert "VRd_kn" not in item["parameters"]
 
 
-def test_isolated_axes_keep_their_demands_and_memorial_moment_units():
-    model = _model(loads={"x": 0., "moment_y": -2., "moment_z": .25,
-                          "shear_y": 3., "shear_z": -1.})
+def test_single_angle_unloaded_axes_are_not_applicable():
+    model = _model(loads={"x": 0., "axial": 0., "moment_y": -2., "moment_z": 0., "shear_y": 0., "shear_z": 0.})
     checks = verify_model(model)["results"]["bar:L1"]["checks"]
-    assert checks["flexion_y"]["applied_kn_cm"] == 200.
-    assert checks["flexion_z"]["applied_kn_cm"] == 25.
-    assert checks["flexion_y"]["utilization"] == pytest.approx(8 * checks["flexion_z"]["utilization"])
-    assert checks["shear_y"]["utilization"] == pytest.approx(3 * checks["shear_z"]["utilization"])
+    assert checks["flexion_y"]["status"] == "not_checked"
+    assert checks["flexion_z"]["status"] == "not_applicable"
+    assert checks["shear_y"]["status"] == "not_applicable"
+    assert checks["shear_z"]["status"] == "not_applicable"
 
 
 def test_unknown_nonplastic_regimes_do_not_report_a_resistance():
@@ -146,7 +145,7 @@ def test_unknown_nonplastic_regimes_do_not_report_a_resistance():
         for axis in ("y", "z"):
             check = checks[f"{kind}_{axis}"]
             assert check["status"] == "not_checked"
-            assert "não disponíveis" in check["detail"]
+            assert "não constitui verificação normativa" in check["detail"]
             assert "MRd_kn_cm" not in check["parameters"]
             assert "VRd_kn" not in check["parameters"]
     for kind in ("oblique_bending", "flexotension", "flexocompression"):
@@ -154,23 +153,18 @@ def test_unknown_nonplastic_regimes_do_not_report_a_resistance():
             assert checks[kind]["status"] == "not_checked"
 
 
-def test_l_memorial_documents_mcalc_and_exposes_limitations():
+def test_l_memorial_exposes_normative_scope_without_unverified_equations():
     model = _model()
     model.verification_results = verify_model(model)["results"]
     latex = {}
     html = CalculationMemorialDialog._render(calculation_memory(model, ("L1",)), {}, equation_latex=latex)
     equations = "\n".join(latex.values())
-    assert "Flexão em Y — hipótese para cantoneira simples" in html
-    assert "Cortante em Y — hipótese para cantoneira simples" in html
+    assert "cantoneira simples" in html
+    assert "não constitui verificação normativa" in html
+    assert "D.1.2" in html
     assert "MCalc" not in html
-    assert "aplicado por analogia" not in html
-    assert "Flexocompressão — critério da ABNT NBR 8800:2024, 5.5.1.2" in html
-    assert "AISC" not in html
-    assert r"M_{pl}" in equations
-    assert r"M_{Rk}" in equations
-    assert r"V_{Rk}" in equations
-    flexion = html.split("Flexão em Y — hipótese para cantoneira simples", 1)[1].split("Flexão em Z —", 1)[0]
-    assert "Anexo D" not in flexion
+    assert r"M_{pl}" not in equations
+    assert r"V_{Rk}" not in equations
 
 
 def test_l_memorial_docx_exports_mcalc_equations(tmp_path):
@@ -191,8 +185,8 @@ def test_old_l_results_request_reverification_instead_of_crashing_the_memorial()
     model.verification_results = verify_model(model)["results"]
     checks = model.verification_results["bar:L1"]["checks"]
     for axis in ("y", "z"):
-        checks[f"flexion_{axis}"]["parameters"].pop("method_version")
-        checks[f"shear_{axis}"]["parameters"].pop("method_version")
+        checks[f"flexion_{axis}"].update(status="checked", parameters={})
+        checks[f"shear_{axis}"].update(status="checked", parameters={})
     html = CalculationMemorialDialog._render(calculation_memory(model, ("L1",)), {})
     assert "atualizar os resultados de flexão do L Laminado" in html
     assert "atualizar os resultados de cortante do L Laminado" in html
@@ -252,3 +246,16 @@ def test_compression_memorial_shows_actual_branches_and_principal_axes():
     assert r"0,658^{\lambda_0^2}" in equations
     assert r"\dfrac{\sigma_{el}}{\chi f_y}" in equations
     assert "MCalc" not in section
+
+
+def test_l_principal_axis_lengths_cannot_mix_manual_and_geometric_estimates():
+    model = _model()
+    model.update_bar_calculation_property("L1", "Ly", 1.)
+    item = verify_model(model)["results"]["bar:L1"]["checks"]["axial_compression"]
+    assert item["status"] == "not_checked"
+    assert "ambos Ly e Lz" in item["detail"]
+    model.update_bar_calculation_property("L1", "Lz", 2.)
+    item = verify_model(model)["results"]["bar:L1"]["checks"]["axial_compression"]
+    assert item["status"] == "checked"
+    assert item["parameters"]["Ly_cm"] == 100.
+    assert item["parameters"]["Lz_cm"] == 200.

@@ -65,6 +65,27 @@ def test_calculation_properties_panel_saves_and_resets_manual_override():
     del app
 
 
+def test_tubular_net_area_and_ct_start_unspecified_and_are_saved_explicitly():
+    app = QApplication.instance() or QApplication([])
+    window = _PanelContext(_model("Tubular Circular"))
+    panel = CalculationPropertiesPanel(window)
+    window.refresh_selected_property_panel = lambda _section: panel.configure_for(("B1",))
+    panel.configure_for(("B1",))
+    assert panel._inputs["Ct"].value() == 0.
+    assert panel._inputs["Ct"].specialValueText() == "Informar"
+    assert panel._inputs["An"].value() == 0.
+    assert not window.model.bars["B1"].calculation_property_overrides
+    panel._inputs["An"].setValue(8.)
+    panel._inputs["An"].editingFinished.emit()
+    panel._inputs["Ct"].setValue(1.)
+    panel._inputs["Ct"].editingFinished.emit()
+    overrides = dict(window.model.bars["B1"].calculation_property_overrides)
+    assert overrides == {"An": 8., "Ct": 1.}
+    panel.close()
+    window.close()
+    app.processEvents()
+
+
 def test_calculation_properties_panel_uses_memorial_unbraced_lengths(monkeypatch):
     app = QApplication.instance() or QApplication([])
     window = _PanelContext(_model())
@@ -170,11 +191,11 @@ def test_calculation_properties_panel_sizes_to_show_its_fields():
     panel = CalculationPropertiesPanel(window)
     panel.configure_for(("B1",))
 
-    assert [panel._labels[name].text() for name, *_ in panel._FIELDS] == [
+    assert [panel._labels[name].text() for name, *_ in panel._FIELDS[:6]] == [
         "L<sub>y</sub>", "L<sub>z</sub>", "L<sub>t</sub>",
         "L<sub>b</sub>", "C<sub>t</sub>", "C<sub>b</sub>",
     ]
-    assert not panel.findChildren(QCheckBox)
+    assert all(widget.isHidden() for widget in panel.findChildren(QCheckBox))
     assert panel._unit_labels["Ly"].text() == "m"
     assert not panel._unit_labels["Ly"].isHidden()
     assert panel._unit_labels["Ct"].isHidden()
@@ -189,13 +210,13 @@ def test_calculation_properties_panel_sizes_to_show_its_fields():
 
     assert panel.width() == CalculationPropertiesPanel.WIDTH
     assert panel.height() > 200
-    fields_grid = panel.layout().itemAt(1).layout()
+    fields_grid = panel.layout().itemAt(1).widget().widget().layout()
     assert [fields_grid.getItemPosition(index)[:2] for index in range(6)] == [
         (0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1),
     ]
     assert all(
         spin.mapTo(panel, spin.rect().bottomRight()).y() < panel.height()
-        for spin in panel._inputs.values()
+        for name, spin in panel._inputs.items() if name in {"Ly", "Lz", "Lt", "Lb", "Ct", "Cb"}
     )
     assert panel.y() >= 0
     assert panel.y() + panel.height() <= window.height()
@@ -239,5 +260,77 @@ def test_calculation_properties_button_opens_panel_for_selected_bar():
     assert panel.configured_names == ["B1"]
     assert button.isChecked()
 
+    window.close()
+    del app
+
+
+def test_mrd_mode_absence_is_explicit_and_can_be_cleared():
+    app = QApplication.instance() or QApplication([])
+    window = _PanelContext(_model("C Formado"))
+    panel = CalculationPropertiesPanel(window)
+    window.refresh_selected_property_panel = lambda _section: panel.configure_for(("B1",))
+    panel.configure_for(("B1",))
+    button = panel._absent_buttons["NcrD"]
+    assert not button.isChecked()
+    assert panel._inputs["NcrD"].specialValueText() == "Automático"
+    assert "NcrD" not in dict(window.model.bars["B1"].calculation_property_overrides)
+    button.click()
+    assert dict(window.model.bars["B1"].calculation_property_overrides)["NcrD"] == -1.
+    assert panel._inputs["NcrD"].specialValueText() == "Ausente"
+    assert not panel._inputs["NcrD"].isEnabled()
+    button.click()
+    assert "NcrD" not in dict(window.model.bars["B1"].calculation_property_overrides)
+    assert panel._inputs["NcrD"].isEnabled()
+    assert panel._inputs["NcrD"].specialValueText() == "Automático"
+    panel.close()
+    window.close()
+    del app
+
+
+def test_restoring_automatic_lengths_does_not_erase_required_connection_or_mrd_data():
+    model = _model("C Formado")
+    model.update_bar_material("B1", "ASTM A36", model.materials["ASTM A36"])
+    model.update_member_profile("B1", "C de teste", {"d": 100., "bf": 50., "c": 15., "t": 2.})
+    model.add_node("C", 0, 0, 3)
+    model.add_bar("B2", "B", "C")
+    model.update_bar_section("B2", "W Laminado")
+    model.update_bar_material("B2", "ASTM A36", model.materials["ASTM A36"])
+    model.update_member_profile("B2", "W de teste", {"d": 203., "bf": 102., "tw": 5.8, "tf": 6.5})
+    required = {"Ct": .8, "An": 2., "An0": 2., "KL1": 2., "KL2": 1., "NcrG": 100., "NcrL": 50., "NcrD": 80.}
+    for name, value in required.items():
+        model.update_bar_calculation_property("B1", name, value)
+    context = SimpleNamespace(model=model)
+    assert not MainWindow._has_calculation_property_overrides(context)
+    model.update_bar_calculation_property("B2", "Lb", 1.)
+    assert MainWindow._has_calculation_property_overrides(context)
+    MainWindow._reset_calculation_property_overrides(context)
+    assert dict(model.bars["B1"].calculation_property_overrides) == required
+    assert model.bars["B2"].calculation_property_overrides == ()
+
+
+def test_effective_lengths_only_appear_for_cold_formed_and_have_no_automatic_default():
+    app = QApplication.instance() or QApplication([])
+    window = _PanelContext(_model("C Formado"))
+    panel = CalculationPropertiesPanel(window)
+    window.refresh_selected_property_panel = lambda _section: panel.configure_for(("B1",))
+    panel.configure_for(("B1",))
+    for name in ("KL1", "KL2"):
+        assert panel._inputs[name].isEnabled()
+        assert panel._inputs[name].value() == 0
+        assert panel._inputs[name].specialValueText() == "Informar"
+        assert "principal" in panel._labels[name].toolTip()
+        assert not panel._inputs[name].parentWidget().parentWidget().isHidden()
+    assert panel._inputs["Ly"].isEnabled()
+    assert "tração" in panel._inputs["Ly"].toolTip()
+    panel._inputs["KL1"].setValue(2.)
+    panel._inputs["KL1"].editingFinished.emit()
+    assert dict(window.model.bars["B1"].calculation_property_overrides)["KL1"] == 2.
+    panel._reset_buttons["KL1"].click()
+    assert "KL1" not in dict(window.model.bars["B1"].calculation_property_overrides)
+    window.model.update_bar_section("B1", "W Laminado")
+    window.model.update_member_profile("B1", "W de teste", {"d": 203., "bf": 102., "tw": 5.8, "tf": 6.5})
+    panel.configure_for(("B1",))
+    assert panel._inputs["KL1"].parentWidget().parentWidget().isHidden()
+    panel.close()
     window.close()
     del app

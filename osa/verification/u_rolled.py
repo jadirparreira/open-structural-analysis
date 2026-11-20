@@ -6,6 +6,8 @@ from math import pi, sqrt
 
 from osa.sections.contours import polygon_properties, u_contour_points
 from osa.verification.calculation_properties import calculation_property
+from osa.verification.moment_gradient import rolled_member_cb
+from osa.verification.net_section import tension_net_data
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -61,9 +63,7 @@ def verify_u_tension(element, model, results) -> dict:
 
     try:
         ag_cm2 = _gross_area_cm2(members[0])
-        # O modelo não contém furos ou recortes da ligação: An = Ag nesta etapa.
-        an_cm2 = ag_cm2
-        ct = calculation_property(model, element, "Ct", CT_INITIAL)
+        an_cm2, ct = tension_net_data(model, element, results, ag_cm2)
         ae_cm2 = ct * an_cm2
         # Model strengths are stored in kN/m²; divide by 10 000 for kN/cm².
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
@@ -248,17 +248,23 @@ def verify_u_flexion_y(element, model, results) -> dict:
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
         tr_kn_cm2 = 0.30 * fy_kn_cm2
         gamma_a1 = GAMMA_A1
-        cb = calculation_property(model, element, "Cb", CB_INITIAL)
+        cb_override = calculation_property(model, element, "Cb", None)
         mp_kn_cm = zy_cm3 * fy_kn_cm2
         mr_kn_cm = 0.70 * wy_cm3 * fy_kn_cm2
 
         lengths = restraint_lengths(
-            model, element, results, {"Iy": geometry["Iz"], "tw": tw_cm}, cb=cb,
+            model, element, results, {"Iy": geometry["Iz"], "tw": tw_cm}, cb=CB_INITIAL,
         )
+        cb_data = rolled_member_cb(model, element, results, "moment_y", lengths, cb_override)
+        cb = cb_data["value"]
         lb_m = lengths.lengths_m["Lb"]
         restraint_parameters = {
             "Lb_cm": lb_m * 100.0,
             "Cb": cb,
+            "Cb_method": cb_data["source"],
+            "Cb_by_combination": cb_data["by_combination"],
+            "Cb_interval_m": cb_data.get("interval_m"),
+            "Cb_governing_input": cb_data.get("governing"),
             "restraint_issues": list(lengths.issues),
             "restraint_modes": lengths.modes,
             "restraint_notes": list(lengths.notes),
@@ -790,8 +796,6 @@ def verify_u_shear_z(element, model, results) -> dict:
         from osa.memorial_data import _u_properties
 
         geometry = _u_properties(members[0])
-        section_geometry = members[0].geometry_dict()
-        radius_mm = geometry["r"]
         d_cm = geometry["d"] / 10.0
         tw_cm = geometry["tw"] / 10.0
         h_cm = geometry["h"] / 10.0
@@ -1005,15 +1009,15 @@ def _verify_u_combined_actions(element, model, results, mode: str,
                 critical = combination_critical
 
     if mode == "flexao_obliqua":
-        label = "Flexão oblíqua"
+        _label = "Flexão oblíqua"
         detail = "nenhuma combinação apresentou flexão simultânea nos dois eixos sem esforço axial"
         critical_name = "Flexão oblíqua"
     elif mode == "flexotension":
-        label = "Flexotração"
+        _label = "Flexotração"
         detail = "nenhuma combinação apresentou tração axial simultânea com momento fletor"
         critical_name = "Flexotração"
     else:
-        label = "Flexocompressão"
+        _label = "Flexocompressão"
         detail = "nenhuma combinação apresentou compressão axial simultânea com momento fletor"
         critical_name = "Flexocompressão"
 

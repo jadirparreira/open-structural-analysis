@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import pi, sqrt
 
-from osa.verification.calculation_properties import calculation_property
+from osa.verification.net_section import tension_net_data
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -184,8 +184,8 @@ def verify_t_tension(element, model, results):
     try:
         members, p, _, _, fy, fu = _base(element, model, results)
         n_yield = p["Ag_cm2"] * fy / GAMMA_A1
-        ct = calculation_property(model, element, "Ct", 1.0)
-        ae = p["Ag_cm2"] * ct
+        an, ct = tension_net_data(model, element, results, p["Ag_cm2"])
+        ae = an * ct
         n_rupture = ae * fu / GAMMA_A2
         cap = min(n_yield, n_rupture)
         out = _result("Tração axial", results, members, "axial", cap,
@@ -217,7 +217,7 @@ def verify_t_tension(element, model, results):
             "applied_kn": critical["applied_kn"] if critical else None,
             "combinations": combinations,
             "parameters": {
-                "Ag_cm2": p["Ag_cm2"], "An_cm2": p["Ag_cm2"],
+                "Ag_cm2": p["Ag_cm2"], "An_cm2": an,
                 "Ae_cm2": ae, "Ct": ct,
                 "fy_kn_cm2": fy, "fu_kn_cm2": fu,
                 "gamma_a1": GAMMA_A1, "gamma_a2": GAMMA_A2,
@@ -462,32 +462,16 @@ def _local_buckling_capacity(lam, lp, lr, mpl, mr, mcr):
 
 
 def verify_t_flexion_z(element, model, results):
-    """Check the second-axis flange-buckling resistance used by the T reference."""
+    """Do not transfer the I/H weak-axis FLM curve to a T without its FLT."""
     try:
-        members, p, e, _, fy, _ = _base(element, model, results)
-        lam = p["bf_mm"] / p["tf_mm"]
-        sigma_r = 0.30 * fy
-        lp = 0.38 * sqrt(e / fy)
-        lr = 0.83 * sqrt(e / max(fy - sigma_r, EPS))
-        mpl = p["Zz_cm3"] * fy
-        w_comp = p["Wz_cm3"]
-        mr = min((fy - sigma_r) * w_comp, fy * w_comp)
-        mcr = 0.69 * e * w_comp / lam**2
-        cap = _local_buckling_capacity(lam, lp, lr, mpl, mr, mcr)
-        out = _result("Flexão Z", results, members, "moment_z", cap, 100.0,
-                      threshold=MIN_BENDING_KN_M * 100.0)
-        out["applied_kn_cm"] = out.pop("applied_kn", None)
-        if out["status"] == "not_applicable":
-            out["detail"] = "nenhuma combinação apresentou flexão em Z"
-        out["parameters"] = {
-            "Ag_cm2": p["Ag_cm2"], "bf_mm": p["bf_mm"], "tf_mm": p["tf_mm"],
-            "lambda_flm": lam, "lambda_p_flm": lp, "lambda_r_flm": lr,
-            "sigma_r_kn_cm2": sigma_r, "fy_kn_cm2": fy, "E_kn_cm2": e,
-            "gamma_a1": GAMMA_A1, "Zz_cm3": p["Zz_cm3"],
-            "Wzc_cm3": w_comp, "Mpl_kn_cm": mpl, "Mr_kn_cm": mr,
-            "Mcr_kn_cm": mcr, "MRd_kn_cm": cap,
-        }
-        return out
+        members, _p, _e, _g, _fy, _fu = _base(element, model, results)
+        demanded = any(abs(float(sample["moment_z"])) >= MIN_BENDING_KN_M
+                       for _, _, sample in _samples(results, members))
+        return {"status": "not_checked" if demanded else "not_applicable",
+                "critical_check": "Flexão Z", "parameters": {},
+                "detail": "O OSA não possui verificação prevista de flexão Z para esta seção T; é necessário procedimento específico que considere suas instabilidades." if demanded else "nenhuma combinação apresentou flexão em Z",
+                "memorandum_only": demanded,
+                "reference": "ABNT NBR 8800:2024, 5.4.2.1; Tabela D.1"}
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
         return {"status": "not_checked", "detail": str(error)}
 
@@ -503,18 +487,18 @@ def _shear(element, model, results, axis):
         if demand < MIN_SHEAR_KN:
             return {"status": "not_applicable", "detail": f"nenhuma combinação apresentou cortante em {axis.upper()}",
                     "parameters": {"VRd_kn": 0.0}}
-        if axis == "z":
-            # Flange shear plate model used by the supplied T-section reference.
-            lam = p["bf_mm"] / p["tf_mm"]
-            kv = 5.0
-            aw = (p["bf_mm"] - p["tw_mm"]) * p["tf_mm"] / 100.0
-        else:
-            lam = p["d_mm"] / p["tw_mm"]
-            kv = 1.2
-            aw = p["d_mm"] * p["tw_mm"] / 100.0
-            if lam > 260.0:
-                return {"status": "not_checked", "detail": "d/tw excede 260, limite da NBR 8800:2024, 5.4.3.3",
-                        "parameters": {"lambda": lam, "kv": kv, "Aw_cm2": aw}}
+        if axis == "y":
+            return {"status": "not_checked", "parameters": {}, "critical_check": "Cortante Y",
+                    "detail": "O OSA não possui verificação prevista de cortante Y para esta seção T; kv=5 da alma apoiada não pode ser transferido à mesa livre.",
+                    "memorandum_only": True,
+                    "reference": "ABNT NBR 8800:2024, 5.4.3"}
+        # Local z is the web-height direction, conjugate to bending My.
+        lam = p["d_mm"] / p["tw_mm"]
+        kv = 1.2
+        aw = p["d_mm"] * p["tw_mm"] / 100.0
+        if lam > 260.0:
+            return {"status": "not_checked", "detail": "d/tw excede 260, limite da NBR 8800:2024, 5.4.3.3",
+                    "parameters": {"lambda": lam, "kv": kv, "Aw_cm2": aw}}
         lp = 1.10 * sqrt(kv * e / fy)
         lr = 1.37 * sqrt(kv * e / fy)
         vpl = 0.60 * aw * fy
@@ -593,13 +577,30 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
                     signed_my = float(sample.get("moment_y", 0.0))
                     my = abs(signed_my) * 100.0
                     mz = abs(float(sample.get("moment_z", 0.0))) * 100.0
+                    has_my = my >= MIN_BENDING_KN_M*100
+                    has_mz = mz >= MIN_BENDING_KN_M*100
+                    if mode == "oblique":
+                        if abs(n_raw) >= MIN_TENSION_KN or not (has_my and has_mz):
+                            continue
+                    elif n < MIN_TENSION_KN or not (has_my or has_mz):
+                        continue
+                    if ((has_my and flex_y.get("status") == "not_checked") or
+                            (has_mz and flex_z.get("status") == "not_checked")):
+                        memorandum_only = bool(has_mz and flex_z.get("memorandum_only"))
+                        return {"status": "not_checked", "memorandum_only": memorandum_only,
+                                "detail": "Interação não verificada por falta de procedimento de flexão aplicável à seção T." if memorandum_only else
+                                         "Resistência à flexão indisponível para a interação.", "parameters": {}}
+                    if mode != "oblique" and axial_capacity <= 0:
+                        return {"status": "not_checked", "detail": "Resistência axial indisponível para a interação.", "parameters": {}}
                     my_capacity = float((flex_y.get("parameters") or {}).get(
                         "MRd_tension_kn_cm" if signed_my >= 0.0 else "MRd_compression_kn_cm", myr))
                     if n < MIN_TENSION_KN and my < MIN_BENDING_KN_M * 100.0 and mz < MIN_BENDING_KN_M * 100.0:
                         continue
                     ratio_n = n / max(axial_capacity, EPS) if mode != "oblique" else 0.0
-                    ratio_my = my / max(my_capacity, EPS)
-                    ratio_mz = mz / max(mzr, EPS)
+                    if (has_my and my_capacity <= 0) or (has_mz and mzr <= 0):
+                        return {"status": "not_checked", "detail": "Resistência à flexão ausente ou inválida.", "parameters": {}}
+                    ratio_my = my/my_capacity if has_my else 0.
+                    ratio_mz = mz/mzr if has_mz else 0.
                     if mode == "oblique":
                         candidate_utilization = ratio_my + ratio_mz
                     elif ratio_n >= 0.2:
@@ -614,8 +615,8 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
                 continue
             n, my, mz, owner, interaction, my_capacity = governing
             ratio_n = n / max(axial_capacity, EPS) if mode != "oblique" else 0.0
-            ratio_my = my / max(my_capacity, EPS)
-            ratio_mz = mz / max(mzr, EPS)
+            ratio_my = my/my_capacity if my >= MIN_BENDING_KN_M*100 else 0.
+            ratio_mz = mz/mzr if mz >= MIN_BENDING_KN_M*100 else 0.
             item = {"combination": result.load_reference, "member": owner,
                     "applied_kn": n, "applied_my_kn_cm": my,
                     "applied_mz_kn_cm": mz, "utilization": interaction,

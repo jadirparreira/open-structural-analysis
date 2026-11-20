@@ -113,7 +113,7 @@ def test_legacy_saved_analysis_requires_reprocessing_after_axis_correction():
     restored.revision = model.revision
     assert ResultService(restored).current()
 
-    data.pop("analysis_axes")
+    data["analysis_axes"] = "osa-z-up-v1"
     restored.load_dict(data)
     restored.revision = model.revision
     assert not ResultService(restored).current()

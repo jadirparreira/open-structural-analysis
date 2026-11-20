@@ -1,5 +1,7 @@
 """Conversão de resultados do PyNite para entidades do domínio."""
 
+from math import cos, radians, sin
+
 import numpy as np
 
 from osa.domain import AnalysisResult
@@ -24,6 +26,10 @@ class ResultMapper:
         else:
             groups = ((name, ((name, 0.0, 1.0),)) for name in source.members)
         for name, segments in groups:
+            warping = getattr(source, '_osa_vlasov_results', {}).get(load_reference, {}).get(name)
+            if warping is not None:
+                member_results[name] = warping
+                continue
             first_name, first_start, first_end = segments[0]
             first = source.members[first_name]
             length = float(first.L()) / (first_end - first_start)
@@ -94,27 +100,26 @@ class ResultMapper:
 
     @staticmethod
     def _member_end_result(member, position: float, load_reference: str) -> dict[str, float]:
-        deflections = ResultMapper._global_deflections(member, position, load_reference)
-        return {
-            "axial": float(member.axial(position, load_reference)),
-            "shear_y": float(member.shear("Fy", position, load_reference)),
-            "shear_z": float(member.shear("Fz", position, load_reference)),
-            "moment_y": float(member.moment("My", position, load_reference)),
-            "moment_z": float(member.moment("Mz", position, load_reference)),
-            "torque": float(member.torque(position, load_reference)),
-            **deflections,
-        }
+        return {key: value for key, value in
+                ResultMapper._member_sample(member, position, load_reference).items() if key != "x"}
 
     @staticmethod
     def _member_sample(member, position: float, load_reference: str) -> dict[str, float]:
         deflections = ResultMapper._global_deflections(member, position, load_reference)
+        angle = radians(getattr(member, "_osa_principal_angle", 0.0))
+        cosine, sine = cos(angle), sin(angle)
+        fy, fz = (float(member.shear(axis, position, load_reference)) for axis in ("Fy", "Fz"))
+        my, mz = (float(member.moment(axis, position, load_reference)) for axis in ("My", "Mz"))
         return {
             "x": position,
             "axial": float(member.axial(position, load_reference)),
-            "shear_y": float(member.shear("Fy", position, load_reference)),
-            "shear_z": float(member.shear("Fz", position, load_reference)),
-            "moment_y": float(member.moment("My", position, load_reference)),
-            "moment_z": float(member.moment("Mz", position, load_reference)),
+            "shear_y": cosine * fy - sine * fz,
+            "shear_z": sine * fy + cosine * fz,
+            # PyNite's plotted My/Mz signs differ from the vector convention
+            # used by its shear API; rotate these reported bending components
+            # with the corresponding conjugate sign convention.
+            "moment_y": cosine * my + sine * mz,
+            "moment_z": -sine * my + cosine * mz,
             "torque": float(member.torque(position, load_reference)),
             **deflections,
         }

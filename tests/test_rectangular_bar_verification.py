@@ -23,10 +23,10 @@ def _model(b=10.0, h=20.0, length=0.5, loads=None):
     model.analysis_results = [AnalysisResult(
         model.revision,
         "ELU",
-        member_results={"R1": {"samples": [loads or {
+        member_results={"R1": {"samples": [{"torque": 0., **(loads or {
             "x": 0.0, "axial": 10.0, "moment_y": 0.1, "moment_z": 0.1,
             "shear_y": 1.0, "shear_z": 1.0,
-        }]}},
+        })}]}},
     )]
     return model
 

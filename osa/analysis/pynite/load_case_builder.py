@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import cos, isfinite, radians, sin
+
 import numpy as np
 
 from osa.domain import StructuralModel
@@ -48,21 +50,31 @@ class LoadCaseBuilder:
         kind = action.kind
         if kind.startswith("member_distributed_force_"):
             direction = LoadCaseBuilder._member_force_direction(kind)
+            member = target.members.get(action.target)
+            angle = radians(getattr(member, "_osa_principal_angle", 0.0))
+            if direction == "Fy" and angle:
+                directions = (("Fy", cos(angle)), ("Fz", -sin(angle)))
+            elif direction == "Fz" and angle:
+                directions = (("Fy", sin(angle)), ("Fz", cos(angle)))
+            else:
+                directions = ((direction, 1.0),)
             initial, final = action.components
             segments = getattr(target, "_osa_member_segments", {}).get(action.target)
             if segments:
                 for segment_name, start_ratio, end_ratio in segments:
                     start_value = initial + (final - initial) * start_ratio
                     end_value = initial + (final - initial) * end_ratio
-                    target.add_member_dist_load(
-                        segment_name, direction, start_value, end_value, case=action.load_case,
-                        self_weight=kind == "member_distributed_force_selfweight_Z",
-                    )
+                    for local_direction, factor in directions:
+                        target.add_member_dist_load(
+                            segment_name, local_direction, start_value * factor, end_value * factor,
+                            case=action.load_case, self_weight=kind == "member_distributed_force_selfweight_Z",
+                        )
             else:
-                target.add_member_dist_load(
-                    action.target, direction, initial, final, case=action.load_case,
-                    self_weight=kind == "member_distributed_force_selfweight_Z",
-                )
+                for local_direction, factor in directions:
+                    target.add_member_dist_load(
+                        action.target, local_direction, initial * factor, final * factor,
+                        case=action.load_case, self_weight=kind == "member_distributed_force_selfweight_Z",
+                    )
             return
         if kind.startswith(("node_force_", "node_moment_")):
             axis = kind.rsplit("_", 1)[1].upper()
@@ -82,6 +94,15 @@ class LoadCaseBuilder:
                 for node_name in node_names:
                     target.add_node_load(node_name, "FZ", nodal_force, action.load_case)
             return
+        if kind.startswith('member_bimoment_'):
+            if len(action.components) != 1 or not isfinite(float(action.components[0])):
+                raise ValueError('Bimomento deve ser um valor finito em kN m².')
+            if action.target not in target.members or kind.rsplit('_', 1)[-1] not in ('A', 'B'):
+                raise ValueError('Barra ou extremidade do bimomento inexistente.')
+            if not hasattr(target, '_osa_bimoment_loads'):
+                target._osa_bimoment_loads = []
+            target._osa_bimoment_loads.append((action.target, kind[-1], float(action.components[0]), action.load_case))
+            return
         if kind.startswith("member_moment_"):
             LoadCaseBuilder._apply_distributed_member_moment(target, action)
             return
@@ -93,7 +114,7 @@ class LoadCaseBuilder:
             return "FZ"
         suffix = kind.removeprefix("member_distributed_force_")
         if suffix.startswith("local_"):
-            return f"F{suffix.removeprefix('local_')}"
+            return f"F{suffix.removeprefix('local_').lower()}"
         if suffix.startswith("global_"):
             return f"F{suffix.removeprefix('global_')}"
         return f"F{suffix}"
@@ -110,6 +131,9 @@ class LoadCaseBuilder:
         if axis not in {"X", "Y", "Z"}:
             raise ValueError(f"A direção do momento distribuído '{axis}' é inválida.")
         density = float(action.components[0])
+        if not hasattr(target, '_osa_continuous_moments'):
+            target._osa_continuous_moments = []
+        target._osa_continuous_moments.append((action.target, axis, density, action.load_case))
         member = target.members.get(action.target)
         if member is None:
             raise ValueError(f"A barra '{action.target}' não existe no modelo PyNite.")
@@ -123,20 +147,29 @@ class LoadCaseBuilder:
         if length <= 0.0:
             raise ValueError(f"A barra '{action.target}' deve possuir comprimento positivo.")
         segment_length = length / cls.DISTRIBUTED_MOMENT_SEGMENTS
-        direction = f"M{axis.lower()}"
+        angle = radians(getattr(member, "_osa_principal_angle", 0.0))
+        if axis == "Y" and angle:
+            directions = (("My", cos(angle)), ("Mz", -sin(angle)))
+        elif axis == "Z" and angle:
+            directions = (("My", sin(angle)), ("Mz", cos(angle)))
+        else:
+            directions = ((f"M{axis.lower()}", 1.0),)
         for index in range(cls.DISTRIBUTED_MOMENT_SEGMENTS):
             global_position = (index + 0.5) * segment_length
             applied = False
             for segment_name, start_ratio, end_ratio in segments:
                 start_position, end_position = start_ratio * length, end_ratio * length
                 if start_position - 1e-10 <= global_position <= end_position + 1e-10:
-                    target.add_member_pt_load(
-                        segment_name, direction, density * segment_length,
-                        global_position - start_position, action.load_case,
-                    )
+                    for direction, factor in directions:
+                        target.add_member_pt_load(
+                            segment_name, direction, density * segment_length * factor,
+                            global_position - start_position, action.load_case,
+                        )
                     applied = True
                     break
             if not applied:
-                target.add_member_pt_load(
-                    action.target, direction, density * segment_length, global_position, action.load_case,
-                )
+                for direction, factor in directions:
+                    target.add_member_pt_load(
+                        action.target, direction, density * segment_length * factor,
+                        global_position, action.load_case,
+                    )

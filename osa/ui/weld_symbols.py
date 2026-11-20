@@ -412,7 +412,7 @@ class WeldTool(QObject):
         self.workspace.set_member_break_mode(False)
         for name in ("_annotation_mode", "_element_visibility_mode"):
             setattr(self.workspace, name, None)
-        for name in ("_dimension_mode", "_identification_mode", "_detail_identifier_mode", "_elevation_identifier_mode"):
+        for name in ("_dimension_mode", "_identification_mode", "_detail_identifier_mode", "_section_mode", "_elevation_identifier_mode"):
             setattr(self.workspace, name, False)
         self._clear_snap()
         self.active = True
@@ -655,7 +655,7 @@ class WeldTool(QObject):
                         ws.layout_changed.emit()
                 return True
             if not any((ws._annotation_mode, ws._dimension_mode, ws._identification_mode,
-                        ws._detail_identifier_mode, ws._elevation_identifier_mode,
+                        ws._detail_identifier_mode, ws._section_mode, ws._elevation_identifier_mode,
                         ws._element_visibility_mode, ws._member_break_mode)):
                 hit = next((key for key, shape in reversed(tuple(self.hits.items())) if shape.contains(pos)), None)
                 if hit is not None:

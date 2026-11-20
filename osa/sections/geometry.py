@@ -30,6 +30,7 @@ from .contours import (
     t_svg_path,
     u_formed_svg_path,
     z_formed_svg_path,
+    z_stiffened_points,
 )
 
 Point = tuple[float, float]
@@ -110,7 +111,7 @@ def _arc_points(
         (rx * rx * ry * ry) - (rx * rx * y_prime * y_prime) - (ry * ry * x_prime * x_prime),
     )
     denominator = rx * rx * y_prime * y_prime + ry * ry * x_prime * x_prime
-    coefficient = sqrt(numerator / denominator) if denominator > 1e-20 else 0.0
+    coefficient = sqrt(numerator / denominator) if denominator > 0.0 else 0.0
     if bool(large_arc) == bool(sweep):
         coefficient = -coefficient
 
@@ -135,7 +136,7 @@ def _arc_points(
     elif sweep and delta_angle < 0.0:
         delta_angle += 2.0 * pi
 
-    samples = max(2, ceil(abs(delta_angle) / (pi / 2.0) * steps))
+    samples = max(2, ceil(abs(delta_angle) / (pi / 2.0) * steps - 1e-10))
     return [
         (
             center[0] + rx * cos_phi * cos(angle) - ry * sin_phi * sin(angle),
@@ -261,6 +262,9 @@ def _raw_loops(family: str, geometry: dict[str, float], arc_steps: int) -> tuple
         return _svg_loops(c_formed_svg_path(float(geometry["d"]), float(geometry["bf"]), float(geometry["c"]), float(geometry["t"])), arc_steps)
     if family == "Z Formado":
         return _svg_loops(z_formed_svg_path(float(geometry["d"]), float(geometry["bf"]), float(geometry["t"])), arc_steps)
+    if family in {"Z45 Formado", "Z90 Formado"}:
+        return (z_stiffened_points(*(float(geometry[key]) for key in ("d", "bf", "c", "t", "r")),
+                                   45 if family == "Z45 Formado" else 90, arc_steps),)
     if family == "L Formado":
         return _svg_loops(l_formed_svg_path(float(geometry["d"]), float(geometry["bf"]), float(geometry["t"])), arc_steps)
     if family == "Cartola Formado":

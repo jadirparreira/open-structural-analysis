@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from math import pi, sqrt, tan
+from math import pi, sqrt
 
 from osa.sections.contours import i_contour_points, polygon_properties
 from osa.verification.calculation_properties import calculation_property
+from osa.verification.moment_gradient import rolled_member_cb
+from osa.verification.net_section import tension_net_data
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -63,9 +65,7 @@ def verify_i_tension(element, model, results) -> dict:
 
     try:
         ag_cm2 = _gross_area_cm2(members[0])
-        # O modelo não contém furos ou recortes da ligação: An = Ag nesta etapa.
-        an_cm2 = ag_cm2
-        ct = calculation_property(model, element, "Ct", CT_INITIAL)
+        an_cm2, ct = tension_net_data(model, element, results, ag_cm2)
         ae_cm2 = ct * an_cm2
         # Model strengths are stored in kN/m²; divide by 10 000 for kN/cm².
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
@@ -253,17 +253,23 @@ def verify_i_flexion_y(element, model, results) -> dict:
         fy_kn_cm2 = fy_kn_m2 / 10_000.0
         tr_kn_cm2 = 0.30 * fy_kn_cm2
         gamma_a1 = GAMMA_A1
-        cb = calculation_property(model, element, "Cb", CB_INITIAL)
+        cb_override = calculation_property(model, element, "Cb", None)
         mp_kn_cm = zy_cm3 * fy_kn_cm2
         mr_kn_cm = 0.70 * wy_cm3 * fy_kn_cm2
 
         lengths = restraint_lengths(
-            model, element, results, {"Iy": geometry["Iz"], "tw": tw_cm}, cb=cb,
+            model, element, results, {"Iy": geometry["Iz"], "tw": tw_cm}, cb=CB_INITIAL,
         )
+        cb_data = rolled_member_cb(model, element, results, "moment_y", lengths, cb_override)
+        cb = cb_data["value"]
         lb_m = lengths.lengths_m["Lb"]
         restraint_parameters = {
             "Lb_cm": lb_m * 100.0,
             "Cb": cb,
+            "Cb_method": cb_data["source"],
+            "Cb_by_combination": cb_data["by_combination"],
+            "Cb_interval_m": cb_data.get("interval_m"),
+            "Cb_governing_input": cb_data.get("governing"),
             "restraint_issues": list(lengths.issues),
             "restraint_modes": lengths.modes,
             "restraint_notes": list(lengths.notes),
@@ -315,15 +321,18 @@ def verify_i_flexion_y(element, model, results) -> dict:
         lambda_fla = di_cm / tw_cm
         lambda_p_fla = 3.76 * sqrt(elastic_kn_cm2 / fy_kn_cm2)
         lambda_r_fla = 5.70 * sqrt(elastic_kn_cm2 / fy_kn_cm2)
+        mr_fla_kn_cm = wy_cm3 * fy_kn_cm2
+        if lambda_fla > lambda_r_fla:
+            return {"status": "not_checked", "critical_check": "Flexão Y — FLA",
+                    "detail": "A alma excede o limite da Tabela D.1; a interpolação de D.2.3 não pode ser extrapolada. O Anexo E não cobre automaticamente o perfil I laminado.",
+                    "parameters": {**restraint_parameters, "lambda_fla": lambda_fla,
+                                   "lambda_p_fla": lambda_p_fla, "lambda_r_fla": lambda_r_fla,
+                                   "Mr_fla_kn_cm": mr_fla_kn_cm}}
         if lambda_fla <= lambda_p_fla:
             mn_fla_kn_cm = mp_kn_cm
         else:
-            # Keep the extended interpolation defined in the supplied routine.
-            mn_fla_kn_cm = max(0.0, min(
-                mp_kn_cm,
-                mp_kn_cm - (mp_kn_cm - mr_kn_cm)
-                * ((lambda_fla - lambda_p_fla) / (lambda_r_fla - lambda_p_fla)),
-            ))
+            mn_fla_kn_cm = mp_kn_cm - (mp_kn_cm - mr_fla_kn_cm) * (
+                (lambda_fla - lambda_p_fla) / (lambda_r_fla - lambda_p_fla))
         mrd_fla_kn_cm = mn_fla_kn_cm / gamma_a1
 
         mrd_limit_kn_cm = 1.50 * wy_cm3 * fy_kn_cm2 / gamma_a1
@@ -378,6 +387,7 @@ def verify_i_flexion_y(element, model, results) -> dict:
         "Cw_cm6": cw_cm6, "bf_cm": bf_cm, "tf_cm": tf_cm,
         "tw_cm": tw_cm, "di_cm": di_cm,
         "Cb": cb, "Mp_kn_cm": mp_kn_cm, "Mr_kn_cm": mr_kn_cm,
+        "Mr_fla_kn_cm": mr_fla_kn_cm,
         "beta1": beta1,
         "lambda_flt": lambda_flt, "lambda_p_flt": lambda_p_flt,
         "lambda_r_flt": lambda_r_flt, "Mcr_flt_kn_cm": mcr_flt_kn_cm,
@@ -884,15 +894,15 @@ def _verify_i_combined_actions(element, model, results, mode: str,
                 critical = combination_critical
 
     if mode == "flexao_obliqua":
-        label = "Flexão oblíqua"
+        _label = "Flexão oblíqua"
         detail = "nenhuma combinação apresentou flexão simultânea nos dois eixos sem esforço axial"
         critical_name = "Flexão oblíqua"
     elif mode == "flexotension":
-        label = "Flexotração"
+        _label = "Flexotração"
         detail = "nenhuma combinação apresentou tração axial simultânea com momento fletor"
         critical_name = "Flexotração"
     else:
-        label = "Flexocompressão"
+        _label = "Flexocompressão"
         detail = "nenhuma combinação apresentou compressão axial simultânea com momento fletor"
         critical_name = "Flexocompressão"
 

@@ -410,6 +410,9 @@ class PropertyPanel(QFrame):
             "W Laminado", "HP Laminado", "I Laminado", "U Laminado",
             "L Laminado", "T Laminado", "Barra Retangular", "Barra Quadrada",
             "Barra Circular",
+            "Tubular Circular",
+            "Tubular Quadrado", "Tubular Retangular",
+            "U Formado", "C Formado", "Z Formado", "Z45 Formado", "Z90 Formado", "L Formado", "Cartola Formado",
         }
 
     def _verification_result_for(self, names: tuple[str, ...] | list[str]):
@@ -727,7 +730,7 @@ class PropertyPanel(QFrame):
                 if utilization is not None:
                     status_text = None
                     self._verification_result_values["utilization"].setText(
-                        f"{float(utilization):.2%}{'' if is_w_member else '*'}".replace(".", ",")
+                        f"{float(utilization):.2%}*".replace(".", ",")
                     )
                     self._verification_result_values["critical_check"].setText(
                         str(element_result.get("critical_check", "N/D")).split(" — ", 1)[0]

@@ -6,11 +6,11 @@ mm⁴ até a conversão explícita feita pelo adaptador do solver.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from math import atan2, degrees, hypot, pi
-from typing import Mapping
+from math import atan2, degrees, hypot, isfinite, pi
 
-from .contours import contour_points, polygon_properties
+from .contours import contour_points, polygon_properties, z_stiffened_points
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,8 +71,8 @@ def _positive(parameters: Mapping[str, float], name: str) -> float:
         value = float(parameters[name])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Informe um valor numérico para '{name}'.") from error
-    if value <= 0:
-        raise ValueError(f"'{name}' deve ser maior que zero.")
+    if not isfinite(value) or value <= 0:
+        raise ValueError(f"'{name}' deve ser maior que zero e finito.")
     return value
 
 
@@ -117,6 +117,32 @@ def _open_wall_torsion(*segments: tuple[float, float]) -> float:
     aproximação é apropriada às seções idealizadas por chapas retangulares.
     """
     return sum(length * thickness**3 / 3.0 for length, thickness in segments)
+
+
+def _formed_from_outline(family, parameters, density):
+    """Use the same rounded outline in analysis, rendering and verification."""
+    from .geometry import section_shape
+
+    keys = ("d", "bf", "t", "c") if family in {"C Formado", "Cartola Formado"} else ("d", "bf", "t")
+    values = {key: _positive(parameters, key) for key in keys}
+    if not all(isfinite(value) for value in values.values()):
+        raise ValueError("As dimensões da seção devem ser finitas.")
+    if "r" in parameters and (not isfinite(float(parameters["r"])) or
+                               abs(float(parameters["r"])-values["t"]) > 1e-9*max(1., values["t"])):
+        raise ValueError("Esta família formada usa raio interno r=t. O raio informado não pode ser ignorado; use uma geometria suportada.")
+    if family == "L Formado" and min(values["d"], values["bf"]) <= 2*values["t"]:
+        raise ValueError("As abas do perfil L devem comportar as dobras: d e bf > 2t.")
+    if "c" in values and values["c"] < values["t"]:
+        raise ValueError("O enrijecedor deve comportar o raio interno: c >= t.")
+    shape = section_shape(family, dict(parameters), arc_steps=64)
+    if shape is None or len(shape.loops) != 1:
+        raise ValueError("Contorno da seção formada indisponível.")
+    area, _, _, iy, iz, iyz = polygon_properties(shape.loops[0])
+    mean, radius = (iy+iz)/2, hypot((iy-iz)/2, iyz)
+    return SectionProperties(area_mm2=area, centroid_y_mm=shape.centroid[0], centroid_z_mm=shape.centroid[1],
+        iy_mm4=iy, iz_mm4=iz, iyz_mm4=iyz, i_major_mm4=mean+radius, i_minor_mm4=mean-radius,
+        principal_axis_angle_deg=degrees(.5*atan2(-2*iyz, iy-iz)),
+        j_mm4=area*values["t"]**2/3, mass_kg_m=area*1e-6*density)
 
 
 def _properties_from_contour(
@@ -214,94 +240,39 @@ def _l(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperti
 
 
 def _l_formed(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperties:
-    d = _positive(parameters, "d")
-    bf = _positive(parameters, "bf")
-    t = _positive(parameters, "t")
-    if d <= t or bf <= t:
-        raise ValueError("A geometria requer d > t e bf > t.")
-    flange = bf - t
-    rectangles = (
-        _Rectangle(t, d, t / 2.0, d / 2.0),
-        _Rectangle(flange, t, t + flange / 2.0, d - t / 2.0),
-    )
-    j = _open_wall_torsion((d, t), (flange, t))
-    return _properties_from_rectangles(rectangles, j, density_kg_m3)
+    return _formed_from_outline("L Formado", parameters, density_kg_m3)
 
 
 def _u_formed(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperties:
-    d = _positive(parameters, "d")
-    bf = _positive(parameters, "bf")
-    t = _positive(parameters, "t")
-    if d <= 4.0 * t or bf <= 2.0 * t:
-        raise ValueError("A seção U formada requer d > 4t e bf > 2t.")
-    flange = bf - t
-    rectangles = (
-        _Rectangle(t, d, t / 2.0, d / 2.0),
-        _Rectangle(flange, t, t + flange / 2.0, t / 2.0),
-        _Rectangle(flange, t, t + flange / 2.0, d - t / 2.0),
-    )
-    j = _open_wall_torsion((d, t), (flange, t), (flange, t))
-    return _properties_from_rectangles(rectangles, j, density_kg_m3)
+    return _formed_from_outline("U Formado", parameters, density_kg_m3)
 
 
 def _u_stiffened(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperties:
-    d = _positive(parameters, "d")
-    bf = _positive(parameters, "bf")
-    thickness = _positive(parameters, "t")
-    tw = tf = thickness
-    c = _positive(parameters, "c")
-    if d <= 2.0 * (tf + c) or bf <= tw:
-        raise ValueError("A seção C formada requer d > 2(t + c) e bf > t.")
-    flange = bf - tw
-    rectangles = (
-        _Rectangle(tw, d, tw / 2.0, d / 2.0),
-        _Rectangle(flange, tf, tw + flange / 2.0, tf / 2.0),
-        _Rectangle(flange, tf, tw + flange / 2.0, d - tf / 2.0),
-        _Rectangle(tf, c, bf - tf / 2.0, tf + c / 2.0),
-        _Rectangle(tf, c, bf - tf / 2.0, d - tf - c / 2.0),
-    )
-    j = _open_wall_torsion(
-        (d, tw), (flange, tf), (flange, tf), (c, tf), (c, tf)
-    )
-    return _properties_from_rectangles(rectangles, j, density_kg_m3)
+    return _formed_from_outline("C Formado", parameters, density_kg_m3)
 
 
 def _z(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperties:
-    d = _positive(parameters, "d")
-    bf = _positive(parameters, "bf")
-    thickness = _positive(parameters, "t")
-    tw = tf = thickness
-    if d <= 4.0 * tf or bf <= 2.0 * tf:
-        raise ValueError("A seção Z formada requer d > 4t e bf > 2t.")
-    rectangles = (
-        _Rectangle(tw, d - 2.0 * tf, tw / 2.0, d / 2.0),
-        _Rectangle(bf, tf, -bf / 2.0, tf / 2.0),
-        _Rectangle(bf, tf, tw + bf / 2.0, d - tf / 2.0),
+    return _formed_from_outline("Z Formado", parameters, density_kg_m3)
+
+
+def _z_stiffened(parameters: Mapping[str, float], density_kg_m3: float, angle: int) -> SectionProperties:
+    d, bf, c, t, r = (_positive(parameters, key) for key in ("d", "bf", "c", "t", "r"))
+    points = z_stiffened_points(d, bf, c, t, r, angle, arc_steps=64)
+    area, cy, cz, iy, iz, iyz = polygon_properties(points)
+    mean = (iy + iz) / 2.0
+    radius = hypot((iy - iz) / 2.0, iyz)
+    return SectionProperties(
+        area_mm2=area, centroid_y_mm=cy, centroid_z_mm=cz,
+        iy_mm4=iy, iz_mm4=iz, iyz_mm4=iyz,
+        i_major_mm4=mean + radius, i_minor_mm4=mean - radius,
+        principal_axis_angle_deg=degrees(0.5 * atan2(-2.0 * iyz, iy - iz)),
+        # Thin-walled open section: J ≈ (mean-line length) t³ / 3.
+        j_mm4=area * t * t / 3.0, mass_kg_m=area * 1e-6 * density_kg_m3,
     )
-    j = _open_wall_torsion((d - 2.0 * tf, tw), (bf, tf), (bf, tf))
-    return _properties_from_rectangles(rectangles, j, density_kg_m3)
 
 
 def _cartola(parameters: Mapping[str, float], density_kg_m3: float) -> SectionProperties:
-    d = _positive(parameters, "d")
-    bf = _positive(parameters, "bf")
-    thickness = _positive(parameters, "t")
-    tw = tf = thickness
-    c = _positive(parameters, "c")
-    if d <= 4.0 * tf or bf <= 5.0 * tw or c <= 0.0:
-        raise ValueError("A seção Cartola requer d > 4t, bf > 5t e c > 0.")
-    web_y = bf / 2.0 - tw / 2.0
-    rectangles = (
-        _Rectangle(bf, tf, 0.0, tf / 2.0),
-        _Rectangle(tw, d - 2.0 * tf, -web_y, d / 2.0),
-        _Rectangle(tw, d - 2.0 * tf, web_y, d / 2.0),
-        _Rectangle(c, tf, -web_y - c / 2.0, d - tf / 2.0),
-        _Rectangle(c, tf, web_y + c / 2.0, d - tf / 2.0),
-    )
-    j = _open_wall_torsion(
-        (bf, tf), (d - 2.0 * tf, tw), (d - 2.0 * tf, tw), (c, tf), (c, tf)
-    )
-    return _properties_from_rectangles(rectangles, j, density_kg_m3)
+    return _formed_from_outline("Cartola Formado", parameters, density_kg_m3)
 
 
 def _tube_properties(
@@ -320,7 +291,7 @@ def _tube_properties(
         iyz_mm4=0.0,
         i_major_mm4=max(iy, iz),
         i_minor_mm4=min(iy, iz),
-        principal_axis_angle_deg=0.0,
+        principal_axis_angle_deg=90.0 if iz > iy else 0.0,
         j_mm4=j,
         mass_kg_m=area * 1e-6 * density_kg_m3,
     )
@@ -392,8 +363,8 @@ def _tubular_square(parameters: Mapping[str, float], density_kg_m3: float) -> Se
     inner = side - 2.0 * thickness
     if inner <= 2.0 * thickness:
         raise ValueError("O lado externo deve ser maior que quatro vezes a espessura para os cantos arredondados.")
-    outer_area, outer_iy, outer_iz = _rounded_rectangle_geometry(side, side, 2.0 * thickness)
-    inner_area, inner_iy, inner_iz = _rounded_rectangle_geometry(inner, inner, thickness)
+    outer_area, outer_iy, _outer_iz = _rounded_rectangle_geometry(side, side, 2.0 * thickness)
+    inner_area, inner_iy, _inner_iz = _rounded_rectangle_geometry(inner, inner, thickness)
     area = outer_area - inner_area
     inertia = outer_iy - inner_iy
     j = _closed_rectangular_torsion(side, side, thickness)
@@ -548,7 +519,6 @@ def _concrete_rectangular_hollow(parameters: Mapping[str, float], density_kg_m3:
     thickness = _positive(parameters, "t")
     if width <= 2.0 * thickness + 1.0 or height <= 2.0 * thickness + 1.0:
         raise ValueError("A seção retangular vazada requer b e h > 2t + 1.")
-    inner_width = width - 2.0 * thickness
     inner_height = height - 2.0 * thickness
     rectangles = (
         _Rectangle(width, thickness, width / 2.0, thickness / 2.0),
@@ -600,6 +570,8 @@ def calculate_section_properties(
         "U Formado": _u_formed,
         "C Formado": _u_stiffened,
         "Z Formado": _z,
+        "Z45 Formado": lambda p, density: _z_stiffened(p, density, 45),
+        "Z90 Formado": lambda p, density: _z_stiffened(p, density, 90),
         "L Formado": _l_formed,
         "Cartola Formado": _cartola,
         "Tubular Circular": _tubular_circular,

@@ -139,6 +139,9 @@ class CalculationMemorialDialog(QDialog):
         max_equation_width: float = 644.0,
         equation_latex: dict[str, str] | None = None,
     ) -> str:
+        # Keep a shared line length that fits both the Qt view and editable
+        # Word equations. Their native math font metrics differ from SVG.
+        max_equation_width = min(max_equation_width, 480.0)
         equation_objects = equation_objects if equation_objects is not None else {}
         equation_latex = equation_latex if equation_latex is not None else {}
 
@@ -155,6 +158,15 @@ class CalculationMemorialDialog(QDialog):
             except (TypeError, ValueError):
                 result = str(value)
             return f"{result} {unit}" if unit else result
+
+        def governing_case(verification):
+            parts = [str(verification.get("critical_combination", "—"))]
+            if verification.get("critical_member"):
+                parts.append("barra " + str(verification["critical_member"]))
+            position = verification.get("critical_position_m", verification.get("position_m"))
+            if position is not None:
+                parts.append("x = " + formatted(position, "m"))
+            return escape("; ".join(parts))
 
         def row(label: str, value: object) -> str:
             text = value if isinstance(value, str) else str(value) if value is not None else "—"
@@ -222,6 +234,8 @@ class CalculationMemorialDialog(QDialog):
             section_rows[:4] = [
                 ("Diâmetro (d)", formatted(geometry.get("d_mm"), "mm")),
             ]
+        if memory.get("profile_type") == "L Laminado":
+            section_rows = [(label.replace("em Y (Ly)", "no eixo principal maior (Ly)").replace("em Z (Lz)", "no eixo principal menor (Lz)"), value) for label, value in section_rows]
         material_rows = [
             ("Tipo de material", material.get("type", "—")),
             ("Módulo de elasticidade (E)", formatted(material.get("E_kn_m2"), "kN/m²")),
@@ -517,6 +531,11 @@ class CalculationMemorialDialog(QDialog):
                 )
             return "".join(rendered)
 
+        if memory.get("profile_type") in {"Tubular Circular", "Tubular Quadrado", "Tubular Retangular",
+                                           "U Formado", "C Formado", "Z Formado", "Z45 Formado", "Z90 Formado", "L Formado", "Cartola Formado"}:
+            from .extended_steel_memorial import render
+            return render(memory, row, formatted, spaced_equations, equation_triplet)
+
         slenderness_content = ""
         if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado"}:
             slenderness_status = slenderness_summary.get("status")
@@ -643,7 +662,7 @@ class CalculationMemorialDialog(QDialog):
             ]
             applied = verification.get("applied_kn")
             utilization = verification.get("utilization")
-            combination_name = escape(str(verification.get("critical_combination", "—")))
+            combination_name = governing_case(verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             for index, (check_name, latex_lines) in enumerate(checks):
                 top_spacing = "0" if index == 0 else "18px"
@@ -1046,7 +1065,7 @@ class CalculationMemorialDialog(QDialog):
                 axial_compression_content += spaced_equations(latex_lines, fallback)
             applied = compression_verification.get("applied_kn")
             utilization = compression_verification.get("utilization")
-            combination_name = escape(str(compression_verification.get("critical_combination", "—")))
+            combination_name = governing_case(compression_verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             ratio_lines = equation_triplet(
                 r"\eta_c", r"\dfrac{N_{c,Sd}}{N_{c,Rd}}",
@@ -1080,6 +1099,10 @@ class CalculationMemorialDialog(QDialog):
             )
         def l_flexion_content(check: dict, axis: str) -> str:
             p = check["parameters"]
+            if check.get("status") == "not_checked" and check.get("memorandum_only"):
+                detail = escape(str(check.get("detail", "")))
+                return (f'<p>Não há verificação prevista no OSA para flexão {axis.upper()} '
+                        f'da cantoneira L. {detail}</p>')
             if p.get("method_version") != "mcalc_compact_v1":
                 return '<p>Execute Verificar modelo para atualizar os resultados de flexão do L Laminado.</p>'
             names = {r"\lambda": "Esbeltez da aba", r"\lambda_p": "Limite para plastificação",
@@ -1102,6 +1125,10 @@ class CalculationMemorialDialog(QDialog):
 
         def l_shear_content(check: dict, axis: str) -> str:
             p = check["parameters"]
+            if check.get("status") == "not_checked" and check.get("memorandum_only"):
+                detail = escape(str(check.get("detail", "")))
+                return (f'<p>Não há verificação prevista no OSA para cortante {axis.upper()} '
+                        f'da cantoneira L. {detail}</p>')
             if p.get("method_version") != "mcalc_plastic_v1":
                 return '<p>Execute Verificar modelo para atualizar os resultados de cortante do L Laminado.</p>'
             names = {r"\lambda": "Esbeltez da aba", r"k_v": "Coeficiente de flambagem por cisalhamento",
@@ -1131,7 +1158,7 @@ class CalculationMemorialDialog(QDialog):
                if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"} else
                "Flexão em Y — ABNT NBR 8800:2024, 5.4.1.1-c e Anexo D, D.2.3</p>"
                if memory.get("profile_type") == "T Laminado" else
-               "Flexão em Y — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
+               "Flexão em Y — cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
                else "Flexão em Y — ABNT NBR 8800:2024, 5.4 e Anexo D</p>")
         )
         if flexion_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -1311,7 +1338,22 @@ class CalculationMemorialDialog(QDialog):
                 + r"^2\cdot " + decimal(p.get("Iy_cm4")) + r"}}}"
             )
 
+            cb_input = p.get("Cb_governing_input")
+            cb_lines = ()
+            if (p.get("Cb_method", "").startswith("automático") and cb_input
+                    and all(cb_input.get(key) is not None for key in ("Mmax", "MA", "MB", "MC", "Rm"))):
+                cb_lines = equation_triplet(
+                    r"C_b",
+                    r"\dfrac{12,5M_{max}}{2,5M_{max}+3M_A+4M_B+3M_C}R_m",
+                    rf"\dfrac{{12,5\cdot {decimal(cb_input['Mmax'])}}}"
+                    rf"{{2,5\cdot {decimal(cb_input['Mmax'])}+3\cdot {decimal(cb_input['MA'])}"
+                    rf"+4\cdot {decimal(cb_input['MB'])}+3\cdot {decimal(cb_input['MC'])}}}"
+                    rf"\cdot {decimal(cb_input['Rm'])}",
+                    decimal(cb_input["Cb"]),
+                )
+
             flt_lines = (
+                *cb_lines,
                 *equation_triplet(r"\lambda_{FLT}", r"\dfrac{L_b}{r_z}",
                                   rf"\dfrac{{{decimal(p.get('Lb_cm'))}}}{{{decimal(p.get('rz_cm'))}}}",
                                   decimal(p.get("lambda_flt"))),
@@ -1424,9 +1466,23 @@ class CalculationMemorialDialog(QDialog):
             )
             for latex_lines in flexion_steps:
                 flexion_y_content += spaced_equations(latex_lines)
+            cb_method = str(p.get("Cb_method", ""))
+            if cb_method == "manual":
+                flexion_y_content += (
+                    '<p style="margin:0 0 3px;color:#57606a">'
+                    f"Cb = {decimal(p.get('Cb'))} (valor definido manualmente pelo usuário)."
+                    "</p>"
+                )
+            elif cb_method.startswith("fallback"):
+                flexion_y_content += (
+                    '<p style="margin:0 0 3px;color:#57606a">'
+                    f"Cb = {decimal(p.get('Cb'))}. O cálculo automático não foi aplicado: "
+                    f"{escape(cb_method)}."
+                    "</p>"
+                )
             applied = flexion_verification.get("applied_kn_cm")
             utilization = flexion_verification.get("utilization")
-            combination_name = escape(str(flexion_verification.get("critical_combination", "—")))
+            combination_name = governing_case(flexion_verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             utilization_lines = equation_triplet(
                 r"\eta_y", r"\dfrac{M_{y,Sd}}{M_{y,Rd}}",
@@ -1508,6 +1564,11 @@ class CalculationMemorialDialog(QDialog):
                 '<p style="margin:5px 0;color:#57606a">'
                 "Execute Verificar modelo após a análise para exibir as equações e os resultados.</p>"
             )
+        if memory.get("profile_type") == "T Laminado":
+            flexion_y_content += (
+                '<p style="margin:5px 0;color:#57606a">'
+                "A rotina atual para a seção T não determina Cb automaticamente.</p>"
+            )
         flexion_z_verification = flexion_z.get("verification") or {}
         u_weak_axis = memory.get("profile_type") == "U Laminado"
         flexion_z_basis = (
@@ -1519,8 +1580,8 @@ class CalculationMemorialDialog(QDialog):
             + ("Flexão em Z — ABNT NBR 8800:2024, 5.4.2.2 e Anexo D, D.2.5</p>"
                if memory.get("profile_type") == "Barra Circular" else
                "Flexão em Z — ABNT NBR 8800:2024, 5.4 e Anexo D, D.2.5 e Tabela D.1</p>" if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada"}
-               else "Flexão em Z — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
-               else "Flexão em Z — hipótese para seção T</p>" if memory.get("profile_type") == "T Laminado"
+               else "Flexão em Z — cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
+               else "Flexão em Z — seção T; verificação não prevista no OSA</p>" if memory.get("profile_type") == "T Laminado"
                else f"Flexão em Z — ABNT NBR 8800:2024, 5.4.2.1 e 5.4.2.2; {flexion_z_basis}</p>")
         )
         if flexion_z_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -1838,7 +1899,7 @@ class CalculationMemorialDialog(QDialog):
                 flexion_z_content += spaced_equations(weak_axis_flm_lines)
             applied = flexion_z_verification.get("applied_kn_cm")
             utilization = flexion_z_verification.get("utilization")
-            combination_name = escape(str(flexion_z_verification.get("critical_combination", "—")))
+            combination_name = governing_case(flexion_z_verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             selected_resistance = flexion_z_verification.get("resistance_kn_cm", p.get("Mrd_z_kn_cm"))
             selected_moment = flexion_z_verification.get("signed_moment_kn_cm")
@@ -1883,9 +1944,9 @@ class CalculationMemorialDialog(QDialog):
             '<p style="margin:22px 0 12px;color:#57606a;font-weight:700">'
             + ("Cortante em Y — ABNT NBR 8800:2024, 5.5.2.3-b</p>"
                if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"} else
-               "Cortante em Y — ABNT NBR 8800:2024, 5.4.3.3</p>"
+               "Cortante em Y — seção T; verificação não prevista no OSA</p>"
                if memory.get("profile_type") == "T Laminado" else
-               "Cortante em Y — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
+               "Cortante em Y — cantoneira simples</p>" if memory.get("profile_type") == "L Laminado"
                else "Cortante em Y — ABNT NBR 8800:2024, 5.4.3.5 e 5.4.3.1.1–1.2</p>")
         )
         if shear_y_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -2041,7 +2102,7 @@ class CalculationMemorialDialog(QDialog):
             )
             applied = shear_y_verification.get("applied_kn")
             utilization = shear_y_verification.get("utilization")
-            combination_name = escape(str(shear_y_verification.get("critical_combination", "—")))
+            combination_name = governing_case(shear_y_verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             utilization_line_y = equation_triplet(
                 r"\eta_{v,Y}", r"\dfrac{|V_{y,Sd}|}{V_{y,Rd}}",
@@ -2077,8 +2138,8 @@ class CalculationMemorialDialog(QDialog):
         shear_z_content = (
             '<p style="margin:22px 0 12px;color:#57606a;font-weight:700">'
             + ("Cortante em Z — ABNT NBR 8800:2024, 5.5.2.3-b</p>" if memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"} else
-               "Cortante em Z — hipótese para cantoneira simples</p>" if memory.get("profile_type") == "L Laminado" else
-               "Cortante em Z — hipótese para seção T</p>" if memory.get("profile_type") == "T Laminado"
+               "Cortante em Z — cantoneira simples</p>" if memory.get("profile_type") == "L Laminado" else
+               "Cortante em Z — ABNT NBR 8800:2024, 5.4.3.3</p>" if memory.get("profile_type") == "T Laminado"
                else "Cortante em Z — ABNT NBR 8800:2024, 5.4.3.1.1–1.2</p>")
         )
         if shear_z_verification.get("status") == "checked" and memory.get("profile_type") in {"Barra Retangular", "Barra Quadrada", "Barra Circular"}:
@@ -2134,22 +2195,23 @@ class CalculationMemorialDialog(QDialog):
                     rf"\dfrac{{{decimal(p.get('Vp_kn'))}}}{{{decimal(p.get('gamma_a1'))}}}"
                 )
             shear_z_content += spaced_equations((
-                *equation_triplet(r"\lambda_Z", r"\dfrac{b_f}{t_f}",
-                                  rf"\dfrac{{{decimal(p.get('bf_mm'))}}}{{{decimal(p.get('tf_mm'))}}}",
+                *equation_triplet(r"\lambda_Z", r"\dfrac{d}{t_w}",
+                                  rf"\dfrac{{{decimal(p.get('d_mm'))}}}{{{decimal(p.get('tw_mm'))}}}",
                                   decimal(lambda_z)),
-                *equation_triplet(r"k_v", r"5,0", decimal(p.get("kv")), decimal(p.get("kv"))),
+                *equation_triplet(r"k_v", r"1,2", decimal(p.get("kv")), decimal(p.get("kv"))),
                 *equation_triplet(r"\lambda_p", r"1,10\sqrt{\dfrac{k_vE}{f_y}}",
                                   decimal(lambda_p_z), decimal(lambda_p_z)),
                 *equation_triplet(r"\lambda_r", r"1,37\sqrt{\dfrac{k_vE}{f_y}}",
                                   decimal(lambda_r_z), decimal(lambda_r_z)),
-                *equation_triplet(r"A_w", r"(b_f-t_w)t_f",
-                                  decimal(p.get("Aw_cm2")), decimal(p.get("Aw_cm2")), r"cm^2"),
+                *equation_triplet(r"A_w", r"d t_w",
+                                  rf"{decimal(p.get('d_mm')/10)}\cdot {decimal(p.get('tw_mm')/10)}", decimal(p.get("Aw_cm2")), r"cm^2"),
                 *equation_triplet(r"V_{p\ell}", r"0,60A_wf_y",
                                   rf"0,60\cdot {decimal(p.get('Aw_cm2'))}\cdot {decimal(p.get('fy_kn_cm2'))}",
                                   decimal(p.get("Vp_kn")), r"kN"),
                 *equation_triplet(r"V_{z,Rd}", vrd_formula_z, vrd_substituted_z,
                                   decimal(p.get("VRd_kn")), r"kN"),
-            ))
+            ), references={symbol: "5.4.3.3; 5.4.3.1.1–5.4.3.1.2" for symbol in
+                           (r"\lambda_Z", r"k_v", r"\lambda_p", r"\lambda_r", r"A_w", r"V_{p\ell}", r"V_{z,Rd}")})
             utilization = shear_z_verification.get("utilization")
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             shear_z_content += spaced_equations(equation_triplet(
@@ -2235,7 +2297,7 @@ class CalculationMemorialDialog(QDialog):
             )
             applied = shear_z_verification.get("applied_kn")
             utilization = shear_z_verification.get("utilization")
-            combination_name = escape(str(shear_z_verification.get("critical_combination", "—")))
+            combination_name = governing_case(shear_z_verification)
             status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
             utilization_line_z = equation_triplet(
                 r"\eta_{v,Z}", r"\dfrac{|V_{z,Sd}|}{V_{z,Rd}}",
@@ -2282,7 +2344,7 @@ class CalculationMemorialDialog(QDialog):
             )
             if verification.get("status") == "checked":
                 utilization = verification.get("utilization")
-                combination_name = escape(str(verification.get("critical_combination", "—")))
+                combination_name = governing_case(verification)
                 status = "APROVADO" if utilization <= 1.0 else "REPROVADO"
                 p = verification.get("parameters", {})
                 if memory.get("profile_type") == "Barra Circular":
@@ -2415,7 +2477,9 @@ class CalculationMemorialDialog(QDialog):
         )
         scope_notice = ""
         torsion_content = ""
-        if memory.get("profile_type") in {"W Laminado", "HP Laminado", "I Laminado", "U Laminado"}:
+        if memory.get("profile_type") in {
+            "W Laminado", "HP Laminado", "I Laminado", "U Laminado", "L Laminado", "T Laminado",
+        }:
             if not torsion_summary.get("available"):
                 torsion_message = (
                     "Execute a análise e a verificação do modelo para identificar "
@@ -2423,12 +2487,13 @@ class CalculationMemorialDialog(QDialog):
                 )
             elif torsion_summary.get("has_torsion"):
                 torsion_message = (
-                    "Foi detectado uma torção de "
+                    "Foi detectada uma torção de "
                     f"{formatted(torsion_summary.get('torque_kn_m'), 'kN·m')} "
                     f"na barra {torsion_summary.get('member', '—')}, combinação "
                     f"{torsion_summary.get('combination', '—')}, "
                     f"x = {formatted(torsion_summary.get('position_m'), 'm')}. "
-                    "Solicitação não verificada."
+                    "O OSA não possui verificação de resistência à torção prevista para esta seção; "
+                    "a solicitação foi identificada, mas não foi incluída nas verificações de resistência."
                 )
             else:
                 torsion_message = (
@@ -2451,6 +2516,48 @@ class CalculationMemorialDialog(QDialog):
                     + "".join(f"<li>{escape(note)}</li>" for note in dict.fromkeys(notes))
                     + "</ul></div>"
                 )
+        if memory.get("profile_type") in {"L Laminado", "T Laminado"}:
+            summarized_checks = verification_summary.get("checks", {})
+            if memory.get("profile_type") == "L Laminado":
+                limited = any(
+                    summarized_checks.get(key, {}).get("memorandum_only")
+                    for key in ("flexion_y", "flexion_z", "shear_y", "shear_z",
+                                "flexao_obliqua", "flexotracao", "flexocompressao")
+                )
+                limitation = (
+                    "Foram identificadas solicitações de flexão e/ou cortante para a cantoneira L. "
+                    "O OSA não possui verificações previstas para esses esforços nesta seção; "
+                    "as interações que dependem dessas resistências também não foram verificadas. "
+                    "Essas lacunas são informativas e não alteram a conclusão das demais verificações."
+                )
+            else:
+                limited = any(
+                    summarized_checks.get(key, {}).get("memorandum_only")
+                    for key in ("flexion_z", "shear_y", "flexao_obliqua", "flexotracao", "flexocompressao")
+                )
+                limitation = (
+                    "Foram identificadas solicitações de flexão Z e/ou cortante Y para a seção T. "
+                    "O OSA não possui verificações previstas para esses esforços; "
+                    "as interações que dependem dessas resistências também não foram verificadas. "
+                    "Essas lacunas são informativas e não alteram a conclusão das demais verificações."
+                )
+            if limited:
+                scope_notice += (
+                    '<div style="margin:10px 0 16px;padding:9px 12px;border-left:3px solid #bf8700;'
+                    'background:#fff8c5;color:#6e5100">'
+                    f"<b>Limite de escopo — {escape(memory.get('profile_type'))}</b>"
+                    f'<p style="margin:5px 0 0">{escape(limitation)}</p></div>'
+                )
+        verification_conclusion = ""
+        if verification_summary:
+            rejected = verification_summary.get("has_rejected_check") or (
+                verification_summary.get("status") == "checked" and verification_summary.get("utilization", 0) > 1)
+            text = ("REPROVADO — há verificações reprovadas" if rejected else
+                    "NÃO VERIFICADO — existem pendências" if verification_summary.get("status") == "not_checked" else
+                    "APROVADO" if verification_summary.get("status") == "checked" else "Sem solicitação aplicável")
+            verification_conclusion = f'<p style="margin:5px 0;color:#57606a"><b>{escape(text)}</b></p>'
+            if verification_summary.get("status") == "not_checked":
+                verification_conclusion += f'<p style="margin:5px 0;color:#57606a">{escape(verification_summary.get("detail", ""))}</p>'
         members = ", ".join(memory.get("members", ())) or "—"
         element_rows = [
             ("Nome", memory.get("element_name", "—")),
@@ -2470,6 +2577,7 @@ class CalculationMemorialDialog(QDialog):
             + '<h3 style="margin:22px 0 8px;font-size:15px">3. Parâmetros materiais</h3>'
             '<table cellspacing="0" cellpadding="0">' + "".join(row(*item) for item in material_rows) + "</table>"
             '<h3 style="margin:22px 0 8px;font-size:15px">4. Verificações</h3>'
+            + verification_conclusion
             + slenderness_content
             + axial_tension_content
             + axial_compression_content

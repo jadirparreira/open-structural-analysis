@@ -28,7 +28,7 @@ def test_catalog_u_profile_without_optional_radii_is_verified():
             "moment_y": 1.0,
             "moment_z": 0.5,
             "shear_y": 1.0,
-            "shear_z": 1.0,
+            "shear_z": 1.0, "torque": 0.,
         }]}},
     )]
 
@@ -78,21 +78,21 @@ def test_slender_web_u_is_unverified_when_annex_e_has_no_u_procedure():
             model.revision,
             "ELU-compressão",
             member_results={"U1": {"samples": [{
-                "x": 0.0, "axial": 10.0, "moment_y": 1.0, "moment_z": 0.5,
+                "x": 0.0, "axial": 10.0, "moment_y": 1.0, "moment_z": 0.5, "shear_y": 0., "shear_z": 0., "torque": 0.,
             }]}},
         ),
         AnalysisResult(
             model.revision,
             "ELU-tração",
             member_results={"U1": {"samples": [{
-                "x": 0.0, "axial": -10.0, "moment_y": 1.0, "moment_z": 0.5,
+                "x": 0.0, "axial": -10.0, "moment_y": 1.0, "moment_z": 0.5, "shear_y": 0., "shear_z": 0., "torque": 0.,
             }]}},
         ),
         AnalysisResult(
             model.revision,
             "ELU-flexão biaxial",
             member_results={"U1": {"samples": [{
-                "x": 0.0, "axial": 0.0, "moment_y": 1.0, "moment_z": 0.5,
+                "x": 0.0, "axial": 0.0, "moment_y": 1.0, "moment_z": 0.5, "shear_y": 0., "shear_z": 0., "torque": 0.,
             }]}},
         ),
     ]
@@ -124,7 +124,7 @@ def test_slender_web_u_is_unverified_when_annex_e_has_no_u_procedure():
     assert equation_objects
 
 
-def test_significant_torsion_is_informational_and_does_not_count_as_unverified():
+def test_significant_torsion_is_not_a_verification_failure_but_is_reported_in_memorial():
     model = StructuralModel()
     model.add_node("A", 0.0, 0.0, 0.0)
     model.add_node("B", 0.0, 0.0, 3.0)
@@ -139,24 +139,27 @@ def test_significant_torsion_is_informational_and_does_not_count_as_unverified()
     model.analysis_results = [AnalysisResult(
         model.revision,
         "ELU-torção",
-        member_results={"U1": {"samples": [{"x": 1.5, "torque": 0.2}]}},
+        member_results={"U1": {"samples": [{"x": 1.5, "torque": 0.0, "axial": 0., "moment_y": 0., "moment_z": 0., "shear_y": 0., "shear_z": 0.}]}},
     )]
 
+    baseline = verify_model(model)
+    model.analysis_results[0].member_results["U1"]["samples"][0]["torque"] = 0.2
     verification = verify_model(model)
     element = verification["results"]["bar:U1"]
 
+    assert element["status"] == baseline["results"]["bar:U1"]["status"]
     assert element["status"] == "not_applicable"
     assert "torsion" not in element["checks"]
     assert element["torsion_summary"]["has_torsion"]
-    assert verification["summary"]["approved"] == 0
-    assert verification["summary"]["unverified"] == 0
+    assert verification["summary"]["approved"] == baseline["summary"]["approved"]
+    assert verification["summary"]["unverified"] == baseline["summary"]["unverified"]
 
     model.verification_results = verification["results"]
     memorial = CalculationMemorialDialog._render(
         calculation_memory(model, ("U1",)), {},
     )
-    assert "Foi detectado uma torção de 0,2 kN·m" in memorial
-    assert "Solicitação não verificada" in memorial
+    assert "Foi detectada uma torção de 0,2 kN·m" in memorial
+    assert "O OSA não possui verificação de resistência à torção prevista para esta seção" in memorial
 
 
 def test_u_simultaneous_shear_is_not_a_separate_check():

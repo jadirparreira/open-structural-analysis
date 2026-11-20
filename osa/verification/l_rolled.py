@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from math import pi, sqrt
 
 from osa.sections.contours import polygon_properties
 from osa.verification.calculation_properties import calculation_property
+from osa.verification.net_section import tension_net_data
 from osa.verification.restraints import restraint_lengths
 
 GAMMA_A1 = 1.10
@@ -92,7 +94,7 @@ def _plastic_modulus(points, axis: int, centroid: float) -> float:
         # Vertical/horizontal strips are integrated at contour breakpoints.
         breaks = sorted({section_min, cut, *(value for value in coords if section_min < value < cut)})
         area = 0.0
-        for a, b in zip(breaks, breaks[1:]):
+        for a, b in pairwise(breaks):
             if b <= a:
                 continue
             area += _width(points, axis, (a + b) / 2.0) * (b - a)
@@ -121,10 +123,9 @@ def _width(points, axis: int, position: float) -> float:
 
 def _first_moment_abs(points, axis: int, pna: float) -> float:
     # Integrate each side of the plastic neutral axis with midpoint strips.
-    other = 1 - axis
     breaks = sorted({p[axis] for p in points} | {pna})
     result = 0.0
-    for a, b in zip(breaks, breaks[1:]):
+    for a, b in pairwise(breaks):
         if b - a <= EPS:
             continue
         # Width is piecewise linear between contour vertices; 4-point sampling
@@ -260,13 +261,12 @@ def verify_l_tension(element, model, results):
     try:
         members, geom, _, _, fy, fu = _base(element, model, results)
         n1 = geom["Ag_cm2"] * fy / GAMMA_A1
-        ct = calculation_property(model, element, "Ct", 1.0)
-        ae = geom["Ag_cm2"] * ct
+        an, ct = tension_net_data(model, element, results, geom["Ag_cm2"])
+        ae = an * ct
         n2 = ae * fu / GAMMA_A2
         cap = min(n1, n2)
         out = _finish("Tração axial", cap, results, members, "axial")
-        # O modelo não representa os detalhes de furos e ligação; An = Ag e Ct = 1.
-        out["parameters"] = {"Ag_cm2": geom["Ag_cm2"], "An_cm2": geom["Ag_cm2"],
+        out["parameters"] = {"Ag_cm2": geom["Ag_cm2"], "An_cm2": an,
                              "Ae_cm2": ae, "Ct": ct, "fy_kn_cm2": fy,
                              "fu_kn_cm2": fu, "gamma_a1": GAMMA_A1, "gamma_a2": GAMMA_A2,
                              "Nt_Rd1_kn": n1, "Nt_Rd2_kn": n2, "Nt_Rd_kn": cap}
@@ -301,6 +301,11 @@ def verify_l_compression(element, model, results):
         members, p, e, g, fy, _ = _base(element, model, results)
         lengths = restraint_lengths(model, element, results, {"Iy": p["Iz_cm4"], "tw": p["t_mm"] / 10})
         ly, lz, lt = (lengths.lengths_m[key] * 100 for key in ("Ly", "Lz", "Lt"))
+        manual_y, manual_z = (calculation_property(model, element, key, None) for key in ("Ly", "Lz"))
+        if (manual_y is None) != (manual_z is None):
+            raise ValueError("Informe ambos Ly e Lz nos eixos principais maior e menor da cantoneira; não misture comprimento manual principal e estimativa no eixo geométrico.")
+        if manual_y is None and abs(ly-lz) > 1e-8*max(1., ly, lz):
+            raise ValueError("Contenções automáticas diferentes nos eixos geométricos não definem os comprimentos nos eixos principais da cantoneira. Informe Ly e Lz nos eixos principais.")
         if min(ly, lz, lt) <= 0: raise ValueError("comprimentos destravados inválidos")
         it = p["It_cm4"]
         area = p["Ag_cm2"]
@@ -386,37 +391,28 @@ def verify_l_compression(element, model, results):
         return {"status": "not_checked", "detail": str(error)}
 
 
-def _flexion(element, model, results, axis: int):
-    """Reproduce the compact-section calculation shown in the MCalc example."""
+def _unsupported_single_angle(element, model, results, axis, *, shear=False):
     try:
-        members, p, e, _, fy, _ = _base(element, model, results)
-        key = "y" if axis == 1 else "z"
-        b, t = p["b_mm"] / 10.0, p["t_mm"] / 10.0
-        w, z = p[f"W{key}_cm3"], p[f"Z{key}_cm3"]
-        slender = b / t
-        lp, lr = 1.12 * sqrt(e / fy), 1.40 * sqrt(e / fy)
-        mpl = z * fy
-        mcr = 0.69 * e * w / slender**2
-        parameters = {
-            "Ag_cm2": p["Ag_cm2"], "Wy_cm3": p["Wy_cm3"], "Wz_cm3": p["Wz_cm3"],
-            "Zy_cm3": p["Zy_cm3"], "Zz_cm3": p["Zz_cm3"],
-            "b_cm": b, "t_cm": t, "W_cm3": w, "Z_cm3": z,
-            "E_kn_cm2": e, "fy_kn_cm2": fy, "gamma_a1": GAMMA_A1,
-            "sigma_r_kn_cm2": 0.30 * fy, "lambda_leg": slender,
-            "lambda_p": lp, "lambda_r": lr, "Mpl_kn_cm": mpl,
-            "Mcr_kn_cm": mcr, "criterion": "MCalc: exemplo fornecido; hipótese para cantoneira simples",
-            "method_version": "mcalc_compact_v1",
-        }
-        if slender > lp:
-            return {"status": "not_checked", "parameters": parameters,
-                    "detail": "Regime não plástico: equações ainda não disponíveis."}
-        parameters.update({"Mn_kn_cm": mpl, "MRd_kn_cm": mpl / GAMMA_A1})
-        field = "moment_y" if axis == 1 else "moment_z"
-        out = _finish(f"Flexão {key.upper()}", mpl / GAMMA_A1, results, members, field, 100.0)
-        out["parameters"] = parameters
-        return out
+        members, _p, _e, _g, _fy, _fu = _base(element, model, results)
+        field = ("shear_" if shear else "moment_") + ("y" if axis == 1 else "z")
+        demanded = any(abs(float(sample[field])) > 1e-6 for result in results
+                       for member in members for sample in result.member_results[member.name].get("samples", ()))
+        kind = "Cortante" if shear else "Flexão"
+        return {"status": "not_checked" if demanded else "not_applicable",
+                "critical_check": kind + (" Y" if axis == 1 else " Z"),
+                "detail": ("A hipótese anterior de exemplo não constitui verificação normativa da cantoneira isolada. "
+                           + ("5.4.3.4 trata de duas cantoneiras em T; kv=5 não pode ser transferido à aba livre da cantoneira simples. O OSA não possui verificação prevista para esta seção."
+                              if shear else "O Anexo D, D.1.2, não inclui cantoneira simples; são necessários os estados-limite de instabilidade e a flexão não simétrica por procedimento específico. O OSA não possui verificação prevista para esta seção."))
+                          if demanded else "Sem solicitação aplicável.",
+                "memorandum_only": demanded,
+                "parameters": {"method_version": "single_angle_scope_review_v2"},
+                "reference": "ABNT NBR 8800:2024, " + ("5.4.3" if shear else "5.4.2.1; D.1.2")}
     except (KeyError, TypeError, ValueError, ArithmeticError) as error:
-        return {"status": "not_checked", "detail": str(error)}
+        return {"status": "not_checked", "detail": str(error), "parameters": {}}
+
+
+def _flexion(element, model, results, axis: int):
+    return _unsupported_single_angle(element, model, results, axis)
 
 
 def verify_l_flexion_y(element, model, results): return _flexion(element, model, results, 1)
@@ -424,28 +420,7 @@ def verify_l_flexion_z(element, model, results): return _flexion(element, model,
 
 
 def _shear(element, model, results, axis: int):
-    """Reproduce the plastic shear branch shown in the MCalc example."""
-    try:
-        members, p, e, _, fy, _ = _base(element, model, results)
-        b, t = p["b_mm"] / 10.0, p["t_mm"] / 10.0
-        kv, lam = 5.0, b / t
-        lp, lr = 1.10 * sqrt(kv * e / fy), 1.37 * sqrt(kv * e / fy)
-        vp = 0.60 * b * t * fy
-        parameters = {"Aw_cm2": b * t, "lambda": lam, "lambda_p": lp,
-                      "lambda_r": lr, "kv": kv, "b_cm": b, "t_cm": t,
-                      "fy_kn_cm2": fy, "E_kn_cm2": e, "Vp_kn": vp,
-                      "gamma_a1": GAMMA_A1, "method_version": "mcalc_plastic_v1",
-                      "criterion": "MCalc: exemplo fornecido; hipótese para cantoneira simples"}
-        if lam > lp:
-            return {"status": "not_checked", "parameters": parameters,
-                    "detail": "Regime não plástico: equações ainda não disponíveis."}
-        parameters.update({"Vn_kn": vp, "VRd_kn": vp / GAMMA_A1})
-        field = "shear_y" if axis == 1 else "shear_z"
-        out = _finish(f"Cortante {('Y' if axis == 1 else 'Z')}", vp / GAMMA_A1, results, members, field)
-        out["parameters"] = parameters
-        return out
-    except (KeyError, TypeError, ValueError, ArithmeticError) as error:
-        return {"status": "not_checked", "detail": str(error)}
+    return _unsupported_single_angle(element, model, results, axis, shear=True)
 
 
 def verify_l_shear_y(element, model, results): return _shear(element, model, results, 1)
@@ -459,7 +434,9 @@ def _interaction(element, model, results, tension, compression, flex_y, flex_z, 
         nt = float((tension.get("parameters") or {}).get("Nt_Rd_kn", 0.0))
         nc = float((compression.get("parameters") or {}).get("Nc_Rd_kn", 0.0))
         if any(check.get("status") == "not_checked" for check in (flex_y, flex_z)):
-            return {"status": "not_checked", "detail": "Resistência à flexão indisponível para a interação."}
+            memorandum_only = any(check.get("memorandum_only") for check in (flex_y, flex_z))
+            return {"status": "not_checked", "memorandum_only": memorandum_only,
+                    "detail": "Interação não verificada: não há procedimento de flexão da cantoneira implementado para esta solicitação."}
         myr = float((flex_y.get("parameters") or {}).get("MRd_kn_cm", 0.0))
         mzr = float((flex_z.get("parameters") or {}).get("MRd_kn_cm", 0.0))
         critical, combos = None, []
