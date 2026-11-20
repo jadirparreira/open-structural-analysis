@@ -335,7 +335,7 @@ def test_deformation_color_range_is_shared_by_plates_and_bars():
         real_plotter.close()
 
 
-def test_plate_pressure_is_resolved_into_global_z_nodal_forces():
+def test_plate_pressure_is_resolved_into_local_normal_nodal_forces():
     class Target:
         def __init__(self):
             self.loads = []
@@ -351,9 +351,15 @@ def test_plate_pressure_is_resolved_into_global_z_nodal_forces():
 
     LoadCaseBuilder._apply_action(target, action)
 
-    assert len(target.loads) == 4
-    assert all(load[1] == "FZ" and load[2] > 0 for load in target.loads)
-    assert sum(load[2] for load in target.loads) == pytest.approx(5 * np.sqrt(40))
+    assert len(target.loads) == 12
+    totals = {
+        direction: sum(load[2] for load in target.loads if load[1] == direction)
+        for direction in ("FX", "FY", "FZ")
+    }
+    assert totals["FX"] == pytest.approx(0.0)
+    assert totals["FY"] == pytest.approx(-10.0)
+    assert totals["FZ"] == pytest.approx(30.0)
+    assert np.linalg.norm(tuple(totals.values())) == pytest.approx(5 * np.sqrt(40))
     assert all(load[3] == "Caso" for load in target.loads)
 
 

@@ -159,6 +159,57 @@ class ActionService:
             f"Carga {index}", "plate_surface_pressure", target, (float(pressure),), load_case,
         ))
 
+    def add_plate_surface_pressure_profiles(
+        self, target: str, x_initial: float, x_final: float,
+        y_initial: float, y_final: float, load_case: str,
+    ) -> Action:
+        """Store independent local-X and local-Y pressure profiles for a plate."""
+        if target not in self.model.plates:
+            raise ValueError(f"A laje '{target}' não existe.")
+        if self.has_selfweight(load_case):
+            raise ValueError(
+                f"A ação '{load_case}' está restrita ao peso próprio; remova-o antes de lançar outras cargas."
+            )
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        return self.add_action(Action(
+            f"Carga {index}", "plate_surface_pressure", target,
+            (float(x_initial), float(x_final), float(y_initial), float(y_final)), load_case,
+        ))
+
+    def add_plate_edge_action(
+        self, target: str, edge_index: int, action_type: str, direction: str,
+        initial: float, final: float, load_case: str, reference: str = "global",
+    ) -> Action:
+        """Store a distributed force or moment applied along one plate contour edge."""
+        if target not in self.model.plates:
+            raise ValueError(f"A placa '{target}' não existe.")
+        if not 0 <= int(edge_index) < len(self.model.plates[target].contour):
+            raise ValueError("A aresta selecionada não pertence à placa.")
+        reference = reference.casefold()
+        direction = direction.upper()
+        if reference not in {"global", "local"} or direction not in {"X", "Y", "Z"}:
+            raise ValueError("Referência ou direção inválida para a ação na aresta.")
+        if action_type not in {"force", "moment"}:
+            raise ValueError("O tipo da ação na aresta deve ser force ou moment.")
+        if action_type == "moment" and reference != "local":
+            raise ValueError("Momentos distribuídos na aresta usam os eixos locais.")
+        if self.has_selfweight(load_case):
+            raise ValueError(
+                f"A ação '{load_case}' está restrita ao peso próprio; remova-o antes de lançar outras cargas."
+            )
+        kind = (
+            f"plate_edge_distributed_force_{reference}_{direction}:{int(edge_index)}"
+            if action_type == "force"
+            else f"plate_edge_moment_local_{direction}:{int(edge_index)}"
+        )
+        index = 1
+        while f"Carga {index}" in self.model.actions:
+            index += 1
+        components = (float(initial), float(final)) if action_type == "force" else (float(initial),)
+        return self.add_action(Action(f"Carga {index}", kind, target, components, load_case))
+
     def replace_action_with_selfweight(
         self, load_case: str, weights: tuple[tuple[str, float], ...],
     ) -> tuple[Action, ...]:

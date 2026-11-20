@@ -247,11 +247,11 @@ def test_plate_action_and_analysis_panels_show_only_the_requested_fields(window)
     assert not panel.member_color_button.isVisible()
     assert panel.findChild(QLabel, 'propertySection').text() == 'Identidade'
     labels = [label.text() for label in panel.findChildren(QLabel)]
-    assert 'Ação distribuída' in labels
+    assert 'Ação na superfície' in labels
     assert 'Barras' not in labels and 'Material' not in labels and 'Espessura' not in labels
     pressure_field = next(
         field for field in panel.findChildren(QLineEdit)
-        if field.accessibleName() == 'Ação distribuída na laje (kN/m²)'
+        if field.accessibleName() == 'Ação na superfície da placa (kN/m²)'
     )
     assert pressure_field.text() == '-3'
     assert all(field.accessibleName() != 'Espessura da placa (mm)'

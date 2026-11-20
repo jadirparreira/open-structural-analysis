@@ -16,7 +16,7 @@ from osa.domain import StructuralModel
 from osa.domain.member_axes import member_basis
 from osa.services import SectionPropertyService, calculate_rigid_bar_properties
 
-from .plate_mesh import generate_plate_mesh
+from .plate_mesh import _plate_local_basis, generate_plate_mesh
 
 
 class ModelBuilder:
@@ -31,6 +31,9 @@ class ModelBuilder:
         target = FEModel3D()
         target._osa_member_segments = {}
         target._osa_plate_elements = {}
+        target._osa_plate_edges = {}
+        target._osa_plate_surface_axes = {}
+        target._osa_node_coordinates = {}
         target._osa_original_node_names = set(source.nodes)
         rotationally_unconnected = self._rotationally_unconnected_nodes(source)
         node_fixed_supports = {}
@@ -38,6 +41,7 @@ class ModelBuilder:
         node_spring_directions = {}
         for node in source.nodes.values():
             target.add_node(node.name, node.x, node.y, node.z)
+            target._osa_node_coordinates[node.name] = (node.x, node.y, node.z)
             supports = list(node.supports)
             stiffness = node.support_stiffness
             if node.name in rotationally_unconnected:
@@ -89,11 +93,22 @@ class ModelBuilder:
             if existing is None:
                 existing = f"FE::N{index}"
                 target.add_node(existing, *coordinates)
+                target._osa_node_coordinates[existing] = coordinates
                 node_fixed_supports[existing] = [False] * 6
                 node_spring_stiffness[existing] = [0.0] * 6
                 node_spring_directions[existing] = [set() for _ in range(6)]
             plate_node_names.append(existing)
         for plate in source.plates.values():
+            contour_points = np.asarray(plate.contour, dtype=float)
+            local_x, local_y, _normal = _plate_local_basis(plate.contour)
+            relative_contour = contour_points - contour_points[0]
+            local_x_values = relative_contour @ local_x
+            local_y_values = relative_contour @ local_y
+            target._osa_plate_surface_axes[plate.name] = (
+                contour_points[0], local_x, local_y,
+                float(local_x_values.min()), float(local_x_values.max()),
+                float(local_y_values.min()), float(local_y_values.max()),
+            )
             if plate.material not in source.materials:
                 raise ValueError(f"A laje '{plate.name}' não possui um material cadastrado.")
             if source.material_types and source.material_types.get(plate.material) != "Concreto":
@@ -109,6 +124,24 @@ class ModelBuilder:
                 )
                 plate_elements.append((element_name, node_names, coordinates))
             target._osa_plate_elements[plate.name] = tuple(plate_elements)
+            for edge_index, (start, end) in enumerate(zip(
+                plate.contour, (*plate.contour[1:], plate.contour[0]),
+            )):
+                start_point = np.asarray(start, dtype=float)
+                edge_vector = np.asarray(end, dtype=float) - start_point
+                edge_length_squared = float(np.dot(edge_vector, edge_vector))
+                edge_nodes = {}
+                if edge_length_squared > 0.0:
+                    for _, node_names, coordinates in plate_elements:
+                        for node_name, coordinate in zip(node_names, coordinates):
+                            point = np.asarray(coordinate, dtype=float)
+                            ratio = float(np.dot(point - start_point, edge_vector) / edge_length_squared)
+                            projected = start_point + ratio * edge_vector
+                            if -1e-8 <= ratio <= 1.0 + 1e-8 and np.linalg.norm(point - projected) <= 1e-7:
+                                edge_nodes[round(min(1.0, max(0.0, ratio)), 10)] = node_name
+                target._osa_plate_edges[(plate.name, edge_index)] = tuple(
+                    (node_name, ratio) for ratio, node_name in sorted(edge_nodes.items())
+                )
 
         restrained_nodes = set()
         for plate in source.plates.values():

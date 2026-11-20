@@ -47,6 +47,12 @@ class ActionRenderer:
             if visibility.get("member_forces", True)
             and action.kind.startswith("member_distributed_force_") and len(action.components) == 2
         ]
+        plate_edge_actions = [
+            action for action in visible_actions
+            if (visibility.get("member_forces", True) if action.kind.startswith("plate_edge_distributed_force_")
+                else visibility.get("member_moments", True))
+            if action.kind.startswith(("plate_edge_distributed_force_", "plate_edge_moment_local_"))
+        ]
         node_force_actions = [
             action for action in visible_actions
             if visibility.get("node_forces", True)
@@ -65,20 +71,21 @@ class ActionRenderer:
         plate_pressure_actions = [
             action for action in visible_actions
             if visibility.get("plate_pressures", True)
-            and action.kind == "plate_surface_pressure" and len(action.components) == 1
+            and action.kind == "plate_surface_pressure" and len(action.components) in {1, 4}
         ]
         plate_loads = []
         for action in plate_pressure_actions:
             if action.target not in getattr(model, "plates", {}):
                 continue
-            sample_points, _normal = self._plate_action_samples(model, action.target)
+            sample_points, normal = self._plate_action_samples(model, action.target)
             surface_faces, surface_edges = self._plate_action_surface(model, action.target)
             if not sample_points or not surface_faces:
                 continue
-            pressure = float(action.components[0])
+            components = tuple(float(value) for value in action.components)
+            pressure = self._plate_pressure_peak(components)
             plate_loads.append((
-                pressure, np.array((0.0, 0.0, np.sign(pressure))), sample_points,
-                self.COLOR, surface_faces, surface_edges,
+                components, normal, sample_points, self.COLOR, surface_faces, surface_edges,
+                self._plate_pressure_axis_parameters(model, action.target, normal),
             ))
 
         selfweight_actions = [
@@ -99,20 +106,22 @@ class ActionRenderer:
                 if not surface_faces:
                     continue
                 plate_loads.append((
-                    pressure, np.array((0.0, 0.0, np.sign(pressure))), sample_points,
-                    self.SELFWEIGHT_COLOR, surface_faces, surface_edges,
+                    (pressure,), np.array((0.0, 0.0, np.sign(pressure))), sample_points,
+                    self.SELFWEIGHT_COLOR, surface_faces, surface_edges, None,
                 ))
         maximum_intensity = max(
             (
                 abs(component)
-                for action in (*distributed_actions, *node_force_actions, *plate_pressure_actions)
+                for action in (*distributed_actions, *node_force_actions, *plate_pressure_actions,
+                               *(action for action in plate_edge_actions
+                                 if action.kind.startswith("plate_edge_distributed_force_")))
                 for component in action.components
             ),
             default=0.0,
         )
         maximum_intensity = max(
             maximum_intensity,
-            max((abs(load[0]) for load in plate_loads), default=0.0),
+            max((self._plate_pressure_peak(load[0]) for load in plate_loads), default=0.0),
         )
         for action in distributed_actions if maximum_intensity else ():
             member = model.bars.get(action.target)
@@ -201,6 +210,71 @@ class ActionRenderer:
                 ))
                 labels.extend((self._format_force(initial), self._format_force(final)))
 
+        for action in plate_edge_actions:
+            plate = getattr(model, "plates", {}).get(action.target)
+            if plate is None:
+                continue
+            try:
+                prefix, edge_text = action.kind.rsplit(":", 1)
+                edge_index = int(edge_text)
+                start_node = model.nodes[plate.vertex_nodes[edge_index]]
+                end_node = model.nodes[plate.vertex_nodes[(edge_index + 1) % len(plate.vertex_nodes)]]
+            except (ValueError, IndexError, KeyError):
+                continue
+            start = np.array((start_node.x, start_node.y, start_node.z), dtype=float)
+            end = np.array((end_node.x, end_node.y, end_node.z), dtype=float)
+            vector = end - start
+            length = float(np.linalg.norm(vector))
+            if length <= 1e-12:
+                continue
+            tangent = vector / length
+            contour = np.asarray(plate.contour, dtype=float)
+            normal = np.zeros(3, dtype=float)
+            for index, point in enumerate(contour):
+                normal += np.cross(point - contour[0], contour[(index + 1) % len(contour)] - contour[0])
+            normal_length = float(np.linalg.norm(normal))
+            if normal_length <= 1e-12:
+                continue
+            dominant_axis = int(np.argmax(np.abs(normal)))
+            if normal[dominant_axis] < 0.0:
+                normal = -normal
+            normal /= normal_length
+            local_basis = (tangent, np.cross(normal, tangent), normal)
+            local_basis = tuple(axis / np.linalg.norm(axis) for axis in local_basis)
+            axis_name = prefix.rsplit("_", 1)[1][-1]
+            axis_index = "XYZ".index(axis_name)
+            is_local = "_local_" in prefix
+            direction = local_basis[axis_index] if is_local else np.eye(3)[axis_index]
+            if prefix.startswith("plate_edge_moment_"):
+                moment = float(action.components[0])
+                axis, plane_u, plane_v = self._moment_plane(local_basis, axis_name)
+                centers = [start + vector * fraction for fraction in (0.25, 0.5, 0.75)]
+                for center in centers:
+                    points, lines = self._add_moment_symbol(
+                        plotter, center, axis, plane_u, plane_v, moment, self.MOMENT_RADIUS,
+                        self.LOCAL_COLOR,
+                    )
+                    self._append_lines(line_batches, (self.LOCAL_COLOR, 3.0), points, lines)
+                label_positions.append(centers[1] + plane_u * (self.MOMENT_RADIUS * 1.35))
+                labels.append(self._format_moment(moment))
+                continue
+            initial, final = action.components
+            if np.isclose(initial, 0.0) and np.isclose(final, 0.0):
+                continue
+            color = self.LOCAL_COLOR if is_local else self.COLOR
+            initial_sign = np.sign(initial) or np.sign(final) or 1.0
+            final_sign = np.sign(final) or initial_sign
+            top_start = start - direction * initial_sign * self._force_height(initial, maximum_intensity)
+            top_end = end - direction * final_sign * self._force_height(final, maximum_intensity)
+            vertices = np.array((start, end, top_end, top_start))
+            self._append_face(face_batches, color, vertices)
+            self._append_lines(
+                line_batches, (color, 2.0), vertices,
+                (2, 1, 2, 2, 2, 3, 2, 3, 0),
+            )
+            label_positions.extend((top_start + tangent * length * 0.08, top_end - tangent * length * 0.08))
+            labels.extend((self._format_force(initial), self._format_force(final)))
+
         for action in node_force_actions:
             prefix = "node_force_"
             if not action.kind.startswith(prefix) or len(action.components) != 1:
@@ -271,16 +345,21 @@ class ActionRenderer:
             label_positions.append(center + plane_u * (self.MOMENT_RADIUS * 1.35))
             labels.append(self._format_node_moment(action.components[0]))
 
-        for pressure, direction, positions, color, surface_faces, surface_edges in plate_loads:
-            if np.isclose(pressure, 0.0):
+        for components, normal, positions, color, surface_faces, surface_edges, pressure_axes in plate_loads:
+            if np.isclose(self._plate_pressure_peak(components), 0.0):
                 continue
-            arrow_length = self._force_height(pressure, maximum_intensity)
-            surface_offset = -direction * arrow_length
             for vertices in surface_faces:
-                self._append_face(face_batches, color, vertices + surface_offset)
+                offsets = []
+                for point in vertices:
+                    pressure = self._plate_pressure_value(components, point, pressure_axes)
+                    offsets.append(
+                        -normal * np.sign(pressure) * self._force_height(pressure, maximum_intensity)
+                    )
+                self._append_face(face_batches, color, vertices + np.asarray(offsets))
             if surface_edges:
                 edge_points = np.asarray([
-                    point + surface_offset
+                    point - normal * np.sign(self._plate_pressure_value(components, point, pressure_axes))
+                    * self._force_height(self._plate_pressure_value(components, point, pressure_axes), maximum_intensity)
                     for edge in surface_edges for point in edge
                 ])
                 edge_lines = tuple(
@@ -291,15 +370,23 @@ class ActionRenderer:
                 self._append_lines(
                     line_batches, (color, 2.0), edge_points, edge_lines,
                 )
+            label_data = None
             for center in positions:
+                pressure = self._plate_pressure_value(components, center, pressure_axes)
+                if np.isclose(pressure, 0.0):
+                    continue
+                direction = normal * np.sign(pressure)
+                arrow_length = self._force_height(pressure, maximum_intensity)
                 line_start = center - direction * arrow_length
                 points, lines = self._add_node_force_arrow(
                     plotter, line_start, center, direction, arrow_length,
                 )
                 self._append_lines(line_batches, (color, 2.5), points, lines)
-            label_center = positions[0] - direction * (arrow_length + self.LABEL_CLEARANCE)
-            label_positions.append(label_center)
-            labels.append(self._format_pressure(pressure))
+                if label_data is None:
+                    label_data = (line_start - direction * self.LABEL_CLEARANCE, pressure)
+            if label_data is not None:
+                label_positions.append(label_data[0])
+                labels.append(self._format_pressure(label_data[1]))
 
         for color, (points, faces) in face_batches.items():
             if not points:
@@ -396,6 +483,48 @@ class ActionRenderer:
         return ActionRenderer._format_number(value) + " kNm"
 
     @staticmethod
+    def _plate_pressure_peak(components) -> float:
+        if len(components) == 1:
+            return abs(float(components[0]))
+        if len(components) != 4:
+            return 0.0
+        x_start, x_end, y_start, y_end = map(float, components)
+        return max(abs(x + y) for x in (x_start, x_end) for y in (y_start, y_end))
+
+    @staticmethod
+    def _plate_pressure_axis_parameters(model, plate_name: str, normal):
+        plate = getattr(model, "plates", {}).get(plate_name)
+        if plate is None or len(plate.contour) < 3:
+            return None
+        points = np.asarray(plate.contour, dtype=float)
+        origin = points[0]
+        local_x = np.array((1.0, 0.0, 0.0)) - normal * normal[0]
+        if np.linalg.norm(local_x) <= 1e-8:
+            local_x = np.array((0.0, 1.0, 0.0)) - normal * normal[1]
+        local_x /= np.linalg.norm(local_x)
+        local_y = np.cross(normal, local_x)
+        local_y /= np.linalg.norm(local_y)
+        relative = points - origin
+        x_values, y_values = relative @ local_x, relative @ local_y
+        return (
+            origin, local_x, local_y,
+            float(x_values.min()), float(x_values.max()),
+            float(y_values.min()), float(y_values.max()),
+        )
+
+    @staticmethod
+    def _plate_pressure_value(components, point, parameters) -> float:
+        if len(components) == 1 or parameters is None:
+            return float(components[0])
+        x_start, x_end, y_start, y_end = map(float, components)
+        origin, local_x, local_y, x_min, x_max, y_min, y_max = parameters
+        relative = np.asarray(point, dtype=float) - origin
+        x_length, y_length = x_max - x_min, y_max - y_min
+        x_ratio = 0.5 if x_length <= 1e-12 else (float(np.dot(relative, local_x)) - x_min) / x_length
+        y_ratio = 0.5 if y_length <= 1e-12 else (float(np.dot(relative, local_y)) - y_min) / y_length
+        return x_start + (x_end - x_start) * x_ratio + y_start + (y_end - y_start) * y_ratio
+
+    @staticmethod
     def _plate_action_samples(model, plate_name: str, maximum_count: int = 16):
         """Return spread quad centroids and the mesh's positive normal."""
         mesh = getattr(model, "plate_mesh", None)
@@ -422,6 +551,9 @@ class ActionRenderer:
         length = float(np.linalg.norm(normal))
         if length <= 1e-12:
             return (), np.array((0.0, 0.0, 1.0))
+        dominant_axis = int(np.argmax(np.abs(normal)))
+        if normal[dominant_axis] < 0.0:
+            normal = -normal
         return (points.mean(axis=0),), normal / length
 
     @staticmethod
