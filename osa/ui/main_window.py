@@ -82,6 +82,7 @@ from .project_sheet import (
     ProjectSheetDetailIdentifierPanel,
     ProjectSheetElevationIdentifierPanel,
     ProjectSheetIdentificationPanel,
+    ProjectSheetSectionPanel,
     ProjectSheetViewPanel,
     ProjectSheetWorkspace,
     default_project_sheet_settings,
@@ -261,6 +262,7 @@ class MainWindow(QMainWindow):
         self.project_sheet_detail_group_panel = ProjectSheetDetailGroupPanel(self)
         self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
         self.project_sheet_detail_identifier_panel = ProjectSheetDetailIdentifierPanel(self)
+        self.project_sheet_section_panel = ProjectSheetSectionPanel(self)
         self.project_sheet_elevation_identifier_panel = ProjectSheetElevationIdentifierPanel(self)
         self.project_weld_tool = WeldTool(self, self.project_sheet_workspace)
         self.project_sheet_workspace.weld_tool = self.project_weld_tool
@@ -272,6 +274,9 @@ class MainWindow(QMainWindow):
         )
         self.project_sheet_workspace.detail_identifier_selection_changed.connect(
             self._project_sheet_detail_identifier_selected
+        )
+        self.project_sheet_workspace.section_selection_changed.connect(
+            self._project_sheet_section_selected
         )
         self.project_sheet_workspace.elevation_identifier_selection_changed.connect(
             self._project_sheet_elevation_identifier_selected
@@ -309,6 +314,8 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.detail_identifier_step_changed.connect(
             self._project_detail_identifier_step_changed
         )
+        self.project_sheet_workspace.section_finished.connect(self._finish_project_section)
+        self.project_sheet_workspace.section_step_changed.connect(self._project_section_step_changed)
         self.project_sheet_workspace.elevation_identifier_finished.connect(
             self._finish_project_elevation_identifier
         )
@@ -347,6 +354,9 @@ class MainWindow(QMainWindow):
         )
         self.project_sheet_detail_identifier_panel.identity_edited.connect(
             self._project_sheet_detail_identifier_identity_edited
+        )
+        self.project_sheet_section_panel.identity_edited.connect(
+            self._project_sheet_section_identity_edited
         )
         self.project_sheet_elevation_identifier_panel.identity_edited.connect(
             self._project_sheet_elevation_identifier_identity_edited
@@ -403,6 +413,9 @@ class MainWindow(QMainWindow):
         self.detailing_mode_palette = DetailingModePalette(self)
         self.detailing_mode_palette.reposition()
         self.project_sheets_palette = ProjectSheetsPalette(self)
+        self.project_sheet_workspace.remove_component_detail_group_requested.connect(
+            self.project_sheets_palette.remove_component_detail_group_from_active_sheet
+        )
         self.project_sheets_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
@@ -1071,6 +1084,9 @@ class MainWindow(QMainWindow):
         detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
         if detail_panel is not None:
             detail_panel.hide()
+        section_panel = getattr(self, "project_sheet_section_panel", None)
+        if section_panel is not None:
+            section_panel.hide()
         elevation_panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
         if elevation_panel is not None:
             elevation_panel.hide()
@@ -1181,6 +1197,17 @@ class MainWindow(QMainWindow):
                             identifiers[identifier_index]
                         )
                         return
+            selected_section = self.project_sheet_workspace._selected_section
+            if selected_section is not None:
+                view_index, section_index = selected_section
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    sections = views[view_index].get("sections", ())
+                    if 0 <= section_index < len(sections):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_section_panel.show_for(sections[section_index])
+                        return
         detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
         if detail_panel is not None:
             detail_panel.hide()
@@ -1286,6 +1313,46 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.update()
         self.project_sheet_workspace.layout_changed.emit()
         self.project_sheet_detail_identifier_panel.show_for(identifier)
+
+    def _project_sheet_section_selected(self, section: dict | None) -> None:
+        panel = getattr(self, "project_sheet_section_panel", None)
+        if panel is None:
+            return
+        if section is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if not any((self.project_sheet_workspace._selected_detail_identifier,
+                        self.project_sheet_workspace._selected_elevation_identifier,
+                        self.project_sheet_workspace._selected_identification_indices)):
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_detail_identifier_panel.hide()
+        self.project_sheet_elevation_identifier_panel.hide()
+        panel.show_for(section)
+
+    def _project_sheet_section_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_section
+        if selected is None:
+            return
+        view_index, section_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        sections = views[view_index].get("sections", ())
+        if not 0 <= section_index < len(sections):
+            return
+        section = sections[section_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(section.get("name", "")):
+            return
+        section["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_section_panel.show_for(section)
 
     def _project_sheet_elevation_identifier_identity_edited(self, identity: str) -> None:
         selected = self.project_sheet_workspace._selected_elevation_identifier
@@ -1540,6 +1607,39 @@ class MainWindow(QMainWindow):
             "> <b>Identificador de detalhe</b> "
             "<span style='color:#57606a'>(Clique na vista em que o detalhe será identificado)</span>"
         )
+
+    def start_project_section(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_section"
+        self.project_sheet_workspace.set_section_mode(True)
+        self.history.append(
+            "> <b>Corte</b> <span style='color:#57606a'>"
+            "(Selecione a vista, clique nas duas extremidades da linha e indique o lado do corte; "
+            "Esc encerra)</span>"
+        )
+
+    def _project_section_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_section":
+            return
+        prompt = {
+            1: "Clique na primeira extremidade do corte",
+            2: "Clique na segunda extremidade; o alinhamento ajusta em 45°",
+            4: "Clique no lado para o qual as setas devem apontar",
+        }.get(step)
+        if prompt:
+            self.history.append(f"> <b>Corte</b> <span style='color:#57606a'>({prompt}; Esc encerra)</span>")
+
+    def _finish_project_section(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_section":
+            return
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento encerrado" if not canceled else "Lançamento encerrado; cortes preservados"
+        self.history.append(f"> <b>Corte</b> <span style='color:#8c959f'>({message})</span>")
 
     def start_project_elevation_identifier(self) -> None:
         if not self._detailing_project_mode:
@@ -2670,6 +2770,12 @@ class MainWindow(QMainWindow):
             for key in ("center", "label_position"):
                 if detail_identifier.get(key) is not None:
                     detail_identifier[key] = point(detail_identifier[key])
+        for section in view.get("sections", ()):
+            if not isinstance(section, dict):
+                continue
+            for key in ("start", "end"):
+                if section.get(key) is not None:
+                    section[key] = point(section[key])
 
     def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
         """Expand a picked bar to its group only while detailing is active."""
@@ -4174,6 +4280,11 @@ class MainWindow(QMainWindow):
             and self.project_sheet_detail_identifier_panel.isVisible()
         ):
             self.project_sheet_detail_identifier_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_section_panel")
+            and self.project_sheet_section_panel.isVisible()
+        ):
+            self.project_sheet_section_panel.reposition()
         if (
             hasattr(self, "project_sheet_elevation_identifier_panel")
             and self.project_sheet_elevation_identifier_panel.isVisible()
@@ -6137,6 +6248,9 @@ class MainWindow(QMainWindow):
         if self._command_mode == "project_sheet_detail_identifier":
             self.project_sheet_workspace.set_detail_identifier_mode(False)
             self._finish_project_detail_identifier(canceled=True)
+        if self._command_mode == "project_sheet_section":
+            self.project_sheet_workspace.set_section_mode(False)
+            self._finish_project_section(canceled=True)
             return
         if self._command_mode == "project_sheet_elevation_identifier":
             self.project_sheet_workspace._finish_elevation_identifier_mode(True)
@@ -6919,6 +7033,8 @@ class MainWindow(QMainWindow):
             if self.project_sheet_workspace.delete_selected_elevation_identifier():
                 return
             if self.project_sheet_workspace.delete_selected_detail_identifier():
+                return
+            if self.project_sheet_workspace.delete_selected_section():
                 return
             if self.project_sheet_workspace.delete_selected_identification():
                 return

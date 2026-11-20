@@ -1030,6 +1030,10 @@ class ProjectSheetsPalette(QFrame):
             window.start_project_detail_identifier,
         )
         self.detail_identifier_button.setIconSize(QSize(21, 21))
+        self.section_button = self._action_button(
+            "section-cut.svg", "Corte", window.start_project_section,
+        )
+        self.section_button.setIconSize(QSize(21, 21))
         self.elevation_identifier_button = self._action_button(
             "elevation-identifier.svg", "Identificador de elevação",
             window.start_project_elevation_identifier,
@@ -1111,7 +1115,8 @@ class ProjectSheetsPalette(QFrame):
             self.hide_view_elements_button, self.reveal_view_elements_button, self.reveal_all_view_elements_button,
         ))
         self.model_elements_group_button = self._group_button("tag.svg", "Elementos do modelo", (
-            self.identify_button, self.detail_identifier_button, self.elevation_identifier_button, self.member_break_button, self.weld_button,
+            self.identify_button, self.detail_identifier_button, self.section_button,
+            self.elevation_identifier_button, self.member_break_button, self.weld_button,
         ))
         self.dimensions_group_button = self._group_button("dimension.svg", "Cotas", (
             self.dimension_button, self.orthogonal_dimension_button, self.angular_dimension_button, self.level_dimension_button,
@@ -1250,6 +1255,20 @@ class ProjectSheetsPalette(QFrame):
             return
         views.pop(index)
         self._window.project_sheet_workspace.set_sheet_views(views, clear_selection=True)
+        self._window._store_detailing_state()
+
+    def remove_component_detail_group_from_active_sheet(self, group_id: str) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        views = self._sheet_views.get(sheet_name, [])
+        remaining = [
+            view for view in views
+            if not isinstance(view.get("component_detail_group"), dict)
+            or str(view["component_detail_group"].get("id")) != str(group_id)
+        ]
+        if len(remaining) == len(views):
+            return
+        self._sheet_views[sheet_name] = remaining
+        self._window.project_sheet_workspace.set_sheet_views(remaining, clear_selection=True)
         self._window._store_detailing_state()
 
     def reposition(self) -> None:
