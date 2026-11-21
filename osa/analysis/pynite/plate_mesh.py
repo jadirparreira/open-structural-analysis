@@ -264,22 +264,26 @@ def _is_rectangle(contour) -> bool:
     return orthogonal and opposite_edges_parallel
 
 
-
-
 def _plate_local_basis(contour):
-    """Create a deterministic plate basis aligned with global X when possible."""
+    """Create a plate basis with local Y following the downward vertical projection."""
     points = np.asarray(_canonical_contour(contour), dtype=float)
     normal = np.zeros(3, dtype=float)
     for index, point in enumerate(points):
         normal += np.cross(point - points[0], points[(index + 1) % len(points)] - points[0])
     normal /= np.linalg.norm(normal)
-    local_x = np.array((1.0, 0.0, 0.0))
-    local_x -= np.dot(local_x, normal) * normal
-    if np.linalg.norm(local_x) <= 1e-8:
-        local_x = np.array((0.0, 1.0, 0.0))
+    global_down = np.array((0.0, 0.0, -1.0))
+    local_y = global_down - np.dot(global_down, normal) * normal
+    if np.linalg.norm(local_y) > 1e-8:
+        local_y /= np.linalg.norm(local_y)
+        local_x = np.cross(local_y, normal)
+    else:
+        local_x = np.array((1.0, 0.0, 0.0))
         local_x -= np.dot(local_x, normal) * normal
-    local_x /= np.linalg.norm(local_x)
-    local_y = np.cross(normal, local_x)
+        if np.linalg.norm(local_x) <= 1e-8:
+            local_x = np.array((0.0, 1.0, 0.0))
+            local_x -= np.dot(local_x, normal) * normal
+        local_x /= np.linalg.norm(local_x)
+        local_y = np.cross(normal, local_x)
     return local_x, local_y, normal
 
 

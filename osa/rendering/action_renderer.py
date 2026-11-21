@@ -85,7 +85,7 @@ class ActionRenderer:
             pressure = self._plate_pressure_peak(components)
             plate_loads.append((
                 components, normal, sample_points, self.COLOR, surface_faces, surface_edges,
-                self._plate_pressure_axis_parameters(model, action.target, normal),
+                self._plate_pressure_axis_parameters(model, action.target), action.target,
             ))
 
         selfweight_actions = [
@@ -107,7 +107,7 @@ class ActionRenderer:
                     continue
                 plate_loads.append((
                     (pressure,), np.array((0.0, 0.0, np.sign(pressure))), sample_points,
-                    self.SELFWEIGHT_COLOR, surface_faces, surface_edges, None,
+                    self.SELFWEIGHT_COLOR, surface_faces, surface_edges, None, plate_name,
                 ))
         maximum_intensity = max(
             (
@@ -345,7 +345,7 @@ class ActionRenderer:
             label_positions.append(center + plane_u * (self.MOMENT_RADIUS * 1.35))
             labels.append(self._format_node_moment(action.components[0]))
 
-        for components, normal, positions, color, surface_faces, surface_edges, pressure_axes in plate_loads:
+        for components, normal, positions, color, surface_faces, surface_edges, pressure_axes, plate_name in plate_loads:
             if np.isclose(self._plate_pressure_peak(components), 0.0):
                 continue
             for vertices in surface_faces:
@@ -384,7 +384,24 @@ class ActionRenderer:
                 self._append_lines(line_batches, (color, 2.5), points, lines)
                 if label_data is None:
                     label_data = (line_start - direction * self.LABEL_CLEARANCE, pressure)
-            if label_data is not None:
+            variable_axes = self._variable_plate_pressure_axes(components)
+            if variable_axes and pressure_axes is not None:
+                for axis, start, end in variable_axes:
+                    for ratio, pressure in ((0.0, start), (1.0, end)):
+                        edge_point = self._plate_pressure_edge_point(
+                            model, plate_name, pressure_axes, axis, ratio,
+                        )
+                        total_pressure = self._plate_pressure_value(components, edge_point, pressure_axes)
+                        if np.isclose(total_pressure, 0.0):
+                            continue
+                        direction = normal * np.sign(total_pressure)
+                        label_positions.append(
+                            edge_point - direction * (
+                                self._force_height(total_pressure, maximum_intensity) + self.LABEL_CLEARANCE
+                            )
+                        )
+                        labels.append(self._format_pressure(total_pressure))
+            elif label_data is not None:
                 label_positions.append(label_data[0])
                 labels.append(self._format_pressure(label_data[1]))
 
@@ -489,21 +506,39 @@ class ActionRenderer:
         if len(components) != 4:
             return 0.0
         x_start, x_end, y_start, y_end = map(float, components)
-        return max(abs(x + y) for x in (x_start, x_end) for y in (y_start, y_end))
+        x_active = not (np.isclose(x_start, 0.0) and np.isclose(x_end, 0.0))
+        y_active = not (np.isclose(y_start, 0.0) and np.isclose(y_end, 0.0))
+        samples = np.linspace(0.0, 1.0, 17)
+        return max(
+            abs(ActionRenderer._plate_pressure_envelope(
+                x_start + (x_end - x_start) * x_ratio,
+                y_start + (y_end - y_start) * y_ratio,
+                x_active, y_active,
+            ))
+            for x_ratio in samples for y_ratio in samples
+        )
 
     @staticmethod
-    def _plate_pressure_axis_parameters(model, plate_name: str, normal):
+    def _plate_pressure_envelope(pressure_x, pressure_y, x_active=True, y_active=True) -> float:
+        """Return the upper envelope of active profiles, ignoring blank axes."""
+        if x_active and y_active:
+            return max(float(pressure_x), float(pressure_y))
+        if x_active:
+            return float(pressure_x)
+        if y_active:
+            return float(pressure_y)
+        return 0.0
+
+    @staticmethod
+    def _plate_pressure_axis_parameters(model, plate_name: str):
         plate = getattr(model, "plates", {}).get(plate_name)
         if plate is None or len(plate.contour) < 3:
             return None
+        from osa.analysis.pynite.plate_mesh import _plate_local_basis
+
         points = np.asarray(plate.contour, dtype=float)
         origin = points[0]
-        local_x = np.array((1.0, 0.0, 0.0)) - normal * normal[0]
-        if np.linalg.norm(local_x) <= 1e-8:
-            local_x = np.array((0.0, 1.0, 0.0)) - normal * normal[1]
-        local_x /= np.linalg.norm(local_x)
-        local_y = np.cross(normal, local_x)
-        local_y /= np.linalg.norm(local_y)
+        local_x, local_y, _normal = _plate_local_basis(points)
         relative = points - origin
         x_values, y_values = relative @ local_x, relative @ local_y
         return (
@@ -522,7 +557,46 @@ class ActionRenderer:
         x_length, y_length = x_max - x_min, y_max - y_min
         x_ratio = 0.5 if x_length <= 1e-12 else (float(np.dot(relative, local_x)) - x_min) / x_length
         y_ratio = 0.5 if y_length <= 1e-12 else (float(np.dot(relative, local_y)) - y_min) / y_length
-        return x_start + (x_end - x_start) * x_ratio + y_start + (y_end - y_start) * y_ratio
+        pressure_x = x_start + (x_end - x_start) * x_ratio
+        pressure_y = y_start + (y_end - y_start) * y_ratio
+        x_active = not (np.isclose(x_start, 0.0) and np.isclose(x_end, 0.0))
+        y_active = not (np.isclose(y_start, 0.0) and np.isclose(y_end, 0.0))
+        return ActionRenderer._plate_pressure_envelope(
+            pressure_x, pressure_y, x_active, y_active,
+        )
+
+    @staticmethod
+    def _variable_plate_pressure_axes(components):
+        """Return the active linear pressure profiles for local X and Y."""
+        if len(components) != 4:
+            return ()
+        x_start, x_end, y_start, y_end = map(float, components)
+        axes = []
+        if not np.isclose(x_start, x_end):
+            axes.append(("X", x_start, x_end))
+        if not np.isclose(y_start, y_end):
+            axes.append(("Y", y_start, y_end))
+        return tuple(axes)
+
+    @staticmethod
+    def _plate_pressure_edge_point(model, plate_name: str, parameters, axis: str, ratio: float) -> np.ndarray:
+        """Return the midpoint of the plate edge at one end of a local axis."""
+        origin, local_x, local_y, x_min, x_max, y_min, y_max = parameters
+        plate = getattr(model, "plates", {}).get(plate_name)
+        if plate is None:
+            return np.asarray(origin, dtype=float)
+        contour = np.asarray(plate.contour, dtype=float)
+        relative = contour - origin
+        use_x = axis == "X"
+        basis = local_x if use_x else local_y
+        low, high = (x_min, x_max) if use_x else (y_min, y_max)
+        target = low + (high - low) * ratio
+        coordinates = relative @ basis
+        scale = max(1.0, abs(low), abs(high))
+        selected = contour[np.isclose(coordinates, target, atol=scale * 1e-7, rtol=0.0)]
+        if len(selected):
+            return selected.mean(axis=0)
+        return np.asarray(origin) + basis * target
 
     @staticmethod
     def _plate_action_samples(model, plate_name: str, maximum_count: int = 16):

@@ -161,6 +161,8 @@ class LoadCaseBuilder:
             x_initial, x_final, y_initial, y_final = map(float, action.components)
         else:
             raise ValueError(f"A ação na superfície '{action.name}' tem componentes inválidos.")
+        x_active = not (np.isclose(x_initial, 0.0) and np.isclose(x_final, 0.0))
+        y_active = not (np.isclose(y_initial, 0.0) and np.isclose(y_final, 0.0))
 
         axes = getattr(target, "_osa_plate_surface_axes", {}).get(action.target)
         if axes is None:
@@ -201,7 +203,14 @@ class LoadCaseBuilder:
                     ) / y_length
                     pressure_x = x_initial + (x_final - x_initial) * x_ratio
                     pressure_y = y_initial + (y_final - y_initial) * y_ratio
-                    pressure = pressure_x + pressure_y
+                    if x_active and y_active:
+                        pressure = max(pressure_x, pressure_y)
+                    elif x_active:
+                        pressure = pressure_x
+                    elif y_active:
+                        pressure = pressure_y
+                    else:
+                        pressure = 0.0
                     for index in range(4):
                         nodal_forces[index] += shape[index] * pressure * area_vector
             for node_name, force in zip(node_names, nodal_forces):

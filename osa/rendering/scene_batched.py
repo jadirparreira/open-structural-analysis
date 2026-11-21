@@ -529,6 +529,7 @@ class StructureScene(QWidget):
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors: list[object] = []
+        self._plate_local_axis_actors: list[object] = []
         self._action_actors: list[object] = []
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels: tuple[str, ...] = ()
@@ -2160,7 +2161,30 @@ class StructureScene(QWidget):
             mapper.SetResolveCoincidentTopologyLineOffsetParameters(0.0, 0.0)
             mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
             self._update_plate_edge_style(name)
+            self._add_plate_local_axes(plate)
         self._update_plate_antialiasing()
+
+    def _add_plate_local_axes(self, plate) -> None:
+        """Draw plate X/Y/Z axes in the same overlay used for member axes."""
+        from osa.analysis.pynite.plate_mesh import _plate_local_basis
+
+        points = np.asarray(plate.contour, dtype=float)
+        if len(points) < 3:
+            return
+        local_x, local_y, normal = _plate_local_basis(points)
+        basis = (local_x, local_y, normal)
+        origin = points.mean(axis=0)
+        relative = points - points[0]
+        spans = (
+            float(np.ptp(relative @ local_x)),
+            float(np.ptp(relative @ local_y)),
+        )
+        scale = min(max(max(spans) * 0.2, 0.15), 1.0)
+        for axis, color in zip(basis, self._axis_colors):
+            mesh = pv.Line(origin, origin + axis * scale)
+            actor = self._add_local_axis_overlay(mesh, color)
+            actor.SetVisibility(self._local_axes_visible)
+            self._plate_local_axis_actors.append(actor)
 
     def _update_plate_antialiasing(self) -> None:
         self._plate_antialiasing.set_active(
@@ -7351,7 +7375,7 @@ class StructureScene(QWidget):
 
     def set_local_axes_visible(self, visible: bool) -> None:
         self._local_axes_visible = bool(visible)
-        for actor in self._local_axis_actors:
+        for actor in (*self._local_axis_actors, *self._plate_local_axis_actors):
             actor.SetVisibility(visible)
         self.plotter.render()
 
@@ -7937,7 +7961,7 @@ class StructureScene(QWidget):
         for actor in (
             self._member_line_actor, self._member_fallback_actor,
             self._member_face_actor, self._member_edge_actor, self._release_actor,
-            *self._local_axis_actors,
+            *self._local_axis_actors, *self._plate_local_axis_actors,
         ):
             if actor is not None:
                 actor.GetMapper().Modified()
@@ -8676,7 +8700,7 @@ class StructureScene(QWidget):
         """Keep analytical axes aligned while the overlay layer owns depth."""
         if not self._local_axis_actors:
             return
-        for actor in self._local_axis_actors:
+        for actor in (*self._local_axis_actors, *self._plate_local_axis_actors):
             actor.SetPosition(0.0, 0.0, 0.0)
 
     def _reference_plane_levels(self) -> tuple[float, ...]:
@@ -8705,7 +8729,7 @@ class StructureScene(QWidget):
                 actor.GetProperty().SetLineWidth(self._member_line_width * zoom_factor)
         if self._rigid_bar_actor is not None:
             self._rigid_bar_actor.GetProperty().SetLineWidth(self._rigid_bar_line_width * zoom_factor)
-        for actor in self._local_axis_actors:
+        for actor in (*self._local_axis_actors, *self._plate_local_axis_actors):
             actor.GetProperty().SetLineWidth(self._local_axis_line_width * zoom_factor)
         for actor, width in self._result_line_widths:
             actor.GetProperty().SetLineWidth(width * zoom_factor)
@@ -8779,7 +8803,7 @@ class StructureScene(QWidget):
         self._plate_intersection_actor = None
         self._plate_intersection_overlays = {}
         self._plate_intersection_key = None
-        for actor in self._local_axis_actors:
+        for actor in (*self._local_axis_actors, *self._plate_local_axis_actors):
             self._local_axes_renderer.RemoveActor(actor)
         self._grid_actor = None
         self._reference_axes_actor = None
@@ -8805,6 +8829,7 @@ class StructureScene(QWidget):
         self._support_actor = None
         self._release_actor = None
         self._local_axis_actors = []
+        self._plate_local_axis_actors = []
         self._action_actors = []
         self._action_layer_key = None
         self._action_label_positions = np.empty((0, 3), dtype=float)
