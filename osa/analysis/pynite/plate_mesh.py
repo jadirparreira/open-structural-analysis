@@ -73,6 +73,8 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
             point_sizes: dict[tuple[int, int, int], float] = {}
             curve_tags: dict[tuple[tuple[int, int, int], tuple[int, int, int]], int] = {}
             surface_tags: dict[str, int] = {}
+            transfinite_curves_by_surface: dict[int, tuple[int, int, int, int]] = {}
+            transfinite_segments_by_curve: dict[int, int] = {}
             all_contour_points = [
                 np.asarray(point, dtype=float)
                 for plate in plates.values() for point in plate.contour
@@ -142,10 +144,56 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
                     surface_tags[plate.name] = gmsh.model.geo.addSurfaceFilling([loop])
                 else:
                     surface_tags[plate.name] = gmsh.model.geo.addPlaneSurface([loop])
+                    if len(contour) == 4 and len(loop_curves) == 4 and _is_rectangle(contour):
+                        surface_tag = surface_tags[plate.name]
+                        boundary_curves = tuple(abs(tag) for tag in loop_curves)
+                        transfinite_curves_by_surface[surface_tag] = boundary_curves
+                        edge_lengths = [
+                            float(np.linalg.norm(
+                                np.asarray(contour[(index + 1) % 4]) - contour[index]
+                            ))
+                            for index in range(4)
+                        ]
+                        mesh_size = sizes_by_plate[plate.name]
+                        for edge_index, curve_tag in enumerate(boundary_curves):
+                            requested_segments = max(
+                                transfinite_segments_by_curve.get(curve_tag, 1),
+                                int(math.ceil(edge_lengths[edge_index] / mesh_size)),
+                            )
+                            # Full-quad recombination subdivides boundary lines
+                            # in pairs, so transfinite edges need an even count.
+                            transfinite_segments_by_curve[curve_tag] = max(
+                                2, 2 * int(math.ceil(requested_segments / 2)),
+                            )
 
             gmsh.model.geo.synchronize()
             for point_key, tag in point_tags.items():
                 gmsh.model.mesh.setSize([(0, tag)], point_sizes[point_key])
+            if transfinite_curves_by_surface:
+                # Opposite sides of a transfinite rectangle need equal element
+                # counts. Propagate the largest requested count across those
+                # pairs; shared curves then carry the same nodes into adjacent
+                # unstructured surfaces, keeping the mixed mesh conforming.
+                while True:
+                    changed = False
+                    for curves in transfinite_curves_by_surface.values():
+                        for first, opposite in ((curves[0], curves[2]), (curves[1], curves[3])):
+                            count = max(
+                                transfinite_segments_by_curve[first],
+                                transfinite_segments_by_curve[opposite],
+                            )
+                            if transfinite_segments_by_curve[first] != count:
+                                transfinite_segments_by_curve[first] = count
+                                changed = True
+                            if transfinite_segments_by_curve[opposite] != count:
+                                transfinite_segments_by_curve[opposite] = count
+                                changed = True
+                    if not changed:
+                        break
+                for curve_tag, segment_count in transfinite_segments_by_curve.items():
+                    gmsh.model.mesh.setTransfiniteCurve(curve_tag, segment_count + 1)
+                for surface_tag in transfinite_curves_by_surface:
+                    gmsh.model.mesh.setTransfiniteSurface(surface_tag)
             gmsh.model.mesh.generate(2)
 
             node_tags, coordinates, _ = gmsh.model.mesh.getNodes()
@@ -191,6 +239,31 @@ def _canonical_contour(contour):
         normal += np.cross(point - points[0], points[(index + 1) % len(points)] - points[0])
     dominant_axis = int(np.argmax(np.abs(normal)))
     return tuple(tuple(point) for point in (points if normal[dominant_axis] >= 0 else points[::-1]))
+
+
+def _is_rectangle(contour) -> bool:
+    """Return whether a planar four-edge contour is a true rectangle."""
+    points = np.asarray(contour, dtype=float)
+    if points.shape != (4, 3):
+        return False
+    edges = np.roll(points, -1, axis=0) - points
+    lengths = np.linalg.norm(edges, axis=1)
+    if np.any(lengths <= 1e-10):
+        return False
+    scale = float(lengths.max())
+    tolerance = max(1e-8 * scale, 1e-10)
+    orthogonal = all(
+        abs(float(np.dot(edges[index], edges[(index + 1) % 4])))
+        <= 1e-8 * lengths[index] * lengths[(index + 1) % 4]
+        for index in range(4)
+    )
+    opposite_edges_parallel = (
+        np.linalg.norm(edges[0] + edges[2]) <= tolerance
+        and np.linalg.norm(edges[1] + edges[3]) <= tolerance
+    )
+    return orthogonal and opposite_edges_parallel
+
+
 
 
 def _plate_local_basis(contour):
