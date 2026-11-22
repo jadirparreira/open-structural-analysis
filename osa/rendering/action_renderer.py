@@ -91,10 +91,26 @@ class ActionRenderer:
         selfweight_actions = [
             action for action in visible_actions
             if visibility.get("plate_pressures", True)
-            and action.kind == "member_distributed_force_selfweight_Z"
+            and action.kind in {
+                "member_distributed_force_selfweight_Z",
+                "plate_surface_pressure_selfweight",
+            }
         ]
         if selfweight_actions:
-            for plate_name, plate in getattr(model, "plates", {}).items():
+            selected_plate_names = {
+                action.target for action in selfweight_actions
+                if action.target in getattr(model, "plates", {})
+            }
+            selected_materials = {
+                model.bars[action.target].material for action in selfweight_actions
+                if action.target in getattr(model, "bars", {})
+            }
+            selected_plate_names.update(
+                name for name, plate in getattr(model, "plates", {}).items()
+                if plate.material in selected_materials
+            )
+            for plate_name in selected_plate_names:
+                plate = model.plates[plate_name]
                 sample_points, _normal = self._plate_action_samples(model, plate_name)
                 material = getattr(model, "materials", {}).get(plate.material)
                 if not sample_points or material is None:
@@ -106,7 +122,7 @@ class ActionRenderer:
                 if not surface_faces:
                     continue
                 plate_loads.append((
-                    (pressure,), np.array((0.0, 0.0, np.sign(pressure))), sample_points,
+                    (pressure,), np.array((0.0, 0.0, 1.0)), sample_points,
                     self.SELFWEIGHT_COLOR, surface_faces, surface_edges, None, plate_name,
                 ))
         maximum_intensity = max(

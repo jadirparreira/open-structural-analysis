@@ -1554,10 +1554,25 @@ class StructuralModel:
         whose endpoint pair already exists are skipped, which makes copying
         onto an existing position idempotent.
         """
+        copied_nodes, copied_members, _copied_plates = self.copy_elements_with_plates(
+            node_names, member_names, offset, rigid_bar_names, (),
+        )
+        return copied_nodes, copied_members
+
+    def copy_elements_with_plates(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
+        plate_names: tuple[str, ...] = (),
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes, members, rigid bars and plates by translation."""
         selected_nodes = tuple(dict.fromkeys(node_names))
         selected_members = tuple(dict.fromkeys(member_names))
         selected_rigid_bars = tuple(dict.fromkeys(rigid_bar_names))
-        if not selected_nodes and not selected_members and not selected_rigid_bars:
+        selected_plates = tuple(dict.fromkeys(plate_names))
+        if not selected_nodes and not selected_members and not selected_rigid_bars and not selected_plates:
             raise ValueError("Selecione pelo menos um nó ou elemento para copiar.")
         if any(name not in self.nodes for name in selected_nodes):
             raise EntityNotFoundError("Um dos nós selecionados não foi encontrado.")
@@ -1565,6 +1580,16 @@ class StructuralModel:
             raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
         if any(name not in self.rigid_bars for name in selected_rigid_bars):
             raise EntityNotFoundError("Uma das barras rígidas selecionadas não foi encontrada.")
+        if any(name not in self.plates for name in selected_plates):
+            raise EntityNotFoundError("Uma das placas selecionadas não foi encontrada.")
+        for plate_name in selected_plates:
+            plate = self.plates[plate_name]
+            if len(plate.vertex_nodes) != len(plate.contour) or any(
+                node_name not in self.nodes for node_name in plate.vertex_nodes
+            ):
+                raise ValueError(
+                    f"A placa '{plate_name}' não possui nós válidos associados aos vértices."
+                )
 
         try:
             translation = tuple(float(value) for value in offset)
@@ -1583,6 +1608,10 @@ class StructuralModel:
         for rigid_name in selected_rigid_bars:
             rigid = self.rigid_bars[rigid_name]
             for node_name in (rigid.start_node, rigid.end_node):
+                if node_name not in source_node_names:
+                    source_node_names.append(node_name)
+        for plate_name in selected_plates:
+            for node_name in self.plates[plate_name].vertex_nodes:
                 if node_name not in source_node_names:
                     source_node_names.append(node_name)
 
@@ -1635,6 +1664,7 @@ class StructuralModel:
             for member in self.bars.values()
         }
         new_bars: dict[str, Bar] = {}
+        copied_member_map: dict[str, str] = {}
         next_member_index = 1
         for source_name in selected_members:
             source = self.bars[source_name]
@@ -1644,6 +1674,10 @@ class StructuralModel:
                 raise ValueError("A cópia criaria uma barra de comprimento zero na precisão de um milímetro.")
             pair = frozenset((start_node, end_node))
             if pair in existing_pairs:
+                copied_member_map[source_name] = next(
+                    name for name, member in (*self.bars.items(), *new_bars.items())
+                    if frozenset((member.start_node, member.end_node)) == pair
+                )
                 continue
             while f"B{next_member_index}" in self.bars or f"B{next_member_index}" in new_bars:
                 next_member_index += 1
@@ -1655,6 +1689,7 @@ class StructuralModel:
                 start_node=start_node,
                 end_node=end_node,
             )
+            copied_member_map[source_name] = member_name
             existing_pairs.add(pair)
 
         existing_rigid_pairs = {
@@ -1662,6 +1697,7 @@ class StructuralModel:
             for rigid in self.rigid_bars.values()
         }
         new_rigid_bars: dict[str, RigidBar] = {}
+        copied_rigid_map: dict[str, str] = {}
         for source_name in selected_rigid_bars:
             source = self.rigid_bars[source_name]
             start_node = node_map[source.start_node]
@@ -1670,19 +1706,94 @@ class StructuralModel:
                 raise ValueError("A cópia criaria uma barra rígida de comprimento zero.")
             pair = frozenset((start_node, end_node))
             if pair in existing_rigid_pairs:
+                copied_rigid_map[source_name] = next(
+                    name for name, rigid in (*self.rigid_bars.items(), *new_rigid_bars.items())
+                    if frozenset((rigid.start_node, rigid.end_node)) == pair
+                )
                 continue
             rigid_name = f"{start_node}-{end_node}"
             if rigid_name in self.rigid_bars or rigid_name in new_rigid_bars:
                 raise ValueError(f"Já existe uma barra rígida chamada '{rigid_name}'.")
             new_rigid_bars[rigid_name] = RigidBar(rigid_name, start_node, end_node)
+            copied_rigid_map[source_name] = rigid_name
             existing_rigid_pairs.add(pair)
 
-        if new_nodes or new_bars or new_rigid_bars:
+        def same_contour(first, second) -> bool:
+            if len(first) != len(second):
+                return False
+            count = len(first)
+            for ordered in (second, tuple(reversed(second))):
+                for shift in range(count):
+                    if all(
+                        same_coordinates(first[index], ordered[(index + shift) % count])
+                        for index in range(count)
+                    ):
+                        return True
+            return False
+
+        new_plates: dict[str, Plate] = {}
+        copied_plate_names: list[str] = []
+        copied_plate_sources: dict[str, str] = {}
+        next_plate_index = 1
+        for source_name in selected_plates:
+            source = self.plates[source_name]
+            contour = tuple(
+                (
+                    new_nodes[node_map[node_name]].x,
+                    new_nodes[node_map[node_name]].y,
+                    new_nodes[node_map[node_name]].z,
+                ) if node_map[node_name] in new_nodes else (
+                    self.nodes[node_map[node_name]].x,
+                    self.nodes[node_map[node_name]].y,
+                    self.nodes[node_map[node_name]].z,
+                )
+                for node_name in source.vertex_nodes
+            )
+            if any(same_contour(contour, plate.contour) for plate in self.plates.values()) or any(
+                same_contour(contour, plate.contour) for plate in new_plates.values()
+            ):
+                continue
+            while f"P{next_plate_index}" in self.plates or f"P{next_plate_index}" in new_plates:
+                next_plate_index += 1
+            plate_name = f"P{next_plate_index}"
+            next_plate_index += 1
+            support_map = {
+                **{("bar", old): ("bar", new) for old, new in copied_member_map.items()},
+                **{("rigid_bar", old): ("rigid_bar", new) for old, new in copied_rigid_map.items()},
+            }
+            supports = tuple(support_map.get(item, item) for item in source.supports)
+            remapped_support_names = {
+                old_name: new_item[1]
+                for (kind, old_name), new_item in support_map.items()
+                if (kind, old_name) in source.supports
+            }
+            edge_positioning = tuple(
+                (remapped_support_names.get(edge_name, edge_name), displacement, angle)
+                for edge_name, displacement, angle in source.edge_positioning
+            )
+            new_plates[plate_name] = replace(
+                source,
+                name=plate_name,
+                contour=contour,
+                supports=supports,
+                edge_positioning=edge_positioning,
+                vertex_nodes=tuple(node_map[node_name] for node_name in source.vertex_nodes),
+            )
+            copied_plate_names.append(plate_name)
+            copied_plate_sources[source_name] = plate_name
+
+        if new_nodes or new_bars or new_rigid_bars or new_plates:
             self.nodes.update(new_nodes)
             self.bars.update(new_bars)
             self.rigid_bars.update(new_rigid_bars)
+            self.plates.update(new_plates)
+            for hidden in self.scene_views.values():
+                hidden.update(
+                    copied_name for source_name, copied_name in copied_plate_sources.items()
+                    if source_name in hidden
+                )
             self._touch()
-        return tuple(new_nodes), tuple(new_bars)
+        return tuple(new_nodes), tuple(new_bars), tuple(copied_plate_names)
 
     def _validate_rigid_bar_nodes(
         self, start_node: str, end_node: str, ignore: str = "",

@@ -10,6 +10,10 @@ from osa.domain import (
     StructuralModel,
 )
 
+BAR_SELFWEIGHT_ACTION = "member_distributed_force_selfweight_Z"
+PLATE_SELFWEIGHT_ACTION = "plate_surface_pressure_selfweight"
+SELFWEIGHT_ACTION_KINDS = frozenset({BAR_SELFWEIGHT_ACTION, PLATE_SELFWEIGHT_ACTION})
+
 ACTION_GROUP_TEMPLATES = {
     "PP+AP+AV": ActionGroup(
         "PP+AP+AV",
@@ -213,18 +217,32 @@ class ActionService:
     def replace_action_with_selfweight(
         self, load_case: str, weights: tuple[tuple[str, float], ...],
     ) -> tuple[Action, ...]:
-        """Apaga todas as cargas da ação e recria somente os pesos próprios."""
+        """Replace a load case with selfweight markers for bars and plates."""
+        normalized_weights = tuple((str(target), float(value)) for target, value in weights)
+        invalid_target = next(
+            (target for target, _value in normalized_weights
+             if target not in self.model.bars and target not in self.model.plates),
+            None,
+        )
+        if invalid_target is not None:
+            raise ValueError(f"O elemento '{invalid_target}' não existe para aplicar peso próprio.")
+        if any(not math.isfinite(value) for _target, value in normalized_weights):
+            raise ValueError("Os valores de peso próprio devem ser finitos.")
         for name, action in tuple(self.model.actions.items()):
             if action.load_case == load_case:
                 del self.model.actions[name]
         created: list[Action] = []
-        for target, value in weights:
+        for target, value in normalized_weights:
             index = 1
             while f"Carga {index}" in self.model.actions:
                 index += 1
+            is_plate = target in self.model.plates
             action = Action(
-                f"Carga {index}", "member_distributed_force_selfweight_Z", target,
-                (float(value), float(value)), load_case,
+                f"Carga {index}",
+                PLATE_SELFWEIGHT_ACTION if is_plate else BAR_SELFWEIGHT_ACTION,
+                target,
+                (float(value),) if is_plate else (float(value), float(value)),
+                load_case,
             )
             self.model.actions[action.name] = action
             created.append(action)
@@ -234,7 +252,27 @@ class ActionService:
     def has_selfweight(self, load_case: str) -> bool:
         return any(
             action.load_case == load_case
-            and action.kind == "member_distributed_force_selfweight_Z"
+            and action.kind in SELFWEIGHT_ACTION_KINDS
+            for action in self.model.actions.values()
+        )
+
+    def has_plate_selfweight(self, target: str, load_case: str) -> bool:
+        """Return whether the plate is covered by the active selfweight selection."""
+        if any(
+            action.load_case == load_case
+            and action.kind == PLATE_SELFWEIGHT_ACTION
+            and action.target == target
+            for action in self.model.actions.values()
+        ):
+            return True
+        plate = self.model.plates.get(target)
+        if plate is None:
+            return False
+        return any(
+            action.load_case == load_case
+            and action.kind == BAR_SELFWEIGHT_ACTION
+            and action.target in self.model.bars
+            and self.model.bars[action.target].material == plate.material
             for action in self.model.actions.values()
         )
 
@@ -245,7 +283,7 @@ class ActionService:
         for name, action in tuple(self.model.actions.items()):
             if (
                 action.target == target
-                and action.kind == "member_distributed_force_selfweight_Z"
+                and action.kind == BAR_SELFWEIGHT_ACTION
                 and action.components != components
             ):
                 self.model.actions[name] = replace(action, components=components)
@@ -259,14 +297,14 @@ class ActionService:
         return {
             action.load_case
             for action in self.model.actions.values()
-            if action.kind == "member_distributed_force_selfweight_Z"
+            if action.kind in SELFWEIGHT_ACTION_KINDS
         }
 
     def remove_selfweight(self, load_case: str) -> None:
         names = [
             name for name, action in self.model.actions.items()
             if action.load_case == load_case
-            and action.kind == "member_distributed_force_selfweight_Z"
+            and action.kind in SELFWEIGHT_ACTION_KINDS
         ]
         if not names:
             return

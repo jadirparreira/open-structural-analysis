@@ -5092,8 +5092,8 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
             return
 
-        if not self.model.bars:
-            self.show_error("Não há barras no modelo para aplicar o peso próprio.")
+        if not self.model.bars and not self.model.plates:
+            self.show_error("Não há barras ou placas no modelo para aplicar o peso próprio.")
             return
         if not self.model.materials:
             self.show_error("Não há materiais cadastrados para aplicar o peso próprio.")
@@ -5108,19 +5108,22 @@ class MainWindow(QMainWindow):
         try:
             selected_types = set(dialog.selected_material_types)
             materials = dict.fromkeys(
-                member.material
-                for member in self.model.bars.values()
-                if self.model.material_types.get(member.material, "Aço") in selected_types
+                material
+                for material in [
+                    *(member.material for member in self.model.bars.values()),
+                    *(plate.material for plate in self.model.plates.values()),
+                ]
+                if self.model.material_types.get(material, "Aço") in selected_types
             )
             for material in materials:
-                weights.extend(self.model_service.member_selfweights(material))
+                weights.extend(self.model_service.selfweights(material))
         except ValueError as error:
             self.show_error(str(error))
             return
 
         if not weights:
             self.show_error(
-                "Não há barras associadas aos tipos de material selecionados "
+                "Não há barras ou placas associadas aos tipos de material selecionados "
                 "para aplicar o peso próprio."
             )
             return
@@ -5367,13 +5370,13 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
 
     def start_copy_elements(self) -> None:
-        """Start selecting nodes, members, and rigid bars for a translated copy."""
+        """Start selecting nodes and elements for a translated copy."""
         self._remember_last_command(self.start_copy_elements)
         self.command_session.cancel()
         self._member_placement_start = None
         targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
         self._copy_elements_selection = [
-            target for target in targets if target[0] in {"node", "bar", "rigid_bar"}
+            target for target in targets if target[0] in {"node", "bar", "rigid_bar", "plate"}
         ]
         self._copy_elements_reference = None
         self._copy_properties_reference = None
@@ -5388,7 +5391,7 @@ class MainWindow(QMainWindow):
         self.close_displacement_panel()
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
-            "(Selecione nós, barras e barras rígidas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+            "(Selecione nós, barras, barras rígidas e placas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -5470,7 +5473,7 @@ class MainWindow(QMainWindow):
             return
         self._copy_elements_selection = [
             target for target in self.selected_elements
-            if target[0] in {"node", "bar", "rigid_bar"}
+            if target[0] in {"node", "bar", "rigid_bar", "plate"}
         ]
         if not self._copy_elements_selection:
             self.history.append(
@@ -5615,10 +5618,13 @@ class MainWindow(QMainWindow):
         rigid_bar_names = tuple(
             name for kind, name in self._copy_elements_selection if kind == "rigid_bar"
         )
+        plate_names = tuple(
+            name for kind, name in self._copy_elements_selection if kind == "plate"
+        )
         rigid_bars_before = set(self.model.rigid_bars)
         try:
-            copied_nodes, copied_members = self.model_service.copy_elements(
-                node_names, member_names, offset, rigid_bar_names,
+            copied_nodes, copied_members, copied_plates = self.model_service.copy_elements_with_plates(
+                node_names, member_names, offset, rigid_bar_names, plate_names,
             )
         except ValueError as error:
             self.history.append(
@@ -5635,11 +5641,12 @@ class MainWindow(QMainWindow):
                 self.section_geometry[member_name] = copied_member.geometry_dict()
 
         self._command_mode = "copy_elements_destination_placement"
-        if copied_nodes or copied_members or copied_rigid_bars:
+        if copied_nodes or copied_members or copied_rigid_bars or copied_plates:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
                 f"({len(copied_nodes)} nó(s), {len(copied_members)} barra(s) e "
-                f"{len(copied_rigid_bars)} barra(s) rígida(s) criada(s); "
+                f"{len(copied_rigid_bars)} barra(s) rígida(s) e "
+                f"{len(copied_plates)} placa(s) criada(s); "
                 "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
         else:
@@ -5679,10 +5686,12 @@ class MainWindow(QMainWindow):
         self.scene.set_member_preview_start(None)
         self.clear_selection()
         if mode == "exact":
+            self._enable_plate_endpoint_snap()
             self._command_mode = "plate_point_placement"
             self.scene.set_member_placement_mode(True)
             prompt = "Clique nos vértices externos da placa; ENTER fecha o contorno"
         else:
+            self._restore_plate_snap()
             self._command_mode = "plate_selection"
             self.scene.set_member_placement_mode(False)
             prompt = "Selecione as barras do contorno; ENTER conclui"
@@ -5798,8 +5807,7 @@ class MainWindow(QMainWindow):
             self._create_plate(contour)
         elif choice == "manual":
             self._command_mode = "plate_manual"
-            self._plate_saved_endpoint_snap = self.scene._snap_types["endpoint"]
-            self.scene._snap_types["endpoint"] = True
+            self._enable_plate_endpoint_snap()
             self.scene.set_member_placement_mode(True)
             self.history.append(
                 "> <b>Adicionar placa</b> <span style='color:#57606a'>"
@@ -5912,6 +5920,12 @@ class MainWindow(QMainWindow):
         if self._plate_saved_endpoint_snap is not None:
             self.scene._snap_types["endpoint"] = self._plate_saved_endpoint_snap
             self._plate_saved_endpoint_snap = None
+
+    def _enable_plate_endpoint_snap(self) -> None:
+        """Keep plate placement attached to existing structural vertices."""
+        if self._plate_saved_endpoint_snap is None:
+            self._plate_saved_endpoint_snap = self.scene._snap_types["endpoint"]
+        self.scene._snap_types["endpoint"] = True
 
     def _handle_interface_command(self, command: str) -> bool:
         """Dispatch one-word commands that mirror visible interface buttons."""
@@ -7063,7 +7077,7 @@ class MainWindow(QMainWindow):
             "reverse_member_selection", "join_member_selection", "action_selection", "verification_group_selection",
             "verification_ungroup_selection",
         }:
-            kinds = {"node", "bar", "rigid_bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
+            kinds = {"node", "bar", "rigid_bar", "plate"} if self._command_mode == "copy_elements_selection" else {"bar"}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:
                 kinds = {self._pending_action_launch[0]}
             targets = tuple(target for target in elements if target[0] in kinds)

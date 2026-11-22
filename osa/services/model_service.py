@@ -267,6 +267,19 @@ class ModelService:
         """Copy selected nodes, members, and rigid bars to a translated position."""
         return self.model.copy_elements(node_names, member_names, offset, rigid_bar_names)
 
+    def copy_elements_with_plates(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
+        plate_names: tuple[str, ...] = (),
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes, members, rigid bars and plates by translation."""
+        return self.model.copy_elements_with_plates(
+            node_names, member_names, offset, rigid_bar_names, plate_names,
+        )
+
     def create_rigid_bar(self, start_node: str, end_node: str):
         return self.model.add_rigid_bar(start_node, end_node)
 
@@ -360,6 +373,26 @@ class ModelService:
             names = ", ".join(missing)
             raise ValueError(f"Não foi possível obter o peso linear das barras: {names}.")
         return tuple(weights)
+
+    def plate_selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
+        """Retorna pesos superficiais em kN/m², opcionalmente filtrados por material."""
+        material_key = material.casefold() if material is not None else None
+        weights = []
+        for plate in self.model.plates.values():
+            if material_key is not None and plate.material.casefold() != material_key:
+                continue
+            values = self.model.materials.get(plate.material)
+            if values is None or len(values) < 4:
+                continue
+            pressure = -float(values[3]) * plate.thickness_mm / 1000.0
+            if not math.isfinite(pressure):
+                raise ValueError(f"Não foi possível obter o peso superficial da placa '{plate.name}'.")
+            weights.append((plate.name, pressure))
+        return tuple(weights)
+
+    def selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
+        """Retorna pesos próprios de barras e placas no material informado."""
+        return (*self.member_selfweights(material), *self.plate_selfweights(material))
 
     def member_selfweight(self, name: str) -> float:
         """Calcula o peso linear atualizado de uma barra em kN/m."""

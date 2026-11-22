@@ -24,6 +24,7 @@ from osa.domain import (
     StructuralModel,
 )
 from osa.services import ActionService, ModelService, ResultService
+from osa.services.action_service import SELFWEIGHT_ACTION_KINDS
 from osa.services.section_property_service import SectionPropertyService
 
 ANALYSIS_DIAGRAMS = (
@@ -771,7 +772,7 @@ class McpApplication:
         current = self.model.actions.get(action_name)
         if current is None:
             raise ValueError(f"Ação '{action_name}' não encontrada.")
-        if current.kind == "member_distributed_force_selfweight_Z":
+        if current.kind in SELFWEIGHT_ACTION_KINDS:
             raise ValueError("O peso próprio deve ser alterado por apply_selfweight ou remove_selfweight.")
         if all(value is None for value in (target, direction, initial, final, value, load_case, reference)):
             raise ValueError("Informe pelo menos um parâmetro para atualizar a ação.")
@@ -847,7 +848,7 @@ class McpApplication:
         load_case: str,
         materials: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Substitui as cargas do caso pelo peso próprio dos materiais selecionados."""
+        """Replace a load case with selfweight loads for selected bars and plates."""
         self._validate_load_case(load_case)
         selected_materials = tuple(materials) if materials is not None else tuple(self.model.materials)
         unknown = next((material for material in selected_materials if material not in self.model.materials), None)
@@ -855,9 +856,9 @@ class McpApplication:
             raise ValueError(f"Material '{unknown}' não encontrado.")
         weights: list[tuple[str, float]] = []
         for material in selected_materials:
-            weights.extend(self.model_service.member_selfweights(material))
+            weights.extend(self.model_service.selfweights(material))
         if not weights:
-            raise ValueError("Não há barras com propriedades para aplicar o peso próprio.")
+            raise ValueError("Não há barras ou placas com propriedades para aplicar o peso próprio.")
         actions = self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
         self._notify_model_changed()
         return {
@@ -1440,14 +1441,16 @@ class McpApplication:
         member_names: list[str] | None,
         offset: tuple[float, float, float],
         rigid_bar_names: list[str] | None = None,
+        plate_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Copia nós, barras e barras rígidas por translação."""
+        """Copia nós, barras, barras rígidas e placas por translação."""
         rigid_bars_before = set(self.model.rigid_bars)
-        copied_nodes, copied_members = self.model_service.copy_elements(
+        copied_nodes, copied_members, copied_plates = self.model_service.copy_elements_with_plates(
             tuple(node_names or ()),
             tuple(member_names or ()),
             offset,
             tuple(rigid_bar_names or ()),
+            tuple(plate_names or ()),
         )
         copied_rigid_bars = sorted(set(self.model.rigid_bars) - rigid_bars_before)
         self._notify_model_changed()
@@ -1456,7 +1459,18 @@ class McpApplication:
             "created_nodes": list(copied_nodes),
             "created_members": list(copied_members),
             "created_rigid_bars": copied_rigid_bars,
+            "created_plates": list(copied_plates),
             "members": [self._member_payload(self.model.bars[name]) for name in copied_members],
+            "plates": [
+                {
+                    "name": name,
+                    "contour": [list(point) for point in self.model.plates[name].contour],
+                    "thickness_mm": self.model.plates[name].thickness_mm,
+                    "material": self.model.plates[name].material,
+                    "vertex_nodes": list(self.model.plates[name].vertex_nodes),
+                }
+                for name in copied_plates
+            ],
             "rigid_bars": [
                 {
                     "name": name,

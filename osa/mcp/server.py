@@ -617,7 +617,7 @@ class LocalMcpServer:
             name="apply_selfweight",
             title="Aplicar peso próprio",
             description=(
-                "Substitui os carregamentos do caso informado pelo peso próprio das barras. "
+                "Substitui os carregamentos do caso informado pelo peso próprio de barras e placas. "
                 "Informe materials para filtrar materiais; omitindo, todos os materiais serão usados."
             ),
             annotations=write,
@@ -1090,9 +1090,9 @@ class LocalMcpServer:
             name="copy_elements",
             title="Copiar elementos",
             description=(
-                "Copia nós, barras e/ou barras rígidas por uma translação. Informe listas "
-                "de nomes e um deslocamento [dx, dy, dz] nas unidades do projeto. Barras "
-                "copiados preservam suas propriedades."
+                "Copia nós, barras, barras rígidas e/ou placas por uma translação. Informe "
+                "listas de nomes e um deslocamento [dx, dy, dz] nas unidades do projeto. "
+                "Barras e placas copiadas preservam suas propriedades."
             ),
             annotations=write,
         )
@@ -1101,6 +1101,7 @@ class LocalMcpServer:
             node_names: list[str] | None = None,
             member_names: list[str] | None = None,
             rigid_bar_names: list[str] | None = None,
+            plate_names: list[str] | None = None,
         ) -> dict[str, Any]:
             if len(offset) != 3:
                 raise ValueError("O deslocamento deve possuir exatamente três valores.")
@@ -1109,6 +1110,7 @@ class LocalMcpServer:
                 member_names,
                 (float(offset[0]), float(offset[1]), float(offset[2])),
                 rigid_bar_names,
+                plate_names,
             )
 
         @self.server.tool(

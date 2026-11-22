@@ -1695,6 +1695,9 @@ class PropertyPanel(QFrame):
 
     @staticmethod
     def _action_description(action) -> str:
+        if action.kind == "plate_surface_pressure_selfweight":
+            value = action.components[0] if action.components else 0.0
+            return f"Peso próprio da placa: {value:g} kN/m²"
         labels = {
             "node_force": "Força no nó",
             "node_moment": "Momento no nó",
@@ -3315,10 +3318,13 @@ class PropertyPanel(QFrame):
         locked = self.window.action_service.has_selfweight(load_case)
         if self.window.action_service.has_selfweight(load_case):
             plate = self.window.model.plates[name]
-            material = self.window.model.materials.get(plate.material)
-            pressure = 0.0 if material is None else (
-                -float(material[3]) * float(plate.thickness_mm) / 1000.0
-            )
+            if self.window.action_service.has_plate_selfweight(name, load_case):
+                material = self.window.model.materials.get(plate.material)
+                pressure = 0.0 if material is None else (
+                    -float(material[3]) * float(plate.thickness_mm) / 1000.0
+                )
+            else:
+                pressure = 0.0
             values = (pressure, pressure, 0.0, 0.0)
         self._add_plate_pressure_axis_row(name, "X", values[0], values[1], values[0] != values[1], load_case, locked)
         self._add_plate_pressure_axis_row(name, "Y", values[2], values[3], values[2] != values[3], load_case, locked)

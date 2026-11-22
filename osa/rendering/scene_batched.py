@@ -3731,6 +3731,9 @@ class StructureScene(QWidget):
                 left, top, right, bottom, crossing=end[0] < start[0], batch=solid_batch,
             ) if solid else set()
         )
+        plates_inside = self._plates_in_rectangle(
+            left, top, right, bottom, crossing=end[0] < start[0],
+        )
         return (
             *(("node", node_names[index]) for index in np.flatnonzero(nodes_inside)),
             *(target for index, target in enumerate(member_targets)
@@ -3740,7 +3743,57 @@ class StructureScene(QWidget):
                       members_inside[index] or target[1] in solid_members
                   )
               )),
+            *(("plate", name) for name in plates_inside),
         )
+
+    def _plates_in_rectangle(
+        self, left: float, top: float, right: float, bottom: float, *, crossing: bool,
+    ) -> set[str]:
+        """Select visible plate surfaces intersecting or contained by a drag box."""
+        visible_plates = {
+            name: actor for name, actor in self._plate_actors.items()
+            if actor.GetVisibility()
+        }
+        if not visible_plates:
+            return set()
+        matrix, width, height = self._measurement_projection_context()
+        selected: set[str] = set()
+        for name, actor in visible_plates.items():
+            mesh = pv.wrap(actor.GetMapper().GetInput())
+            if not mesh.n_points or not mesh.n_cells:
+                continue
+            screens, within_depth = project_world_to_screen(
+                mesh.points, matrix, width, height, clip_to_viewport=False,
+            )
+            if not np.any(within_depth):
+                continue
+            if crossing:
+                points = screens[within_depth]
+                if (
+                    points[:, 0].min() > right or points[:, 0].max() < left
+                    or points[:, 1].min() > bottom or points[:, 1].max() < top
+                ):
+                    continue
+                triangle_mesh = mesh.triangulate()
+                faces = np.asarray(triangle_mesh.faces, dtype=np.int64)
+                if len(faces) % 4 or not np.all(faces[::4] == 3):
+                    continue
+                cells = faces.reshape((-1, 4))[:, 1:]
+                triangle_screens, triangle_depth = project_world_to_screen(
+                    triangle_mesh.points, matrix, width, height, clip_to_viewport=False,
+                )
+                visible_faces = np.all(triangle_depth[cells], axis=1)
+                if self._triangles_touch_rectangle(
+                    triangle_screens[cells[visible_faces]], left, top, right, bottom,
+                ):
+                    selected.add(name)
+            elif (
+                np.all(within_depth)
+                and np.all((screens[:, 0] >= left) & (screens[:, 0] <= right))
+                and np.all((screens[:, 1] >= top) & (screens[:, 1] <= bottom))
+            ):
+                selected.add(name)
+        return selected
 
     def _solid_members_in_rectangle(
         self, left: float, top: float, right: float, bottom: float, *, crossing: bool,
@@ -4593,7 +4646,7 @@ class StructureScene(QWidget):
         if perpendicular is not None:
             preferred_points = [
                 candidate for candidate in candidates
-                if candidate[2] in {"endpoint", "center"}
+                if candidate[2] in {"endpoint", "center", "intersection"}
             ]
             if preferred_points:
                 _perpendicular_screen, perpendicular_visible = project_world_to_screen(
@@ -4608,7 +4661,8 @@ class StructureScene(QWidget):
                     )
                     # Compare projected positions rather than world coordinates:
                     # a vertical view can put distinct 3D points at the same
-                    # cursor position, and node/centre snaps take precedence.
+                    # cursor position. Prefer the nearest endpoint, centre or
+                    # true intersection over the perpendicular projection.
                     if distance <= perpendicular_distance + 1e-6:
                         self._placement_snap_element = owner if kind == "center" else None
                         self._placement_snap_member_name = (
@@ -4643,11 +4697,21 @@ class StructureScene(QWidget):
         """Reuse node and member-centre projections while the camera is still."""
         camera = self.plotter.renderer.GetActiveCamera()
         reference_snaps = self._member_placement_mode or self._measurement_mode
+        plate_edge_signature = tuple(
+            (
+                name,
+                bool(actor.GetVisibility()),
+                int(actor.GetMapper().GetInput().GetMTime())
+                if actor.GetMapper() is not None and actor.GetMapper().GetInput() is not None
+                else 0,
+            )
+            for name, actor in self._plate_edge_actors.items()
+        )
         key = (
             id(self._model), self._model.revision, self._model.view_revision,
             reference_snaps,
             int(camera.GetMTime()),
-            width, height,
+            width, height, plate_edge_signature,
         )
         if self._projected_snap_cache is not None and self._projected_snap_cache[0] == key:
             return self._projected_snap_cache[1]
@@ -4685,6 +4749,18 @@ class StructureScene(QWidget):
                     (start.z + end.z) * 0.5,
                 ))
                 center_elements.append(("rigid_bar", rigid.name))
+        # A plate contour is made of analytical edges. Add one midpoint per
+        # contour edge so plate placement has the same centre snap as bars,
+        # independent of how densely its finite element mesh is divided.
+        for name, plate in visible_model.plates.items():
+            edge_actor = self._plate_edge_actors.get(name)
+            if edge_actor is None or not edge_actor.GetVisibility():
+                continue
+            contour = self._plate_display_contour(plate)
+            if len(contour) < 2:
+                continue
+            centers.extend((contour + np.roll(contour, -1, axis=0)) * 0.5)
+            center_elements.extend(None for _ in range(len(contour)))
         center_points = np.asarray(centers, dtype=float).reshape((-1, 3))
         if reference_snaps:
             endpoints, reference_centers = self._drawing_reference_renderer.snap_points(self._model.references)
@@ -4740,7 +4816,9 @@ class StructureScene(QWidget):
         # arbitrary point on a segment nearest to the mouse.
         _segments, points = self._measurement_segments(matrix, width, height)
         screens, worlds, kinds, _priorities, edge_starts, edge_ends = points
-        surface = np.asarray([kind.startswith(("edge", "silhouette")) for kind in kinds], dtype=bool)
+        surface = np.asarray([
+            kind.startswith(("edge", "silhouette", "plate-edge")) for kind in kinds
+        ], dtype=bool)
         for kind, suffix in (("endpoint", "-endpoint"), ("center", "-midpoint")):
             mask = np.asarray([value.endswith(suffix) for value in kinds], dtype=bool)
             add_points(
@@ -5065,6 +5143,19 @@ class StructureScene(QWidget):
         line_visible = bool(self._member_line_actor is not None and self._member_line_actor.GetVisibility())
         fallback_visible = bool(self._member_fallback_actor is not None and self._member_fallback_actor.GetVisibility())
         rigid_visible = bool(self._rigid_bar_actor is not None and self._rigid_bar_actor.GetVisibility())
+        visible_plate_edge_actors = tuple(
+            (name, actor)
+            for name, actor in self._plate_edge_actors.items()
+            if actor.GetVisibility()
+            and actor.GetMapper() is not None
+            and actor.GetMapper().GetInput() is not None
+        )
+        visible_plate_names = {name for name, _actor in visible_plate_edge_actors}
+        plate_edges = tuple(
+            (name, self._plate_display_contour(plate))
+            for name, plate in self._model.plates.items()
+            if name in visible_plate_names
+        )
         camera = self.plotter.renderer.GetActiveCamera()
         key = (
             id(self._model), self._model.revision, self._model.view_revision,
@@ -5077,6 +5168,10 @@ class StructureScene(QWidget):
             solid_visible,
             silhouette_visible,
             self._solid_members_visible, line_visible, fallback_visible, rigid_visible,
+            tuple(
+                (name, int(actor.GetMapper().GetInput().GetMTime()))
+                for name, actor in visible_plate_edge_actors
+            ),
         )
         if self._measurement_segments_cache is not None:
             cached_key, cached_segments = self._measurement_segments_cache
@@ -5094,7 +5189,20 @@ class StructureScene(QWidget):
             meshes.append((self._member_batch.lines, "line", 2, True))
         if rigid_visible and self._rigid_bar_mesh is not None:
             meshes.append((self._rigid_bar_mesh, "line", 2, True))
-
+        # Use the plate's analytical midsurface contour for boundary
+        # intersections. Solid outline actors contain both thickness faces,
+        # which can create duplicate or offset crossings.
+        for _name, contour in plate_edges:
+            count = len(contour)
+            if count < 2:
+                continue
+            ids = np.arange(count, dtype=np.int64)
+            line_cells = np.column_stack((
+                np.full(count, 2, dtype=np.int64), ids, np.roll(ids, -1),
+            )).ravel()
+            meshes.append((
+                pv.PolyData(contour, lines=line_cells), "plate-edge", 1, False,
+            ))
         segment_groups = []
         point_groups = []
         for mesh, kind, priority, discrete in meshes:
@@ -5311,7 +5419,9 @@ class StructureScene(QWidget):
             return self._intersection_snap_cache[1]
 
         screen_starts, screen_ends, starts, ends, kinds, _priorities = segments
-        surfaces = np.asarray([kind in {"edge", "silhouette"} for kind in kinds], dtype=bool)
+        surfaces = np.asarray([
+            kind in {"edge", "silhouette", "plate-edge"} for kind in kinds
+        ], dtype=bool)
         extra_lines = []
         plane = self._reference_plane_mode
         offset = self._reference_plane_z
@@ -5350,21 +5460,103 @@ class StructureScene(QWidget):
         self._intersection_snap_cache = key, result
         return result
 
+    def _orthogonal_intersection_target(
+        self, pointer: np.ndarray, matrix: np.ndarray, width: int, height: int,
+    ) -> tuple[np.ndarray, float] | None:
+        """Intersect bars and external plate edges with global-axis guides through the start."""
+        anchor = (
+            self._measurement_start if self._measurement_mode
+            else self._member_preview_start if self._member_placement_mode else None
+        )
+        if anchor is None:
+            return None
+        anchor = np.asarray(anchor, dtype=float)
+        tolerance = max(self._model.coordinate_tolerance * 10, 1e-9)
+        starts, ends, points, surfaces = [], [], [], []
+        segments = []
+        model = self._scene_filtered_model()
+        for member in (*model.bars.values(), *model.rigid_bars.values()):
+            first = model.nodes.get(member.start_node)
+            last = model.nodes.get(member.end_node)
+            if first is not None and last is not None:
+                segments.append((
+                    np.asarray((first.x, first.y, first.z), dtype=float),
+                    np.asarray((last.x, last.y, last.z), dtype=float), False,
+                ))
+        for name, plate in model.plates.items():
+            actor = self._plate_edge_actors.get(name)
+            if actor is None or not actor.GetVisibility():
+                continue
+            contour = self._plate_display_contour(plate)
+            segments.extend(
+                (first, last, True)
+                for first, last in zip(contour, np.roll(contour, -1, axis=0))
+            )
+        for first, last, surface in segments:
+            direction = last - first
+            for axis in range(3):
+                # Match both coordinates transverse to the global guide.
+                transverse = [index for index in range(3) if index != axis]
+                delta = direction[transverse]
+                denominator = float(np.dot(delta, delta))
+                if denominator <= tolerance ** 2:
+                    continue  # Parallel lines have no unique crossing.
+                fraction = float(np.dot(anchor[transverse] - first[transverse], delta) / denominator)
+                if not 0.0 <= fraction <= 1.0:
+                    continue
+                point = first + fraction * direction
+                if np.linalg.norm(point[transverse] - anchor[transverse]) > tolerance:
+                    continue
+                if np.linalg.norm(point - anchor) <= tolerance:
+                    continue
+                starts.append(first)
+                ends.append(last)
+                points.append(point)
+                surfaces.append(surface)
+        if not points:
+            return None
+        starts = np.asarray(starts, dtype=float)
+        ends = np.asarray(ends, dtype=float)
+        points = np.asarray(points, dtype=float)
+        point_screens, point_visible = project_world_to_screen(
+            points, matrix, width, height, clip_to_viewport=False,
+        )
+        point_distances = np.linalg.norm(point_screens - pointer, axis=1)
+        order = np.argsort(np.where(
+            point_visible & (point_distances <= self._snap_tolerance_pixels),
+            point_distances, np.inf,
+        ))
+        depth_cache = {}
+        for order_index in order:
+            if not point_visible[order_index] or point_distances[order_index] > self._snap_tolerance_pixels:
+                continue
+            segment_index = int(order_index)
+            if self._measurement_visible_points(
+                point_screens[order_index:order_index + 1],
+                points[order_index:order_index + 1], matrix, depth_cache,
+                surface_points=np.asarray([surfaces[segment_index]]),
+                edge_starts=starts[segment_index:segment_index + 1],
+                edge_ends=ends[segment_index:segment_index + 1],
+            )[0]:
+                return points[order_index], float(point_distances[order_index])
+        return None
+
     def _intersection_snap_target(self, *, projection=None) -> tuple[np.ndarray, float] | None:
-        """Find a real 3D crossing among the visible segments near the cursor."""
+        """Find segment crossings and orthogonal guide crossings on bars and plate edges."""
         if not self._snap_enabled or not self._snap_types["intersection"] or self._pointer_position is None:
             return None
         matrix, width, height = projection or self._measurement_projection_context()
+        pointer = np.asarray(self._pointer_position, dtype=float)
+        best = self._orthogonal_intersection_target(pointer, matrix, width, height)
         screens_a, screens_b, starts, ends, surfaces, low, high = self._intersection_segments(
             matrix, width, height,
         )
-        pointer = np.asarray(self._pointer_position, dtype=float)
         pixel_tolerance = self._snap_tolerance_pixels
         nearby = np.flatnonzero(
             ((pointer >= low - pixel_tolerance) & (pointer <= high + pixel_tolerance)).all(axis=1)
         )
         if len(nearby) < 2:
-            return None
+            return best
         directions = screens_b[nearby] - screens_a[nearby]
         lengths_squared = np.einsum("ij,ij->i", directions, directions)
         fractions = np.divide(
@@ -5374,11 +5566,11 @@ class StructureScene(QWidget):
         closest = screens_a[nearby] + np.clip(fractions, 0.0, 1.0)[:, None] * directions
         nearby = nearby[np.linalg.norm(closest - pointer, axis=1) <= pixel_tolerance]
         if len(nearby) < 2:
-            return None
+            return best
         tolerance = max(self._model.coordinate_tolerance * 10, 1e-9)
         points = segment_intersections(starts[nearby], ends[nearby], tolerance)
         if not len(points):
-            return None
+            return best
         screens, visible = project_world_to_screen(points, matrix, width, height)
         distances = np.linalg.norm(screens - pointer, axis=1)
         order = np.argsort(np.where(visible & (distances <= pixel_tolerance), distances, np.inf))
@@ -5405,8 +5597,11 @@ class StructureScene(QWidget):
                 edge_starts=starts[edge_index:edge_index + 1],
                 edge_ends=ends[edge_index:edge_index + 1],
             )[0]:
-                return points[index], float(distances[index])
-        return None
+                distance = float(distances[index])
+                if best is None or distance < best[1]:
+                    best = points[index], distance
+                break
+        return best
 
     def _position_snap_marker(
         self,
@@ -5947,7 +6142,7 @@ class StructureScene(QWidget):
         return None
 
     def _perpendicular_snap_target(self, *, projection=None) -> np.ndarray | None:
-        """Capture the foot on bars, rigid links, references and solid edges.
+        """Capture the foot on bars, plates, references and solid edges.
 
         Fixed-start projections are cached until the model, view or camera
         changes. Pointer motion only searches the resulting screen points.
@@ -5974,9 +6169,20 @@ class StructureScene(QWidget):
             segments, _points = self._measurement_segments(matrix, width, height)
             edge_data = segments
             edge_key = self._measurement_segments_cache[0]
+        plate_edge_signature = tuple(
+            (
+                name,
+                bool(actor.GetVisibility()),
+                int(actor.GetMapper().GetInput().GetMTime())
+                if actor.GetMapper() is not None and actor.GetMapper().GetInput() is not None
+                else 0,
+            )
+            for name, actor in self._plate_edge_actors.items()
+        )
         camera = self.plotter.renderer.GetActiveCamera()
         feet_key = (
-            self._model, self._model.revision, self._model.view_revision, tuple(start), edge_key,
+            self._model, self._model.revision, self._model.view_revision, tuple(start),
+            edge_key, plate_edge_signature,
         )
         key = (
             feet_key, None if anchor is None else tuple(anchor),
@@ -6003,6 +6209,19 @@ class StructureScene(QWidget):
                 if a is not None and b is not None:
                     segments.append(((a.x, a.y, a.z), (b.x, b.y, b.z)))
                     owners.append(("rigid_bar", rigid.name))
+            # Plate contours act as analytical snap lines during placement,
+            # just like bar centrelines. Do not use FE mesh divisions here:
+            # they are solver discretization, not user geometry.
+            for name, plate in model.plates.items():
+                edge_actor = self._plate_edge_actors.get(name)
+                if edge_actor is None or not edge_actor.GetVisibility():
+                    continue
+                contour = self._plate_display_contour(plate)
+                if len(contour) < 2:
+                    continue
+                for first, last in zip(contour, np.roll(contour, -1, axis=0)):
+                    segments.append((first, last))
+                    owners.append(None)
             endpoints = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
             reference_starts, reference_ends = self._drawing_reference_renderer.snap_segments(
                 self._model.references,

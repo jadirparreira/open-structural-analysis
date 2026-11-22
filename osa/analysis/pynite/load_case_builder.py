@@ -22,19 +22,34 @@ class LoadCaseBuilder:
 
     @staticmethod
     def _apply_plate_selfweight(target, model) -> None:
-        cases = {
-            action.load_case for action in model.actions.values()
-            if action.kind == "member_distributed_force_selfweight_Z"
-        }
-        if not cases:
+        selfweight_actions = [
+            action for action in model.actions.values()
+            if action.kind in {
+                "member_distributed_force_selfweight_Z",
+                "plate_surface_pressure_selfweight",
+            }
+        ]
+        if not selfweight_actions:
             return
-        for plate in model.plates.values():
-            values = model.materials.get(plate.material)
-            if values is None:
-                continue
-            unit_weight = float(values[3])
-            thickness = plate.thickness_mm / 1000.0
-            for load_case in cases:
+        plates_by_case: dict[str, set[str]] = {}
+        for action in selfweight_actions:
+            selected = plates_by_case.setdefault(action.load_case, set())
+            if action.kind == "plate_surface_pressure_selfweight" and action.target in model.plates:
+                selected.add(action.target)
+            elif action.kind == "member_distributed_force_selfweight_Z" and action.target in model.bars:
+                material = model.bars[action.target].material
+                selected.update(
+                    plate.name for plate in model.plates.values()
+                    if plate.material == material
+                )
+        for load_case, plate_names in plates_by_case.items():
+            for plate_name in plate_names:
+                plate = model.plates[plate_name]
+                values = model.materials.get(plate.material)
+                if values is None:
+                    continue
+                unit_weight = float(values[3])
+                thickness = plate.thickness_mm / 1000.0
                 for _, node_names, coordinates in getattr(target, "_osa_plate_elements", {}).get(plate.name, ()):
                     p1, p2, p3, p4 = (np.asarray(point, dtype=float) for point in coordinates)
                     area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
@@ -46,6 +61,8 @@ class LoadCaseBuilder:
     @staticmethod
     def _apply_action(target, action) -> None:
         kind = action.kind
+        if kind == "plate_surface_pressure_selfweight":
+            return
         if kind.startswith("member_distributed_force_"):
             direction = LoadCaseBuilder._member_force_direction(kind)
             initial, final = action.components

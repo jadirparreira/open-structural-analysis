@@ -8,6 +8,7 @@ from math import atan, degrees
 
 from osa.domain import ReferenceAxis
 from osa.services import ActionService, ModelService
+from osa.services.action_service import SELFWEIGHT_ACTION_KINDS
 
 from .parser import parse_distributed_force, parse_load_value
 
@@ -295,14 +296,14 @@ class CommandSession:
                     "error",
                 )
             try:
-                weights = self.service.member_selfweights(None if all_materials else material)
+                weights = self.service.selfweights(None if all_materials else material)
             except ValueError as error:
                 return CommandResponse(value, str(error), "error")
             if not weights:
                 scope = "nenhum material" if all_materials else f"o material '{material}'"
                 return CommandResponse(
                     value,
-                    f"Não há barras com {scope} para aplicar o peso próprio. Escolha outro material.",
+                    f"Não há barras ou placas com {scope} para aplicar o peso próprio. Escolha outro material.",
                     "error",
                 )
             self._pending_selfweights = tuple(SelfWeight(name, weight) for name, weight in weights)
@@ -317,7 +318,7 @@ class CommandSession:
         if command == "load":
             if self.active_load_case and any(
                 action.load_case == self.active_load_case
-                and action.kind == "member_distributed_force_selfweight_Z"
+                and action.kind in SELFWEIGHT_ACTION_KINDS
                 for action in self.service.model.actions.values()
             ):
                 return CommandResponse(
@@ -331,7 +332,7 @@ class CommandSession:
         if command == "selfweight":
             if self.active_load_case and any(
                 action.load_case == self.active_load_case
-                and action.kind == "member_distributed_force_selfweight_Z"
+                and action.kind in SELFWEIGHT_ACTION_KINDS
                 for action in self.service.model.actions.values()
             ):
                 return CommandResponse(
@@ -340,8 +341,8 @@ class CommandSession:
                     "success",
                     remove_selfweight=True,
                 )
-            if not self.service.model.bars:
-                return CommandResponse(value, "Não há barras no modelo para aplicar o peso próprio.", "error")
+            if not self.service.model.bars and not self.service.model.plates:
+                return CommandResponse(value, "Não há barras ou placas no modelo para aplicar o peso próprio.", "error")
             materials = tuple(self.service.model.materials)
             if not materials:
                 return CommandResponse(value, "Não há materiais cadastrados para aplicar o peso próprio.", "error")
@@ -591,12 +592,11 @@ class CommandSession:
             for node in (base_nodes[(x, module_width)], top_nodes[(x, 0.0)], top_nodes[(x, module_width)]):
                 add_w_member(node, right_hub.name, "brace")
 
-        # O peso próprio usa os pesos lineares calculados para todos os
-        # elementos, tal como o comando ``selfweight`` com a opção "Todos".
+        # O peso próprio inclui barras e placas, tal como a opção "Todos".
         # Isso ocorre após a criação dos contraventamentos para incluí-los.
         action_service.replace_action_with_selfweight(
             "Peso próprio",
-            self.service.member_selfweights(),
+            self.service.selfweights(),
         )
 
         self.service.set_reference_axes({
