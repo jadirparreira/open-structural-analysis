@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
         "configaxes", "nodelabels", "memberlabels", "platelabels", "localaxes", "nodes",
-        "solids", "releases", "semirigid", "supports", "scene", "configreference",
+        "solids", "releases", "semirigid", "supports", "components", "scene", "configreference",
     })
 
     def __init__(self) -> None:
@@ -6231,6 +6231,7 @@ class MainWindow(QMainWindow):
             "releases": "releases",
             "semirigid": "semirigid",
             "supports": "supports",
+            "components": "components",
         }
         action_visibility = {
             "nodeforce": "node_forces",

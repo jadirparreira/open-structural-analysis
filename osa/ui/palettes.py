@@ -1498,6 +1498,7 @@ class TopIconPalette(QFrame):
             "releases": self.geometry_options_button,
             "semirigid": self.geometry_options_button,
             "supports": self.geometry_options_button,
+            "components": self.geometry_options_button,
         }
         group_menus = {
             "grid": self.scene_options_menu,
@@ -1508,6 +1509,7 @@ class TopIconPalette(QFrame):
             "releases": self.geometry_options_menu,
             "semirigid": self.geometry_options_menu,
             "supports": self.geometry_options_menu,
+            "components": self.geometry_options_menu,
         }
         self._added_popup_groups: set[QToolButton] = set()
         for filename, tooltip, kind in (("hash.svg", "Planos", "grid"),
@@ -1520,7 +1522,8 @@ class TopIconPalette(QFrame):
                                         ("axis-3d.svg", "Eixos locais", "axes"),
                                         ("release.svg", "Vinculações das barras", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
-                                        ("support-3d.svg", "Apoios dos nós", "supports")):
+                                        ("support-3d.svg", "Apoios dos nós", "supports"),
+                                        ("component.svg", "Componente", "components")):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
             button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
@@ -1537,6 +1540,7 @@ class TopIconPalette(QFrame):
                 "releases": "RELEASES",
                 "semirigid": "SEMIRIGID",
                 "supports": "SUPPORTS",
+                "components": "COMPONENTS",
             }[kind]
             palette_tooltip = _command_tooltip(tooltip, command)
             button.setToolTip(palette_tooltip)
@@ -1561,6 +1565,8 @@ class TopIconPalette(QFrame):
                 button.toggled.connect(window.scene.set_semirigid_links_visible)
             elif kind == "supports":
                 button.toggled.connect(window.scene.set_node_supports_visible)
+            elif kind == "components":
+                button.toggled.connect(window.scene.set_node_components_visible)
             elif kind == "node":
                 button.toggled.connect(
                     lambda visible: window._apply_mcp_view_change("node_labels_visible", visible)

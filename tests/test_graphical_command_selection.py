@@ -471,3 +471,26 @@ def test_action_launcher_applies_pressure_to_multiple_plates(window, monkeypatch
     assert {action.target for action in actions} == {plate.name for plate in plates}
     assert all(action.components == (-2., -4., -1., -1.) for action in actions)
     window.cancel_member_placement()
+
+
+def test_component_toggle_hides_geometry_and_survives_scene_refresh(window):
+    from osa.domain.entities import NodeComponentAssignment
+    window.model.update_node_component('N1', NodeComponentAssignment('base_plate', ()))
+    window.scene.render_model(window.model)
+    scene = window.scene
+    assert scene._node_component_actors
+    assignment = window.model.nodes['N1'].component
+    revision = window.model.revision
+    action = next(action for action in window.top_icon_palette.geometry_options_menu.actions() if action.text() == 'Componente')
+    assert action.isChecked()
+    action.defaultWidget().click()
+    assert not action.isChecked()
+    assert not scene._node_component_actors
+    assert not scene._node_component_pick_actors
+    scene.render_model(window.model)
+    assert not scene._node_component_actors
+    action.defaultWidget().click()
+    assert action.isChecked()
+    assert scene._node_component_actors
+    assert window.model.nodes['N1'].component == assignment
+    assert window.model.revision == revision

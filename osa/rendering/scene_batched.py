@@ -517,6 +517,7 @@ class StructureScene(QWidget):
         self._selected_reference_axis: tuple[str, str] | None = None
         self._node_actor = None
         self._node_glyph_points: pv.PolyData | None = None
+        self._node_components_visible = True
         self._node_component_actors: list[object] = []
         self._node_component_pick_actors: list[object] = []
         self._node_component_plate_actors: dict[str, object] = {}
@@ -1497,6 +1498,14 @@ class StructureScene(QWidget):
             )
             self._support_actor.SetVisibility(self._node_supports_visible)
 
+    def set_node_components_visible(self, visible: bool) -> None:
+        """Toggle visual node components without changing their assignments."""
+        self._node_components_visible = bool(visible)
+        self._refresh_node_components(self._scene_filtered_model().nodes, render=False)
+        self._highlight_state_key = None
+        self._sync_highlights()
+        self.plotter.render()
+
     def _refresh_node_components(self, visible_nodes=None, *, render: bool = True) -> None:
         """Render visual-only node components as separate scene actors."""
         for actor in self._node_component_actors:
@@ -1509,6 +1518,10 @@ class StructureScene(QWidget):
         self._last_picked_component_face_actor = None
         self._node_component_rod_meshes = []
         self._node_component_silhouette_actors = []
+        if not self._node_components_visible:
+            if render:
+                self.plotter.render()
+            return
         visible_names = set(visible_nodes) if visible_nodes is not None else set(self._model.nodes)
         for name, node in self._model.nodes.items():
             assignment = node.component
