@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
     _open_file_filter = _project_file_filter
     _import_file_filter = "Projeto PRJ (*.prj *.prj.zip)"
     _interface_commands = frozenset({
-        "bar", "plate", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
+        "bar", "plate", "split", "splitplate", "joinplates", "join", "rigid", "copy", "move", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
         "configaxes", "nodelabels", "memberlabels", "platelabels", "localaxes", "nodes",
@@ -203,6 +203,8 @@ class MainWindow(QMainWindow):
         self._copy_properties_reference: str | None = None
         self._copy_elements_selection: list[tuple[str, str]] = []
         self._copy_elements_reference: tuple[float, float, float] | None = None
+        self._move_elements_selection: list[tuple[str, str]] = []
+        self._move_elements_reference: tuple[float, float, float] | None = None
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
@@ -371,6 +373,9 @@ class MainWindow(QMainWindow):
         self._plate_manual_start = None
         self._plate_point_vertices = []
         self._plate_saved_endpoint_snap = None
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
         self.scene.element_clicked.connect(self.select_element)
         self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
@@ -393,9 +398,6 @@ class MainWindow(QMainWindow):
         self.palette = FloatingPalette(self)
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
-        self.top_icon_palette.set_member_direction_normalization_enabled(
-            self._member_direction_normalization_enabled
-        )
         self.top_icon_palette.reposition()
         self.verification_top_palette = VerificationTopPalette(self)
         self.verification_top_palette.reposition()
@@ -521,6 +523,11 @@ class MainWindow(QMainWindow):
         self.reference_panel = ReferencePanel(self)
         self.axes_panel.visibility_changed.connect(self.top_icon_palette.configure_axes_button.setChecked)
         self.reference_panel.visibility_changed.connect(self.top_icon_palette.configure_reference_button.setChecked)
+        reference_axes_button = self.top_icon_palette._visibility_buttons["reference-axes"]
+        with QSignalBlocker(self.axes_panel.visibility_checkbox):
+            self.axes_panel.visibility_checkbox.setChecked(reference_axes_button.isChecked())
+        self.axes_panel.visibility_checkbox.toggled.connect(reference_axes_button.setChecked)
+        reference_axes_button.toggled.connect(self.axes_panel.visibility_checkbox.setChecked)
         self.split_member_dialog = SplitMemberDialog(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
@@ -4085,15 +4092,11 @@ class MainWindow(QMainWindow):
 
     @property
     def member_direction_normalization_enabled(self) -> bool:
-        return self._member_direction_normalization_enabled
+        return True
 
     def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
-        """Toggle canonical member orientation and synchronize the geometry tool."""
-        enabled = bool(enabled)
-        self._member_direction_normalization_enabled = enabled
-        self.top_icon_palette.set_member_direction_normalization_enabled(enabled)
-        if not enabled:
-            return
+        """Keep canonical member orientation enabled as a fixed program behavior."""
+        self._member_direction_normalization_enabled = True
         changed = self.normalize_member_directions_if_enabled()
         if changed:
             self.refresh_selected_property_panel(self.palette.active_group)
@@ -4450,6 +4453,16 @@ class MainWindow(QMainWindow):
             return True
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
+        if (
+            command_bar is not None and watched is command_bar.input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "move_elements_selection"
+            and not command_bar.input.text().strip()
+        ):
+            self._confirm_copy_elements()
+            event.accept()
+            return True
         if (
             event.type() == QEvent.Type.KeyPress
             and event.key() == Qt.Key.Key_Escape
@@ -5162,6 +5175,169 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def start_split_plate(self) -> None:
+        """Select a plate, then define the two boundary points of its split."""
+        self._remember_last_command(self.start_split_plate)
+        self.command_session.cancel()
+        self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
+        self.properties.hide()
+        self._restore_plate_snap()
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
+        self._command_mode = "split_plate_selection"
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_member_preview_start(None)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Dividir placa</b> <span style='color:#57606a'>"
+            "(Selecione a placa que será dividida; pressione ESC para cancelar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _begin_split_plate_points(self, plate_name: str) -> None:
+        if plate_name not in self.model.plates:
+            return
+        self._plate_split_source = plate_name
+        self._plate_split_points = []
+        self._plate_split_saved_snap_types = dict(self.scene._snap_types)
+        self._command_mode = "split_plate_placement"
+        self.scene.set_snap_type_enabled("endpoint", True)
+        self.scene.set_snap_type_enabled("center", True)
+        self.scene.set_member_placement_mode(True)
+        self.scene.set_member_preview_start(None)
+        self.history.append(
+            f"> <b>Dividir placa {escape(plate_name)}</b> "
+            "<span style='color:#57606a'>(Clique em dois pontos da borda; os snaps estão ativos; ESC cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _plate_at_boundary_point(
+        self, point, tolerance: float = 0.004, *, plate_name: str | None = None,
+    ) -> str | None:
+        """Find the plate boundary nearest a snapped point."""
+        coordinates = tuple(float(value) for value in point)
+        matches = []
+        plates = (
+            ((plate_name, self.model.plates[plate_name]),)
+            if plate_name in self.model.plates else ()
+        ) if plate_name is not None else self.model.plates.items()
+        for name, plate in plates:
+            for start, end in zip(plate.contour, (*plate.contour[1:], plate.contour[0])):
+                vector = tuple(b - a for a, b in zip(start, end))
+                length2 = sum(value * value for value in vector)
+                if length2 <= 1e-24:
+                    continue
+                fraction = min(1.0, max(0.0, sum(
+                    (value - a) * direction
+                    for value, a, direction in zip(coordinates, start, vector)
+                ) / length2))
+                projected = tuple(a + fraction * direction for a, direction in zip(start, vector))
+                distance = math.dist(coordinates, projected)
+                if distance <= tolerance:
+                    matches.append((distance, name))
+        return min(matches)[1] if matches else None
+
+    def _split_plate_placement_point(self, point) -> None:
+        coordinates = tuple(float(value) for value in point)
+        plate_name = self._plate_split_source
+        if plate_name is None:
+            return
+        point_plate = self._plate_at_boundary_point(coordinates, plate_name=plate_name)
+        if point_plate is None:
+            self.history.append(
+                "> <b>Dividir placa</b> <span style='color:#8c959f'>"
+                "(Capture um vértice ou o meio de uma borda da placa selecionada)</span>"
+            )
+            return
+        if not self._plate_split_points:
+            self._plate_split_points = [coordinates]
+            self.scene.set_member_preview_start(coordinates)
+            self.history.append(
+                f"> <b>Dividir placa {escape(plate_name)}</b> "
+                "<span style='color:#57606a'>(Clique no segundo ponto da borda)</span>"
+            )
+            return
+        try:
+            first, second = self.model.split_plate(
+                plate_name, self._plate_split_points[0], coordinates,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Dividir placa {escape(plate_name)}</b> "
+                f"<span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._finish_split_plate_mode()
+        self.clear_selection()
+        self.history.append(
+            f"> <b>Dividir placa</b> <span style='color:#57606a'>"
+            f"({escape(first.name)} dividida; nova placa {escape(second.name)})</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+
+    def _finish_split_plate_mode(self) -> None:
+        if self._plate_split_saved_snap_types is not None:
+            for kind, enabled in self._plate_split_saved_snap_types.items():
+                self.scene.set_snap_type_enabled(kind, enabled)
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
+        self._command_mode = None
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+
+    def start_join_plates(self) -> None:
+        """Join exactly two selected adjacent plates, or request a selection."""
+        self._remember_last_command(self.start_join_plates)
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._command_mode = "join_plate_selection"
+        plates = tuple(dict.fromkeys(
+            name for kind, name in self.selected_elements
+            if kind == "plate" and name in self.model.plates
+        ))
+        if len(plates) == 2:
+            self._join_plates(*plates)
+            return
+        self.selected_elements = []
+        self.selected = None
+        self.scene.set_selection_highlight(())
+        self.properties.hide()
+        self.history.append(
+            "> <b>Unir placas</b> <span style='color:#57606a'>"
+            "(Selecione duas placas com Ctrl e pressione ENTER)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _join_plates(self, *plate_names: str) -> None:
+        names = tuple(dict.fromkeys(plate_names))
+        if len(names) != 2:
+            self.history.append(
+                "> <b>Unir placas</b> <span style='color:#8c959f'>"
+                "(Selecione exatamente duas placas e pressione ENTER)</span>"
+            )
+            return
+        try:
+            merged = self.model.join_plates(*names)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Unir placas</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._command_mode = None
+        self.history.append(
+            f"> <b>Unir placas</b> <span style='color:#57606a'>"
+            f"(Placas unidas em {escape(merged.name)})</span>"
+        )
+        self.clear_selection()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+
     def _selected_command_members(self) -> tuple[str, ...]:
         targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
         return tuple(dict.fromkeys(name for kind, name in targets if kind == "bar" and name in self.model.bars))
@@ -5317,14 +5493,16 @@ class MainWindow(QMainWindow):
         self.scene.set_member_placement_mode(False)
         self._copy_elements_selection = []
         self._copy_elements_reference = None
-        members = self._selected_command_members()
+        kind = self.member_property_copy_panel.kind
+        targets = self.selected_elements or ([self.selected] if self.selected else [])
+        members = tuple(name for target_kind, name in targets if target_kind == kind)
         self._copy_properties_reference = (
             members[0]
             if members
             else None
         )
         self._command_mode = "copy_member_properties_selection"
-        targets = tuple(("bar", name) for name in members[1:])
+        targets = tuple((kind, name) for name in members[1:])
         self.scene.set_selection_highlight(targets)
         self.selected_elements = list(targets)
         self.selected = targets[-1] if targets else None
@@ -5332,7 +5510,7 @@ class MainWindow(QMainWindow):
         message = (
             f"Referência: {escape(self._copy_properties_reference)}; selecione destinos com Ctrl e pressione ENTER"
             if self._copy_properties_reference is not None
-            else "Selecione a barra de referência"
+            else "Selecione o elemento de referência"
         )
         self.history.append(
             "> <b>Copiar propriedades</b> "
@@ -5340,18 +5518,45 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def _copy_property_kind_changed(self) -> None:
+        self._copy_properties_reference = None
+        if self._command_mode == "copy_member_properties_selection":
+            self.clear_selection()
+            self.history.append("> <b>Copiar propriedades</b> (Selecione o elemento de referência)")
+            self.scene.plotter.setFocus()
+
+    def _confirm_property_copy_selection(self) -> None:
+        kind = self.member_property_copy_panel.kind
+        names = tuple(dict.fromkeys(name for target_kind, name in self.selected_elements if target_kind == kind))
+        if self._copy_properties_reference is None:
+            if len(names) != 1:
+                self.history.append("> <b>Copiar propriedades</b> (Selecione apenas um elemento de referência)")
+                return
+            self._copy_properties_reference = names[0]
+            self.clear_selection()
+            self.history.append("> <b>Copiar propriedades</b> (Selecione os destinos; ENTER confirma)")
+            return
+        targets = tuple(name for name in names if name != self._copy_properties_reference)
+        if not targets:
+            self.history.append("> <b>Copiar propriedades</b> (Selecione destinos diferentes da referência)")
+            return
+        for name in targets:
+            self._copy_member_properties(self._copy_properties_reference, name, refresh=False)
+        self.clear_selection()
+        self.refresh_scene()
+
     def _copy_member_properties(self, source_name: str, target_name: str, *, refresh: bool = True) -> None:
         properties = self.member_property_copy_panel.selected_properties()
         try:
-            copied = self.model_service.copy_member_properties(
-                source_name, target_name, properties,
+            copied = self.model.copy_element_properties(
+                self.member_property_copy_panel.kind, source_name, target_name, properties,
             )
         except ValueError as error:
             self.history.append(
                 f"> <b>Copiar propriedades</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
-        if "section" in properties:
+        if "section" in properties and self.member_property_copy_panel.kind == "bar":
             if copied.profile:
                 self.section_profiles[target_name] = copied.profile
             else:
@@ -5392,6 +5597,28 @@ class MainWindow(QMainWindow):
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
             "(Selecione nós, barras, barras rígidas e placas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_move_elements(self) -> None:
+        """Select geometry, then pick reference and destination with existing snaps."""
+        targets = list(self.selected_elements or ([self.selected] if self.selected else []))
+        self.cancel_member_placement()
+        self.command_session.cancel()
+        self._remember_last_command(self.start_move_elements)
+        self._move_elements_selection = [
+            target for target in targets if target[0] in {"node", "bar", "rigid_bar", "plate"}
+        ]
+        self._move_elements_reference = None
+        self._command_mode = "move_elements_selection"
+        self.selected_elements = list(self._move_elements_selection)
+        self.selected = self.selected_elements[-1] if self.selected_elements else None
+        self.scene.set_selection_highlight(self.selected_elements)
+        self.scene.set_member_placement_mode(False)
+        self.properties.hide()
+        self.history.append(
+            "> <b>Mover</b> <span style='color:#57606a'>"
+            "(Selecione nós, barras, barras rígidas e placas; Ctrl permite multiseleção; ENTER confirma; ESC cancela)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -5469,6 +5696,16 @@ class MainWindow(QMainWindow):
 
     def _confirm_copy_elements(self) -> None:
         """Confirm the element set and begin the two-point copy placement."""
+        if self._command_mode == "move_elements_selection":
+            self._move_elements_selection = list(self.selected_elements)
+            if not self._move_elements_selection:
+                self.history.append("> <b>Mover</b> (Selecione pelo menos um nó ou elemento)")
+                return
+            self._command_mode = "move_elements_reference_placement"
+            self.scene.set_member_placement_mode(True)
+            self.history.append("> <b>Mover</b> (Selecione a posição de referência)")
+            self.scene.plotter.setFocus()
+            return
         if self._command_mode != "copy_elements_selection":
             return
         self._copy_elements_selection = [
@@ -5493,6 +5730,9 @@ class MainWindow(QMainWindow):
     def _confirm_command_selection(self) -> None:
         """Apply commands to the shared Ctrl selection when ENTER is pressed."""
         mode = self._command_mode
+        if mode == "copy_member_properties_selection":
+            self._confirm_property_copy_selection()
+            return
         if mode == "detail_end_cut_face_selection":
             self._commit_detail_end_cut_faces()
             return
@@ -5501,6 +5741,13 @@ class MainWindow(QMainWindow):
             return
         if mode == "plate_point_placement":
             self._finish_plate_point_contour()
+            return
+        if mode == "join_plate_selection":
+            plates = tuple(dict.fromkeys(
+                name for kind, name in self.selected_elements
+                if kind == "plate" and name in self.model.plates
+            ))
+            self._join_plates(*plates)
             return
         if mode not in {
             "split_member_selection", "reverse_member_selection", "join_member_selection",
@@ -5590,6 +5837,31 @@ class MainWindow(QMainWindow):
 
     def _handle_copy_placement_point(self, point: object) -> None:
         """Collect the reference/destination points and copy the selection."""
+        if self._command_mode == "move_elements_reference_placement":
+            self._move_elements_reference = tuple(float(value) for value in point)
+            self._command_mode = "move_elements_destination_placement"
+            self.scene.set_member_preview_start(self._move_elements_reference)
+            self.history.append("> <b>Mover</b> (Selecione a posição de destino; ESC cancela)")
+            return
+        if self._command_mode == "move_elements_destination_placement":
+            offset = tuple(float(value) - origin for value, origin in zip(point, self._move_elements_reference))
+            try:
+                moved = self.model.move_elements(self._move_elements_selection, offset)
+            except ValueError as error:
+                self.history.append(f"> <b>Mover</b> ({escape(str(error))})")
+                return
+            self._command_mode = None
+            self._move_elements_selection = []
+            self._move_elements_reference = None
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.clear_selection()
+            self.normalize_member_directions_if_enabled()
+            self.refresh_action_palette()
+            self.refresh_analysis_palette()
+            self.refresh_scene()
+            self.history.append(f"> <b>Mover</b> ({len(moved)} nó(s) movido(s); elementos conectados atualizados)")
+            return
         if self._command_mode == "copy_elements_reference_placement":
             self._copy_elements_reference = tuple(float(value) for value in point)
             self._command_mode = "copy_elements_destination_placement"
@@ -5920,6 +6192,12 @@ class MainWindow(QMainWindow):
         if self._plate_saved_endpoint_snap is not None:
             self.scene._snap_types["endpoint"] = self._plate_saved_endpoint_snap
             self._plate_saved_endpoint_snap = None
+        if self._plate_split_saved_snap_types is not None:
+            for kind, enabled in self._plate_split_saved_snap_types.items():
+                self.scene.set_snap_type_enabled(kind, enabled)
+            self._plate_split_saved_snap_types = None
+            self._plate_split_source = None
+            self._plate_split_points = []
 
     def _enable_plate_endpoint_snap(self) -> None:
         """Keep plate placement attached to existing structural vertices."""
@@ -5998,10 +6276,12 @@ class MainWindow(QMainWindow):
         callbacks = {
             "bar": ("Geometria", self.start_member_placement),
             "split": ("Geometria", self.start_split_member),
-            "reverse": ("Geometria", self.start_reverse_member),
+            "splitplate": ("Geometria", self.start_split_plate),
+            "joinplates": ("Geometria", self.start_join_plates),
             "join": ("Geometria", self.start_join_members),
             "rigid": ("Geometria", self.start_rigid_bar_placement),
             "copy": ("Geometria", self.start_copy_elements),
+            "move": ("Geometria", self.start_move_elements),
             "cprop": ("Geometria", self.start_copy_member_properties),
             "measure": ("Geometria", self.start_measurement),
             "configaxes": ("Geometria", self.toggle_axes_panel),
@@ -6131,6 +6411,9 @@ class MainWindow(QMainWindow):
             return
         if self._command_mode == "plate_point_placement":
             self._plate_point_placement_point(tuple(float(value) for value in point))
+            return
+        if self._command_mode == "split_plate_placement":
+            self._split_plate_placement_point(tuple(float(value) for value in point))
             return
         if self._command_mode != "member_placement":
             return
@@ -6378,6 +6661,19 @@ class MainWindow(QMainWindow):
         self.scene.set_measurement_mode(False)
 
     def cancel_member_placement(self) -> None:
+        if getattr(self, "_command_mode", None) in {
+            "move_elements_selection", "move_elements_reference_placement", "move_elements_destination_placement",
+        }:
+            self.command_session.cancel()
+            self._command_mode = None
+            self._move_elements_selection = []
+            self._move_elements_reference = None
+            self.scene.cancel_ctrl_selection()
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.clear_selection()
+            self.history.append("> <b>Mover</b> (Operação cancelada)")
+            return
         workspace = getattr(self, "project_sheet_workspace", None)
         if workspace is not None and workspace.cancel_identification_resize():
             return
@@ -6428,6 +6724,20 @@ class MainWindow(QMainWindow):
         }:
             self.project_sheet_workspace.set_element_visibility_mode(None)
             self._finish_project_sheet_visibility(canceled=True)
+            return
+        if self._command_mode in {"split_plate_selection", "split_plate_placement"}:
+            self._finish_split_plate_mode()
+            self.clear_selection()
+            self.history.append(
+                "> <b>Dividir placa</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode == "join_plate_selection":
+            self._command_mode = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Unir placas</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
             return
         if self._command_mode in {"plate_selection", "plate_manual", "plate_point_placement"}:
             self._command_mode = None
@@ -6767,6 +7077,32 @@ class MainWindow(QMainWindow):
         if self._command_mode == "plate_selection":
             self._plate_add_selection(kind, name)
             return
+        if self._command_mode == "split_plate_selection":
+            if kind != "plate" or name not in self.model.plates:
+                self.history.append(
+                    "> <b>Dividir placa</b> <span style='color:#8c959f'>"
+                    "(Selecione uma placa)</span>"
+                )
+                return
+            self.selected = (kind, name)
+            self.selected_elements = [(kind, name)]
+            self.scene.set_selection_highlight(self.selected_elements)
+            self._begin_split_plate_points(name)
+            return
+        if self._command_mode == "join_plate_selection":
+            targets = tuple(dict.fromkeys(
+                target for target in (*self.selected_elements, (kind, name))
+                if target[0] == "plate" and target[1] in self.model.plates
+            ))
+            self.selected_elements = list(targets)
+            self.selected = targets[-1] if targets else None
+            self.scene.set_selection_highlight(targets)
+            self.properties.hide()
+            self.history.append(
+                "> <span style='color:#57606a'>"
+                f"({len(targets)} placa(s) selecionada(s); pressione ENTER para unir)</span>"
+            )
+            return
         if self._command_mode == "detail_end_cut_target_selection":
             if kind != "bar":
                 self.history.append(
@@ -7010,15 +7346,12 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._join_members(self._join_member_first, name)
-        elif self._command_mode == "copy_elements_selection":
+        elif self._command_mode in {"copy_elements_selection", "move_elements_selection"}:
             self._selection_changed(((kind, name),))
             return
         elif self._command_mode == "copy_member_properties_selection":
-            if kind != "bar":
-                self.history.append(
-                    "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou barra rígida)</span>"
-                )
+            if kind != self.member_property_copy_panel.kind:
+                self.history.append("> <b>Copiar propriedades</b> (Selecione o tipo de elemento indicado no painel)")
             elif self._copy_properties_reference is None:
                 self._copy_properties_reference = name
                 self.clear_selection()
@@ -7029,7 +7362,7 @@ class MainWindow(QMainWindow):
             elif name == self._copy_properties_reference:
                 self.history.append(
                     "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra de destino diferente)</span>"
+                    "<span style='color:#8c959f'>(Selecione um destino diferente)</span>"
                 )
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
@@ -7050,6 +7383,20 @@ class MainWindow(QMainWindow):
             for kind, name in elements:
                 if self._command_mode == "plate_selection":
                     self._plate_add_selection(kind, name)
+            return
+        if self._command_mode == "join_plate_selection":
+            targets = tuple(dict.fromkeys(
+                (kind, name) for kind, name in elements
+                if kind == "plate" and name in self.model.plates
+            ))
+            self.selected_elements = list(targets)
+            self.selected = targets[-1] if targets else None
+            self.scene.set_selection_highlight(targets)
+            self.properties.hide()
+            self.history.append(
+                "> <span style='color:#57606a'>"
+                f"({len(targets)} placa(s) selecionada(s); pressione ENTER para unir)</span>"
+            )
             return
         if self.palette.active_group == "Detalhamento":
             expanded = list(elements)
@@ -7073,11 +7420,13 @@ class MainWindow(QMainWindow):
             self.selected = self.selected_elements[-1] if self.selected_elements else None
             return
         if self._command_mode in {
-            "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
+            "copy_elements_selection", "move_elements_selection", "copy_member_properties_selection", "split_member_selection",
             "reverse_member_selection", "join_member_selection", "action_selection", "verification_group_selection",
             "verification_ungroup_selection",
         }:
-            kinds = {"node", "bar", "rigid_bar", "plate"} if self._command_mode == "copy_elements_selection" else {"bar"}
+            kinds = {"node", "bar", "rigid_bar", "plate"} if self._command_mode in {"copy_elements_selection", "move_elements_selection"} else {"bar"}
+            if self._command_mode == "copy_member_properties_selection":
+                kinds = {self.member_property_copy_panel.kind}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:
                 kinds = {self._pending_action_launch[0]}
             targets = tuple(target for target in elements if target[0] in kinds)

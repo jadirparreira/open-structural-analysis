@@ -3182,24 +3182,6 @@ class ProgramSettingsDialog(QDialog):
         members_scroll.setWidget(members_content)
         members_layout.addWidget(members_scroll, 1)
         members_content_layout.addSpacing(10)
-        direction_section = QVBoxLayout()
-        direction_section.setContentsMargins(0, 0, 0, 0)
-        direction_section.setSpacing(6)
-        direction_label = QLabel("Normalizar a direção das barras automaticamente")
-        direction_label.setObjectName("hint")
-        direction_label.setWordWrap(True)
-        direction_label.setAccessibleName("Normalizar a direção das barras automaticamente")
-        direction_section.addWidget(direction_label)
-        self._member_direction_switch = _SettingsChoiceSwitch(
-            (("sim", "Sim"), ("nao", "Não")),
-            "sim" if self.window.member_direction_normalization_enabled else "nao",
-            lambda mode: self.window.set_member_direction_normalization_enabled(mode == "sim"),
-            self,
-        )
-        direction_section.addWidget(self._member_direction_switch, 0, Qt.AlignmentFlag.AlignLeft)
-        members_content_layout.addLayout(direction_section)
-        members_content_layout.addSpacing(12)
-
         split_section = QVBoxLayout()
         split_section.setContentsMargins(0, 0, 0, 0)
         split_section.setSpacing(6)

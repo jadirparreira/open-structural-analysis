@@ -30,3 +30,16 @@ def test_gmsh_quads_share_a_consistent_plate_local_axis():
         assert first_edge @ local_x > 0
         assert (first_edge @ local_x) / (first_edge @ first_edge) ** 0.5 > 0.5
         assert (first_edge[1] * fourth_edge[0] - first_edge[0] * fourth_edge[1]) * normal[2] < 0
+
+
+def test_joined_plates_with_partial_shared_edge_generate_gmsh_mesh():
+    model = StructuralModel()
+    model.add_plate(((0, 0, 0), (2, 0, 0), (2, 6, 0), (0, 6, 0)), name="P1")
+    model.add_plate(((0, 1, 0), (0, 3, 0), (-2, 3, 0), (-2, 1, 0)), name="P14")
+
+    joined = model.join_plates("P1", "P14")
+    mesh = generate_plate_mesh(model.plates)
+
+    assert joined.name == "P1"
+    assert set(mesh.elements) == {"P1"}
+    assert mesh.elements["P1"]

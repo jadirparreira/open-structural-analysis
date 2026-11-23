@@ -404,6 +404,300 @@ class StructuralModel:
         self._delete_orphan_nodes(vertex_nodes)
         self._touch()
 
+    def split_plate(
+        self, name: str, first_point, second_point, *, tolerance: float = 0.002,
+    ) -> tuple[Plate, Plate]:
+        """Split a plate by a chord between two points on its boundary."""
+        from osa.services.plate_operations import split_plate_contour
+
+        source = self.plates.get(name)
+        if source is None:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        first_contour, second_contour = split_plate_contour(
+            source.contour, first_point, second_point, tolerance=tolerance,
+        )
+        candidate = StructuralModel(
+            materials=self.materials, material_types=self.material_types, sections=self.sections,
+        )
+        candidate.nodes = self.nodes.copy()
+        candidate.bars = self.bars.copy()
+        candidate.rigid_bars = self.rigid_bars.copy()
+        candidate.plates = self.plates.copy()
+        candidate.plates.pop(name)
+        candidate.actions = self.actions.copy()
+        candidate.node_display_names = self.node_display_names.copy()
+        candidate.plate_display_names = self.plate_display_names.copy()
+        candidate.plate_display_names.pop(name, None)
+        if name in self.plate_display_names:
+            candidate.plate_display_names[name] = self.plate_display_names[name]
+        candidate.import_metadata = self.import_metadata.copy()
+        candidate.scene_views = {key: set(value) for key, value in self.scene_views.items()}
+
+        def child_supports(contour):
+            retained = []
+            edges = tuple(zip(contour, (*contour[1:], contour[0])))
+            for kind, support_name in source.supports:
+                element = (self.bars if kind == "bar" else self.rigid_bars)[support_name]
+                start_node = self.nodes[element.start_node]
+                end_node = self.nodes[element.end_node]
+                start = (start_node.x, start_node.y, start_node.z)
+                end = (end_node.x, end_node.y, end_node.z)
+                if any(
+                    self._points_on_same_segment(edge_start, edge_end, start, end, tolerance)
+                    for edge_start, edge_end in edges
+                ):
+                    retained.append((kind, support_name))
+            return tuple(retained)
+
+        plate_properties = {
+            "color": source.color,
+            "thickness_mm": source.thickness_mm,
+            "material": source.material,
+            "positioning_displacement": source.positioning_displacement,
+            "restrictions": source.restrictions,
+            "restriction_stiffness": source.restriction_stiffness,
+            "restriction_directions": source.restriction_directions,
+        }
+        first_plate = candidate.add_plate(
+            first_contour, name=name, supports=child_supports(first_contour),
+            edge_positioning=tuple(
+                item for item in source.edge_positioning
+                if item[0] in {support_name for _kind, support_name in child_supports(first_contour)}
+            ),
+            **plate_properties,
+        )
+        first_plate = replace(first_plate, detail_subtractions=source.detail_subtractions)
+        candidate.plates[name] = first_plate
+        second_supports = child_supports(second_contour)
+        second_plate = candidate.add_plate(
+            second_contour, supports=second_supports,
+            edge_positioning=tuple(
+                item for item in source.edge_positioning
+                if item[0] in {support_name for _kind, support_name in second_supports}
+            ),
+            **plate_properties,
+        )
+        second_plate = replace(second_plate, detail_subtractions=source.detail_subtractions)
+        candidate.plates[second_plate.name] = second_plate
+
+        plate_actions = tuple(
+            action for action in self.actions.values() if action.target == name
+        )
+        for action in plate_actions:
+            candidate.actions.pop(action.name, None)
+            routes: list[tuple[str, int | None]] = []
+            if action.kind.startswith("plate_edge_"):
+                try:
+                    old_edge_index = int(action.kind.rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    old_edge_index = -1
+                if 0 <= old_edge_index < len(source.contour):
+                    old_start = source.contour[old_edge_index]
+                    old_end = source.contour[(old_edge_index + 1) % len(source.contour)]
+                    for plate in (first_plate, second_plate):
+                        for edge_index, (start, end) in enumerate(zip(
+                            plate.contour, (*plate.contour[1:], plate.contour[0]),
+                        )):
+                            if (
+                                self._points_on_same_segment(start, end, old_start, old_end, tolerance)
+                            ):
+                                routes.append((plate.name, edge_index))
+            else:
+                routes.extend(((first_plate.name, None), (second_plate.name, None)))
+            for route_index, (target, edge_index) in enumerate(routes):
+                kind = action.kind
+                if edge_index is not None:
+                    kind = f"{kind.rsplit(':', 1)[0]}:{edge_index}"
+                action_name = action.name if route_index == 0 else f"{action.name} ({target})"
+                suffix = 2
+                base_name = action_name
+                while action_name in candidate.actions:
+                    action_name = f"{base_name}, {suffix}"
+                    suffix += 1
+                candidate.actions[action_name] = replace(
+                    action, name=action_name, target=target, kind=kind,
+                )
+
+        self.nodes.clear()
+        self.nodes.update(candidate.nodes)
+        self.plates.clear()
+        self.plates.update(candidate.plates)
+        self.actions.clear()
+        self.actions.update(candidate.actions)
+        self.plate_display_names.clear()
+        self.plate_display_names.update(candidate.plate_display_names)
+        self._touch()
+        return self.plates[name], self.plates[second_plate.name]
+
+    @staticmethod
+    def _points_on_same_segment(first_start, first_end, second_start, second_end, tolerance) -> bool:
+        from osa.services.plate_operations import _project_to_edge
+
+        return all(
+            _project_to_edge(point, second_start, second_end)[2] <= tolerance
+            for point in (first_start, first_end)
+        )
+
+    def join_plates(self, first_name: str, second_name: str) -> Plate:
+        """Merge two coplanar plates that share complete boundary edges."""
+        from osa.services.plate_operations import merge_plate_contours
+
+        if first_name == second_name:
+            raise ValueError("Selecione duas placas diferentes para unir.")
+        first = self.plates.get(first_name)
+        second = self.plates.get(second_name)
+        if first is None or second is None:
+            raise EntityNotFoundError("Uma das placas selecionadas não foi encontrada.")
+        structural_properties = (
+            "thickness_mm", "material", "positioning_displacement", "restrictions",
+            "restriction_stiffness", "restriction_directions",
+        )
+        if any(getattr(first, key) != getattr(second, key) for key in structural_properties):
+            raise ValueError("As placas precisam ter os mesmos parâmetros estruturais para serem unidas.")
+        merged_contour, shared_edges = merge_plate_contours(first.contour, second.contour)
+        shared_supports = set()
+        for kind, support_name in set((*first.supports, *second.supports)):
+            element = (self.bars if kind == "bar" else self.rigid_bars).get(support_name)
+            if element is None:
+                continue
+            a = self.nodes[element.start_node]
+            b = self.nodes[element.end_node]
+            endpoints = ((a.x, a.y, a.z), (b.x, b.y, b.z))
+            if all(
+                any(self._points_on_same_segment(point, point, start, end, 1e-8) for start, end in shared_edges)
+                for point in endpoints
+            ):
+                shared_supports.add((kind, support_name))
+        supports = tuple(dict.fromkeys(
+            support for support in (*first.supports, *second.supports)
+            if support not in shared_supports
+        ))
+        edge_values = {}
+        for edge_name, displacement, angle in (*first.edge_positioning, *second.edge_positioning):
+            value = displacement, angle
+            if edge_name in edge_values and edge_values[edge_name] != value:
+                raise ValueError("As placas têm posicionamentos de borda diferentes.")
+            edge_values[edge_name] = value
+        edge_positioning = tuple(
+            (name, *value) for name, value in edge_values.items()
+            if ("bar", name) in supports or ("rigid_bar", name) in supports
+        )
+
+        first_surface_actions = sorted(
+            (action.kind, action.components, action.load_case)
+            for action in self.actions.values()
+            if action.target == first_name and action.kind.startswith("plate_surface_pressure")
+        )
+        second_surface_actions = sorted(
+            (action.kind, action.components, action.load_case)
+            for action in self.actions.values()
+            if action.target == second_name and action.kind.startswith("plate_surface_pressure")
+        )
+        if first_surface_actions != second_surface_actions:
+            raise ValueError("As placas precisam ter as mesmas ações de superfície para serem unidas.")
+
+        candidate = StructuralModel(
+            materials=self.materials, material_types=self.material_types, sections=self.sections,
+        )
+        candidate.nodes = self.nodes.copy()
+        candidate.bars = self.bars.copy()
+        candidate.rigid_bars = self.rigid_bars.copy()
+        candidate.plates = self.plates.copy()
+        candidate.plates.pop(first_name)
+        candidate.plates.pop(second_name)
+        candidate.actions = self.actions.copy()
+        candidate.plate_display_names = self.plate_display_names.copy()
+        first_display_name = candidate.plate_display_names.get(first_name)
+        candidate.plate_display_names.pop(second_name, None)
+        candidate.plate_display_names.pop(first_name, None)
+        if first_display_name is not None:
+            candidate.plate_display_names[first_name] = first_display_name
+
+        merged = candidate.add_plate(
+            merged_contour,
+            name=first_name,
+            supports=supports,
+            color=first.color,
+            thickness_mm=first.thickness_mm,
+            material=first.material,
+            positioning_displacement=first.positioning_displacement,
+            edge_positioning=edge_positioning,
+            restrictions=first.restrictions,
+            restriction_stiffness=first.restriction_stiffness,
+            restriction_directions=first.restriction_directions,
+        )
+        merged = replace(
+            merged,
+            detail_subtractions=tuple(dict.fromkeys(
+                cutter for cutter in (*first.detail_subtractions, *second.detail_subtractions)
+                if cutter != ("plate", second_name) and cutter != ("plate", first_name)
+            )),
+        )
+        candidate.plates[first_name] = merged
+        candidate._delete_orphan_nodes((*first.vertex_nodes, *second.vertex_nodes))
+
+        contour_edges = tuple(zip(merged.contour, (*merged.contour[1:], merged.contour[0])))
+        for action_name, action in tuple(candidate.actions.items()):
+            if action.target not in {first_name, second_name}:
+                continue
+            candidate.actions.pop(action_name, None)
+            if action.target == second_name and action.kind.startswith("plate_surface_pressure"):
+                continue
+            routed_kinds = [action.kind]
+            if action.kind.startswith("plate_edge_"):
+                try:
+                    old_index = int(action.kind.rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                source = first if action.target == first_name else second
+                if not 0 <= old_index < len(source.contour):
+                    continue
+                old_start = source.contour[old_index]
+                old_end = source.contour[(old_index + 1) % len(source.contour)]
+                edge_indices = [
+                    index for index, (start, end) in enumerate(contour_edges)
+                    if self._points_on_same_segment(start, end, old_start, old_end, 1e-8)
+                ]
+                if not edge_indices:
+                    continue
+                routed_kinds = [
+                    f"{action.kind.rsplit(':', 1)[0]}:{edge_index}"
+                    for edge_index in edge_indices
+                ]
+            for route_index, kind in enumerate(routed_kinds):
+                routed_name = action_name if route_index == 0 else f"{action_name} ({first_name} borda {route_index + 1})"
+                suffix = 2
+                base_name = routed_name
+                while routed_name in candidate.actions:
+                    routed_name = f"{base_name}, {suffix}"
+                    suffix += 1
+                candidate.actions[routed_name] = replace(
+                    action, name=routed_name, target=first_name, kind=kind,
+                )
+
+        for plate in tuple(candidate.plates.values()):
+            if plate.name == first_name or ("plate", second_name) not in plate.detail_subtractions:
+                continue
+            candidate.plates[plate.name] = replace(
+                plate,
+                detail_subtractions=tuple(dict.fromkeys(
+                    ("plate", first_name) if cutter == ("plate", second_name) else cutter
+                    for cutter in plate.detail_subtractions
+                    if cutter != ("plate", plate.name)
+                )),
+            )
+
+        self.nodes.clear()
+        self.nodes.update(candidate.nodes)
+        self.plates.clear()
+        self.plates.update(candidate.plates)
+        self.actions.clear()
+        self.actions.update(candidate.actions)
+        self.plate_display_names.clear()
+        self.plate_display_names.update(candidate.plate_display_names)
+        self._touch()
+        return self.plates[first_name]
+
     def related_plates(self, name: str) -> tuple[str, ...]:
         """Return plates that share a boundary edge or boundary bar with a plate."""
         if name not in self.plates:
@@ -655,6 +949,36 @@ class StructuralModel:
         else:
             self.plate_display_names.pop(name, None)
         self._touch()
+
+    def move_elements(self, targets, offset) -> tuple[str, ...]:
+        """Translate each selected/shared vertex once and update connected geometry."""
+        if len(offset) != 3 or not all(math.isfinite(float(value)) for value in offset):
+            raise ValueError("Informe um deslocamento finito em três coordenadas.")
+        names = set()
+        for kind, name in targets:
+            if kind == "node":
+                if name not in self.nodes:
+                    raise ValueError(f"Nó '{name}' não encontrado.")
+                names.add(name)
+            elif kind in {"bar", "rigid_bar"}:
+                element = (self.bars if kind == "bar" else self.rigid_bars).get(name)
+                if element is None:
+                    raise ValueError(f"Elemento '{name}' não encontrado.")
+                names.update((element.start_node, element.end_node))
+            elif kind == "plate":
+                plate = self.plates.get(name)
+                if plate is None:
+                    raise ValueError(f"Placa '{name}' não encontrada.")
+                names.update(plate.vertex_nodes)
+            else:
+                raise ValueError("Selecione nós, barras ou placas para mover.")
+        changes = {
+            name: tuple(value + float(delta) for value, delta in zip(
+                (self.nodes[name].x, self.nodes[name].y, self.nodes[name].z), offset,
+            )) for name in names
+        }
+        self.update_nodes_coordinates(changes)
+        return tuple(sorted(names))
 
     def update_nodes_coordinates(
         self, changes: dict[str, tuple[float, float, float]],
@@ -1491,6 +1815,34 @@ class StructuralModel:
         self.actions.update(candidate.actions)
         self._touch()
         return self.bars[first_name]
+
+    def copy_element_properties(self, kind, source_name, target_name, properties):
+        """Copy selected properties without changing identity, geometry or positioning."""
+        if kind == "bar":
+            if "offsets" in properties:
+                raise ValueError("Deslocamentos não podem ser copiados na Geometria.")
+            return self.copy_bar_properties(source_name, target_name, properties)
+        fields = {
+            "node": {"component": ("component",), "restrictions": (
+                "supports", "support_stiffness", "support_directions",
+            )},
+            "plate": {"color": ("color",), "material": ("material",),
+                      "section": ("thickness_mm",), "restrictions": (
+                          "restrictions", "restriction_stiffness", "restriction_directions",
+                      )},
+        }.get(kind)
+        if fields is None or not properties or set(properties).difference(fields):
+            raise ValueError("Selecione propriedades válidas para copiar.")
+        collection = self.nodes if kind == "node" else self.plates
+        if source_name == target_name:
+            raise ValueError("Selecione referência e destino diferentes.")
+        if source_name not in collection or target_name not in collection:
+            raise ValueError("Referência ou destino não encontrado.")
+        source = collection[source_name]
+        changes = {field: getattr(source, field) for key in properties for field in fields[key]}
+        collection[target_name] = replace(collection[target_name], **changes)
+        self._touch()
+        return collection[target_name]
 
     def copy_bar_properties(
         self,

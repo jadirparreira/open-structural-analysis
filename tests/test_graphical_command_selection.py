@@ -396,3 +396,61 @@ def test_escape_cancels_pending_multi_selection_without_model_changes(window, mo
         assert window._command_mode is None
         assert window.model.revision == revision
         assert len(window.model.bars) == 3
+
+
+def test_move_selection_reference_destination_and_escape(window, monkeypatch):
+    monkeypatch.setattr(window, 'refresh_scene', lambda **kwargs: None)
+    select(window, ('bar', 'B1'), ('node', 'N2'))
+    window.start_move_elements()
+    window._confirm_copy_elements()
+    assert window._command_mode == 'move_elements_reference_placement'
+    window._handle_copy_placement_point((0, 0, 0))
+    window._handle_copy_placement_point((0, 1, 0))
+    assert window.model.nodes['N1'].y == 1
+    assert window.model.nodes['N2'].y == 1
+    assert window.model.nodes['N3'].y == 0
+    assert window._command_mode is None
+    assert not window.scene._member_placement_mode
+    window.start_move_elements()
+    window.cancel_member_placement()
+    assert window._command_mode is None
+    assert not window.selected_elements
+
+
+@pytest.mark.parametrize('kind', ['node', 'plate'])
+def test_property_copy_switch_uses_matching_reference_and_destinations(window, kind):
+    if kind == 'node':
+        source, target = 'N1', 'N2'
+        window.model.update_node_supports(source, (True,) * 6)
+    else:
+        source = window.model.add_plate(((0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)), thickness_mm=180).name
+        target = window.model.add_plate(((3, 0, 0), (5, 0, 0), (5, 2, 0), (3, 2, 0))).name
+    window.start_copy_member_properties()
+    window.member_property_copy_panel.kind_switch._buttons[kind].click()
+    assert window._copy_properties_reference is None
+    select(window, (kind, source))
+    window._confirm_command_selection()
+    assert window._copy_properties_reference == source
+    select(window, (kind, target))
+    window._confirm_command_selection()
+    if kind == 'node':
+        assert window.model.nodes[target].supports == (True,) * 6
+    else:
+        assert window.model.plates[target].thickness_mm == 180
+    window.cancel_member_placement()
+
+
+def test_property_copy_panel_resizes_immediately_when_switching_kinds(window, qt_app):
+    window.start_copy_member_properties()
+    panel = window.member_property_copy_panel
+    heights = {}
+    for kind in ('bar', 'node', 'plate', 'bar', 'node', 'plate'):
+        panel.kind_switch._buttons[kind].click()
+        if kind in heights:
+            assert panel.height() == heights[kind]
+        heights[kind] = panel.height()
+        assert all(panel.rect().contains(box.geometry()) for box in panel.checkboxes.values())
+        qt_app.processEvents()
+        assert panel.height() == heights[kind]
+    assert heights['node'] < heights['plate'] < heights['bar']
+    window.cancel_member_placement()

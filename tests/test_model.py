@@ -23,6 +23,18 @@ def test_model_round_trip(tmp_path):
     assert loaded.as_dict() == expected
 
 
+def test_splitting_plate_creates_two_plates_and_preserves_original_name():
+    model = StructuralModel()
+    model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)), name="P1")
+
+    first, second = model.split_plate("P1", (0, 0, 0), (4, 3, 0))
+
+    assert first.name == "P1"
+    assert second.name == "P2"
+    assert len(first.contour) == 3
+    assert len(second.contour) == 3
+
+
 def test_node_with_bar_cannot_be_removed():
     model = StructuralModel()
     model.add_node("N1", 0, 0, 0)

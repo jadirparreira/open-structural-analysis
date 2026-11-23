@@ -3572,9 +3572,9 @@ class StructureScene(QWidget):
                 and not self._analysis_visible
                 and getattr(self.window(), "_command_mode", None) in (
                     None, "scene_hide_selection", "scene_reveal_selection",
-                    "copy_elements_selection", "copy_member_properties_selection",
+                    "copy_elements_selection", "move_elements_selection", "copy_member_properties_selection",
                     "reverse_member_selection", "split_member_selection",
-                    "join_member_selection", "action_selection", "verification_group_selection",
+                    "join_member_selection", "join_plate_selection", "action_selection", "verification_group_selection",
                 )
                 and not over_navigation_cube
             ):
@@ -6534,7 +6534,14 @@ class StructureScene(QWidget):
             if kind == "node":
                 node_colors[name] = "#0969da"
         for name, actor in self._plate_actors.items():
-            color = QColor(self._model.plates[name].color)
+            plate = self._model.plates.get(name)
+            if plate is None:
+                actor.SetVisibility(False)
+                edge_actor = self._plate_edge_actors.get(name)
+                if edge_actor is not None:
+                    edge_actor.SetVisibility(False)
+                continue
+            color = QColor(plate.color)
             actor.GetProperty().SetColor(color.redF(), color.greenF(), color.blueF())
             self._update_plate_edge_style(name)
         if hover is not None and hover[0] == "node":

@@ -496,7 +496,6 @@ class MemberPropertyCopyPanel(QFrame):
         ("material", "Material"),
         ("section", "Seção"),
         ("rotation", "Rotação"),
-        ("offsets", "Deslocamento"),
         ("releases", "Vinculações"),
     )
 
@@ -520,11 +519,15 @@ class MemberPropertyCopyPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
-        title = QLabel("Copiar propriedades da barra", self)
-        title.setObjectName("memberPropertyCopyTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(title)
+        from .dialogs import _SettingsChoiceSwitch
+        self.kind = "bar"
+        self.kind_switch = _SettingsChoiceSwitch(
+            (("node", "Nó"), ("bar", "Barra"), ("plate", "Placa")),
+            self.kind, self._change_kind, self,
+        )
+        layout.addWidget(self.kind_switch, 0, Qt.AlignmentFlag.AlignHCenter)
         choices = QGridLayout()
+        self._choices_layout = choices
         choices.setContentsMargins(0, 0, 0, 0)
         choices.setHorizontalSpacing(12)
         choices.setVerticalSpacing(0)
@@ -538,6 +541,35 @@ class MemberPropertyCopyPanel(QFrame):
         layout.addLayout(choices)
         self.adjustSize()
         self.hide()
+
+    def _change_kind(self, kind: str) -> None:
+        self.kind = kind
+        for checkbox in self.checkboxes.values():
+            self._choices_layout.removeWidget(checkbox)
+            checkbox.hide()
+            checkbox.setParent(None)
+            checkbox.deleteLater()
+        self.checkboxes = {}
+        options = {
+            "node": (("component", "Componente"), ("restrictions", "Restrições")),
+            "bar": self._options,
+            "plate": (("color", "Cor"), ("material", "Material"),
+                      ("section", "Seção"), ("restrictions", "Restrições")),
+        }[kind]
+        for index, (key, label) in enumerate(options):
+            checkbox = QCheckBox(label, self)
+            checkbox.setAccessibleName(f"Copiar {label.casefold()}")
+            checkbox.setChecked(True)
+            self.checkboxes[key] = checkbox
+            self._choices_layout.addWidget(checkbox, index // 2, index % 2)
+            checkbox.show()
+        self._choices_layout.invalidate()
+        self.layout().invalidate()
+        self.layout().activate()
+        self.resize(self.sizeHint())
+        self.layout().setGeometry(self.rect())
+        self.reposition()
+        self.window._copy_property_kind_changed()
 
     def begin(self, button: QToolButton) -> None:
         self._button = button
@@ -1441,7 +1473,43 @@ class TopIconPalette(QFrame):
         self._visibility_buttons: dict[str, QToolButton] = {}
         self._solid_node_states: dict[str, tuple[bool, bool]] | None = None
         self._window = window
-        for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
+        self.identifier_group_button, self.identifier_group_menu = self._create_popup_group(
+            "tag.svg", "Identificadores"
+        )
+        self.geometry_options_button, self.geometry_options_menu = self._create_popup_group(
+            "axis-3d.svg", "Opções de geometria"
+        )
+        self.scene_options_button, self.scene_options_menu = self._create_popup_group(
+            "hash.svg", "Opções de cena"
+        )
+        self.member_tools_button, self.member_tools_menu = self._create_popup_group(
+            "member-spline.svg", "Barras"
+        )
+        self.plate_tools_button, self.plate_tools_menu = self._create_popup_group(
+            "plate.svg", "Placas"
+        )
+        group_buttons = {
+            "grid": self.scene_options_button,
+            "node": self.identifier_group_button,
+            "bar": self.identifier_group_button,
+            "plate": self.identifier_group_button,
+            "axes": self.geometry_options_button,
+            "releases": self.geometry_options_button,
+            "semirigid": self.geometry_options_button,
+            "supports": self.geometry_options_button,
+        }
+        group_menus = {
+            "grid": self.scene_options_menu,
+            "node": self.identifier_group_menu,
+            "bar": self.identifier_group_menu,
+            "plate": self.identifier_group_menu,
+            "axes": self.geometry_options_menu,
+            "releases": self.geometry_options_menu,
+            "semirigid": self.geometry_options_menu,
+            "supports": self.geometry_options_menu,
+        }
+        self._added_popup_groups: set[QToolButton] = set()
+        for filename, tooltip, kind in (("hash.svg", "Planos", "grid"),
                                         ("reference-axes.svg", "Eixos", "reference-axes"),
                                         ("box.svg", "Seções sólidas", "solid"),
                                         ("node-circle.svg", "Nós", "nodes"),
@@ -1513,7 +1581,27 @@ class TopIconPalette(QFrame):
                 "QToolButton:checked { background: #d0d7de; }"
                 "QToolButton:pressed { background: #afb8c1; }"
             )
-            layout.addWidget(button)
+            group_button = group_buttons.get(kind)
+            if kind == "reference-axes":
+                button.hide()
+            elif group_button is not None:
+                if (
+                    group_button is not self.scene_options_button
+                    and group_button not in self._added_popup_groups
+                ):
+                    layout.addWidget(group_button)
+                    self._added_popup_groups.add(group_button)
+                action = group_menus[kind].addAction(button.icon(), tooltip)
+                action.setCheckable(True)
+                action.setChecked(button.isChecked())
+                action.toggled.connect(button.setChecked)
+                button.toggled.connect(action.setChecked)
+                button.hide()
+                if kind == "axes" and self.scene_options_button not in self._added_popup_groups:
+                    layout.addWidget(self.scene_options_button)
+                    self._added_popup_groups.add(self.scene_options_button)
+            else:
+                layout.addWidget(button)
             self._visibility_buttons[kind] = button
 
         scene_button = QToolButton(self)
@@ -1524,10 +1612,10 @@ class TopIconPalette(QFrame):
         }
         scene_button.setIcon(self._scene_icons[False])
         scene_button.setIconSize(QSize(19, 19))
-        scene_tooltip = _command_tooltip("Cena", "SCENE")
+        scene_tooltip = "Visibilidade"
         scene_button.setToolTip(scene_tooltip)
         scene_button.setProperty("paletteTooltip", scene_tooltip)
-        scene_button.setAccessibleName("Cena")
+        scene_button.setAccessibleName("Visibilidade")
         scene_button.setCheckable(True)
         scene_button.setChecked(False)
         scene_button.toggled.connect(self._on_scene_toggled)
@@ -1598,23 +1686,16 @@ class TopIconPalette(QFrame):
         self._update_scene_view_actions()
         self.scene_palette.hide()
 
-        separator = QFrame(self)
-        separator.setFrameShape(QFrame.Shape.VLine)
-        separator.setFrameShadow(QFrame.Shadow.Plain)
-        separator.setFixedHeight(18)
-        separator.setStyleSheet("QFrame { color: #d0d7de; }")
-        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
-
         configure_axes_button = QToolButton(self)
         configure_axes_button.setFixedSize(24, 24)
         configure_axes_button.setIcon(
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"))
         )
         configure_axes_button.setIconSize(QSize(19, 19))
-        configure_axes_tooltip = _command_tooltip("Configurar eixos", "CONFIGAXES")
+        configure_axes_tooltip = _command_tooltip("Eixos", "CONFIGAXES")
         configure_axes_button.setToolTip(configure_axes_tooltip)
         configure_axes_button.setProperty("paletteTooltip", configure_axes_tooltip)
-        configure_axes_button.setAccessibleName("Configurar eixos")
+        configure_axes_button.setAccessibleName("Eixos")
         configure_axes_button.setCheckable(True)
         configure_axes_button.clicked.connect(window.toggle_axes_panel)
         configure_axes_button.installEventFilter(self)
@@ -1625,6 +1706,11 @@ class TopIconPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         self.configure_axes_button = configure_axes_button
+        configure_axes_action = self.scene_options_menu.addAction(
+            configure_axes_button.icon(), configure_axes_button.accessibleName()
+        )
+        configure_axes_action.triggered.connect(configure_axes_button.click)
+        configure_axes_button.hide()
 
         configure_reference_button = QToolButton(self)
         configure_reference_button.setFixedSize(24, 24)
@@ -1632,17 +1718,20 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources/icons/scan-box.svg"))
         )
         configure_reference_button.setIconSize(QSize(19, 19))
-        configure_reference_tooltip = _command_tooltip("Configurar referência", "CONFIGREFERENCE")
+        configure_reference_tooltip = _command_tooltip("Referências", "CONFIGREFERENCE")
         configure_reference_button.setToolTip(configure_reference_tooltip)
         configure_reference_button.setProperty("paletteTooltip", configure_reference_tooltip)
-        configure_reference_button.setAccessibleName("Configurar referência")
+        configure_reference_button.setAccessibleName("Referências")
         configure_reference_button.setCheckable(True)
         configure_reference_button.clicked.connect(window.toggle_reference_panel)
         configure_reference_button.installEventFilter(self)
         configure_reference_button.setStyleSheet(configure_axes_button.styleSheet())
-        layout.addWidget(configure_reference_button)
         self.configure_reference_button = configure_reference_button
-        layout.addWidget(configure_axes_button)
+        configure_reference_action = self.scene_options_menu.addAction(
+            configure_reference_button.icon(), configure_reference_button.accessibleName()
+        )
+        configure_reference_action.triggered.connect(configure_reference_button.click)
+        configure_reference_button.hide()
 
         add_member_button = QToolButton(self)
         add_member_button.setFixedSize(24, 24)
@@ -1661,7 +1750,12 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.addWidget(add_member_button)
+        layout.addWidget(self.member_tools_button)
+        add_member_action = self.member_tools_menu.addAction(
+            add_member_button.icon(), add_member_button.accessibleName()
+        )
+        add_member_action.triggered.connect(add_member_button.click)
+        add_member_button.hide()
         self.add_member_button = add_member_button
 
         plate_button = QToolButton(self)
@@ -1677,8 +1771,43 @@ class TopIconPalette(QFrame):
         plate_button.clicked.connect(lambda: window.handle_command("PLATE"))
         plate_button.installEventFilter(self)
         plate_button.setStyleSheet(add_member_button.styleSheet())
-        layout.addWidget(plate_button)
+        layout.addWidget(self.plate_tools_button)
+        add_plate_action = self.plate_tools_menu.addAction(
+            plate_button.icon(), "Adicionar placa"
+        )
+        add_plate_action.triggered.connect(plate_button.click)
+        plate_button.hide()
         self.plate_button = plate_button
+
+        split_plate_button = QToolButton(self)
+        split_plate_button.setFixedSize(24, 24)
+        split_plate_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "split-member.svg")))
+        split_plate_button.setIconSize(QSize(19, 19))
+        split_plate_button.setAccessibleName("Dividir placa")
+        split_plate_button.setToolTip(_command_tooltip("Dividir placa", "SPLITPLATE"))
+        split_plate_button.clicked.connect(window.start_split_plate)
+        split_plate_button.setStyleSheet(add_member_button.styleSheet())
+        split_plate_action = self.plate_tools_menu.addAction(
+            split_plate_button.icon(), split_plate_button.accessibleName()
+        )
+        split_plate_action.triggered.connect(split_plate_button.click)
+        split_plate_button.hide()
+        self.split_plate_button = split_plate_button
+
+        join_plate_button = QToolButton(self)
+        join_plate_button.setFixedSize(24, 24)
+        join_plate_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "join-member-link.svg")))
+        join_plate_button.setIconSize(QSize(19, 19))
+        join_plate_button.setAccessibleName("Unir placas")
+        join_plate_button.setToolTip(_command_tooltip("Unir placas", "JOINPLATES"))
+        join_plate_button.clicked.connect(window.start_join_plates)
+        join_plate_button.setStyleSheet(add_member_button.styleSheet())
+        join_plate_action = self.plate_tools_menu.addAction(
+            join_plate_button.icon(), join_plate_button.accessibleName()
+        )
+        join_plate_action.triggered.connect(join_plate_button.click)
+        join_plate_button.hide()
+        self.join_plate_button = join_plate_button
 
         split_member_button = QToolButton(self)
         split_member_button.setFixedSize(24, 24)
@@ -1697,28 +1826,12 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.addWidget(split_member_button)
+        split_member_action = self.member_tools_menu.addAction(
+            split_member_button.icon(), split_member_button.accessibleName()
+        )
+        split_member_action.triggered.connect(split_member_button.click)
+        split_member_button.hide()
         self.split_member_button = split_member_button
-
-        reverse_member_button = QToolButton(self)
-        reverse_member_button.setFixedSize(24, 24)
-        reverse_member_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "reverse-member.svg"))
-        )
-        reverse_member_button.setIconSize(QSize(19, 19))
-        reverse_member_tooltip = _command_tooltip("Inverter barra", "REVERSE")
-        reverse_member_button.setToolTip(reverse_member_tooltip)
-        reverse_member_button.setProperty("paletteTooltip", reverse_member_tooltip)
-        reverse_member_button.setAccessibleName("Inverter barra")
-        reverse_member_button.clicked.connect(window.start_reverse_member)
-        reverse_member_button.installEventFilter(self)
-        reverse_member_button.setStyleSheet(
-            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
-            "QToolButton:hover { background: #eaeef2; }"
-            "QToolButton:pressed { background: #afb8c1; }"
-        )
-        layout.addWidget(reverse_member_button)
-        self.reverse_member_button = reverse_member_button
 
         join_members_button = QToolButton(self)
         join_members_button.setFixedSize(24, 24)
@@ -1737,7 +1850,11 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.insertWidget(layout.indexOf(reverse_member_button), join_members_button)
+        join_members_action = self.member_tools_menu.addAction(
+            join_members_button.icon(), join_members_button.accessibleName()
+        )
+        join_members_action.triggered.connect(join_members_button.click)
+        join_members_button.hide()
         self.join_members_button = join_members_button
 
         rigid_member_button = QToolButton(self)
@@ -1757,7 +1874,11 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.insertWidget(layout.indexOf(join_members_button) + 1, rigid_member_button)
+        rigid_member_action = self.member_tools_menu.addAction(
+            rigid_member_button.icon(), rigid_member_button.accessibleName()
+        )
+        rigid_member_action.triggered.connect(rigid_member_button.click)
+        rigid_member_button.hide()
         self.rigid_member_button = rigid_member_button
 
         copy_properties_button = QToolButton(self)
@@ -1819,7 +1940,43 @@ class TopIconPalette(QFrame):
         )
         layout.insertWidget(layout.indexOf(copy_properties_button), copy_elements_button)
         self.copy_elements_button = copy_elements_button
+        move_elements_button = QToolButton(self)
+        move_elements_button.setFixedSize(24, 24)
+        move_elements_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "move.svg")))
+        move_elements_button.setIconSize(QSize(19, 19))
+        move_tooltip = _command_tooltip("Mover", "MOVE")
+        move_elements_button.setToolTip(move_tooltip)
+        move_elements_button.setProperty("paletteTooltip", move_tooltip)
+        move_elements_button.setAccessibleName("Mover")
+        move_elements_button.clicked.connect(window.start_move_elements)
+        move_elements_button.installEventFilter(self)
+        move_elements_button.setStyleSheet(copy_elements_button.styleSheet())
+        layout.insertWidget(layout.indexOf(copy_elements_button), move_elements_button)
+        self.move_elements_button = move_elements_button
         self.adjustSize()
+
+    def _create_popup_group(self, icon_filename: str, label: str) -> tuple[QToolButton, QMenu]:
+        button = QToolButton(self)
+        button.setFixedSize(24, 24)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+        button.setIconSize(QSize(19, 19))
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+        button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton::menu-indicator { image: none; }"
+        )
+        menu = QMenu(button)
+        menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(
+            "QMenu { background: #ffffff; border: 1px solid #d0d7de; padding: 5px; color: #24292f; }"
+            "QMenu::item { padding: 7px 28px 7px 10px; }"
+            "QMenu::item:selected { background: #eaeef2; }"
+        )
+        button.setMenu(menu)
+        return button, menu
 
     def _on_scene_toggled(self, active: bool) -> None:
         self.scene_button.setIcon(self._scene_icons[bool(active)])
@@ -2000,10 +2157,6 @@ class TopIconPalette(QFrame):
         if visible and self.scene_button.isChecked():
             self._position_scene_palette()
             self.scene_palette.raise_()
-
-    def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
-        """Disable manual reversal while automatic normalization is active."""
-        self.reverse_member_button.setEnabled(not enabled)
 
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN

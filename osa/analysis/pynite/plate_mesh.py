@@ -72,6 +72,7 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
             point_tags: dict[tuple[int, int, int], int] = {}
             point_sizes: dict[tuple[int, int, int], float] = {}
             curve_tags: dict[tuple[tuple[int, int, int], tuple[int, int, int]], int] = {}
+            curve_segment_counts: dict[int, int] = {}
             surface_tags: dict[str, int] = {}
             transfinite_curves_by_surface: dict[int, tuple[int, int, int, int]] = {}
             transfinite_segments_by_curve: dict[int, int] = {}
@@ -127,6 +128,14 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
                                 point_tag(ordered_points[1], mesh_size),
                             )
                             curve_tags[edge_key] = tag
+                        requested_segments = max(
+                            2, int(math.ceil(float(np.linalg.norm(second - first)) / mesh_size)),
+                        )
+                        if requested_segments % 2:
+                            requested_segments += 1
+                        curve_segment_counts[tag] = max(
+                            curve_segment_counts.get(tag, 2), requested_segments,
+                        )
                         loop_curves.append(tag if first_key < second_key else -tag)
                 loop = gmsh.model.geo.addCurveLoop(loop_curves)
                 points = np.asarray(contour, dtype=float)
@@ -190,10 +199,14 @@ def generate_plate_mesh(plates, *, max_element_size: float | None = None) -> Pla
                                 changed = True
                     if not changed:
                         break
-                for curve_tag, segment_count in transfinite_segments_by_curve.items():
-                    gmsh.model.mesh.setTransfiniteCurve(curve_tag, segment_count + 1)
+                curve_segment_counts.update({
+                    curve_tag: max(curve_segment_counts.get(curve_tag, 2), segment_count)
+                    for curve_tag, segment_count in transfinite_segments_by_curve.items()
+                })
                 for surface_tag in transfinite_curves_by_surface:
                     gmsh.model.mesh.setTransfiniteSurface(surface_tag)
+            for curve_tag, segment_count in curve_segment_counts.items():
+                gmsh.model.mesh.setTransfiniteCurve(curve_tag, segment_count + 1)
             gmsh.model.mesh.generate(2)
 
             node_tags, coordinates, _ = gmsh.model.mesh.getNodes()
