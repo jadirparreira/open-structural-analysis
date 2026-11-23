@@ -1901,7 +1901,10 @@ class StructureScene(QWidget):
                 )
                 self._plate_result_names = self._renderable_plate_result_names(result, diagram)
         deformation_has_colored_results = (
-            diagram.startswith("Deformação") and result is not None and (
+            diagram.startswith("Deformação") and result is not None
+            and self._result_renderer.deformation_maximum(
+                result, diagram.removeprefix("Deformação ") or "XYZ",
+            ) > 1e-12 and (
                 self._analysis_plate_diagrams_visible and bool(result.plate_results)
                 or self._result_diagrams_visible and bool(result.member_results)
             )

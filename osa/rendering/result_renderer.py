@@ -498,6 +498,25 @@ class ResultRenderer:
         return cls._deformation_scalar(values, components) * 1000.0
 
     @classmethod
+    def deformation_maximum(cls, result, components: str) -> float:
+        """Return the largest selected displacement magnitude in the result."""
+        values = [
+            cls._deformation_scalar(node, components)
+            for node in result.node_results.values()
+        ]
+        values.extend(
+            cls._deformation_scalar(sample, components)
+            for member in result.member_results.values()
+            for sample in member.get("samples", ())
+        )
+        values.extend(
+            cls._deformation_scalar(node, components)
+            for plate in result.plate_results.values()
+            for node in plate.get("nodes", {}).values()
+        )
+        return max((abs(value) for value in values), default=0.0)
+
+    @classmethod
     def _refine_plate_result_surface(cls, coordinates, sample_rows) -> pv.PolyData:
         """Build a bilinearly subdivided quad mesh for plate colors and isolines."""
         divisions = cls.PLATE_CONTOUR_SUBDIVISIONS
@@ -869,32 +888,10 @@ class ResultRenderer:
             for name, values in result.member_results.items()
             if name in model.bars
         }
-        member_maximum = max(
-            (
-                float(np.linalg.norm([
-                    float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
-                    float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0,
-                    float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0,
-                ]))
-                for samples in samples_by_member.values()
-                for sample in samples
-            ),
-            default=0.0,
-        )
         plate_results = getattr(result, "plate_results", {})
-        plate_maximum = max((
-            float(np.linalg.norm([
-                float(values.get("DX", 0.0)) if "X" in components else 0.0,
-                float(values.get("DY", 0.0)) if "Y" in components else 0.0,
-                float(values.get("DZ", 0.0)) if "Z" in components else 0.0,
-            ]))
-            for plate_result in plate_results.values()
-            for values in plate_result.get("nodes", {}).values()
-        ), default=0.0)
-        maximum = max(member_maximum, plate_maximum)
+        maximum = self.deformation_maximum(result, components)
+        has_component_displacement = maximum > 1e-12
         actors: list[object] = []
-        if maximum <= 1e-12:
-            return actors, np.empty((0, 3)), ()
         # Results are in model units; 1× therefore draws the real deformation.
         # Larger values are an explicit visual amplification from the palette.
         scale = max(1.0, min(100.0, float(deformation_scale)))
@@ -967,7 +964,7 @@ class ResultRenderer:
             maximum_vector = visual_displacements[maximum_index]
             vector_length = float(np.linalg.norm(maximum_vector))
             outward = maximum_vector / vector_length * 0.12 if vector_length > 1e-12 else local_z * 0.12
-            if bar_diagrams_visible:
+            if bar_diagrams_visible and has_component_displacement:
                 label_positions.append(deformed_centerline[maximum_index] + outward)
                 if components == "XYZ":
                     value_mm = float(magnitudes[maximum_index] * 1000.0)
@@ -977,7 +974,7 @@ class ResultRenderer:
                 labels.append(self._format_displacement(value_mm))
             color = np.asarray(pv.Color(member.color).int_rgb, dtype=np.uint8)
             station_colors = None
-            if bar_diagrams_visible:
+            if bar_diagrams_visible and has_component_displacement:
                 scalar_values = np.asarray([
                     self._deformation_scalar(sample, components) for sample in samples
                 ], dtype=float)
