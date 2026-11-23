@@ -3518,10 +3518,17 @@ class PropertyPanel(QFrame):
         edge_selector.setObjectName("plateEdgeSelector")
         edge_selector.setAccessibleName("Aresta da placa para aplicação da ação")
         for index, start_node in enumerate(plate.vertex_nodes):
+            if self.window.model.plate_edge_bars(name, index):
+                continue
             end_node = plate.vertex_nodes[(index + 1) % len(plate.vertex_nodes)]
             edge_selector.addItem(f"{start_node} – {end_node}", index)
         if edge_selector.count():
-            edge_selector.setCurrentIndex(min(self._plate_edge_index, edge_selector.count() - 1))
+            selected_index = edge_selector.findData(self._plate_edge_index)
+            edge_selector.setCurrentIndex(max(0, selected_index))
+        else:
+            edge_selector.addItem("Não disponível", -1)
+            edge_selector.setEnabled(False)
+            switch.setEnabled(False)
         selector_layout.addWidget(edge_selector, 1)
         self._add_context_widget(selector_row)
         if not load_case:
@@ -3531,7 +3538,7 @@ class PropertyPanel(QFrame):
             return
 
         edge_selector.currentIndexChanged.connect(
-            lambda index: self._set_plate_edge_index(name, index)
+            lambda index: self._set_plate_edge_index(name, edge_selector.itemData(index))
         )
 
         self._plate_edge_inputs.clear()
@@ -3544,6 +3551,24 @@ class PropertyPanel(QFrame):
         self._plate_edge_index = edge_selector.currentData()
         for action_label in ("FX", "FY", "FZ", "MX", "MY", "MZ"):
             self._add_plate_edge_action_row(name, action_label, load_case)
+        self._update_plate_edge_editability(name)
+
+    def _update_plate_edge_editability(self, name: str) -> None:
+        unavailable = self._plate_edge_index < 0
+        bars = () if unavailable else self.window.model.plate_edge_bars(name, self._plate_edge_index)
+        locked = unavailable or bool(bars) or self._is_selfweight_locked(self.window.selected_action_name)
+        for label, field in self._plate_edge_inputs.items():
+            disabled = locked or (label.startswith("M") and self._plate_edge_reference == "global")
+            field.setReadOnly(disabled)
+            field.setEnabled(not disabled)
+            box = self._plate_edge_boxes[label]
+            box.setProperty("disabledValue", disabled)
+            box.style().unpolish(box)
+            box.style().polish(box)
+            if label in self._plate_edge_end_inputs:
+                self._plate_edge_end_inputs[label].setReadOnly(locked)
+                self._plate_edge_end_inputs[label].setEnabled(not locked)
+                self._plate_edge_variable_buttons[label].setEnabled(not locked)
 
     def _plate_edge_reference_switch(self, name: str) -> QFrame:
         switch = QFrame()
@@ -3708,6 +3733,7 @@ class PropertyPanel(QFrame):
 
     def _set_plate_edge_index(self, name: str, index: int) -> None:
         self._plate_edge_index = index
+        self._update_plate_edge_editability(name)
         if not self.window.selected_action_name:
             return
         for label in ("FX", "FY", "FZ", "MX", "MY", "MZ"):
@@ -3748,15 +3774,10 @@ class PropertyPanel(QFrame):
             animation.start()
         self._update_plate_edge_reference_switch_text()
         self._set_plate_edge_index(name, self._plate_edge_index)
-        for label, field in self._plate_edge_inputs.items():
-            global_moment = label.startswith("M") and self._plate_edge_reference == "global"
-            field.setReadOnly(self._is_selfweight_locked(self.window.selected_action_name) or global_moment)
-            if value_box := self._plate_edge_boxes.get(label):
-                value_box.setProperty("disabledValue", global_moment)
-                value_box.style().unpolish(value_box)
-                value_box.style().polish(value_box)
 
     def _toggle_plate_edge_variable(self, name: str, label: str) -> None:
+        if self._plate_edge_index < 0 or self.window.model.plate_edge_bars(name, self._plate_edge_index):
+            return
         variable = not self._plate_edge_variable_modes.get(label, False)
         self._plate_edge_variable_modes[label] = variable
         field = self._plate_edge_inputs[label]
@@ -3773,6 +3794,8 @@ class PropertyPanel(QFrame):
 
     def _plate_edge_action_changed(self, name: str, label: str, field: QLineEdit) -> None:
         if not self._selected or self._selected != ("plate", name):
+            return
+        if self._plate_edge_index < 0 or self.window.model.plate_edge_bars(name, self._plate_edge_index):
             return
         load_case = self.window.selected_action_name
         if not load_case or (label.startswith("M") and self._plate_edge_reference == "global"):

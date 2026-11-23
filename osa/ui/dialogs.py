@@ -532,7 +532,7 @@ class SelfweightDialog(QDialog):
 class ActionDialog(QDialog):
     """Configure an action before selecting its nodes or members graphically."""
 
-    _field_labels = ("FX", "FY", "FZ", "MX", "MY", "MZ")
+    _field_labels = ("FX", "FY", "FZ", "MX", "MY", "MZ", "PX", "PY")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -541,6 +541,7 @@ class ActionDialog(QDialog):
         self._fields: dict[str, QLineEdit] = {}
         self._unit_labels: dict[str, QLabel] = {}
         self._value_boxes: dict[str, QFrame] = {}
+        self._field_rows = {}
         self._reference_buttons: dict[str, QToolButton] = {}
         self._reference_group: QButtonGroup | None = None
         self._reference_indicator: QFrame | None = None
@@ -605,13 +606,17 @@ class ActionDialog(QDialog):
         target_row.setSpacing(20)
         self.node_button = QRadioButton("Nó")
         self.member_button = QRadioButton("Barra")
+        self.plate_button = QRadioButton("Placa")
+        self.plate_button.setAccessibleName("Lançar ação em placas")
         self.node_button.setAccessibleName("Lançar ação em nós")
         self.member_button.setAccessibleName("Lançar ação em barras")
         self.node_button.setChecked(True)
         self.node_button.toggled.connect(self._target_changed)
         self.member_button.toggled.connect(self._target_changed)
+        self.plate_button.toggled.connect(self._target_changed)
         target_row.addWidget(self.node_button)
         target_row.addWidget(self.member_button)
+        target_row.addWidget(self.plate_button)
         target_row.addStretch(1)
         content.addLayout(target_row)
 
@@ -637,7 +642,7 @@ class ActionDialog(QDialog):
             field_label = QLabel(label)
             field_label.setObjectName("sectionLabel")
             field_label.setFixedWidth(28)
-            unit = "kN" if label.startswith("F") and self.target_kind == "node" else "kNm"
+            unit = "kN/m²" if label.startswith("P") else "kN" if label.startswith("F") and self.target_kind == "node" else "kNm"
             value_box = QFrame()
             value_box.setObjectName("unitValueBox")
             value_layout = QHBoxLayout(value_box)
@@ -654,10 +659,16 @@ class ActionDialog(QDialog):
             row.addWidget(field_label)
             row.addWidget(value_box, 1)
             self.values_layout.addLayout(row)
+            self._field_rows[label] = (field_label, value_box)
             self._fields[label] = field
             self._unit_labels[label] = unit_label
             self._value_boxes[label] = value_box
         content.addLayout(self.values_layout)
+        self.plate_hint = QLabel("Pressão normal à superfície, com perfis nos eixos locais X e Y. "
+                                 "Informe um valor uniforme ou inicial;final (kN/m²).")
+        self.plate_hint.setObjectName("hint")
+        self.plate_hint.setWordWrap(True)
+        content.addWidget(self.plate_hint)
 
         self.error_label = QLabel()
         self.error_label.setObjectName("hint")
@@ -683,13 +694,13 @@ class ActionDialog(QDialog):
         outer.addLayout(content, 1)
         self.launch_button = launch_button
 
-        self._set_reference_options(("global",))
+        self._target_changed(True)
 
     def _target_changed(self, checked: bool) -> None:
         if not checked:
             return
-        self.target_kind = "node" if self.node_button.isChecked() else "bar"
-        options = ("global",) if self.target_kind == "node" else ("global", "local")
+        self.target_kind = "plate" if self.plate_button.isChecked() else "node" if self.node_button.isChecked() else "bar"
+        options = ("local",) if self.target_kind == "plate" else ("global",) if self.target_kind == "node" else ("global", "local")
         if self.reference not in options:
             self.reference = options[0]
         self._set_reference_options(options)
@@ -779,8 +790,12 @@ class ActionDialog(QDialog):
 
     def _update_field_editability(self) -> None:
         member_global = self.target_kind == "bar" and self.reference == "global"
+        self.plate_hint.setVisible(self.target_kind == "plate")
         for label, field in self._fields.items():
-            disabled = member_global and label.startswith("M")
+            visible = label.startswith("P") == (self.target_kind == "plate")
+            for widget in self._field_rows[label]:
+                widget.setVisible(visible)
+            disabled = not visible or (member_global and label.startswith("M"))
             field.setReadOnly(disabled)
             field.setEnabled(not disabled)
             value_box = self._value_boxes[label]
@@ -792,7 +807,7 @@ class ActionDialog(QDialog):
                 field.setPlaceholderText("")
             else:
                 self._unit_labels[label].setText(
-                    "kN" if label.startswith("F") and self.target_kind == "node"
+                    "kN/m²" if label.startswith("P") else "kN" if label.startswith("F") and self.target_kind == "node"
                     else "kN/m" if label.startswith("F")
                     else "kNm" if self.target_kind == "node"
                     else "kNm/m"

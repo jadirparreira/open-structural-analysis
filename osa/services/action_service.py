@@ -191,6 +191,9 @@ class ActionService:
             raise ValueError(f"A placa '{target}' não existe.")
         if not 0 <= int(edge_index) < len(self.model.plates[target].contour):
             raise ValueError("A aresta selecionada não pertence à placa.")
+        bars = self.model.plate_edge_bars(target, int(edge_index))
+        if bars:
+            raise ValueError(f"Esta aresta coincide com a barra {', '.join(bars)}. Lance a ação pela barra.")
         reference = reference.casefold()
         direction = direction.upper()
         if reference not in {"global", "local"} or direction not in {"X", "Y", "Z"}:

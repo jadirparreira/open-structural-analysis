@@ -5071,7 +5071,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._pending_action_launch = dialog.launch_data()
-        target_label = "nós" if self._pending_action_launch[0] == "node" else "barras"
+        target_label = {"node": "nós", "bar": "barras", "plate": "placas"}[self._pending_action_launch[0]]
         self._command_mode = "action_selection"
         self.history.append(
             "> <b>Adicionar ação</b> "
@@ -7016,7 +7016,7 @@ class MainWindow(QMainWindow):
             return
         target_kind, reference, values = launch
         if kind != target_kind:
-            expected = "nó" if target_kind == "node" else "barra"
+            expected = {"node": "nó", "bar": "barra", "plate": "placa"}[target_kind]
             self.history.append(
                 "> <b>Adicionar ação</b> "
                 f"<span style='color:#8c959f'>(Selecione apenas {expected})</span>"
@@ -7041,6 +7041,12 @@ class MainWindow(QMainWindow):
                         self.action_service.add_node_force(name, axis, value, load_case)
                     else:
                         self.action_service.add_node_moment(name, axis, value, load_case)
+            elif target_kind == "plate":
+                x = values.get("PX", (0.0,))
+                y = values.get("PY", (0.0,))
+                self.action_service.add_plate_surface_pressure_profiles(
+                    name, x[0], x[-1], y[0], y[-1], load_case,
+                )
             else:
                 for label, components in values.items():
                     axis = label[-1]

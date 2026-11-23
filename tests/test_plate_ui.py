@@ -536,3 +536,34 @@ def test_plate_selection_highlights_only_its_own_intersections(window):
     assert overlay.GetMapper().GetInput().GetNumberOfLines() == int(np.count_nonzero(plate_ids == 0))
     assert scene._plate_edge_actors['P1'].GetProperty().GetColor() == pytest.approx((9/255, 105/255, 218/255))
     assert scene._plate_edge_actors['P2'].GetProperty().GetColor() != pytest.approx((9/255, 105/255, 218/255))
+
+
+def test_plate_edge_selector_lists_only_free_edges(window):
+    from PySide6.QtWidgets import QComboBox
+    plate = window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    window.selected_action_name = 'Caso'
+    window.palette.show_group('Ações')
+    window.select_element('plate', plate.name, (2, 1.5, 0))
+    panel = window.properties
+    selector = panel.findChild(QComboBox, 'plateEdgeSelector')
+    assert selector.count() == 1
+    assert selector.currentData() == 3
+    assert panel._plate_edge_index == 3
+    panel._set_plate_edge_reference(plate.name, 'local')
+    assert all(field.isEnabled() for field in panel._plate_edge_inputs.values())
+
+
+def test_plate_edge_selector_unavailable_when_all_edges_have_bars(window):
+    from PySide6.QtWidgets import QComboBox
+    window.model.add_bar('B4', 'N4', 'N1')
+    plate = window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    window.selected_action_name = 'Caso'
+    window.palette.show_group('Ações')
+    window.select_element('plate', plate.name, (2, 1.5, 0))
+    panel = window.properties
+    selector = panel.findChild(QComboBox, 'plateEdgeSelector')
+    assert selector.currentText() == 'Não disponível'
+    assert not selector.isEnabled()
+    assert panel._plate_edge_index == -1
+    assert all(not field.isEnabled() for field in panel._plate_edge_inputs.values())
+    assert all(not button.isEnabled() for button in panel._plate_edge_variable_buttons.values())

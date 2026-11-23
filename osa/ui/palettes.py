@@ -2298,21 +2298,6 @@ class ActionTopPalette(QFrame):
         layout.addWidget(group_actions_button)
         self.group_actions_button = group_actions_button
 
-        add_action_button = QToolButton(self)
-        add_action_button.setFixedSize(24, 24)
-        add_action_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-action.svg"))
-        )
-        add_action_button.setIconSize(QSize(19, 19))
-        add_action_tooltip = _command_tooltip("Adicionar ação", "ACTION")
-        add_action_button.setToolTip(add_action_tooltip)
-        add_action_button.setProperty("paletteTooltip", add_action_tooltip)
-        add_action_button.setAccessibleName("Adicionar ação")
-        add_action_button.clicked.connect(window.start_load_command)
-        add_action_button.installEventFilter(self)
-        layout.addWidget(add_action_button)
-        self.add_action_button = add_action_button
-
         # Botão de aplicação do peso próprio.
         self.selfweight_button = QToolButton(self)
         self.selfweight_button.setObjectName("selfweightButton")

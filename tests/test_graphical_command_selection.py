@@ -454,3 +454,20 @@ def test_property_copy_panel_resizes_immediately_when_switching_kinds(window, qt
         assert panel.height() == heights[kind]
     assert heights['node'] < heights['plate'] < heights['bar']
     window.cancel_member_placement()
+
+
+def test_action_launcher_applies_pressure_to_multiple_plates(window, monkeypatch):
+    from types import SimpleNamespace
+    plates = [window.model.add_plate(((x, 0, 0), (x+2, 0, 0), (x+2, 2, 0), (x, 2, 0))) for x in (0, 3)]
+    monkeypatch.setattr('osa.ui.main_window.ActionDialog', lambda *_: SimpleNamespace(
+        move=lambda *_: None, rect=lambda: QRect(),
+        exec=lambda: QDialog.DialogCode.Accepted,
+        launch_data=lambda: ('plate', 'local', {'PX': (-2., -4.), 'PY': (-1.,)}),
+    ))
+    window.start_load_command()
+    select(window, *(('plate', plate.name) for plate in plates))
+    window._confirm_command_selection()
+    actions = [action for action in window.model.actions.values() if action.kind == 'plate_surface_pressure']
+    assert {action.target for action in actions} == {plate.name for plate in plates}
+    assert all(action.components == (-2., -4., -1., -1.) for action in actions)
+    window.cancel_member_placement()

@@ -698,6 +698,33 @@ class StructuralModel:
         self._touch()
         return self.plates[first_name]
 
+    def plate_edge_bars(self, name: str, edge_index: int) -> tuple[str, ...]:
+        """Find bars overlapping the analytical plate edge by a nonzero length."""
+        plate = self.plates[name]
+        start = plate.contour[edge_index]
+        end = plate.contour[(edge_index + 1) % len(plate.contour)]
+        vector = tuple(b - a for a, b in zip(start, end))
+        length2 = sum(value * value for value in vector)
+        tolerance = 1e-7
+        if length2 <= tolerance ** 2:
+            return ()
+        matches = []
+        for bar in self.bars.values():
+            fractions = []
+            for node_name in (bar.start_node, bar.end_node):
+                node = self.nodes[node_name]
+                point = (node.x, node.y, node.z)
+                fraction = sum((p - a) * v for p, a, v in zip(point, start, vector)) / length2
+                projected = tuple(a + fraction * v for a, v in zip(start, vector))
+                if math.dist(point, projected) > tolerance:
+                    break
+                fractions.append(fraction)
+            if len(fractions) == 2:
+                overlap = min(1.0, max(fractions)) - max(0.0, min(fractions))
+                if overlap * math.sqrt(length2) > tolerance:
+                    matches.append(bar.name)
+        return tuple(matches)
+
     def related_plates(self, name: str) -> tuple[str, ...]:
         """Return plates that share a boundary edge or boundary bar with a plate."""
         if name not in self.plates:
