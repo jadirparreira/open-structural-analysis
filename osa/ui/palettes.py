@@ -2012,13 +2012,13 @@ class TopIconPalette(QFrame):
             self.scene_palette.raise_()
 
     def _position_scene_palette(self) -> None:
-        button_position = self.scene_button.mapTo(self._window, QPoint(0, self.scene_button.height() + 8))
+        palette_position = self.mapTo(self._window, QPoint(0, self.height() + 4))
         self.scene_palette.adjustSize()
-        x = button_position.x() + (self.scene_button.width() - self.scene_palette.width()) // 2
+        x = palette_position.x() + (self.width() - self.scene_palette.width()) // 2
         x = max(8, min(x, self._window.width() - self.scene_palette.width() - 8))
         self.scene_palette.move(
             x,
-            button_position.y(),
+            palette_position.y(),
         )
 
     def _scene_view_action_button(self, icon_filename: str, tooltip: str, callback=None) -> QToolButton:

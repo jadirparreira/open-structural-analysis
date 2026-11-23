@@ -1518,7 +1518,7 @@ class StructureScene(QWidget):
         self._last_picked_component_face_actor = None
         self._node_component_rod_meshes = []
         self._node_component_silhouette_actors = []
-        if not self._node_components_visible:
+        if not (self._node_components_visible or self._detailing_session_active):
             if render:
                 self.plotter.render()
             return
@@ -7242,6 +7242,9 @@ class StructureScene(QWidget):
         self._sync_verification_identifier_labels()
         if self._model is not None:
             if changed:
+                self._refresh_node_components(self._scene_filtered_model().nodes, render=False)
+                self._highlight_state_key = None
+                self._sync_highlights()
                 if self._solid_members_visible:
                     self._refresh_detail_subtraction_geometry()
                 else:

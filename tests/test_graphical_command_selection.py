@@ -494,3 +494,23 @@ def test_component_toggle_hides_geometry_and_survives_scene_refresh(window):
     assert scene._node_component_actors
     assert window.model.nodes['N1'].component == assignment
     assert window.model.revision == revision
+
+
+@pytest.mark.parametrize('other_section', ['Geometria', 'Ações', 'Análise', 'Memorial'])
+def test_detailing_shows_components_and_restores_hidden_preference(window, other_section):
+    from osa.domain.entities import NodeComponentAssignment
+    window.palette.show_group('Geometria')
+    window.model.update_node_component('N1', NodeComponentAssignment('base_plate', ()))
+    window.scene.render_model(window.model)
+    button = window.top_icon_palette._visibility_buttons['components']
+    button.setChecked(False)
+    assert not window.scene._node_component_actors
+    window.palette.show_group('Detalhamento')
+    assert window.scene._node_component_actors
+    assert not button.isChecked()
+    window.scene.render_model(window.model)
+    assert window.scene._node_component_actors
+    window.palette.show_group(other_section)
+    assert not window.scene._node_component_actors
+    assert not button.isChecked()
+    button.setChecked(True)
