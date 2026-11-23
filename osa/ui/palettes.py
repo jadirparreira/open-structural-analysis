@@ -1,6 +1,7 @@
 from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
+from PySide6.QtWidgets import QWidgetAction
 
 
 def _command_tooltip(label: str, command: str) -> str:
@@ -1511,7 +1512,7 @@ class TopIconPalette(QFrame):
         self._added_popup_groups: set[QToolButton] = set()
         for filename, tooltip, kind in (("hash.svg", "Planos", "grid"),
                                         ("reference-axes.svg", "Eixos", "reference-axes"),
-                                        ("box.svg", "Seções sólidas", "solid"),
+                                        ("box.svg", "Seções", "solid"),
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores das barras", "bar"),
@@ -1591,11 +1592,7 @@ class TopIconPalette(QFrame):
                 ):
                     layout.addWidget(group_button)
                     self._added_popup_groups.add(group_button)
-                action = group_menus[kind].addAction(button.icon(), tooltip)
-                action.setCheckable(True)
-                action.setChecked(button.isChecked())
-                action.toggled.connect(button.setChecked)
-                button.toggled.connect(action.setChecked)
+                self._add_menu_item(group_menus[kind], button, tooltip, toggle=True)
                 button.hide()
                 if kind == "axes" and self.scene_options_button not in self._added_popup_groups:
                     layout.addWidget(self.scene_options_button)
@@ -1706,10 +1703,7 @@ class TopIconPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         self.configure_axes_button = configure_axes_button
-        configure_axes_action = self.scene_options_menu.addAction(
-            configure_axes_button.icon(), configure_axes_button.accessibleName()
-        )
-        configure_axes_action.triggered.connect(configure_axes_button.click)
+        self._add_menu_item(self.scene_options_menu, configure_axes_button, configure_axes_button.accessibleName())
         configure_axes_button.hide()
 
         configure_reference_button = QToolButton(self)
@@ -1727,10 +1721,7 @@ class TopIconPalette(QFrame):
         configure_reference_button.installEventFilter(self)
         configure_reference_button.setStyleSheet(configure_axes_button.styleSheet())
         self.configure_reference_button = configure_reference_button
-        configure_reference_action = self.scene_options_menu.addAction(
-            configure_reference_button.icon(), configure_reference_button.accessibleName()
-        )
-        configure_reference_action.triggered.connect(configure_reference_button.click)
+        self._add_menu_item(self.scene_options_menu, configure_reference_button, configure_reference_button.accessibleName())
         configure_reference_button.hide()
 
         add_member_button = QToolButton(self)
@@ -1751,10 +1742,7 @@ class TopIconPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         layout.addWidget(self.member_tools_button)
-        add_member_action = self.member_tools_menu.addAction(
-            add_member_button.icon(), add_member_button.accessibleName()
-        )
-        add_member_action.triggered.connect(add_member_button.click)
+        self._add_menu_item(self.member_tools_menu, add_member_button, add_member_button.accessibleName())
         add_member_button.hide()
         self.add_member_button = add_member_button
 
@@ -1772,10 +1760,7 @@ class TopIconPalette(QFrame):
         plate_button.installEventFilter(self)
         plate_button.setStyleSheet(add_member_button.styleSheet())
         layout.addWidget(self.plate_tools_button)
-        add_plate_action = self.plate_tools_menu.addAction(
-            plate_button.icon(), "Adicionar placa"
-        )
-        add_plate_action.triggered.connect(plate_button.click)
+        self._add_menu_item(self.plate_tools_menu, plate_button, "Adicionar placa")
         plate_button.hide()
         self.plate_button = plate_button
 
@@ -1787,10 +1772,7 @@ class TopIconPalette(QFrame):
         split_plate_button.setToolTip(_command_tooltip("Dividir placa", "SPLITPLATE"))
         split_plate_button.clicked.connect(window.start_split_plate)
         split_plate_button.setStyleSheet(add_member_button.styleSheet())
-        split_plate_action = self.plate_tools_menu.addAction(
-            split_plate_button.icon(), split_plate_button.accessibleName()
-        )
-        split_plate_action.triggered.connect(split_plate_button.click)
+        self._add_menu_item(self.plate_tools_menu, split_plate_button, split_plate_button.accessibleName())
         split_plate_button.hide()
         self.split_plate_button = split_plate_button
 
@@ -1802,10 +1784,7 @@ class TopIconPalette(QFrame):
         join_plate_button.setToolTip(_command_tooltip("Unir placas", "JOINPLATES"))
         join_plate_button.clicked.connect(window.start_join_plates)
         join_plate_button.setStyleSheet(add_member_button.styleSheet())
-        join_plate_action = self.plate_tools_menu.addAction(
-            join_plate_button.icon(), join_plate_button.accessibleName()
-        )
-        join_plate_action.triggered.connect(join_plate_button.click)
+        self._add_menu_item(self.plate_tools_menu, join_plate_button, join_plate_button.accessibleName())
         join_plate_button.hide()
         self.join_plate_button = join_plate_button
 
@@ -1826,10 +1805,7 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        split_member_action = self.member_tools_menu.addAction(
-            split_member_button.icon(), split_member_button.accessibleName()
-        )
-        split_member_action.triggered.connect(split_member_button.click)
+        self._add_menu_item(self.member_tools_menu, split_member_button, split_member_button.accessibleName())
         split_member_button.hide()
         self.split_member_button = split_member_button
 
@@ -1850,10 +1826,7 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        join_members_action = self.member_tools_menu.addAction(
-            join_members_button.icon(), join_members_button.accessibleName()
-        )
-        join_members_action.triggered.connect(join_members_button.click)
+        self._add_menu_item(self.member_tools_menu, join_members_button, join_members_button.accessibleName())
         join_members_button.hide()
         self.join_members_button = join_members_button
 
@@ -1874,10 +1847,7 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        rigid_member_action = self.member_tools_menu.addAction(
-            rigid_member_button.icon(), rigid_member_button.accessibleName()
-        )
-        rigid_member_action.triggered.connect(rigid_member_button.click)
+        self._add_menu_item(self.member_tools_menu, rigid_member_button, rigid_member_button.accessibleName())
         rigid_member_button.hide()
         self.rigid_member_button = rigid_member_button
 
@@ -1954,6 +1924,56 @@ class TopIconPalette(QFrame):
         layout.insertWidget(layout.indexOf(copy_elements_button), move_elements_button)
         self.move_elements_button = move_elements_button
         self.adjustSize()
+
+    def _add_menu_item(
+        self, menu: QMenu, button: QToolButton, label: str, *, toggle: bool = False,
+    ) -> None:
+        action = QWidgetAction(menu)
+        action.setText(label)
+        action.setCheckable(toggle)
+        action.setChecked(toggle and button.isChecked())
+        row = QPushButton(menu)
+        row.setAccessibleName(label)
+        row.setMinimumHeight(38)
+        row.setStyleSheet(
+            "QPushButton { background: transparent; border: 0; border-radius: 5px; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(5, 5, 15, 5)
+        layout.setSpacing(10)
+        icon = QToolButton(row)
+        icon.setFixedSize(28, 28)
+        icon.setIcon(button.icon())
+        icon.setIconSize(QSize(19, 19))
+        icon.setCheckable(toggle)
+        icon.setChecked(toggle and button.isChecked())
+        icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        icon.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        icon.setStyleSheet(
+            "QToolButton { background: transparent; border: 0; border-radius: 6px; }"
+            "QToolButton:checked { background: #d0d7de; }"
+        )
+        text = QLabel(label, row)
+        text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        text.setStyleSheet("QLabel { color: #24292f; background: transparent; border: 0; }")
+        layout.addWidget(icon)
+        layout.addWidget(text, 1)
+        # QPushButton derives its size hint from its own text, not from child
+        # widgets. Give the menu the actual size required by the icon and label.
+        row.ensurePolished()
+        text.ensurePolished()
+        row.setMinimumSize(layout.sizeHint())
+        if toggle:
+            action.toggled.connect(button.setChecked)
+            button.toggled.connect(action.setChecked)
+            action.toggled.connect(icon.setChecked)
+        else:
+            action.triggered.connect(button.click)
+        row.clicked.connect(action.trigger)
+        row.clicked.connect(menu.close)
+        action.setDefaultWidget(row)
+        menu.addAction(action)
 
     def _create_popup_group(self, icon_filename: str, label: str) -> tuple[QToolButton, QMenu]:
         button = QToolButton(self)
