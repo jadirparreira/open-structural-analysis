@@ -3520,6 +3520,16 @@ class StructureScene(QWidget):
             self._schedule_navigation_viewport_sync()
         if (
             watched is self.plotter
+            and event.type() == QEvent.Type.MouseButtonDblClick
+            and event.button() == Qt.MouseButton.MiddleButton
+            and getattr(getattr(self.window(), "palette", None), "active_group", None) == "Geometria"
+        ):
+            self._finish_camera_drag()
+            self.reset_camera()
+            event.accept()
+            return True
+        if (
+            watched is self.plotter
             and event.type() == QEvent.Type.KeyPress
             and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
             and self._placement_active()
