@@ -683,3 +683,38 @@ def test_analysis_selector_widths_stay_fixed_after_style_polish_and_family_chang
         window.deleteLater()
         app.processEvents()
         app.setFont(previous_font)
+
+
+def test_support_reactions_overlay_nodes_and_supports_and_clear_on_view_changes(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    model.update_node_supports('N1', (True,) * 6)
+    scene.render_model(model)
+    model.analysis_results = [AnalysisResult(model.revision, 'Result', node_results={
+        'N1': {'RXN_FX': 2.5, 'RXN_FY': -2.2, 'RXN_FZ': 19.7,
+               'RXN_MX': 2.5, 'RXN_MY': -2.2, 'RXN_MZ': 0.02},
+    })]
+    scene.set_analysis_result('Result', 'Reações de apoio')
+    scene.set_analysis_visible(True)
+    overlay = scene._reaction_overlay_renderer
+    actors = tuple(scene._result_actors)
+    assert actors
+    assert overlay.GetLayer() > scene.plotter.renderer.GetLayer()
+    assert overlay.GetPreserveDepthBuffer() == 0
+    assert overlay.GetActiveCamera() is scene.plotter.renderer.GetActiveCamera()
+    assert scene.plotter.renderer.HasViewProp(scene._node_actor)
+    assert scene.plotter.renderer.HasViewProp(scene._support_actor)
+    for actor in actors:
+        assert overlay.HasViewProp(actor)
+        assert not scene.plotter.renderer.HasViewProp(actor)
+
+    scene.set_analysis_visible(False)
+    assert all(not actor.GetVisibility() for actor in actors)
+    scene.set_analysis_visible(True)
+    assert all(actor.GetVisibility() for actor in scene._result_actors)
+    scene.render_model(model)
+    assert all(not overlay.HasViewProp(actor) for actor in actors)
+    assert overlay.GetViewProps().GetNumberOfItems() == len(scene._result_actors)
+    scene.set_analysis_result('Result', 'Normal')
+    assert overlay.GetViewProps().GetNumberOfItems() == 0

@@ -294,6 +294,17 @@ class StructureScene(QWidget):
             self.plotter.render_window.SetNumberOfLayers(2)
         self.plotter.render_window.AddRenderer(self._local_axes_renderer)
 
+        # Reactions must remain legible where their arrows enter nodes and
+        # support solids. Share the scene camera, but clear its depth buffer.
+        self._reaction_overlay_renderer = vtk.vtkRenderer()
+        self._reaction_overlay_renderer.SetLayer(1)
+        self._reaction_overlay_renderer.SetInteractive(False)
+        self._reaction_overlay_renderer.SetErase(True)
+        self._reaction_overlay_renderer.SetPreserveColorBuffer(True)
+        self._reaction_overlay_renderer.SetPreserveDepthBuffer(False)
+        self._reaction_overlay_renderer.SetActiveCamera(self.plotter.renderer.GetActiveCamera())
+        self.plotter.render_window.AddRenderer(self._reaction_overlay_renderer)
+
         self._grid_renderer = GridRenderer()
         self._reference_axes_renderer = ReferenceAxesRenderer()
         self._drawing_reference_renderer = DrawingReferenceRenderer()
@@ -1772,6 +1783,7 @@ class StructureScene(QWidget):
         )
 
     def _clear_result_layer(self) -> None:
+        self._reaction_overlay_renderer.RemoveAllViewProps()
         self._remove_actors(self._result_actors)
         self._remove_actors(self._plate_result_actors)
         self._result_color_scale_available = False
@@ -1880,6 +1892,10 @@ class StructureScene(QWidget):
                 plate_diagrams_visible=self._analysis_plate_diagrams_visible,
                 include_plate_surfaces=False,
             )
+            if diagram == self._result_renderer.REACTION_DIAGRAM:
+                for actor in self._result_actors:
+                    self.plotter.remove_actor(actor, reset_camera=False, render=False)
+                    self._reaction_overlay_renderer.AddActor(actor)
         self._plate_result_actors = []
         self._plate_result_names = set()
         if result is not None and self._analysis_result_kind == "plate":
@@ -9094,6 +9110,7 @@ class StructureScene(QWidget):
         self._selected = self._selected_elements[-1] if self._selected_elements else None
 
     def _clear_actor_references(self) -> None:
+        self._reaction_overlay_renderer.RemoveAllViewProps()
         self._plate_intersection_timer.stop()
         self._plate_intersection_actor = None
         self._plate_intersection_overlays = {}
