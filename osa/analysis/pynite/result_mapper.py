@@ -2,6 +2,7 @@
 
 import numpy as np
 
+from osa.analysis.plate_postprocessing import enrich_plate_result
 from osa.domain import AnalysisResult
 
 
@@ -78,7 +79,15 @@ class ResultMapper:
                         "DY": float(node.DY[load_reference]),
                         "DZ": float(node.DZ[load_reference]),
                     }
-            plate_results[plate_name] = {"nodes": plate_nodes, "elements": element_results}
+            surface_axes = getattr(source, "_osa_plate_surface_axes", {}).get(plate_name)
+            axes = None
+            if surface_axes is not None:
+                local_x, local_y = surface_axes[1:3]
+                axes = (local_x, local_y, np.cross(local_x, local_y))
+            thickness = getattr(source.quads[elements[0][0]], "t", None) if elements else None
+            plate_results[plate_name] = enrich_plate_result(
+                {"nodes": plate_nodes, "elements": element_results}, axes=axes, thickness_m=thickness,
+            )
         return AnalysisResult(model_revision, load_reference, node_results, member_results, plate_results)
 
     @staticmethod

@@ -38,7 +38,7 @@ O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas 
 | `get_capabilities` | — | Descobre sessões, diagramas, unidades e recursos suportados nesta versão. |
 | `get_member_analysis_results` | `combination`, `member_names?`, `include_samples?` | Consulta esforços e deslocamentos das barras. include_samples inclui as 21 amostras ao longo de cada barra para reconstruir diagramas. |
 | `get_node_analysis_results` | `combination`, `node_names?` | Consulta deslocamentos, rotações e reações nodais de uma combinação analisada. |
-| `get_plate_analysis_results` | `combination`, `plate_names?` | Consulta deslocamentos nodais e esforços locais por elemento de laje. |
+| `get_plate_analysis_results` | `combination`, `plate_names?` | Consulta deslocamentos nodais, esforços locais e pós-processamento por elemento de placa. Inclui wood_armer [Xsup,Ysup,Xinf,Yinf] em kN·m/m e von_mises [sup,inf,max] em MPa, com campos _nodal, eixos e convenções em postprocessing. |
 | `get_project_summary` | — | Use esta ferramenta para saber o estado do projeto estrutural atualmente aberto no OpenSA antes de executar outras ações. |
 | `get_scene_views` | — | Lista as vistas persistentes do projeto, a vista ativa, as barras ocultas e as barras rígidas ocultas em cada vista. A vista 'Completo' mostra tudo. |
 | `get_session_state` | — | Consulta se Geometria, Ações ou Análise está aberta na interface. |

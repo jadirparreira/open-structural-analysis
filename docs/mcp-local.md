@@ -139,3 +139,11 @@ Consulte [Claude Desktop e Claude Code](claude-mcp.md) para os exemplos desse cl
 O servidor escuta somente em `127.0.0.1`, sem credencial adicional. Enquanto
 ativo, processos locais com acesso à porta podem consultar e alterar o modelo.
 Ao desativar a opção ou fechar o OpenSA, o servidor é encerrado.
+
+### Wood-Armer e von Mises
+
+A família de placas também oferece quatro momentos Wood-Armer e três tensões
+von Mises. As chaves exatas aparecem em `get_capabilities`; os valores centrais
+e nodais aparecem em `get_plate_analysis_results`. Consulte
+[Wood-Armer e von Mises nas placas](plate-postprocessing.md) para eixos, faces,
+unidades, interpolação e limites de aplicação.

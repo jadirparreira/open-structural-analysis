@@ -468,7 +468,12 @@ class LocalMcpServer:
         @self.server.tool(
             name="get_plate_analysis_results",
             title="Consultar resultados das lajes",
-            description="Consulta deslocamentos nodais e esforços locais por elemento de laje.",
+            description=(
+                "Consulta deslocamentos nodais e esforços locais por elemento de placa. Inclui "
+                "wood_armer [Xsup,Ysup,Xinf,Yinf] em kN·m/m e von_mises [sup,inf,max] em MPa, "
+                "com campos _nodal, eixos e convenções em postprocessing. Von Mises combina membrana "
+                "e flexão nas faces e não constitui verificação de resistência do concreto."
+            ),
             annotations=read_only,
         )
         def get_plate_analysis_results(
@@ -503,6 +508,8 @@ class LocalMcpServer:
                 "Use result_kind=bar ou plate para distinguir rótulos compartilhados como Fletor Y (My). "
                 "deformation_scale: 1 ou 10..100 em passos de 10; diagram_scale: 0.1..1.0 em passos de 0.1. "
                 "plate_result_display_mode: centros, nos_sem_media, nos_media ou nos_media_macro. "
+                "Placas também oferecem Wood-Armer X/Y superior/inferior (Mwx/Mwy) e Von Mises "
+                "superior/inferior/máximo (σvm). Consulte as chaves exatas em get_capabilities. "
                 "Esforços/tensões referem-se aos eixos locais; deslocamentos aos globais."
             ),
             annotations=write,

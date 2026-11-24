@@ -632,6 +632,8 @@ class McpApplication(CurrentFeatures):
         plate_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """Retorna deslocamentos nodais e esforços locais dos elementos de laje."""
+        from osa.analysis.plate_postprocessing import ensure_plate_postprocessing
+        ensure_plate_postprocessing(self.model)
         result = self._analysis_result(combination)
         names = tuple(plate_names) if plate_names is not None else tuple(result.plate_results)
         unknown = set(names) - set(result.plate_results)

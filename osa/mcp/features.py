@@ -32,6 +32,7 @@ class CurrentFeatures:
                 "plate_moments": "kN·m/m",
                 "plate_shear": "kN/m",
                 "plate_membrane_stress": "kN/m²",
+                "plate_von_mises": "MPa",
                 "display_displacements": "mm",
             },
             "analysis_diagrams": {
@@ -39,11 +40,17 @@ class CurrentFeatures:
                 for kind, options in (("bar", BAR_DIAGRAMS), ("plate", PLATE_DIAGRAMS))
             },
             "plate_result_display_modes": dict(PLATE_RESULT_DISPLAY_MODES),
+            "plate_postprocessing": self._plate_postprocessing_info(),
             "deprecated_options": {
                 "snap_enabled": "Removida: a captura permanece ativa; use os controles de tipo na interface."
             },
             "verification": "Mesmas rotinas e limitações da interface; resultados não verificados são preservados.",
         }
+
+    @staticmethod
+    def _plate_postprocessing_info():
+        from osa.analysis.plate_postprocessing import POSTPROCESSING_INFO
+        return copy.deepcopy(POSTPROCESSING_INFO)
 
     def list_profiles(self, material_type: str, section_family: str) -> dict[str, Any]:
         """Consulta perfis e dimensões dos catálogos. Tipos Aço/Concreto/Madeira; use list_sections para famílias."""

@@ -2,7 +2,7 @@ from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
 from PySide6.QtWidgets import QWidgetAction
-from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS
+from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS, PLATE_FIELDS, plate_diagram_tooltip
 
 
 def _command_tooltip(label: str, command: str) -> str:
@@ -2624,6 +2624,10 @@ class AnalysisTopPalette(QFrame):
         options = BAR_DIAGRAMS if kind == "bar" else PLATE_DIAGRAMS
         for label, key in options:
             self.diagram_selector.addItem(label, key)
+            if kind == "plate":
+                self.diagram_selector.setItemData(
+                    self.diagram_selector.count() - 1, plate_diagram_tooltip(key), Qt.ItemDataRole.ToolTipRole,
+                )
         index = self.diagram_selector.findData(self._selected_diagrams[kind])
         self.diagram_selector.setCurrentIndex(max(0, index))
         self.diagram_selector.blockSignals(False)
@@ -2641,7 +2645,7 @@ class AnalysisTopPalette(QFrame):
         self.reposition()
 
     def select_diagram(self, key: str, result_kind: str | None = None) -> None:
-        kind = "plate" if any(value == key for _label, value in PLATE_DIAGRAMS[:8]) else "bar"
+        kind = "plate" if key in PLATE_FIELDS else "bar"
         if key.startswith("Deformação"):
             kind = self.result_kind
         if result_kind is not None:
@@ -2688,6 +2692,8 @@ class AnalysisTopPalette(QFrame):
         return (int(position) + 1) / 10.0
 
     def _update_scale_controls(self, result_type: str) -> None:
+        if self.result_kind == "plate":
+            self.diagram_selector.setToolTip(plate_diagram_tooltip(result_type))
         deformation = result_type.startswith("Deformação")
         enabled = deformation or (self.result_kind == "bar" and result_type != "Reações de apoio")
         self.deformation_scale_button.setEnabled(enabled)

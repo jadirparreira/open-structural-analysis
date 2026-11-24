@@ -1851,6 +1851,8 @@ class StructureScene(QWidget):
             self._result_label_positions = np.empty((0, 3), dtype=float)
             self._result_labels = ()
             return
+        from osa.analysis.plate_postprocessing import ensure_plate_postprocessing
+        ensure_plate_postprocessing(self._model)
         result = next(
             (
                 item for item in self._model.analysis_results
