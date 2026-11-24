@@ -51,6 +51,18 @@ for path in converter_dir.iterdir():
     else:
         data_files.append(entry)
 
+# Compilador LaTeX (Tectonic) do laudo e do memorial em PDF.
+latex_dir = project_root / "build-tools" / "tectonic" / sys.platform
+latex_name = "tectonic.exe" if sys.platform == "win32" else "tectonic"
+if not (latex_dir / latex_name).is_file():
+    raise RuntimeError("Prepare o compilador LaTeX com scripts/prepare-latex-engine.py antes de empacotar.")
+for path in latex_dir.iterdir():
+    entry = (str(path), "osa/resources/latex")
+    if path.name == latex_name:
+        converter_binaries.append(entry)
+    else:
+        data_files.append(entry)
+
 datas = unique(data_files + pyvista_datas + pyvistaqt_datas + vtk_datas + ezdxf_datas + gmsh_datas)
 binaries = unique(converter_binaries + pyvista_binaries + pyvistaqt_binaries + vtk_binaries + ezdxf_binaries + gmsh_binaries)
 hiddenimports = unique(
@@ -59,6 +71,7 @@ hiddenimports = unique(
     + vtk_hiddenimports
     + ezdxf_hiddenimports
     + gmsh_hiddenimports
+    + ["matplotlib.backends.backend_agg", "matplotlib.backends.backend_pdf"]
     + ["PySide6.QtSvg", "PySide6.QtSvgWidgets"]
 )
 

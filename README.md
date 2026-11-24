@@ -35,7 +35,7 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 - **Apoios e vínculos:** definição de restrições, apoios elásticos, liberações nas extremidades e ligações rígidas.
 - **Ações e combinações:** organização de casos e grupos de ações, aplicação de cargas nodais e em barras, momentos e peso próprio, e configuração de combinações.
 - **Análise estrutural:** processamento do modelo e visualização de deslocamentos, reações de apoio e diagramas de esforço normal, cortantes, momentos fletores e torção por combinação.
-- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em DOCX. A cobertura das verificações está em evolução, com hipóteses e limitações apresentadas pelo próprio programa.
+- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em PDF (LaTeX), projeto `.tex` ou DOCX, e o laudo técnico da estrutura (comando `REPORT`) é gerado em LaTeX/PDF com deformadas desenhadas a partir dos resultados. A cobertura das verificações está em evolução, com hipóteses e limitações apresentadas pelo próprio programa.
 - **Detalhamento:** criação de vistas para detalhamento de barras, alinhamento e conexão de extremidades, com exportação da vista 2D para DXF.
 - **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto.
 - **Exportação DXF:** exportação do modelo e de vistas de detalhamento para uso em ferramentas CAD.
@@ -63,6 +63,12 @@ Para habilitar a importação de DWG na execução pelo código-fonte, prepare o
 
 ```bash
 uv run python scripts/prepare-dwg-converter.py
+```
+
+Para gerar o laudo e o memorial em PDF sem um LaTeX instalado (MiKTeX ou TeX Live), prepare também o compilador Tectonic embutido. Na primeira compilação ele baixa, uma única vez, os pacotes LaTeX usados:
+
+```bash
+uv run python scripts/prepare-latex-engine.py
 ```
 
 Execute o programa com:
