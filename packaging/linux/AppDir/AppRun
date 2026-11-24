@@ -55,7 +55,10 @@ install_desktop_entry() {
     fi
 }
 
-install_desktop_entry
+case "${1:-}" in
+    --mcp-self-test) ;; # O diagnóstico não deve registrar atalhos no perfil do usuário.
+    *) install_desktop_entry ;;
+esac
 
 # O Ubuntu em Wayland precisa do app_id da janela para vinculá-la ao arquivo
 # openstructuralanalysis.desktop. O pacote contém o plugin nativo do Qt;

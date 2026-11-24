@@ -41,13 +41,12 @@ class LocalMcpServer:
             instructions=(
                 "Você está conectado ao Open Structural Analysis. "
                 "Consulte o projeto atual antes de fazer alterações. "
-                "A interface possui as sessões Geometria, Verificação, Ações e Análise. "
+                "A interface possui Geometria, Verificação, Ações, Análise e Detalhamento. Consulte get_capabilities. "
                 "Antes de executar uma operação relacionada a uma sessão, consulte "
                 "get_session_state e abra a sessão correspondente com set_session. "
                 "Mantenha essa sessão aberta durante a sequência de operações para "
                 "que o usuário acompanhe visualmente onde as alterações estão ocorrendo. "
-                "As coordenadas do modelo usam as unidades do projeto; "
-                "se elas não estiverem claras, pergunte ao usuário."
+                "Coordenadas usam m e dimensões de seções usam mm; consulte as unidades de cada ferramenta."
             ),
             host=self.host,
             port=self.port,
@@ -124,6 +123,16 @@ class LocalMcpServer:
                 host=self.host,
                 port=self.port,
                 log_level="warning",
+                # A GUI executable has no stdout/stderr (pythonw/PyInstaller).
+                # Avoid Uvicorn's console formatter and dynamic optional backends.
+                log_config=None,
+                access_log=False,
+                use_colors=False,
+                loop="asyncio",
+                http="h11",
+                ws="none",
+                lifespan="on",
+                timeout_graceful_shutdown=1,
             )
             server = uvicorn.Server(config)
             with self._state_lock:
@@ -132,9 +141,9 @@ class LocalMcpServer:
             if stop_requested:
                 server.should_exit = True
             server.run()
-        except Exception as error:  # noqa: BLE001  # depende do ambiente de rede
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - Report background startup and bind failures.
             with self._state_lock:
-                self._last_error = str(error)
+                self._last_error = f"{type(error).__name__}: {error}"
         finally:
             with self._state_lock:
                 if (
@@ -491,15 +500,21 @@ class LocalMcpServer:
                 "Cortante Y (Qy), Tensão normal X (σx), Tensão normal Y (σy) e "
                 "Tensão de cisalhamento XY (τxy). Selecionar um esforço/tensão de placa ativa o modo "
                 "de placas; selecionar um esforço de barra ativa o modo de barras. "
+                "Use result_kind=bar ou plate para distinguir rótulos compartilhados como Fletor Y (My). "
+                "deformation_scale: 1 ou 10..100 em passos de 10; diagram_scale: 0.1..1.0 em passos de 0.1. "
+                "plate_result_display_mode: centros, nos_sem_media, nos_media ou nos_media_macro. "
                 "Esforços/tensões referem-se aos eixos locais; deslocamentos aos globais."
             ),
             annotations=write,
         )
         def set_analysis_view(
-            combination: str | None = None,
-            diagram: str | None = None,
+            combination: str | None = None, diagram: str | None = None,
+            result_kind: str | None = None, deformation_scale: float | None = None,
+            diagram_scale: float | None = None, plate_result_display_mode: str | None = None,
         ) -> dict[str, Any]:
-            return self.application.set_analysis_view(combination, diagram)
+            return self.application.set_analysis_view(
+                combination, diagram, result_kind, deformation_scale, diagram_scale, plate_result_display_mode,
+            )
 
         @self.server.tool(
             name="set_analysis_diagrams_visible",
@@ -593,7 +608,9 @@ class LocalMcpServer:
                 "Atualiza um carregamento existente pelo nome retornado por list_actions, "
                 "preservando sua identidade automática (por exemplo, Carga 5). "
                 "Para cargas distribuídas use initial_kn_m e final_kn_m; para forças e momentos "
-                "concentrados use value. Também é possível alterar target, direction, load_case e reference."
+                "concentrados e momentos de aresta use value. Pressões de placa aceitam value uniforme ou "
+                "pressure_profiles [Xi,Xf,Yi,Yf] em kN/m². Arestas aceitam edge_index desde zero. "
+                "Também é possível alterar target, direction, load_case e reference."
             ),
             annotations=write,
         )
@@ -606,6 +623,8 @@ class LocalMcpServer:
             value: float | None = None,
             load_case: str | None = None,
             reference: str | None = None,
+            pressure_profiles: list[float] | None = None,
+            edge_index: int | None = None,
         ) -> dict[str, Any]:
             return self.application.update_applied_load(
                 action_name,
@@ -616,6 +635,8 @@ class LocalMcpServer:
                 value=value,
                 load_case=load_case,
                 reference=reference,
+                pressure_profiles=pressure_profiles,
+                edge_index=edge_index,
             )
 
         @self.server.tool(
@@ -822,7 +843,7 @@ class LocalMcpServer:
                 "grid_visible, reference_axes_visible, node_labels_visible, "
                 "member_labels_visible, plate_labels_visible, local_axes_visible, nodes_visible, "
                 "solid_members_visible, member_releases_visible, semirigid_links_visible, "
-                "node_supports_visible, snap_enabled (sempre ativo), node_forces_visible, node_moments_visible, "
+                "node_supports_visible, node_components_visible, node_forces_visible, node_moments_visible, "
                 "member_forces_visible, member_moments_visible e plate_pressures_visible. "
                 "Informe somente os campos desejados."
             ),
@@ -906,7 +927,7 @@ class LocalMcpServer:
                 "somente os campos desejados. Para coordenadas, informe x, y e z juntos. "
                 "supports possui seis booleanos na ordem Dx,Dy,Dz,Rx,Ry,Rz. "
                 "support_stiffness possui seis valores, com rigidezas translacionais em "
-                "kN/m e rotacionais em kN·m/rad."
+                "kN/m e rotacionais em kN·m/rad. support_directions: seis sentidos -, = ou +."
             ),
             annotations=write,
         )
@@ -917,6 +938,7 @@ class LocalMcpServer:
             z: float | None = None,
             supports: list[bool] | None = None,
             support_stiffness: list[float] | None = None,
+            support_directions: list[str] | None = None,
         ) -> dict[str, Any]:
             return self.application.update_node_properties(
                 node_name,
@@ -925,6 +947,7 @@ class LocalMcpServer:
                 z=z,
                 supports=supports,
                 support_stiffness=support_stiffness,
+                support_directions=support_directions,
             )
 
         @self.server.tool(
@@ -1184,7 +1207,8 @@ class LocalMcpServer:
                 "de nomes e somente os campos que deseja alterar. Pode alterar material, "
                 "section, geometry, profile, rotation, releases (12 booleanos na ordem "
                 "Dxa,Dxb,Dya,Dyb,Dza,Dzb,Rxa,Rxb,Rya,Ryb,Rza,Rzb), "
-                "rotation_flexibility_percent (6 inteiros), offsets em milímetros e color. "
+                "rotation_flexibility_percent (6 inteiros), offsets em milímetros, color, section_mirrored "
+                "e solid_face_angles_deg (4 ângulos em graus). "
                 "Para geometry, informe ou mantenha material e section válidos."
             ),
             annotations=write,
@@ -1201,6 +1225,8 @@ class LocalMcpServer:
             solid_face_offsets_mm: list[float] | None = None,
             solid_section_offsets_mm: list[float] | None = None,
             color: str | None = None,
+            section_mirrored: bool | None = None,
+            solid_face_angles_deg: list[float] | None = None,
         ) -> dict[str, Any]:
             return self.application.update_member_properties(
                 member_names,
@@ -1214,4 +1240,9 @@ class LocalMcpServer:
                 solid_face_offsets_mm=solid_face_offsets_mm,
                 solid_section_offsets_mm=solid_section_offsets_mm,
                 color=color,
+                section_mirrored=section_mirrored,
+                solid_face_angles_deg=solid_face_angles_deg,
             )
+
+        from .features import register_feature_tools
+        register_feature_tools(self.server, self.application, read_only, write, destructive)

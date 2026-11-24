@@ -72,6 +72,9 @@ jobs:
           export OSA_VERSION="${OSA_VERSION#v}"
           ./scripts/build-linux-appimage.sh
 
+      - name: Validate MCP in packaged AppImage
+        run: uv run python scripts/check-packaged-mcp.py dist/*.AppImage
+
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -124,6 +127,16 @@ jobs:
         run: |
           $env:OSA_VERSION = $env:OSA_VERSION.Substring(1)
           .\scripts\build-windows-installer.ps1
+
+      - name: Validate MCP after installing the release
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem dist/*-Setup.exe | Select-Object -First 1).FullName
+          $installDir = Join-Path $env:RUNNER_TEMP "opensa-installed-mcp"
+          $process = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$installDir`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installation failed: $($process.ExitCode)" }
+          & uv run python scripts/check-packaged-mcp.py (Join-Path $installDir "open-structural-analysis.exe")
+          if ($LASTEXITCODE -ne 0) { throw "Installed MCP validation failed." }
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4

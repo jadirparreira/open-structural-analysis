@@ -104,3 +104,23 @@ def test_local_mcp_integration_does_not_create_unknown_client_config(tmp_path: P
     assert integration.ensure_installed() is True
     assert integration.is_installed()
     assert not (tmp_path / "missing" / "config.toml").exists()
+
+
+def test_frozen_integration_finds_resources_without_source_checkout(tmp_path, monkeypatch):
+    import shutil
+    import sys
+    bundle = tmp_path/'_internal'
+    source = Path(__file__).resolve().parents[1]/'plugins'
+    shutil.copytree(source, bundle/'plugins')
+    monkeypatch.setattr(sys, '_MEIPASS', str(bundle), raising=False)
+    integration = LocalMcpIntegration(config_path=tmp_path/'settings.toml',
+                                       marketplace_root=tmp_path/'home'/'.agents'/'plugins')
+    assert integration.plugin_root == bundle/'plugins'
+    integration.ensure_installed()
+    assert integration.is_installed()
+
+
+def test_plugin_cache_version_matches_bundled_manifest():
+    from osa.integrations.mcp_local import PLUGIN_VERSION
+    source = Path(__file__).resolve().parents[1]/'plugins'/'mcp-opensa'/'plugin.json'
+    assert json.loads(source.read_text(encoding='utf-8'))['version'] == PLUGIN_VERSION

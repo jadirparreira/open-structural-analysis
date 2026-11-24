@@ -32,7 +32,7 @@ def test_mcp_application_switches_visual_sessions():
 
     assert application.get_session_state() == {
         "active_session": "Geometria",
-        "available_sessions": ["Geometria", "Verificação", "Ações", "Análise"],
+        "available_sessions": ["Geometria", "Verificação", "Ações", "Análise", "Detalhamento"],
     }
 
     application._on_session_changed = lambda session: (sessions.append(session), active_session.__setitem__(0, session))
@@ -73,11 +73,15 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "solid_face_offsets_mm": [0.0, 0.0],
         "solid_section_offsets_mm": [0.0, 0.0],
         "color": "#6e7781",
+        "section_mirrored": False,
+        "solid_face_angles_deg": [0.0] * 4,
+        "calculation_property_overrides": {}, "detail_subtractions": [], "detail_end_cuts": [],
     }
     assert application.get_project_summary() == {
         "revision": 3,
         "nodes": 2,
         "members": 1,
+        "plates": 0, "verification_results": 0,
         "rigid_bars": 0,
         "actions": 0,
         "load_cases": 0,
@@ -136,7 +140,7 @@ def test_mcp_application_deletes_structural_elements_in_batches():
 
     preview = application.delete_elements(nodes=["N1"], dry_run=True)
     assert preview["status"] == "preview"
-    assert preview["blocked"] == [{"node": "N1", "members": ["B1"], "rigid_bars": ["N1-N3"]}]
+    assert preview["blocked"] == [{"node": "N1", "members": ["B1"], "rigid_bars": ["N1-N3"], "plates": []}]
     assert set(model.nodes) == {"N1", "N2", "N3"}
 
     blocked = application.delete_elements(nodes=["N1"])
@@ -309,6 +313,7 @@ def test_mcp_application_updates_node_without_changing_its_name():
         "z": 4.0,
         "supports": [True, True, True, False, False, True],
         "support_stiffness": [10.0, 20.0, 30.0, 1.0, 2.0, 3.0],
+        "support_directions": ["="] * 6, "component": None,
     }
     assert application.list_nodes()["nodes"][0]["support_stiffness"] == [
         10.0, 20.0, 30.0, 1.0, 2.0, 3.0,
@@ -541,7 +546,7 @@ def test_mcp_application_controls_geometry_view_options():
         "member_releases_visible": True,
         "semirigid_links_visible": True,
         "node_supports_visible": True,
-        "snap_enabled": True,
+        "node_components_visible": True,
     }
     changes = []
     application = McpApplication(
@@ -551,11 +556,11 @@ def test_mcp_application_controls_geometry_view_options():
         get_view_state=lambda: dict(view),
     )
 
-    result = application.set_view_options({"grid_visible": False, "snap_enabled": False})
+    result = application.set_view_options({"grid_visible": False, "node_components_visible": False})
 
     assert result["view"]["grid_visible"] is False
-    assert result["view"]["snap_enabled"] is True
-    assert changes == [("grid_visible", False)]
+    assert result["view"]["node_components_visible"] is False
+    assert changes == [("grid_visible", False), ("node_components_visible", False)]
     assert application.get_view_options()["view"]["grid_visible"] is False
 
 

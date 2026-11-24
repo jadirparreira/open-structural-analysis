@@ -2160,6 +2160,7 @@ class TopIconPalette(QFrame):
             "member_releases_visible": "releases",
             "semirigid_links_visible": "semirigid",
             "node_supports_visible": "supports",
+            "node_components_visible": "components",
         }.get(option)
         if kind is not None:
             button = self._visibility_buttons.get(kind)
@@ -2639,10 +2640,12 @@ class AnalysisTopPalette(QFrame):
         self.adjustSize()
         self.reposition()
 
-    def select_diagram(self, key: str) -> None:
+    def select_diagram(self, key: str, result_kind: str | None = None) -> None:
         kind = "plate" if any(value == key for _label, value in PLATE_DIAGRAMS[:8]) else "bar"
         if key.startswith("Deformação"):
             kind = self.result_kind
+        if result_kind is not None:
+            kind = result_kind
         if kind != self.result_kind:
             self.result_kind_switch._buttons[kind].setChecked(True)
             self.result_kind_switch._select(kind)

@@ -48,4 +48,47 @@ def test_restarting_local_mcp_recreates_the_single_use_sdk_session(monkeypatch):
     server._thread.join(timeout=2)
 
     assert server.server is not first_sdk_server
-    assert len(server.server._tool_manager.list_tools()) == 74
+    names = {tool.name for tool in server.server._tool_manager.list_tools()}
+    assert {"create_plate", "run_verification", "get_capabilities", "set_analysis_view"} <= names
+    assert len(names) == len(server.server._tool_manager.list_tools())
+
+
+def test_uvicorn_configuration_works_without_console_streams(monkeypatch):
+    import uvicorn
+    model = StructuralModel()
+    server = LocalMcpServer(McpApplication(model, ModelService(model)))
+    captured = []
+
+    class NoNetworkServer:
+        def __init__(self, config):
+            captured.append(config)
+            config.load()  # Resolves protocol modules and logging without opening sockets.
+            self.started = True
+            self.should_exit = False
+        def run(self):
+            pass
+
+    monkeypatch.setattr(uvicorn, 'Server', NoNetworkServer)
+    monkeypatch.setattr(sys, 'stdout', None)
+    monkeypatch.setattr(sys, 'stderr', None)
+    server._run()
+    assert server.last_error is None
+    assert captured[0].log_config is None
+    assert captured[0].http == 'h11'
+    assert captured[0].loop == 'asyncio'
+    assert captured[0].ws == 'none'
+
+
+def test_bind_system_exit_is_reported_in_settings(monkeypatch):
+    import uvicorn
+    model = StructuralModel()
+    server = LocalMcpServer(McpApplication(model, ModelService(model)))
+    class CannotBind:
+        def __init__(self, config):
+            self.started = False
+        def run(self):
+            raise SystemExit(1)
+    monkeypatch.setattr(uvicorn, 'Server', CannotBind)
+    server._run()
+    assert 'SystemExit' in server.last_error
+    assert not server.is_running

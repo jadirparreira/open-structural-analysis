@@ -559,7 +559,7 @@ class MainWindow(QMainWindow):
         self.mcp_scene_views_changed.connect(self._refresh_after_mcp_scene_views_change)
         self.mcp_active_action_changed.connect(self._select_active_action)
         self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
-        self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
+        self.mcp_analysis_diagrams_changed.connect(self._apply_mcp_analysis_diagrams_visible)
         self.mcp_session_changed.connect(self.palette.show_group)
         self._mcp_dispatcher = McpQtDispatcher(self)
         self._mcp_dispatcher.suspend()
@@ -577,6 +577,7 @@ class MainWindow(QMainWindow):
             on_analysis_view_changed=self.mcp_analysis_view_changed.emit,
             get_analysis_view_state=self.scene.analysis_view_state,
             on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
+            on_analysis_display_changed=self._apply_mcp_analysis_display,
             on_session_changed=self.mcp_session_changed.emit,
             get_session=lambda: self.palette.active_group,
             model_lock=self._model_access_lock,
@@ -8127,6 +8128,7 @@ class MainWindow(QMainWindow):
             "member_releases_visible": self.scene.set_member_releases_visible,
             "semirigid_links_visible": self.scene.set_semirigid_links_visible,
             "node_supports_visible": self.scene.set_node_supports_visible,
+            "node_components_visible": self.scene.set_node_components_visible,
         }
         if option in setters:
             setters[option](visible)
@@ -8418,6 +8420,28 @@ class MainWindow(QMainWindow):
                                      for index, node in enumerate(node_names)], dtype=float)
             return float(weights @ values)
         return None
+
+    def _apply_mcp_analysis_diagrams_visible(self, visible: bool) -> None:
+        if self.analysis_top_palette.result_kind == "plate":
+            self.scene.set_analysis_plate_diagrams_visible(visible)
+        else:
+            self.scene.set_analysis_diagrams_visible(visible)
+
+    def _apply_mcp_analysis_display(self, state: dict) -> None:
+        palette = self.analysis_top_palette
+        self.selected_analysis_combination = state['selected_combination']
+        palette.set_combinations(tuple(r.load_reference for r in self.model.analysis_results),
+                                 self.selected_analysis_combination)
+        palette.select_diagram(state['selected_diagram'], state['result_kind'])
+        self.selected_analysis_diagram = state['selected_diagram']
+        self.scene.set_analysis_result_kind(state['result_kind'], state['selected_diagram'])
+        self.scene.set_analysis_deformation_scale(state['deformation_scale'])
+        self.scene.set_analysis_diagram_scale(state['diagram_scale'])
+        self.set_plate_result_display_mode(state['plate_result_display_mode'])
+        palette._deformation_scale_position = int(state['deformation_scale'] // 10)
+        palette._bar_diagram_scale_position = round(state['diagram_scale'] * 10) - 1
+        palette._update_scale_controls(palette.diagram_selector.currentText())
+        self._sync_analysis_result()
 
     def _apply_mcp_analysis_view(self, combination: str, diagram: str) -> None:
         """Atualiza os seletores e o resultado visual após uma chamada MCP."""

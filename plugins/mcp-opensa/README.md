@@ -17,3 +17,14 @@ precisa estar aberto e o servidor precisa estar ativado nas configurações para
 que as ferramentas operem sobre o projeto estrutural ativo.
 Enquanto ativo, qualquer programa neste computador que alcance o endpoint local
 pode consultar e alterar o modelo. Desative o servidor ao terminar.
+
+## Recursos v5 (plugin 0.2.0)
+
+O servidor oferece 96 ferramentas. Comece por `get_capabilities` para consultar
+sessões, diagramas de barras e placas, unidades e recursos disponíveis. Além da
+modelagem e análise, estão disponíveis componentes dos nós, cargas de placas e
+arestas, verificação e operações de detalhamento.
+
+O release inclui o servidor e os recursos do plugin; não exige Git, Python ou uv.
+A configuração do cliente e a ativação manual no OpenSA continuam necessárias.
+Consulte `docs/mcp-local.md` no repositório para o inventário e diagnóstico dos pacotes.

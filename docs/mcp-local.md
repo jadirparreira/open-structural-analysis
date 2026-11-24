@@ -1,141 +1,141 @@
-# MCP local
+# MCP local — v5
 
-O Open Structural Analysis inicia um servidor MCP local junto com a janela
-principal. O servidor escuta somente em loopback:
-
-```text
-http://127.0.0.1:8765/mcp-opensa
-```
-
-O servidor opera sobre o mesmo `StructuralModel` que está aberto na interface.
-As alterações recebidas por MCP atualizam a cena do OpenSA depois da execução.
-Referências de desenho e vistas fazem parte do estado visual persistido do
-projeto. Essas operações atualizam a revisão visual sem invalidar os resultados
-da análise estrutural.
-
-## Sessões da interface
-
-As sessões visuais disponíveis são `Geometria`, `Verificação`, `Ações` e
-`Análise`. Use `get_session_state` para consultar a sessão aberta e
-`set_session` para abrir a sessão correspondente antes de uma sequência de
-operações. O identificador antigo `Memorial` continua aceito como alias de
-`Verificação`. A sessão permanece visível enquanto as ferramentas MCP são
-executadas, permitindo acompanhar as alterações na tela.
-
-## Ferramentas iniciais
-
-- `get_project_summary`: consulta a quantidade de entidades e a revisão atual.
-- `list_nodes`: lista os nós do projeto aberto.
-- `list_members`: lista as barras do projeto aberto.
-- `list_materials`: lista os materiais disponíveis no catálogo do projeto.
-- `list_sections`: lista as famílias de seção compatíveis com um material.
-- `create_node`: cria um nó no projeto aberto usando o nome sequencial padrão do
-  OpenSA (`N1`, `N2`, ...).
-- `delete_node`: exclui um nó pelo nome retornado pelo OpenSA.
-- `set_node_supports`: define as seis restrições de um nó.
-- `create_member`: cria uma barra entre dois nós existentes usando o nome
-  sequencial padrão do OpenSA (`B1`, `B2`, ...).
-- `delete_member`: exclui uma barra pelo nome retornado pelo OpenSA.
-- `set_member_rectangular_section`: atribui material e seção retangular usando
-  largura e altura explícitas em milímetros.
-- `set_member_properties`: atribui material e seção paramétrica a um ou mais
-  barras. As dimensões da seção usam milímetros; uma seção de 15 x 30 cm usa
-  `{ "b": 150, "h": 300 }`.
-- `delete_elements`: exclui nós, barras e barras rígidas em lote. Use
-  `dry_run` para revisar o plano e `cascade` para incluir automaticamente as
-  dependências conectadas aos nós selecionados.
-- `clear_actions`: remove todas as cargas de um ou vários elementos, usando
-  `target` para um elemento ou `targets` para uma lista de nós e barras. O
-  filtro `load_case` é opcional.
-- `list_drawing_references`: lista as referências de desenho importadas com
-  identificador, plano, origem, visibilidade e contagem de entidades.
-- `update_drawing_reference`: altera a origem, o plano ou a visibilidade de uma
-  referência importada.
-- `delete_drawing_reference`: remove uma referência importada do projeto.
-- `get_scene_views`: lista as vistas persistentes, a vista ativa e as barras
-  ocultos em cada vista.
-- `create_scene_view`, `select_scene_view`, `rename_scene_view` e
-  `delete_scene_view`: gerencia vistas nomeadas. `Completo` é fixa e não pode
-  ser renomeada ou removida.
-- `set_scene_members_visibility`: oculta ou reexibe barras e barras rígidas na
-  vista nomeada ativa. Selecione uma vista nomeada antes; `Completo` mostra tudo.
-- `show_all_scene_members`: reexibe todas as barras e barras rígidas da vista ativa.
-
-Com essas ferramentas, uma IA pode modelar uma estrutura passo a passo:
-
-1. consultar materiais e seções;
-2. criar os nós nas coordenadas do projeto;
-3. criar as barras entre os nós;
-4. atribuir materiais e seções;
-5. definir os apoios.
-
-## Análise estrutural
-
-O servidor também expõe o fluxo da seção Análise do OpenSA:
-
-- `list_load_combinations`: lista as combinações configuradas;
-- `create_load_combination`, `update_load_combination` e `delete_load_combination`;
-- `get_analysis_state`: informa se existem resultados válidos e qual visualização está ativa;
-- `run_analysis`: processa todas as combinações ou somente as informadas;
-- `list_analysis_results`: lista os resultados disponíveis na revisão atual;
-- `get_node_analysis_results`: consulta deslocamentos, rotações e reações nodais;
-- `get_member_analysis_results`: consulta esforços, deslocamentos e, opcionalmente, as 21 amostras de cada barra;
-- `get_support_reactions`: consulta as reações dos nós apoiados;
-- `set_analysis_view`: seleciona a combinação e o diagrama exibido;
-- `set_analysis_diagrams_visible`: mostra ou oculta os diagramas na cena.
-
-As combinações usam as siglas das ações nos fatores `factors`, `factors_2` e
-`factors_3`. Os estados limite aceitos são `CAR`, `ELU` e `ELS`. Os diagramas
-disponíveis são Normal, Cortante Y, Cortante Z, Torsor, Fletor Y, Fletor Z,
-Reações de apoio e Deformação X/Y/Z/XYZ.
-
-Os resultados são vinculados à revisão do modelo. Qualquer alteração estrutural
-invalida os resultados anteriores, exigindo novo processamento.
-
-### Exclusão em lote
-
-`delete_elements` valida todos os nomes e dependências antes de modificar o
-modelo. Por padrão, um nó conectado a uma barra ou barra rígida bloqueia a
-operação. Com `cascade: true`, essas dependências são incluídas no lote. Ações
-aplicadas aos elementos removidos também são eliminadas, e `dry_run: true`
-retorna o plano sem fazer alterações.
-
-## Teste local
-
-O servidor pode ser inspecionado com qualquer cliente MCP compatível. Para um
-teste de desenvolvimento, use o MCP Inspector e informe o endpoint acima como
-Streamable HTTP.
-
-O servidor escuta somente em `127.0.0.1` e é ativado manualmente. Enquanto
-estiver ativo, outros programas no mesmo computador podem consultar e alterar
-o modelo pelo endpoint local, sem uma credencial adicional. Desative o servidor
-quando terminar. O servidor não mantém histórico de alterações nem solicita
-confirmação própria para cada operação de escrita; confira as ferramentas que
-o cliente pretende executar antes de autorizá-las.
-
-## Ativação pelo usuário
-
-O servidor MCP não é iniciado automaticamente. Abra `Arquivo > Configurações >
-MCP` e ative `Servidor MCP` quando quiser permitir que um cliente externo acesse
-o modelo aberto.
-
-A página informa o estado do endpoint local e exibe o endereço:
+O MCP opera sobre o modelo aberto no Open Structural Analysis. Ative-o em
+**Arquivo > Configurações > MCP > Servidor MCP**. Ele não inicia automaticamente
+nem abre o OpenSA por conta própria. O transporte é Streamable HTTP em:
 
 ```text
 http://127.0.0.1:8765/mcp-opensa
 ```
 
-Ao ativar o servidor, o OpenSA também copia o pacote em `plugins/mcp-opensa`
-para o marketplace pessoal e tenta registrar o plugin no ChatGPT Desktop. Se o
-ChatGPT Desktop já estiver aberto, é necessário reiniciá-lo para carregar o
-marketplace; depois, abra um chat Work e selecione `OpenSA` ou escreva
-`@OpenSA`.
-Para Claude Code, use o arquivo `.mcp.json` na raiz do repositório; ele aponta
-para esse endpoint via Streamable HTTP. Para Claude Desktop Chat, use a entrada
-stdio com `mcp-remote` documentada em [Claude Desktop e Claude Code](claude-mcp.md).
-O Claude Desktop usa essa mesma configuração também em sessões Code locais. O
-OpenSA consegue confirmar que o endpoint está acessível e que o plugin do
-ChatGPT foi registrado, mas não consegue detectar se o usuário selecionou o
-plugin dentro do cliente.
+A conexão funciona com a versão de desenvolvimento e com os pacotes de release;
+o release não precisa de checkout, Python ou uv para iniciar o servidor. Cada
+cliente MCP ainda precisa da sua própria configuração ou adaptador.
 
-Ao desativar a opção ou fechar o OpenSA, o servidor MCP é encerrado.
+## Auditoria e compatibilidade
+
+A atualização amplia o servidor de **74 para 96 ferramentas**. As 74 operações
+anteriores continuam correspondendo a recursos existentes do programa; nenhuma
+ferramenta inteira precisou ser retirada. Foram atualizados seus argumentos,
+retornos e descrições. O [inventário completo](mcp-ferramentas.md) lista as 96
+ferramentas e seus parâmetros.
+
+Novas operações:
+
+- Catálogos: `get_capabilities`, `list_profiles`.
+- Placas: `list_plates`, `create_plate`, `update_plate_properties`, `delete_plate`,
+  `split_plate`, `join_plates`.
+- Geometria: `move_elements`, `set_element_display_name`, `copy_element_properties`.
+- Componentes: `list_node_components`, `set_node_component`.
+- Cargas de placas: `add_plate_pressure_profiles`, `add_plate_edge_load`.
+- Verificação: `get_verification_state`, `get_verification_results`,
+  `run_verification`, `set_member_calculation_properties`, `ungroup_verification_elements`.
+- Detalhamento: `set_detail_subtractions`, `set_member_end_cuts`.
+
+A opção `snap_enabled` foi retirada: ela não alterava a captura e sempre retornava
+verdadeiro. `node_components_visible` agora expõe a preferência real dos componentes.
+Essa preferência continua sujeita às regras da sessão: componentes não aparecem em
+Ações, Análise e Verificação. O alias antigo `Memorial` continua aceito por
+`set_session`, apontando para Verificação.
+
+As sessões são Geometria, Verificação, Ações, Análise e Detalhamento.
+`get_session_state` consulta a sessão; `set_session` muda a sessão visível.
+
+## Modelo e unidades
+
+Comece por `get_capabilities` e `get_project_summary`. Consulte materiais,
+famílias e perfis antes de criar elementos. Use os identificadores retornados pelo
+OpenSA (`N1`, `B1`, `P1` etc.); nomes de exibição não substituem esses identificadores.
+
+Coordenadas e comprimentos de cálculo usam m; dimensões de seções, componentes e
+espessuras de placas usam mm. Forças usam kN e momentos kN·m. Pressões usam kN/m²;
+forças e momentos distribuídos nas arestas usam kN/m e kN·m/m.
+
+`update_applied_load` edita cargas existentes preservando seu nome. Para pressões,
+`value` define pressão uniforme e `pressure_profiles: [Xi,Xf,Yi,Yf]` define os quatro
+valores dos perfis locais. Alterar somente o caso de carga preserva todos os valores.
+Nas arestas, `edge_index` começa em zero; forças usam os dois extremos e momentos
+usam `value` e referência local. Arestas coincidentes com barras recebem carga pela barra.
+
+`delete_elements` exclui nós, barras e barras rígidas em lote, com `dry_run` e
+`cascade`. Nós ligados a placas continuam protegidos; use `delete_plate` para
+remover uma placa. Essa operação também remove suas cargas e limpa nós órfãos
+pelas regras do domínio.
+
+## Resultados e visualização
+
+`run_analysis` usa as combinações do projeto, com estados limite CAR, ELU e ELS.
+Os resultados ficam associados à revisão estrutural. Alterações estruturais
+invalidam a análise; alterações apenas visuais preservam os resultados.
+
+`set_analysis_view` aceita `result_kind: "bar"` ou `"plate"`. A seleção troca a
+lista e os diagramas exibidos no modelo. Informe a família explicitamente quando
+o rótulo for compartilhado, como `Fletor Y (My)`. Os catálogos completos de rótulos
+e chaves estão em `get_capabilities`; as chaves antigas de barras continuam aceitas.
+Omitir a combinação preserva a seleção atual.
+
+Também estão disponíveis:
+
+- `deformation_scale`: 1 ou múltiplos de 10 entre 10 e 100;
+- `diagram_scale`: 0,1 a 1,0 em passos de 0,1;
+- `plate_result_display_mode`: modos retornados por `get_capabilities`;
+- `set_analysis_diagrams_visible`: altera a visibilidade da família ativa;
+- consultas de resultados nodais, barras, placas e reações, pelos esquemas do inventário.
+
+Momentos de placas usam kN·m/m, cortantes kN/m e tensões de membrana kN/m².
+Deslocamentos exibidos são em mm; os campos numéricos das consultas mantêm as
+unidades especificadas em cada ferramenta.
+
+`run_verification` usa a mesma rotina e as mesmas limitações da interface. Exige
+análise válida, aceita todas as barras, uma barra ou um grupo completo. Trabalha
+sobre uma cópia e recusa publicar resultados se o modelo mudar durante a execução.
+Os comprimentos e coeficientes definidos pelo usuário são preservados. Consulte
+os status e limitações de cada resultado; executar a ferramenta não implica que
+todos os elementos sejam verificáveis.
+
+Acesso ao MCP não substitui as operações interativas de edição de folhas,
+importação de desenhos ou exportação de documentos que não constem do inventário.
+
+## Pacotes de release
+
+O servidor utiliza asyncio/h11 explicitamente e não depende da configuração de
+console do Uvicorn. Isso evita a falha de inicialização quando o executável Windows
+sem console tem `stdout`/`stderr` ausentes. Os dois arquivos `.spec` carregam o hook
+`packaging/hooks/hook-osa.mcp.server.py`, que inclui os módulos dinâmicos e os
+metadados necessários. O plugin é localizado nos recursos do pacote congelado,
+independentemente do diretório atual.
+
+O workflow de release bloqueia a publicação se o diagnóstico MCP falhar:
+
+- Linux: executa o AppImage final com extração temporária, sem exigir FUSE.
+- Windows: instala silenciosamente o instalador gerado e testa o executável instalado.
+
+O diagnóstico `--mcp-self-test /caminho/relatorio.json` usa modelo e configurações
+temporários, simula ausência de console, verifica recursos do plugin e faz uma
+conexão MCP HTTP real: inicialização, listagem das ferramentas, leitura e criação
+de um nó. Não altera o projeto aberto nem as configurações pessoais. Em
+Windows, informe um caminho absoluto adequado para o relatório.
+
+Para validar um pacote durante o desenvolvimento:
+
+```bash
+uv run python scripts/check-packaged-mcp.py /caminho/do/executavel-ou.AppImage
+```
+
+Esse verificador executa o programa fora do checkout, remove PYTHONPATH/PYTHONHOME
+e exige um processo congelado com relatório de sucesso. O diagnóstico valida o
+servidor e os recursos; não comprova que o usuário selecionou o plugin no cliente.
+
+## Clientes e ativação
+
+Ao ativar o servidor, o OpenSA copia o plugin local para o marketplace pessoal e
+tenta registrá-lo no ChatGPT Desktop. Reinicie o cliente se ele já estava aberto
+e selecione OpenSA no chat Work. O plugin local está na versão 0.2.0.
+
+Para outros clientes, configure o endpoint acima. O exemplo `.mcp.json` da raiz
+é uma configuração de cliente, não uma dependência do servidor empacotado.
+Consulte [Claude Desktop e Claude Code](claude-mcp.md) para os exemplos desse cliente.
+
+O servidor escuta somente em `127.0.0.1`, sem credencial adicional. Enquanto
+ativo, processos locais com acesso à porta podem consultar e alterar o modelo.
+Ao desativar a opção ou fechar o OpenSA, o servidor é encerrado.

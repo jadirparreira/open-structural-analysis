@@ -4286,7 +4286,7 @@ class StructureScene(QWidget):
             "member_releases_visible": self._member_releases_visible,
             "semirigid_links_visible": self._semirigid_links_visible,
             "node_supports_visible": self._node_supports_visible,
-            "snap_enabled": True,
+            "node_components_visible": self._node_components_visible,
             "node_forces_visible": self._action_visibility["node_forces"],
             "node_moments_visible": self._action_visibility["node_moments"],
             "member_forces_visible": self._action_visibility["member_forces"],
@@ -4303,6 +4303,8 @@ class StructureScene(QWidget):
             "result_diagrams_visible": self._result_diagrams_visible,
             "plate_diagrams_visible": self._analysis_plate_diagrams_visible,
             "plate_result_display_mode": self._plate_result_display_mode,
+            "deformation_scale": self._analysis_deformation_scale,
+            "diagram_scale": self._analysis_diagram_scale,
         }
 
     def set_snap_type_enabled(self, snap_kind: str, enabled: bool) -> None:

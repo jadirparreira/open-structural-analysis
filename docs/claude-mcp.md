@@ -5,6 +5,10 @@ em `http://127.0.0.1:8765/mcp-opensa`. O endpoint existe enquanto o OpenSA está
 aberto e a opção **Servidor MCP** está ativada em **Arquivo > Configurações >
 MCP**. Claude não inicia o OpenSA nem esse servidor.
 
+A versão instalada pelo release expõe o mesmo endpoint, sem exigir clone do
+repositório ou ambiente Python. O arquivo de configuração abaixo pode ser criado
+na pasta de trabalho do cliente; não precisa ficar junto ao executável do OpenSA.
+
 ## Claude Code e a aba Code do Claude Desktop
 
 O arquivo `.mcp.json` na raiz deste repositório configura o transporte

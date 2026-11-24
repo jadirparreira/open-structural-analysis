@@ -92,5 +92,45 @@ def run() -> None:
     assert not model.analysis_results
 
 
+    # Verification must also run away from Qt and reject a stale snapshot.
+    from osa.domain import AnalysisResult
+    from osa.verification import runner
+
+    model.analysis_results = [AnalysisResult(model.revision, "ELU")]
+    entered.clear()
+    release.clear()
+    original_verify = runner.verify_model
+    verification_errors = []
+
+    def slow_verify(snapshot, names):
+        assert snapshot is not model
+        assert QThread.currentThread() != app.thread()
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"results": {}}
+
+    runner.verify_model = slow_verify
+    try:
+        def verify():
+            try:
+                application.run_verification()
+            except ValueError as error:
+                verification_errors.append(str(error))
+
+        worker = threading.Thread(target=verify)
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.002)
+        assert entered.is_set()
+        application.create_node(10, 11, 12)
+        release.set()
+        pump_events(app, worker)
+        assert verification_errors == ["Modelo ou resultados alterados durante a verificação. Execute novamente."]
+    finally:
+        runner.verify_model = original_verify
+
+
 if __name__ == "__main__":
     run()

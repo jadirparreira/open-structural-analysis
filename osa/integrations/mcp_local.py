@@ -6,12 +6,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
 MARKETPLACE_NAME = "open-structural-analysis-local"
 PLUGIN_NAME = "mcp-opensa"
-PLUGIN_VERSION = "0.1.5"
+PLUGIN_VERSION = "0.2.0"
 
 
 class LocalMcpIntegration:
@@ -24,7 +25,7 @@ class LocalMcpIntegration:
         config_path: Path | None = None,
         marketplace_root: Path | None = None,
     ) -> None:
-        project_root = Path(__file__).resolve().parents[2]
+        project_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
         self.plugin_root = plugin_root or project_root / "plugins"
         self.config_path = config_path or self._default_config_path()
         self.marketplace_root = marketplace_root or Path.home() / ".agents" / "plugins"
