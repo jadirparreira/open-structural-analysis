@@ -106,17 +106,24 @@ class StructuralModel:
         if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
             raise ValueError("A cor da placa é inválida.")
         thickness_mm = float(thickness_mm)
-        if not math.isfinite(thickness_mm) or thickness_mm <= 0:
-            raise ValueError("A espessura da placa deve ser positiva e finita.")
+        if not math.isfinite(thickness_mm) or thickness_mm < 0:
+            raise ValueError("A espessura da placa deve ser não negativa e finita.")
         if material is None:
-            material = next(
-                (candidate for candidate, kind in self.material_types.items() if kind == "Concreto"),
-                "Concreto Estrutural",
+            material = (
+                "Concreto C30"
+                if self.material_types.get("Concreto C30") == "Concreto"
+                else next(
+                    (candidate for candidate, kind in self.material_types.items() if kind == "Concreto"),
+                    "Concreto C30",
+                )
             )
         if not isinstance(material, str) or not material.strip():
             raise ValueError("A placa deve possuir um material válido.")
-        if self.material_types and self.material_types.get(material) != "Concreto":
-            raise ValueError("Placas devem usar um material do tipo Concreto.")
+        if material != "Indefinido" and self.material_types and (
+            material not in self.materials
+            or self.material_types.get(material) not in {"Concreto", "Aço", "Madeira"}
+        ):
+            raise ValueError("A placa deve usar um material cadastrado de concreto, aço ou madeira.")
         positioning_displacement = float(positioning_displacement)
         if not math.isfinite(positioning_displacement):
             raise ValueError("O deslocamento de posicionamento deve ser finito.")
@@ -182,13 +189,16 @@ class StructuralModel:
         if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
             raise ValueError("A cor da placa é inválida.")
         thickness = plate.thickness_mm if thickness_mm is None else float(thickness_mm)
-        if not math.isfinite(thickness) or thickness <= 0:
-            raise ValueError("A espessura da placa deve ser positiva e finita.")
+        if not math.isfinite(thickness) or thickness < 0:
+            raise ValueError("A espessura da placa deve ser não negativa e finita.")
         material = plate.material if material is None else str(material).strip()
         if not material:
             raise ValueError("A placa deve possuir um material válido.")
-        if self.material_types and self.material_types.get(material) != "Concreto":
-            raise ValueError("Placas devem usar um material do tipo Concreto.")
+        if material != "Indefinido" and self.material_types and (
+            material not in self.materials
+            or self.material_types.get(material) not in {"Concreto", "Aço", "Madeira"}
+        ):
+            raise ValueError("A placa deve usar um material cadastrado de concreto, aço ou madeira.")
         displacement = (
             plate.positioning_displacement if positioning_displacement is None
             else float(positioning_displacement)

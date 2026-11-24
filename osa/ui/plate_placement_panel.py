@@ -1,7 +1,8 @@
 """Transient properties for placing a plate by coordinates or boundary bars."""
 
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout,
+    QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QHBoxLayout,
     QLabel, QVBoxLayout,
 )
 
@@ -41,19 +42,19 @@ class PlatePlacementEditor(QFrame):
         material_title = QLabel("Material")
         material_title.setObjectName("propertySection")
         layout.addWidget(material_title)
-        self.material_combo = QComboBox()
+        self.material_combo = SelectorComboBox()
         self.material_combo.setAccessibleName("Material da placa")
-        self.material_combo.setPlaceholderText("Selecione um concreto")
+        self.material_combo.setPlaceholderText("Indefinido")
         layout.addWidget(self.material_combo)
 
         section_title = QLabel("Seção")
         section_title.setObjectName("propertySection")
         layout.addWidget(section_title)
-        self.section_combo = QComboBox()
+        self.section_combo = SelectorComboBox()
         self.section_combo.addItem("Retangular")
-        self.section_combo.setCurrentIndex(0)
+        self.section_combo.setPlaceholderText("Indefinido")
+        self.section_combo.setCurrentIndex(-1)
         self.section_combo.setAccessibleName("Seção da placa")
-        self.section_combo.setEnabled(False)
         layout.addWidget(self.section_combo)
 
         thickness_title = QLabel("Espessura")
@@ -62,8 +63,11 @@ class PlatePlacementEditor(QFrame):
         self.thickness_mm = QDoubleSpinBox()
         self.thickness_mm.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.thickness_mm.setDecimals(2)
-        self.thickness_mm.setRange(0.01, 1_000_000.0)
-        self.thickness_mm.setValue(100.0)
+        self.thickness_mm.setRange(0.0, 1_000_000.0)
+        self.thickness_mm.setValue(0.0)
+        self.thickness_mm.setSpecialValueText("Indefinido")
+        self.thickness_mm.setEnabled(False)
+        self.section_combo.currentTextChanged.connect(self._section_changed)
         self.thickness_mm.setAccessibleName("Espessura da placa (mm)")
         self.thickness_mm.setSuffix(" mm")
         layout.addWidget(self.thickness_mm)
@@ -102,13 +106,18 @@ class PlatePlacementEditor(QFrame):
             self.restriction_stiffness_fields.append(spring)
         self.hide()
 
+    def _section_changed(self, section: str) -> None:
+        defined = section == "Retangular"
+        self.thickness_mm.setEnabled(defined)
+        self.thickness_mm.setValue(100.0 if defined else 0.0)
+
     @property
     def placement_mode(self) -> str:
         return "exact" if self.placement_mode_switch._buttons["exact"].isChecked() else "bars"
 
     @property
     def material(self) -> str | None:
-        return self.material_combo.currentText() or None
+        return self.material_combo.currentText() or "Indefinido"
 
     @property
     def restrictions(self) -> tuple[bool, bool, bool]:
@@ -124,17 +133,17 @@ class PlatePlacementEditor(QFrame):
 
     def show_for_model(self, model) -> None:
         current = self.material_combo.currentText()
-        concrete_materials = [
+        plate_materials = [
             name for name in model.materials
-            if model.material_types.get(name) == "Concreto"
+            if model.material_types.get(name) in {"Concreto", "Aço", "Madeira"}
         ]
         with QSignalBlocker(self.material_combo):
             self.material_combo.clear()
-            self.material_combo.addItems(concrete_materials)
-            if current in concrete_materials:
+            self.material_combo.addItems(plate_materials)
+            if current in plate_materials:
                 self.material_combo.setCurrentText(current)
-            elif concrete_materials:
-                self.material_combo.setCurrentIndex(0)
+            else:
+                self.material_combo.setCurrentIndex(-1)
         layout = self.layout()
         layout.activate()
         self.setMinimumHeight(0)

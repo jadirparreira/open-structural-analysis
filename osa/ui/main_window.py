@@ -6158,7 +6158,7 @@ class MainWindow(QMainWindow):
         if not material:
             self.history.append(
                 "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
-                "(Selecione um material de concreto)</span>"
+                "(Selecione um material)</span>"
             )
             return
         try:

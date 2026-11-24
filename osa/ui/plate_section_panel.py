@@ -72,7 +72,8 @@ class PlateSectionPanel(QFrame):
         self.thickness = _TrimmedDoubleSpinBox()
         self.thickness.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.thickness.setDecimals(2)
-        self.thickness.setRange(0.01, 1_000_000.0)
+        self.thickness.setRange(0.0, 1_000_000.0)
+        self.thickness.setSpecialValueText("Indefinido")
         self.thickness.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
         )
@@ -217,6 +218,8 @@ class PlateSectionPanel(QFrame):
 
     @staticmethod
     def _section_name(thickness: float) -> str:
+        if thickness <= 0:
+            return "Indefinido"
         value = f"{thickness:g}".replace(".", ",")
         return f"R {value}"
 

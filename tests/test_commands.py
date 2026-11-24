@@ -324,7 +324,7 @@ def test_portico_command_creates_a_concrete_four_column_portal_without_rigid_con
     )
     assert all(node.supports == (True, True, True, False, False, False)
                for node in model.nodes.values() if node.z == 0.0)
-    assert all(member.material == "Concreto Estrutural" for member in model.bars.values())
+    assert all(member.material == "Concreto C30" for member in model.bars.values())
     assert all(member.section == "Retangular" for member in model.bars.values())
     assert all(member.profile == "R 200 x 400" for member in model.bars.values())
     assert all(member.geometry_dict() == {"b": 200.0, "h": 400.0} for member in model.bars.values())
@@ -659,7 +659,7 @@ def test_galpao_does_not_leave_a_pending_command():
         if node.z == 0.0
     )
     concrete_members = [member for member in model.bars.values()
-                        if member.material == "Concreto Estrutural"]
+                        if member.material == "Concreto C30"]
     assert len(concrete_members) == 44
     assert all(
         member.section == "Retangular"
@@ -1034,7 +1034,7 @@ def test_barrabieng_creates_only_a_fixed_concrete_beam_with_one_z_load():
     }
     assert all(node.supports == (True,) * 6 for node in model.nodes.values())
     member = next(iter(model.bars.values()))
-    assert member.material == "Concreto Estrutural"
+    assert member.material == "Concreto C30"
     assert member.section == "Retangular"
     assert member.profile == "R 200 x 400"
     assert member.geometry_dict() == {"b": 200.0, "h": 400.0}

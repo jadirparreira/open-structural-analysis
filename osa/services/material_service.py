@@ -1,9 +1,9 @@
+from dataclasses import replace
+
+from osa.data import CatalogLoader
 from osa.domain import StructuralModel
 
-PROTECTED_MATERIALS = {
-    "ASTM A36", "ASTM A572 Gr 50", "NBR MR 250", "NBR AR 350", "NBR AR 415", "SAE 1020",
-    "Concreto Estrutural", "Madeira Estrutural",
-}
+PROTECTED_MATERIALS = frozenset(item["name"] for item in CatalogLoader().materials())
 
 
 class MaterialService:
@@ -17,8 +17,15 @@ class MaterialService:
             raise ValueError("Tipo de material inválido.")
         if len(values) != 6 or any(float(value) < 0 for value in values):
             raise ValueError("Informe seis propriedades não negativas.")
-        self.model.materials[name.strip()] = tuple(float(value) for value in values)
-        self.model.material_types[name.strip()] = material_type
+        name = name.strip()
+        properties = tuple(float(value) for value in values)
+        self.model.materials[name] = properties
+        self.model.material_types[name] = material_type
+        # Member quantities use a material snapshot; keep it consistent with
+        # the catalog values used by the solver and by plate self-weight.
+        for member_name, member in tuple(self.model.bars.items()):
+            if member.material == name:
+                self.model.bars[member_name] = replace(member, material_values=properties[:4])
         self.model._touch()
 
     def remove(self, name: str) -> None:

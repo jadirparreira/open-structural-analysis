@@ -15,10 +15,10 @@ from PySide6.QtSvg import QSvgRenderer
 
 from osa.rendering.member_breaks import member_break_linework
 
+from .selector import SelectorComboBox
 from .common import (
     QCheckBox,
     QColor,
-    QComboBox,
     QAbstractSpinBox,
     QFrame,
     QHBoxLayout,
@@ -374,7 +374,7 @@ class ProjectSheetViewPanel(QFrame):
         orientation_label = QLabel("Orientação", orientation_group)
         orientation_label.setObjectName("propertySection")
         orientation_layout.addWidget(orientation_label)
-        self._view_orientation_selector = QComboBox(self._settings_popup)
+        self._view_orientation_selector = SelectorComboBox(self._settings_popup)
         self._view_orientation_selector.setObjectName("viewSettingsOrientation")
         self._view_orientation_selector.addItems(
             ("Superior para inferior", "Inferior para superior")

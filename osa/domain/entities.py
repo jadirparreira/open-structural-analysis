@@ -146,7 +146,7 @@ class Plate:
     supports: tuple[tuple[str, str], ...] = ()
     color: str = "#6e7781"
     thickness_mm: float = 100.0
-    material: str = "Concreto Estrutural"
+    material: str = "Concreto C30"
     # Deslocamento visual em metros ao longo da normal global orientada do plano.
     positioning_displacement: float = 0.0
     # Só afetam a geometria exibida no detalhamento; a análise usa plate.contour.

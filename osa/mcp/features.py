@@ -83,7 +83,7 @@ class CurrentFeatures:
         restriction_stiffness: list[float] | None = None,
         restriction_directions: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Cria placa de concreto com contorno em m, espessura em mm e molas distribuídas em kN/m³."""
+        """Cria placa de concreto, aço ou madeira com contorno em m, espessura em mm e molas distribuídas em kN/m³."""
         kwargs = {
             key: value
             for key, value in {

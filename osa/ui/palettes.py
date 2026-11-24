@@ -1,6 +1,7 @@
 from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import QWidgetAction
 from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS, PLATE_FIELDS, plate_diagram_tooltip
 
@@ -1044,7 +1045,7 @@ class ProjectSheetsPalette(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
-        self.sheet_selector = QComboBox(self)
+        self.sheet_selector = SelectorComboBox(self)
         self.sheet_selector.setToolTip("Folha de projeto")
         self.sheet_selector.setAccessibleName("Folha de projeto")
         self.sheet_selector.addItems(self._sheet_names)
@@ -1649,7 +1650,7 @@ class TopIconPalette(QFrame):
         scene_palette_layout = QHBoxLayout(self.scene_palette)
         scene_palette_layout.setContentsMargins(4, 4, 4, 4)
         scene_palette_layout.setSpacing(3)
-        self.scene_view_selector = QComboBox(self.scene_palette)
+        self.scene_view_selector = SelectorComboBox(self.scene_palette)
         self.scene_view_selector.addItem("Completo")
         self.scene_view_selector.setToolTip("Vista da cena")
         self.scene_view_selector.setAccessibleName("Vista da cena")
@@ -2198,7 +2199,7 @@ class TopIconPalette(QFrame):
 class ActionTopPalette(QFrame):
     """Barra superior contextual para a edição de ações estruturais."""
 
-    class ActionSelector(QComboBox):
+    class ActionSelector(SelectorComboBox):
         """Seletor que mostra o indicador de peso próprio dentro do campo."""
 
         def __init__(self, parent: QWidget | None = None) -> None:
@@ -2416,11 +2417,11 @@ class AnalysisTopPalette(QFrame):
         selectors_layout = QHBoxLayout(self.selectors)
         selectors_layout.setContentsMargins(0, 0, 0, 0)
         selectors_layout.setSpacing(6)
-        self.combination_selector = QComboBox(self)
+        self.combination_selector = SelectorComboBox(self)
         self.combination_selector.setToolTip("Combinação de carga para os diagramas")
         self.combination_selector.setAccessibleName("Combinação de análise")
         self.combination_selector.currentTextChanged.connect(window._select_analysis_combination)
-        self.diagram_selector = QComboBox(self)
+        self.diagram_selector = SelectorComboBox(self)
         self.diagram_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.result_kind = "bar"
         self._selected_diagrams = {"bar": "Normal", "plate": PLATE_DIAGRAMS[0][1]}

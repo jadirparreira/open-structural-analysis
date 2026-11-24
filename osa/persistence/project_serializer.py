@@ -152,6 +152,42 @@ class ProjectSerializer:
             data.pop("bars", None)
 
         candidate = type(model)()
+        # Restore saved materials before validating plates that reference them.
+        if file_format == FORMAT_V2:
+            materials = data.get("materials", {})
+            # Keep current catalog defaults when loading older projects, then
+            # overlay project-specific edits and custom materials.
+            catalog_materials = dict(candidate.materials)
+            catalog_types = dict(candidate.material_types)
+            loaded_materials = {}
+            loaded_types = {}
+            for name, item in materials.items():
+                # Generic materials are migrated to specified catalog grades.
+                if name in {"Aço Estrutural", "Concreto Estrutural"}:
+                    continue
+                default_values = catalog_materials.get(name, ())
+                default_strength = tuple(default_values[4:6]) if len(default_values) >= 6 else (0.0, 0.0)
+                loaded_materials[name] = self._material_values(
+                    item["values"], default_strength=default_strength,
+                )
+                loaded_types[name] = item.get("type", catalog_types.get(name, ""))
+            candidate.materials = {**catalog_materials, **loaded_materials}
+            candidate.material_types = {**catalog_types, **loaded_types}
+        legacy_materials = {
+            "Madeira Estrutural": ("Madeira", (12000000.0, 750000.0, 0.35, 4.903325, 0.0, 0.0)),
+        }
+        referenced_materials = {
+            item.get("material")
+            for collection in (data.get("members", data.get("bars", ())), data.get("plates", ()))
+            for item in collection
+        }
+        migrated_concrete = "Concreto Estrutural" in referenced_materials
+        for name in referenced_materials & legacy_materials.keys():
+            kind, values = legacy_materials[name]
+            candidate.materials.setdefault(name, values)
+            if not candidate.material_types.get(name):
+                candidate.material_types[name] = kind
+
         saved_bar_subtractions = tuple(
             (item.get("name"), item.get("detail_subtractions", ()))
             for item in data.get("members", data.get("bars", ()))
@@ -262,6 +298,11 @@ class ProjectSerializer:
             if previous is not None:
                 member_pairs.remove(frozenset((previous.start_node, previous.end_node)))
             member_pairs.add(frozenset((member.start_node, member.end_node)))
+            if member.material == "Concreto Estrutural":
+                member = replace(
+                    member, material="Concreto C30",
+                    material_values=tuple(candidate.materials["Concreto C30"][:4]),
+                )
             candidate.bars[member.name] = member
             if consume:
                 members[index] = None
@@ -316,7 +357,8 @@ class ProjectSerializer:
             candidate.add_plate(item["contour"], name=item["name"], supports=supports,
                                 color=item.get("color", "#b7c6d5"),
                                 thickness_mm=item.get("thickness_mm", 100.0),
-                                material=item.get("material"),
+                                material=("Concreto C30" if item.get("material") == "Concreto Estrutural"
+                                          else item.get("material")),
                                 positioning_displacement=item.get("positioning_displacement", 0.0),
                                 edge_positioning=item.get("edge_positioning", ()),
                                 restrictions=item.get("restrictions", (False, False, False)),
@@ -404,25 +446,6 @@ class ProjectSerializer:
             if active_view not in candidate.scene_views:
                 raise ValueError("A vista ativa é inválida.")
             candidate.active_scene_view = active_view
-            materials = data.get("materials", {})
-            # Keep current catalog defaults when loading older projects, then
-            # overlay project-specific edits and custom materials.
-            catalog_materials = dict(candidate.materials)
-            catalog_types = dict(candidate.material_types)
-            loaded_materials = {}
-            loaded_types = {}
-            for name, item in materials.items():
-                # The old generic steel is replaced by the specified A36 entry.
-                if name == "Aço Estrutural":
-                    continue
-                default_values = catalog_materials.get(name, ())
-                default_strength = tuple(default_values[4:6]) if len(default_values) >= 6 else (0.0, 0.0)
-                loaded_materials[name] = self._material_values(
-                    item["values"], default_strength=default_strength,
-                )
-                loaded_types[name] = item.get("type", catalog_types.get(name, ""))
-            candidate.materials = {**catalog_materials, **loaded_materials}
-            candidate.material_types = {**catalog_types, **loaded_types}
             a36_values = candidate.materials.get("ASTM A36")
             if a36_values is not None:
                 for member_name, member in tuple(candidate.bars.items()):
@@ -481,7 +504,8 @@ class ProjectSerializer:
                 AnalysisResult(
                     # Older analyses used PyNite's Y-up frame for local
                     # properties. Keep their data, but require a fresh solve.
-                    int(item["model_revision"]) if data.get("analysis_axes") == ANALYSIS_AXES else -1,
+                    int(item["model_revision"])
+                    if data.get("analysis_axes") == ANALYSIS_AXES and not migrated_concrete else -1,
                     item["load_reference"],
                     item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
                     item.get("member_results", {}) if consume else dict(item.get("member_results", {})),

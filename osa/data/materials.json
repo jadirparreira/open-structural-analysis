@@ -59,27 +59,285 @@
       "poisson_ratio": 0.3,
       "unit_weight_kn_m3": 76.9822025,
       "fy_kn_m2": 240000.0,
-      "fu_kn_m2": 380000.0
+      "fu_kn_m2": 380000.0,
+      "description": "Designação de composição química. fy e fu são referências editáveis: confirmar a condição de fornecimento e o certificado do produto antes de usá-los como resistências estruturais.",
+      "source": "Gerdau, catálogo Barras e Perfis, linha SAE."
     },
     {
-      "name": "Concreto Estrutural",
+      "name": "ASTM A500 Gr B",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 315000.0,
+      "fu_kn_m2": 400000.0,
+      "description": "Tubos estruturais. Referência ASTM A500/A500M-21a: valores mínimos para seções circulares, quadradas e retangulares. Conferir a edição especificada e o certificado do produto.",
+      "source": "ASTM A500/A500M-21a, Tabela 2; Steel Tube Institute, ASTM A500."
+    },
+    {
+      "name": "ASTM A500 Gr C",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 345000.0,
+      "fu_kn_m2": 425000.0,
+      "description": "Tubos estruturais. Referência ASTM A500/A500M-21a: valores mínimos para seções circulares, quadradas e retangulares. Edições anteriores podiam exigir fy menor para tubos circulares.",
+      "source": "ASTM A500/A500M-21a, Tabela 2; Steel Tube Institute, ASTM A500."
+    },
+    {
+      "name": "NBR 7008-3 ZAR 230",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 230000.0,
+      "fu_kn_m2": 310000.0,
+      "description": "Chapas galvanizadas para perfis formados a frio. Referência Usiminas: espessuras de 0,40 a 3,00 mm. A espessura resistente é a do aço-base.",
+      "source": "ABNT NBR 7008-3:2021; Usiminas, catálogo Galvanizados por Imersão a Quente (2024)."
+    },
+    {
+      "name": "NBR 7008-3 ZAR 280",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 280000.0,
+      "fu_kn_m2": 380000.0,
+      "description": "Chapas galvanizadas para perfis formados a frio. Referência Usiminas: espessuras de 0,40 a 3,00 mm. A espessura resistente é a do aço-base.",
+      "source": "ABNT NBR 7008-3:2021; Usiminas, catálogo Galvanizados por Imersão a Quente (2024)."
+    },
+    {
+      "name": "NBR 7008-3 ZAR 345",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 345000.0,
+      "fu_kn_m2": 430000.0,
+      "description": "Chapas galvanizadas para perfis formados a frio. Referência Usiminas: espessuras de 0,40 a 3,00 mm. A espessura resistente é a do aço-base.",
+      "source": "ABNT NBR 7008-3:2021; Usiminas, catálogo Galvanizados por Imersão a Quente (2024)."
+    },
+    {
+      "name": "NBR 7007 AR 350 COR",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 350000.0,
+      "fu_kn_m2": 485000.0,
+      "description": "Aço patinável para barras e perfis. Resistências mínimas de referência da linha Gerdau; observar as condições de garantia do produto fornecido.",
+      "source": "ABNT NBR 7007; Gerdau, catálogo Barras e Perfis, propriedades mecânicas referenciais."
+    },
+    {
+      "name": "ASTM A992",
+      "type": "Aço",
+      "elastic_modulus_kn_m2": 200000000.0,
+      "shear_modulus_kn_m2": 76900000.0,
+      "poisson_ratio": 0.3,
+      "unit_weight_kn_m3": 76.9822025,
+      "fy_kn_m2": 345000.0,
+      "fu_kn_m2": 450000.0,
+      "description": "Perfis estruturais laminados I e H. Usa fy mínimo de 345 MPa e fu mínimo de 450 MPa; o intervalo de fy de fornecimento não é usado como aumento de resistência.",
+      "source": "Gerdau, catálogo Perfis Estruturais - Informações Técnicas, tabela ASTM A992."
+    },
+    {
+      "name": "Concreto C20",
       "type": "Concreto",
-      "elastic_modulus_kn_m2": 30000000.0,
-      "shear_modulus_kn_m2": 12500000.0,
+      "elastic_modulus_kn_m2": 21287367.145798,
+      "shear_modulus_kn_m2": 8869736.310749,
       "poisson_ratio": 0.2,
-      "unit_weight_kn_m3": 23.53596,
-      "fy_kn_m2": 0.0,
-      "fu_kn_m2": 0.0
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
     },
     {
-      "name": "Madeira Estrutural",
+      "name": "Concreto C25",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 24150000.0,
+      "shear_modulus_kn_m2": 10062500.0,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C30",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 26838405.317753,
+      "shear_modulus_kn_m2": 11182668.882397,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C35",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 29402916.522005,
+      "shear_modulus_kn_m2": 12251215.217502,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C40",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 31875758.814497,
+      "shear_modulus_kn_m2": 13281566.172707,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C45",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 34278922.095072,
+      "shear_modulus_kn_m2": 14282884.20628,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C50",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 36628131.265463,
+      "shear_modulus_kn_m2": 15261721.36061,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C55",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 38092925.492915,
+      "shear_modulus_kn_m2": 15872052.288715,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C60",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 39531327.692411,
+      "shear_modulus_kn_m2": 16471386.538505,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C70",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 42357246.966146,
+      "shear_modulus_kn_m2": 17648852.902561,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C80",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 45132116.87844,
+      "shear_modulus_kn_m2": 18805048.69935,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Concreto C90",
+      "type": "Concreto",
+      "elastic_modulus_kn_m2": 46703175.972013,
+      "shear_modulus_kn_m2": 19459656.655005,
+      "poisson_ratio": 0.2,
+      "unit_weight_kn_m3": 25.0,
+      "description": "Ecs estimado aos 28 dias; agregado granito/gnaisse (αE = 1,0). Peso específico de concreto armado. Valores editáveis.",
+      "source": "ABNT NBR 6118:2023, 8.2.8 e 8.2.9; classes da ABNT NBR 8953:2015. Peso específico: ABNT NBR 6120:2019."
+    },
+    {
+      "name": "Angelim-pedra",
       "type": "Madeira",
-      "elastic_modulus_kn_m2": 12000000.0,
-      "shear_modulus_kn_m2": 750000.0,
-      "poisson_ratio": 0.35,
-      "unit_weight_kn_m3": 4.903325,
-      "fy_kn_m2": 0.0,
-      "fu_kn_m2": 0.0
+      "elastic_modulus_kn_m2": 12912000.0,
+      "shear_modulus_kn_m2": 807000.0,
+      "unit_weight_kn_m3": 6.8058151,
+      "description": "Hymenolobium petraeum. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Cupiúba",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 13627000.0,
+      "shear_modulus_kn_m2": 851687.5,
+      "unit_weight_kn_m3": 8.2179727,
+      "description": "Goupia glabra. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Eucalipto grandis",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 12813000.0,
+      "shear_modulus_kn_m2": 800812.5,
+      "unit_weight_kn_m3": 6.276256,
+      "description": "Eucalyptus grandis. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Garapa",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 18359000.0,
+      "shear_modulus_kn_m2": 1147437.5,
+      "unit_weight_kn_m3": 8.7475318,
+      "description": "Apuleia leiocarpa. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022. Garapa: amostra Garapa Roraima do Anexo E."
+    },
+    {
+      "name": "Ipê",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 18011000.0,
+      "shear_modulus_kn_m2": 1125687.5,
+      "unit_weight_kn_m3": 10.4735022,
+      "description": "Tabebuia serratifolia. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Jatobá",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 23607000.0,
+      "shear_modulus_kn_m2": 1475437.5,
+      "unit_weight_kn_m3": 10.5323421,
+      "description": "Hymenaea spp.. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Maçaranduba",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 22733000.0,
+      "shear_modulus_kn_m2": 1420812.5,
+      "unit_weight_kn_m3": 11.20900095,
+      "description": "Manilkara spp.. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
+    },
+    {
+      "name": "Pinus elliottii",
+      "type": "Madeira",
+      "elastic_modulus_kn_m2": 11889000.0,
+      "shear_modulus_kn_m2": 743062.5,
+      "unit_weight_kn_m3": 5.491724,
+      "description": "Pinus elliottii var. elliottii. Referência a 12% de umidade: E0,m paralelo às fibras; G estimado por E0,m/16. Valores editáveis.",
+      "source": "ABNT NBR 7190:1997, Anexo E, valores médios a 12% de umidade; G estimado por E0,m/16, conforme ABNT NBR 7190-1:2022."
     }
   ]
 }

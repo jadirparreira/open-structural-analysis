@@ -1171,7 +1171,7 @@ class LocalMcpServer:
             description=(
                 "Atribui uma seção retangular a uma ou mais barras. Informe largura e "
                 "altura em milímetros; 15 x 30 cm corresponde a 150 x 300 mm. "
-                "O material padrão é Concreto Estrutural."
+                "O material padrão é Concreto C30."
             ),
             annotations=write,
         )
@@ -1179,7 +1179,7 @@ class LocalMcpServer:
             member_names: list[str],
             width_mm: float,
             height_mm: float,
-            material: str = "Concreto Estrutural",
+            material: str = "Concreto C30",
         ) -> dict[str, Any]:
             return self.application.set_member_rectangular_section(
                 member_names, width_mm, height_mm, material,

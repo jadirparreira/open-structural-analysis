@@ -410,7 +410,7 @@ class CommandSession:
         column_top_nodes: dict[tuple[float, float], str] = {}
 
         def configure_member(name: str) -> None:
-            model.update_bar_material(name, "Concreto Estrutural", model.materials["Concreto Estrutural"])
+            model.update_bar_material(name, "Concreto C30", model.materials["Concreto C30"])
             model.update_bar_section(name, "Retangular")
             model.update_member_profile(name, "R 200 x 400", geometry)
             model.update_member_color(name, member_color)
@@ -456,7 +456,7 @@ class CommandSession:
         model.update_node_supports(end.name, support)
         member = self.service.create_member(start.name, end.name)
         model.update_bar_material(
-            member.name, "Concreto Estrutural", model.materials["Concreto Estrutural"],
+            member.name, "Concreto C30", model.materials["Concreto C30"],
         )
         model.update_bar_section(member.name, "Retangular")
         model.update_member_profile(member.name, "R 200 x 400", {"b": 200.0, "h": 400.0})
@@ -655,7 +655,7 @@ class CommandSession:
                     member = self.service.create_member(start.name, end.name)
                     configure_member(
                         member.name,
-                        "Concreto Estrutural",
+                        "Concreto C30",
                         "Retangular",
                         "R 250 x 500",
                         column_geometry,
@@ -673,7 +673,7 @@ class CommandSession:
                     )
                     configure_member(
                         beam.name,
-                        "Concreto Estrutural",
+                        "Concreto C30",
                         "Retangular",
                         "R 200 x 400",
                         beam_geometry,

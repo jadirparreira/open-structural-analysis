@@ -2,6 +2,7 @@ from math import isfinite
 
 from PySide6.QtCore import QRegularExpression, Signal
 from PySide6.QtGui import QPainterPath, QPen, QRegularExpressionValidator
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
@@ -222,7 +223,7 @@ class PropertyPanel(QFrame):
         self.layout.setSpacing(7)
         self.title = QLabel()
         self.title.setObjectName("propertyTitle")
-        self.kind_selector = QComboBox()
+        self.kind_selector = SelectorComboBox()
         self.kind_selector.setAccessibleName("Propriedades dos elementos selecionados")
         self.kind_selector.currentIndexChanged.connect(self._inspected_kind_changed)
         self.kind_control = QWidget()
@@ -427,6 +428,7 @@ class PropertyPanel(QFrame):
         self._plate_restriction_direction_inputs: list[QWidget] = []
         self._plate_section_settings_button: QToolButton | None = None
         self._plate_section_name_display: QLineEdit | None = None
+        self._plate_section_combo: SelectorComboBox | None = None
         self._solid_offsets_widget: QWidget | None = None
         self._supports_header: QWidget | None = None
         self._support_group = "D"
@@ -694,19 +696,19 @@ class PropertyPanel(QFrame):
 
                 material_label = QLabel("Material")
                 material_label.setObjectName("propertySection")
-                material_combo = QComboBox()
-                material_combo.setAccessibleName("Material de concreto da placa")
-                concrete_materials = [
+                material_combo = SelectorComboBox()
+                material_combo.setAccessibleName("Material da placa")
+                plate_materials = [
                     material_name for material_name in self.window.model.materials
-                    if self.window.model.material_types.get(material_name) == "Concreto"
+                    if self.window.model.material_types.get(material_name) in {"Concreto", "Aço", "Madeira"}
                 ]
-                material_combo.addItems(concrete_materials)
-                if plate.material in concrete_materials:
+                material_combo.addItems(plate_materials)
+                if plate.material in plate_materials:
                     material_combo.setCurrentText(plate.material)
                 else:
                     material_combo.setCurrentIndex(-1)
-                    material_combo.setPlaceholderText("Selecione um concreto")
-                material_combo.setEnabled(bool(concrete_materials))
+                    material_combo.setPlaceholderText("Indefinido")
+                material_combo.setEnabled(True)
                 material_combo.currentTextChanged.connect(
                     lambda selected_material: self._plate_material_changed(
                         name, selected_material,
@@ -717,10 +719,14 @@ class PropertyPanel(QFrame):
 
                 section_label = QLabel("Seção")
                 section_label.setObjectName("propertySection")
-                section_combo = QComboBox()
+                section_combo = SelectorComboBox()
                 section_combo.addItem("Retangular")
-                section_combo.setCurrentIndex(0)
-                section_combo.setEnabled(False)
+                section_combo.setPlaceholderText("Indefinido")
+                section_combo.setCurrentIndex(0 if plate.thickness_mm > 0 else -1)
+                self._plate_section_combo = section_combo
+                section_combo.currentTextChanged.connect(
+                    lambda section: self._plate_section_changed(name, section)
+                )
                 section_combo.setAccessibleName("Formato da seção da placa")
                 section_row_widget = QWidget()
                 section_row = QHBoxLayout(section_row_widget)
@@ -1132,7 +1138,7 @@ class PropertyPanel(QFrame):
                 nodes = list(self.window.model.nodes)
                 self.layout.insertWidget(4, self.nodes_title)
                 self.nodes_title.show()
-                start, end = QComboBox(), QComboBox()
+                start, end = SelectorComboBox(), SelectorComboBox()
                 start.addItems(nodes); end.addItems(nodes)
                 for combo in (start, end):
                     combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1177,7 +1183,7 @@ class PropertyPanel(QFrame):
             material_title = QLabel("Material")
             material_title.setObjectName("propertySection")
             material_layout.addWidget(material_title)
-            material_combo = QComboBox()
+            material_combo = SelectorComboBox()
             material_combo.addItems(self.window.model.materials)
             materials = [self.window.model.bars[member_name].material for member_name in names]
             material_combo.setPlaceholderText("Variado" if not self._all_equal(materials) else "Indefinido")
@@ -1190,7 +1196,7 @@ class PropertyPanel(QFrame):
             self.layout.addWidget(material_widget)
             section_label = QLabel("Seção")
             section_label.setObjectName("propertySection")
-            section_combo = QComboBox()
+            section_combo = SelectorComboBox()
             section_combo.setPlaceholderText("Indefinido")
             sections = [self.window.model.bars[member_name].section for member_name in names]
             available_sections = [
@@ -2957,6 +2963,7 @@ class PropertyPanel(QFrame):
             self.window.close_plate_section_panel(self._plate_section_settings_button)
             self._plate_section_settings_button = None
         self._plate_section_name_display = None
+        self._plate_section_combo = None
         if self._subtractions_button is not None:
             self.window.close_subtractions_panel(self._subtractions_button)
             self._subtractions_button = None
@@ -3244,8 +3251,22 @@ class PropertyPanel(QFrame):
             return
         self.window.refresh_scene()
 
+    def _plate_section_changed(self, name: str, section: str) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        thickness = self.window.model.plates[name].thickness_mm
+        self.window.model.update_plate(
+            name, thickness_mm=(thickness or 100.0) if section == "Retangular" else 0.0,
+        )
+        self.update_plate_section_identity(name)
+        if self.window.plate_section_panel.isVisible():
+            self.window.plate_section_panel.configure_for_plate(name)
+        self.window.refresh_scene()
+
     @staticmethod
     def _plate_section_identity(plate) -> str:
+        if plate.thickness_mm <= 0:
+            return "Indefinido"
         thickness = f"{plate.thickness_mm:g}".replace(".", ",")
         return f"R {thickness}"
 
@@ -3258,6 +3279,11 @@ class PropertyPanel(QFrame):
             self._plate_section_name_display.setText(
                 self._plate_section_identity(self.window.model.plates[name])
             )
+            if self._plate_section_combo is not None:
+                with QSignalBlocker(self._plate_section_combo):
+                    self._plate_section_combo.setCurrentIndex(
+                        0 if self.window.model.plates[name].thickness_mm > 0 else -1
+                    )
 
     def _plate_restriction_changed(self, name: str, index: int, restrained: bool) -> None:
         if self._selected != ("plate", name) or name not in self.window.model.plates:
@@ -3514,7 +3540,7 @@ class PropertyPanel(QFrame):
         selector_layout = QHBoxLayout(selector_row)
         selector_layout.setContentsMargins(0, 0, 0, 0)
         selector_layout.setSpacing(8)
-        edge_selector = QComboBox()
+        edge_selector = SelectorComboBox()
         edge_selector.setObjectName("plateEdgeSelector")
         edge_selector.setAccessibleName("Aresta da placa para aplicação da ação")
         for index, start_node in enumerate(plate.vertex_nodes):

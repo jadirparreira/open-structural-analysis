@@ -5,6 +5,7 @@ import math
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPainterPathStroker, QPen, QPicture, QPixmap, QPolygonF, QRegion
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
 from .property_panel import CompactDoubleSpinBox
@@ -249,7 +250,7 @@ class WeldPanel(QFrame):
         scroll.setWidget(content)
         layout.addWidget(scroll)
         def combo(key, label, choices):
-            field = QComboBox()
+            field = SelectorComboBox()
             for value, name in choices.items():
                 field.addItem(name, value)
             field.currentIndexChanged.connect(self._changed)

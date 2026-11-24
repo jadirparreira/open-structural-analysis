@@ -107,13 +107,13 @@ def test_mcp_application_can_assign_concrete_properties_and_supports():
     supports = application.set_node_supports("N1", True, True, True)
     result = application.set_member_properties(
         ["B1"],
-        "Concreto Estrutural",
+        "Concreto C30",
         "Retangular",
         {"b": 150.0, "h": 300.0},
     )
 
     assert supports["node"]["supports"] == [True, True, True, False, False, False]
-    assert result["members"][0]["material"] == "Concreto Estrutural"
+    assert result["members"][0]["material"] == "Concreto C30"
     assert result["members"][0]["section"] == "Retangular"
     assert result["members"][0]["profile"] == "R 150 x 300"
     assert result["members"][0]["geometry"] == {"b": 150.0, "h": 300.0}
@@ -167,9 +167,9 @@ def test_mcp_application_lists_catalog_materials_and_sections():
     _model, application = make_application()
 
     materials = application.list_materials()
-    sections = application.list_sections("Concreto Estrutural")
+    sections = application.list_sections("Concreto C30")
 
-    assert any(item["name"] == "Concreto Estrutural" for item in materials["materials"])
+    assert any(item["name"] == "Concreto C30" for item in materials["materials"])
     assert sections["sections"] == [{
         "material_type": "Concreto",
         "families": [
@@ -251,7 +251,7 @@ def test_mcp_application_updates_any_combination_of_member_properties():
 
     result = application.update_member_properties(
         ["B1"],
-        material="Concreto Estrutural",
+        material="Concreto C30",
         section="Retangular",
         geometry={"b": 200.0, "h": 400.0},
         rotation=45,

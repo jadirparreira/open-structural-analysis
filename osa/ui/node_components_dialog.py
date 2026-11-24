@@ -11,6 +11,7 @@ import pyvista as pv
 import vtk
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -52,7 +53,7 @@ from .detailing_viewport import _DetachedDetailingScene
 from .property_panel import CompactDoubleSpinBox, PropertyPanel
 
 
-class _ComponentComboBox(QComboBox):
+class _ComponentComboBox(SelectorComboBox):
     def wheelEvent(self, event) -> None:
         event.ignore()
 

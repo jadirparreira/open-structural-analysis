@@ -630,17 +630,9 @@ class _LaunchBuilder:
                 raise ProjectImportError(
                     f"Material individual {override.get('type')!r} da viga não mapeado."
                 )
-            from osa.data import CatalogLoader
-
-            reference = next(
-                item for item in CatalogLoader().materials()
-                if item["name"] == "Madeira Estrutural"
-            )
             name = f"Madeira para revisão ({override['class_name']})"
-            values = [
-                reference["elastic_modulus_kn_m2"], reference["shear_modulus_kn_m2"],
-                reference["poisson_ratio"], reference["unit_weight_kn_m3"],
-            ]
+            # Referência provisória da importação, sem atribuir uma espécie ao lote.
+            values = [12000000.0, 750000.0, 0.0, 4.903325]
             self.materials[name] = {"type": "Madeira", "values": values}
             warning = (
                 "Vigas de madeira usam propriedades de referência do OSA; "

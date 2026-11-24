@@ -1381,7 +1381,7 @@ class McpApplication(CurrentFeatures):
         member_names: list[str],
         width_mm: float,
         height_mm: float,
-        material: str = "Concreto Estrutural",
+        material: str = "Concreto C30",
     ) -> dict[str, Any]:
         """Aplica uma seção retangular com dimensões explícitas em milímetros."""
         return self.set_member_properties(

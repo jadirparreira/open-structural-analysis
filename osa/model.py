@@ -13,7 +13,9 @@ class StructuralModel(_StructuralModel):
         materials = {
             item["name"]: (
                 item["elastic_modulus_kn_m2"], item["shear_modulus_kn_m2"],
-                item["poisson_ratio"], item["unit_weight_kn_m3"],
+                # Species data do not define Poisson; zero remains an editable
+                # default for the equivalent isotropic plate approximation.
+                item.get("poisson_ratio", 0.0), item["unit_weight_kn_m3"],
                 item.get("fy_kn_m2", 0.0), item.get("fu_kn_m2", 0.0),
             )
             for item in catalog

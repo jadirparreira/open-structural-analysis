@@ -408,8 +408,8 @@ class ModelService:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Não foi possível calcular o peso linear da barra '{name}'.") from error
-        # kg/m * 10 N/kg / 1000 = kg/m / 100 kN/m.
-        return -properties.mass_kg_m / 100.0
+        # Use the same acceleration as the kN/m³ -> kg/m³ conversion above.
+        return -properties.mass_kg_m * 9.80665e-3
 
     def remove_node(self, name: str) -> None:
         self.model.remove_node(name)

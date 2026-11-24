@@ -58,7 +58,7 @@ def _cantilever_tip_result(percent: int = 0, rotation: int = 0):
     model.add_bar("B1", "N1", "N2")
     model.update_node_supports("N1", (True, True, True, True, True, True))
 
-    material = "Concreto Estrutural"
+    material = "Concreto C30"
     model.update_bar_material("B1", material, model.materials[material])
     model.update_bar_section("B1", "Retangular")
     model.update_member_profile("B1", "Retangular", {"b": 200.0, "h": 400.0})

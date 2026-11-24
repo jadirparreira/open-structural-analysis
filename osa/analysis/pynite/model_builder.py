@@ -81,6 +81,11 @@ class ModelBuilder:
                 poisson_ratio,
                 unit_weight_kn_m3,
             )
+        for plate in source.plates.values():
+            if plate.material == "Indefinido" or plate.material not in source.materials:
+                raise ValueError(f"Defina o material da placa '{plate.name}' antes de analisar.")
+            if not math.isfinite(plate.thickness_mm) or plate.thickness_mm <= 0:
+                raise ValueError(f"Defina a seção e a espessura da placa '{plate.name}' antes de analisar.")
         plate_mesh = generate_plate_mesh(source.plates)
         plate_node_names = []
         for index, point in enumerate(plate_mesh.nodes, start=1):
@@ -111,8 +116,8 @@ class ModelBuilder:
             )
             if plate.material not in source.materials:
                 raise ValueError(f"A laje '{plate.name}' não possui um material cadastrado.")
-            if source.material_types and source.material_types.get(plate.material) != "Concreto":
-                raise ValueError(f"A laje '{plate.name}' deve usar um material do tipo Concreto.")
+            if source.material_types and source.material_types.get(plate.material) not in {"Concreto", "Aço", "Madeira"}:
+                raise ValueError(f"A placa '{plate.name}' deve usar concreto, aço ou madeira.")
             plate_elements = []
             for index, connectivity in enumerate(plate_mesh.elements[plate.name], start=1):
                 element_name = f"{plate.name}::Q{index}"

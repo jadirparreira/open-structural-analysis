@@ -182,7 +182,7 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     assert panel.member_color_button.isVisible()
     fields = {field.accessibleName(): field for field in panel.findChildren(QLineEdit)}
     assert fields['Barras'].text() == 'B1, B2, B3, N4-N1'
-    assert fields['Material'].text() == 'Concreto Estrutural'
+    assert fields['Material'].text() == 'Concreto C30'
     thickness = next(field for field in panel.findChildren(QDoubleSpinBox)
                      if field.accessibleName() == 'Espessura da placa (mm)')
     assert thickness.value() == 100
@@ -268,7 +268,7 @@ def test_plate_action_and_analysis_panels_show_only_the_requested_fields(window)
         field for field in panel.findChildren(QLineEdit)
         if field.accessibleName() == 'Peso próprio distribuído da placa (kN/m²)'
     )
-    expected_pressure = -window.model.materials['Concreto Estrutural'][3] * 0.1
+    expected_pressure = -window.model.materials['Concreto C30'][3] * 0.1
     assert float(selfweight_field.text()) == pytest.approx(round(expected_pressure, 3))
     assert selfweight_field.isReadOnly()
 

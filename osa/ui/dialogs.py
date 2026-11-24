@@ -9,6 +9,7 @@ import pyvista as pv
 import vtk
 from PySide6.QtGui import QLinearGradient, QPalette, QPen, QPainterPath, QTextCharFormat, QTextCursor, QTextListFormat
 from PySide6.QtCore import QObject, QPointF, QRunnable, QThreadPool, Signal
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -25,6 +26,7 @@ from osa.domain.node_components import node_component_geometry_signature
 from osa.domain import ActionDefinition, ActionGroup, LoadCombination
 from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 from osa.services.action_service import ACTION_GROUP_TEMPLATES
+from osa.services.material_service import PROTECTED_MATERIALS
 from osa.services.base_plate_details import ensure_base_plate_annotations, arrange_base_plate_views
 
 from .special_dimensions import SPECIAL_DIMENSION_DEFAULTS
@@ -1057,7 +1059,7 @@ class SettingsDialog(QDialog):
             if title == "Materiais":
                 page_layout.addSpacing(10)
                 values = self.materials
-                material_combo = QComboBox(); material_combo.addItems(values)
+                material_combo = SelectorComboBox(); material_combo.addItems(values)
                 material_row = QHBoxLayout(); material_row.addWidget(material_combo, 1)
                 add_button = QToolButton(); add_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "plus.svg"))); add_button.setToolTip("Adicionar material")
                 remove_button = QToolButton(); remove_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "trash-2.svg"))); remove_button.setToolTip("Remover material")
@@ -1071,7 +1073,7 @@ class SettingsDialog(QDialog):
                     "Módulo de elasticidade", "Módulo de cisalhamento", "Coeficiente de Poisson",
                     "Peso específico", "Tensão de escoamento", "Tensão de ruptura",
                 )
-                type_combo = QComboBox(); type_combo.addItems(["Aço", "Concreto", "Madeira"])
+                type_combo = SelectorComboBox(); type_combo.addItems(["Aço", "Concreto", "Madeira"])
                 type_combo.setCurrentText(self.material_types.get(material_combo.currentText(), "Aço"))
                 form.addRow("Tipo de material", type_combo)
                 units = ("kN/m²", "kN/m²", "", "kN/m³", "kN/m²", "kN/m²")
@@ -1099,18 +1101,30 @@ class SettingsDialog(QDialog):
                     self.window.material_service.upsert(
                         material_combo.currentText(), type_combo.currentText(), current_values()
                     )
+                    update_remove_button()
 
                 def set_strength_visibility(material_type):
                     visible = material_type == "Aço"
                     for field, label in zip(fields[4:], field_labels[4:]):
                         label.setVisible(visible)
                         field.parentWidget().setVisible(visible)
+                    # Poisson is also used by the equivalent isotropic plate model.
+                    fields[2].parentWidget().setVisible(True)
+                    field_labels[2].setVisible(True)
+                    field_labels[0].setText({
+                        "Concreto": "Elasticidade secante (Ecs)",
+                        "Madeira": "Elasticidade paralela (E0,m)",
+                    }.get(material_type, "Módulo de elasticidade"))
+
+                def update_remove_button():
+                    remove_button.setEnabled(material_combo.currentText() not in PROTECTED_MATERIALS)
 
                 for field in fields:
                     field.valueChanged.connect(save_current_material)
                 type_combo.currentTextChanged.connect(save_current_material)
                 type_combo.currentTextChanged.connect(set_strength_visibility)
                 set_strength_visibility(type_combo.currentText())
+                update_remove_button()
                 def load_material(material):
                     for field in fields:
                         field.blockSignals(True)
@@ -1125,6 +1139,7 @@ class SettingsDialog(QDialog):
                     type_combo.setCurrentText(self.material_types.get(material, "Aço"))
                     type_combo.blockSignals(False)
                     set_strength_visibility(type_combo.currentText())
+                    update_remove_button()
                 material_combo.currentTextChanged.connect(load_material)
                 def add_material():
                     dialog = QInputDialog(self)
@@ -1149,17 +1164,14 @@ class SettingsDialog(QDialog):
                         material_combo.addItem(name.strip()); material_combo.setCurrentText(name.strip())
                 def remove_material():
                     name = material_combo.currentText()
-                    if name not in (
-                        "ASTM A36", "ASTM A572 Gr 50", "NBR MR 250", "NBR AR 350", "NBR AR 415",
-                        "SAE 1020", "Concreto Estrutural", "Madeira Estrutural",
-                    ):
+                    if name not in PROTECTED_MATERIALS:
                         self.window.material_service.remove(name); material_combo.removeItem(material_combo.currentIndex())
                 add_button.clicked.connect(add_material); remove_button.clicked.connect(remove_material)
                 page_layout.addLayout(form)
             else:
                 section_row = QHBoxLayout()
                 section_row.addWidget(QLabel("Tipo de material"))
-                section_material = QComboBox()
+                section_material = SelectorComboBox()
                 section_material.addItems(["Aço", "Concreto", "Madeira"])
                 section_row.addWidget(section_material, 1)
                 page_layout.addLayout(section_row)
@@ -2530,7 +2542,7 @@ class DetailingViewsDialog(QDialog):
         rotation_row.addWidget(self.view_rotation_button, 0, Qt.AlignmentFlag.AlignVCenter)
         rotation_layout.addLayout(rotation_row)
         settings_layout.addWidget(rotation_group)
-        self.view_direction_selector = QComboBox(self._view_settings_panel)
+        self.view_direction_selector = SelectorComboBox(self._view_settings_panel)
         self.view_direction_selector.setObjectName("detailViewDirectionSelector")
         self.view_direction_selector.addItems(
             ("Superior para inferior", "Inferior para superior")
@@ -3317,7 +3329,7 @@ class ProgramSettingsDialog(QDialog):
         results_label.setObjectName("hint")
         results_label.setWordWrap(True)
         plates_layout.addWidget(results_label)
-        self._plate_result_display_combo = QComboBox()
+        self._plate_result_display_combo = SelectorComboBox()
         self._plate_result_display_combo.setObjectName("plateResultDisplayMode")
         self._plate_result_display_combo.setAccessibleName(
             "Visualização dos resultados das placas"
@@ -3971,7 +3983,7 @@ class ProjectSheetSettingsDialog(QDialog):
         dimensions = QGridLayout()
         dimensions.setHorizontalSpacing(12)
         dimensions.setVerticalSpacing(6)
-        self.subject_edit = QComboBox(page)
+        self.subject_edit = SelectorComboBox(page)
         self.subject_edit.setObjectName("sheetSubjectSelector")
         for label in self._sheet_names:
             self.subject_edit.addItem(label, label)
@@ -4014,11 +4026,11 @@ class ProjectSheetSettingsDialog(QDialog):
             setattr(self, attribute, button)
         self.rename_subject_button.setEnabled(bool(self._sheet_names) and self._rename_sheet_callback is not None)
         self._add_sheet_setting_field(dimensions, "Assunto", subject_row, 0, 0, 2)
-        self.paper_size_combo = QComboBox(page)
+        self.paper_size_combo = SelectorComboBox(page)
         self.paper_size_combo.setObjectName("sheetFormatSelector")
         self.paper_size_combo.addItems(("A4", "A3", "A2", "A1", "A0", "Personalizado"))
         self.paper_size_combo.setCurrentText(self._settings.get("paper_size", "A3"))
-        self.orientation_combo = QComboBox(page)
+        self.orientation_combo = SelectorComboBox(page)
         self.orientation_combo.setObjectName("sheetOrientationSelector")
         self.orientation_combo.addItems(("Paisagem", "Retrato"))
         self.orientation_combo.setCurrentText(self._settings.get("orientation", "Paisagem"))
@@ -4068,7 +4080,7 @@ class ProjectSheetSettingsDialog(QDialog):
         self.date_edit.setPlaceholderText("dd/mm/aaaa")
         self.scale_edit = QLineEdit(str(self._settings.get("scale", "INDICADA")), page)
         self.revision_edit = QLineEdit(str(self._settings.get("revision", "00")), page)
-        self.sheet_number_combo = QComboBox(page)
+        self.sheet_number_combo = SelectorComboBox(page)
         self.sheet_number_combo.setObjectName("sheetNumberSelector")
         self.sheet_number_combo.addItems(
             f"{number:02d}" for number in range(1, self._sheet_count + 1)
@@ -4432,7 +4444,7 @@ class ProjectSheetSettingsDialog(QDialog):
             20,
             decimals=1,
         )
-        self.dimension_text_position_combo = QComboBox(page)
+        self.dimension_text_position_combo = SelectorComboBox(page)
         self.dimension_text_position_combo.setObjectName("dimensionSettingSelector")
         self.dimension_text_position_combo.addItem("Centro", "centro")
         self.dimension_text_position_combo.addItem("Superior", "superior")
@@ -4441,7 +4453,7 @@ class ProjectSheetSettingsDialog(QDialog):
             self._project_settings.get("dimension_text_position", "superior")
         )
         self.dimension_text_position_combo.setCurrentIndex(max(0, position_index))
-        self.dimension_unit_combo = QComboBox(page)
+        self.dimension_unit_combo = SelectorComboBox(page)
         self.dimension_unit_combo.setObjectName("dimensionSettingSelector")
         for label, unit in (("Metros", "m"), ("Centímetros", "cm"),
                             ("Decímetros", "dm"), ("Milímetros", "mm")):

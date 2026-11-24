@@ -1,6 +1,7 @@
 """Manage drawing references without exposing selectable objects in the viewport."""
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import QListWidgetItem
 
 from .common import *
@@ -152,7 +153,7 @@ class ReferencePanel(QFrame):
         self.form = QWidget()
         form = QFormLayout(self.form)
         form.setContentsMargins(0, 0, 0, 0)
-        self.plane = QComboBox()
+        self.plane = SelectorComboBox()
         self.plane.addItems(("XY", "XZ", "YZ"))
         self.plane.currentTextChanged.connect(self._commit)
         form.addRow("Plano", self.plane)

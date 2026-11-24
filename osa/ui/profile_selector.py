@@ -1,4 +1,5 @@
 from .common import *
+from .selector import MAX_VISIBLE_ITEMS, SELECTOR_LIST_STYLE
 
 
 class ProfileComboBox(QComboBox):
@@ -51,7 +52,13 @@ class ProfileComboBox(QComboBox):
         popup_width = min(self.width(), screen.width())
         popup.setFixedWidth(popup_width)
         box = QVBoxLayout(popup); box.setContentsMargins(2, 2, 2, 2); box.setSpacing(0)
-        listing = QListWidget(); listing.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        listing = QListWidget()
+        listing.setStyleSheet(SELECTOR_LIST_STYLE + "QListView { border: 0; }")
+        listing.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+            if len(items) > MAX_VISIBLE_ITEMS else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        listing.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for index, text in enumerate(items):
             secondary_name = self.itemData(index, secondary_label_role)
             item = QListWidgetItem("" if secondary_name else text)
@@ -79,7 +86,7 @@ class ProfileComboBox(QComboBox):
             listing.item(index).setSizeHint(QSize(popup_width - 28, 32))
         box.addWidget(listing)
         row_h = 32
-        listing.setFixedHeight(min(8, len(items)) * row_h + 2 if items else 2)
+        listing.setFixedHeight(min(MAX_VISIBLE_ITEMS, len(items), max(1, (screen.height() - 12) // row_h)) * row_h + 2 if items else 2)
         listing.itemClicked.connect(
             lambda item: (self.setCurrentText(item.data(Qt.ItemDataRole.UserRole)), self.hidePopup())
         )

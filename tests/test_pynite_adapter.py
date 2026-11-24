@@ -63,7 +63,7 @@ def test_slab_supported_beam_results_keep_the_full_original_member_length():
     model.add_plate(
         ((0, 0, 3), (4, 0, 3), (4, 3, 3), (0, 3, 3)),
         supports=tuple(("bar", f"B{index}") for index in range(1, 5)),
-        material="Concreto Estrutural", thickness_mm=150,
+        material="Concreto C30", thickness_mm=150,
     )
     ActionService(model).add_plate_surface_pressure("P1", -5, "Caso")
 
