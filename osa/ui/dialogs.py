@@ -217,8 +217,9 @@ class ProjectSheetTextDialog(QDialog):
 class _SettingsChoiceSwitch(QFrame):
     """Animated pill selector matching the A/B switch in member restraints."""
 
-    def __init__(self, choices, selected: str, on_change, parent=None):
+    def __init__(self, choices, selected: str, on_change, parent=None, *, compact: bool = False):
         super().__init__(parent)
+        self._compact = compact
         self._choices = tuple(choices)
         self._selected = selected
         self._on_change = on_change
@@ -231,9 +232,11 @@ class _SettingsChoiceSwitch(QFrame):
             if len(self._choices) == 3 and all(len(label) <= 4 for _, label in self._choices)
             else (50, 76, 50)
         )
+        if compact:
+            widths = (24,) * len(self._choices)
         self._widths = widths
         self.setObjectName("settingsChoiceSwitch")
-        self.setFixedSize(sum(widths) + 6, 30)
+        self.setFixedSize(sum(widths) + (6 * (len(widths) - 1) if compact else 6), 24 if compact else 30)
         self.setStyleSheet(
             "QFrame#settingsChoiceSwitch { background: #ffffff; border: 1px solid #d0d7de; "
             "border-radius: 15px; }"
@@ -244,8 +247,9 @@ class _SettingsChoiceSwitch(QFrame):
             "QFrame#settingsChoiceIndicator { background: #0969da; border: 0; border-radius: 10px; }"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(3, 3, 3, 3)
-        layout.setSpacing(0)
+        margin = 0 if compact else 3
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(6 if compact else 0)
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         for (value, label), width in zip(self._choices, widths):
@@ -275,6 +279,8 @@ class _SettingsChoiceSwitch(QFrame):
              if value == self._selected),
             0,
         )
+        if self._compact:
+            return QRect(sum(self._widths[:index]) + 6 * index, 0, self._widths[index], 24)
         left = 4 + sum(self._widths[:index])
         return QRect(left, 5, self._widths[index] - 2, 20)
 

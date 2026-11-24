@@ -10,6 +10,7 @@ import pyvista as pv
 
 from osa.sections import section_shape
 
+from .analysis_diagrams import PLATE_FIELDS
 from .local_axes_renderer import LocalAxesRenderer
 from .result_color_map import RESULT_COLOR_STOPS, RESULT_MESH_COLOR, result_colors
 from .solid_member_renderer import SolidMemberRenderer
@@ -565,14 +566,15 @@ class ResultRenderer:
             "Fletor Y": ("moment", 0),
             "Fletor Z": ("moment", 1),
         }
-        field = field_by_diagram.get(diagram)
+        field = PLATE_FIELDS[diagram][:2] if diagram in PLATE_FIELDS else field_by_diagram.get(diagram)
         if field is None:
             return None
         key, component = field
         # Keep plate flexural signs consistent with the convention used for
         # member Fletor Y/Z diagrams. PyNite's plate bending convention has
         # the opposite polarity to the convention used by this application.
-        display_sign = -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0
+        display_sign = (PLATE_FIELDS[diagram][3] if diagram in PLATE_FIELDS
+                        else -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0)
         element_values = {}
         for name, element in plate_result.get("elements", {}).items():
             components = np.asarray(element.get(key, ()), dtype=float).reshape(-1)
@@ -612,11 +614,13 @@ class ResultRenderer:
             "Fletor Y": ("moment_nodal", 0),
             "Fletor Z": ("moment_nodal", 1),
         }
-        field = field_by_diagram.get(diagram)
+        field = ((PLATE_FIELDS[diagram][0] + "_nodal", PLATE_FIELDS[diagram][1])
+                 if diagram in PLATE_FIELDS else field_by_diagram.get(diagram))
         if field is None:
             return None
         key, component = field
-        display_sign = -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0
+        display_sign = (PLATE_FIELDS[diagram][3] if diagram in PLATE_FIELDS
+                        else -1.0 if diagram in {"Fletor Y", "Fletor Z"} else 1.0)
         values_by_element = {}
         for name, element in plate_result.get("elements", {}).items():
             nodal = np.asarray(element.get(key, ()), dtype=float)

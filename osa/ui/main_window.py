@@ -8180,8 +8180,8 @@ class MainWindow(QMainWindow):
             # group can request a stale deformation diagram with no result to
             # render.
             self.selected_analysis_combination = None
-            self.selected_analysis_diagram = "Normal"
             self.analysis_top_palette.reset_result_view()
+            self.selected_analysis_diagram = self.analysis_top_palette.diagram_selector.currentData()
         previous = self.selected_analysis_combination
         self.analysis_top_palette.set_combinations(names, previous)
         self.analysis_top_palette.set_analysis_ready(bool(names))
@@ -8220,7 +8220,7 @@ class MainWindow(QMainWindow):
         )
         raw_value: float | None = None
         display_value = "Sem resultados neste ponto"
-        if kind == "bar":
+        if kind == "bar" and self.analysis_top_palette.result_kind == "bar":
             member = self.model.bars.get(name)
             member_result = result.member_results.get(name)
             if member is not None and member_result:
@@ -8307,7 +8307,7 @@ class MainWindow(QMainWindow):
                     connected_values.append(f"{bar_name}: {renderer._format_value(value, renderer.DIAGRAMS[diagram][2])}")
                 if connected_values:
                     display_value = "\n".join(connected_values)
-        elif kind == "plate":
+        elif kind == "plate" and self.analysis_top_palette.result_kind == "plate":
             plate_result = result.plate_results.get(name)
             if plate_result:
                 raw_value = self._sample_analysis_plate(plate_result, diagram, point)
@@ -8320,7 +8320,7 @@ class MainWindow(QMainWindow):
         if no_reaction_result:
             display_value = "Reações de apoio:\nSem resultados neste ponto"
         elif not (kind == "node" and diagram == renderer.REACTION_DIAGRAM):
-            display_value = f"{diagram}: {display_value}"
+            display_value = f"{self.analysis_top_palette.diagram_selector.currentText()}: {display_value}"
         self.scene.show_analysis_point_result(
             kind, name, point, detail, display_value,
             wide=kind == "node" and diagram == renderer.REACTION_DIAGRAM,
@@ -8427,9 +8427,7 @@ class MainWindow(QMainWindow):
             tuple(result.load_reference for result in self.model.analysis_results),
             self.selected_analysis_combination,
         )
-        self.analysis_top_palette.diagram_selector.blockSignals(True)
-        self.analysis_top_palette.diagram_selector.setCurrentText(self.selected_analysis_diagram)
-        self.analysis_top_palette.diagram_selector.blockSignals(False)
+        self.analysis_top_palette.select_diagram(self.selected_analysis_diagram)
         self._sync_analysis_result()
 
     def _select_active_action(self, name: str) -> None:

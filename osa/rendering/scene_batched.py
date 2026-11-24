@@ -22,6 +22,7 @@ from vtk.util.numpy_support import vtk_to_numpy
 from osa.model import StructuralModel
 from osa.verification import verification_elements
 
+from .analysis_diagrams import PLATE_FIELDS
 from .action_renderer import ActionRenderer
 from .batched_renderer import (
     BatchedMemberRenderer,
@@ -543,8 +544,9 @@ class StructureScene(QWidget):
         self._active_load_case: str | None = None
         self._actions_visible = False
         self._analysis_visible = False
+        self._analysis_result_kind = "bar"
         self._result_diagrams_visible = True
-        self._analysis_plate_diagrams_visible = True
+        self._analysis_plate_diagrams_visible = False
         self._active_analysis_combination: str | None = None
         self._active_result_type = "Normal"
         self._analysis_deformation_scale = 1.0
@@ -1518,7 +1520,10 @@ class StructureScene(QWidget):
         self._last_picked_component_face_actor = None
         self._node_component_rod_meshes = []
         self._node_component_silhouette_actors = []
-        if not (self._node_components_visible or self._detailing_session_active):
+        if (
+            self._actions_visible or self._analysis_visible or self._verification_palette_visible
+            or not (self._node_components_visible or self._detailing_session_active)
+        ):
             if render:
                 self.plotter.render()
             return
@@ -1791,6 +1796,8 @@ class StructureScene(QWidget):
 
     @staticmethod
     def _result_unit(diagram: str) -> str:
+        if diagram in PLATE_FIELDS:
+            return PLATE_FIELDS[diagram][2]
         if diagram.startswith("Deformação"):
             return "mm"
         if diagram in {"Normal", "Cortante Y", "Cortante Z"}:
@@ -1842,6 +1849,15 @@ class StructureScene(QWidget):
         )
         model = self._scene_filtered_model()
         diagram = self._active_result_type
+        if result is not None:
+            # Scale only the selected family's results, including displacement colors.
+            if self._analysis_result_kind == "bar" and diagram != self._result_renderer.REACTION_DIAGRAM:
+                bar_nodes = {node for bar in model.bars.values() for node in (bar.start_node, bar.end_node)}
+                result = replace(result, plate_results={}, node_results={
+                    name: values for name, values in result.node_results.items() if name in bar_nodes
+                })
+            elif self._analysis_result_kind == "plate":
+                result = replace(result, member_results={}, node_results={})
         contour_value_range = (
             self._result_renderer.result_range(
                 result, diagram, self._plate_result_display_mode,
@@ -1853,18 +1869,20 @@ class StructureScene(QWidget):
             )
             else None
         )
-        self._result_actors, label_positions, labels = self._result_renderer.render(
-            self.plotter, model, result, diagram,
-            solid_members_visible=self._solid_members_visible,
-            deformation_scale=self._analysis_deformation_scale,
-            diagram_scale=self._analysis_diagram_scale,
-            bar_diagrams_visible=self._result_diagrams_visible,
-            plate_diagrams_visible=self._analysis_plate_diagrams_visible,
-            include_plate_surfaces=False,
-        )
+        self._result_actors, label_positions, labels = [], np.empty((0, 3)), ()
+        if self._analysis_result_kind == "bar":
+            self._result_actors, label_positions, labels = self._result_renderer.render(
+                self.plotter, model, result, diagram,
+                solid_members_visible=self._solid_members_visible,
+                deformation_scale=self._analysis_deformation_scale,
+                diagram_scale=self._analysis_diagram_scale,
+                bar_diagrams_visible=self._result_diagrams_visible,
+                plate_diagrams_visible=self._analysis_plate_diagrams_visible,
+                include_plate_surfaces=False,
+            )
         self._plate_result_actors = []
         self._plate_result_names = set()
-        if result is not None:
+        if result is not None and self._analysis_result_kind == "plate":
             if diagram.startswith("Deformação"):
                 if self._analysis_plate_diagrams_visible:
                     self._plate_result_actors, plate_positions, plate_labels = (
@@ -2933,7 +2951,8 @@ class StructureScene(QWidget):
     def _configure_solid_picker(self) -> None:
         self._solid_picker.InitializePickList()
         actor = self._member_face_actor
-        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
+        deformation_active = (self._analysis_visible and self._analysis_result_kind == "bar"
+                              and self._active_result_type.startswith("Deformação"))
         enabled = actor is not None and self._solid_members_visible and not deformation_active
         if actor is not None:
             actor.SetPickable(enabled)
@@ -4262,6 +4281,7 @@ class StructureScene(QWidget):
     def analysis_view_state(self) -> dict[str, object]:
         """Retorna o estado visual da sessão de análise."""
         return {
+            "result_kind": self._analysis_result_kind,
             "selected_combination": self._active_analysis_combination,
             "selected_diagram": self._active_result_type,
             "result_diagrams_visible": self._result_diagrams_visible,
@@ -7017,6 +7037,7 @@ class StructureScene(QWidget):
         """Return plates represented by the active deformed FE surface."""
         if not (
             self._analysis_visible
+            and self._analysis_result_kind == "plate"
             and self._active_result_type.startswith("Deformação")
         ):
             return set()
@@ -7052,7 +7073,8 @@ class StructureScene(QWidget):
         return names
 
     def _apply_representation_visibility(self) -> None:
-        deformation_active = self._analysis_visible and self._active_result_type.startswith("Deformação")
+        deformation_active = (self._analysis_visible and self._analysis_result_kind == "bar"
+                              and self._active_result_type.startswith("Deformação"))
         solid = self._solid_members_visible and not deformation_active
         self._update_deformed_node_markers()
         deformed_plate_names = self._deformed_plate_names()
@@ -7465,6 +7487,8 @@ class StructureScene(QWidget):
     def set_verification_palette_visible(self, visible: bool) -> None:
         was_visible = self._verification_palette_visible
         self._verification_palette_visible = bool(visible)
+        if was_visible != self._verification_palette_visible:
+            self._refresh_node_components(self._scene_filtered_model().nodes, render=False)
         self._refresh_verification_group_edges()
         self._label_overlay.set_group_visible(
             "bar", self._bar_identifier_overlay_visible(),
@@ -7733,6 +7757,7 @@ class StructureScene(QWidget):
         if visible == self._actions_visible:
             return
         self._actions_visible = visible
+        self._refresh_node_components(self._scene_filtered_model().nodes, render=False)
         self._apply_solid_members_visibility(
             self._solid_members_preference and not (self._actions_visible or self._analysis_visible),
         )
@@ -7759,6 +7784,7 @@ class StructureScene(QWidget):
         if visible == self._analysis_visible:
             return
         self._analysis_visible = visible
+        self._refresh_node_components(self._scene_filtered_model().nodes, render=False)
         self._apply_solid_members_visibility(
             self._solid_members_preference and not (self._actions_visible or self._analysis_visible),
         )
@@ -7792,6 +7818,20 @@ class StructureScene(QWidget):
             self.plotter.render()
             return
         self._refresh_result_layer()
+
+    def set_analysis_result_kind(self, kind: str, diagram: str | None = None) -> None:
+        """Select one family of results without mixing bar and plate diagrams."""
+        if kind not in {"bar", "plate"}:
+            raise ValueError("Tipo de resultado inválido.")
+        self.hide_analysis_point_result()
+        self._analysis_result_kind = kind
+        if diagram is not None:
+            self._active_result_type = diagram
+        self._result_diagrams_visible = kind == "bar"
+        self._analysis_plate_diagrams_visible = kind == "plate"
+        self._result_layer_key = None
+        if self._analysis_visible:
+            self._refresh_result_layer()
 
     def set_analysis_result(self, combination: str | None, result_type: str) -> None:
         combination = combination or None

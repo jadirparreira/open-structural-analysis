@@ -486,7 +486,12 @@ class LocalMcpServer:
             description=(
                 "Seleciona a combinação e o diagrama exibido. Diagramas: Normal, Cortante Y, Cortante Z, "
                 "Torsor, Fletor Y, Fletor Z, Reações de apoio, Deformação X, Deformação Y, "
-                "Deformação Z e Deformação XYZ. Y/Z referem-se aos eixos locais de cada barra."
+                "Deformação Z e Deformação XYZ. Também aceita os rótulos da paleta, como Cortante Y (Vy). "
+                "Placas: Fletor X (Mx), Fletor Y (My), Momento volvente XY (Mxy), Cortante X (Qx), "
+                "Cortante Y (Qy), Tensão normal X (σx), Tensão normal Y (σy) e "
+                "Tensão de cisalhamento XY (τxy). Selecionar um esforço/tensão de placa ativa o modo "
+                "de placas; selecionar um esforço de barra ativa o modo de barras. "
+                "Esforços/tensões referem-se aos eixos locais; deslocamentos aos globais."
             ),
             annotations=write,
         )

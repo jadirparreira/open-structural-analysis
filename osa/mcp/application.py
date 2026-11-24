@@ -31,6 +31,9 @@ ANALYSIS_DIAGRAMS = (
     "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
     "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
 )
+from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_FIELDS
+
+ANALYSIS_DIAGRAMS += tuple(PLATE_FIELDS)
 ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
 APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise")
 _PALETTE_GROUPS = {
@@ -664,6 +667,7 @@ class McpApplication:
         ):
             raise ValueError(f"Não há resultado válido para a combinação '{selected_combination}'.")
         selected_diagram = self._analysis_view["selected_diagram"] if diagram is None else diagram
+        selected_diagram = dict(BAR_DIAGRAMS).get(selected_diagram, selected_diagram)
         if selected_diagram not in ANALYSIS_DIAGRAMS:
             raise ValueError(f"Diagrama desconhecido: '{selected_diagram}'.")
         self._analysis_view.update({

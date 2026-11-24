@@ -2,6 +2,7 @@ from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
 from PySide6.QtWidgets import QWidgetAction
+from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS
 
 
 def _command_tooltip(label: str, command: str) -> str:
@@ -2384,11 +2385,7 @@ class ActionTopPalette(QFrame):
 class AnalysisTopPalette(QFrame):
     """Barra contextual de combinação e diagrama para a seção Análise."""
 
-    diagram_options = (
-        "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
-        "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
-        "Reações de apoio",
-    )
+    diagram_options = tuple(label for label, _key in BAR_DIAGRAMS)
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -2396,7 +2393,7 @@ class AnalysisTopPalette(QFrame):
         self.setObjectName("topIconPalette")
         self.setStyleSheet(
             "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
-            "QComboBox { min-width: 184px; min-height: 24px; padding: 0 8px; border: 0; "
+            "QComboBox { min-height: 24px; padding: 0 8px; border: 0; "
             "border-radius: 6px; background: #d0d7de; color: #24292f; }"
             "QComboBox:hover { background: #afb8c1; }"
             "QComboBox::drop-down { width: 22px; border: 0; }"
@@ -2412,60 +2409,74 @@ class AnalysisTopPalette(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         self._tooltip = PaletteTooltip(window)
         self.selectors = QWidget(self)
         selectors_layout = QHBoxLayout(self.selectors)
         selectors_layout.setContentsMargins(0, 0, 0, 0)
-        selectors_layout.setSpacing(4)
+        selectors_layout.setSpacing(6)
         self.combination_selector = QComboBox(self)
         self.combination_selector.setToolTip("Combinação de carga para os diagramas")
         self.combination_selector.setAccessibleName("Combinação de análise")
         self.combination_selector.currentTextChanged.connect(window._select_analysis_combination)
         self.diagram_selector = QComboBox(self)
-        self.diagram_selector.addItems(self.diagram_options)
+        self.diagram_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.result_kind = "bar"
+        self._selected_diagrams = {"bar": "Normal", "plate": PLATE_DIAGRAMS[0][1]}
+        for label, key in BAR_DIAGRAMS:
+            self.diagram_selector.addItem(label, key)
+        # Polish first: stylesheet minimum widths can override setFixedWidth,
+        # and the inherited font must be resolved before measuring labels.
+        self.diagram_selector.ensurePolished()
+        self.combination_selector.ensurePolished()
+        # Reserve room for either family before the user switches between them.
+        diagram_width = max(
+            self.diagram_selector.fontMetrics().horizontalAdvance(label)
+            for label, _key in (*BAR_DIAGRAMS, *PLATE_DIAGRAMS)
+        ) + 48
+        self.diagram_selector.setFixedWidth(max(224, diagram_width))
+        self.combination_selector.setFixedWidth(224)
+        self.diagram_selector.setFixedHeight(24)
+        self.combination_selector.setFixedHeight(24)
         self.diagram_selector.setToolTip(
             "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada barra."
         )
         self.diagram_selector.setAccessibleName("Tipo de diagrama")
-        self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)
+        self.diagram_selector.currentIndexChanged.connect(
+            lambda _index: window._select_analysis_diagram(self.diagram_selector.currentData())
+        )
         selectors_layout.addWidget(self.combination_selector)
         selectors_layout.addWidget(self.diagram_selector)
 
-        result_diagrams_button = QToolButton(self)
-        result_diagrams_button.setFixedSize(24, 24)
-        result_diagrams_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "result-diagram.svg"))
+        from .dialogs import _SettingsChoiceSwitch
+        self.result_kind_switch = _SettingsChoiceSwitch(
+            (("bar", "Barras"), ("plate", "Placas")), "bar", self._select_result_kind, self,
+            compact=True,
         )
-        result_diagrams_button.setIconSize(QSize(17, 17))
-        result_diagrams_tooltip = "Diagrama nas barras"
-        result_diagrams_button.setToolTip(result_diagrams_tooltip)
-        result_diagrams_button.setProperty("paletteTooltip", result_diagrams_tooltip)
-        result_diagrams_button.setAccessibleName(result_diagrams_tooltip)
-        result_diagrams_button.setCheckable(True)
-        result_diagrams_button.setChecked(True)
-        result_diagrams_button.toggled.connect(window.scene.set_analysis_diagrams_visible)
-        result_diagrams_button.installEventFilter(self)
-        selectors_layout.addWidget(result_diagrams_button)
-        self.result_diagrams_button = result_diagrams_button
-        plate_diagrams_button = QToolButton(self)
-        plate_diagrams_button.setFixedSize(24, 24)
-        plate_diagrams_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "plate.svg"))
+        self.result_kind_switch.setStyleSheet(
+            "QFrame#settingsChoiceSwitch { background: transparent; border: 0; }"
         )
-        plate_diagrams_button.setIconSize(QSize(17, 17))
-        plate_diagrams_tooltip = "Diagrama nas placas"
-        plate_diagrams_button.setToolTip(plate_diagrams_tooltip)
-        plate_diagrams_button.setProperty("paletteTooltip", plate_diagrams_tooltip)
-        plate_diagrams_button.setAccessibleName(plate_diagrams_tooltip)
-        plate_diagrams_button.setCheckable(True)
-        plate_diagrams_button.setChecked(True)
-        plate_diagrams_button.toggled.connect(window.scene.set_analysis_plate_diagrams_visible)
-        plate_diagrams_button.installEventFilter(self)
-        selectors_layout.addWidget(plate_diagrams_button)
-        self.plate_diagrams_button = plate_diagrams_button
-        self.diagram_selector.currentTextChanged.connect(self._update_result_diagrams_button)
-        self._update_result_diagrams_button(self.diagram_selector.currentText())
+        self.result_kind_switch._indicator.setStyleSheet(
+            "QFrame#settingsChoiceIndicator { background: #0969da; border: 0; border-radius: 6px; }"
+        )
+        icons = Path(__file__).parents[1] / "resources" / "icons"
+        for kind, icon_name, tooltip in (
+            ("bar", "result-diagram.svg", "Diagramas de barras"),
+            ("plate", "plate.svg", "Diagramas de placas"),
+        ):
+            button = self.result_kind_switch._buttons[kind]
+            button.setText("")
+            button.setIcon(QIcon(str(icons / icon_name)))
+            button.setIconSize(QSize(19, 19))
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.setProperty("paletteTooltip", tooltip)
+            button.installEventFilter(self)
+        self.result_diagrams_button = self.result_kind_switch._buttons["bar"]
+        self.plate_diagrams_button = self.result_kind_switch._buttons["plate"]
+        selectors_layout.addWidget(self.result_kind_switch)
+        self._update_result_kind_icons()
+        self._window.scene.set_analysis_result_kind("bar")
         self.deformation_scale_button = QToolButton(self)
         self.deformation_scale_button.setFixedSize(24, 24)
         self.deformation_scale_button.setIcon(
@@ -2575,6 +2586,7 @@ class AnalysisTopPalette(QFrame):
         process_button.installEventFilter(self)
         layout.addWidget(process_button)
         self.process_button = process_button
+        self.pending.setFixedHeight(24)
         self.adjustSize()
 
     def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:
@@ -2585,6 +2597,7 @@ class AnalysisTopPalette(QFrame):
         self.combination_selector.setCurrentIndex(index if index >= 0 else (0 if names else -1))
         self.combination_selector.blockSignals(False)
         self.adjustSize()
+        self.reposition()
 
     def set_analysis_ready(self, ready: bool) -> None:
         self.selectors.setVisible(ready)
@@ -2592,20 +2605,60 @@ class AnalysisTopPalette(QFrame):
         if not ready:
             self.deformation_scale_popup.hide()
         self.adjustSize()
+        self.reposition()
 
     def reset_result_view(self) -> None:
         """Return to the neutral view when analysis results are unavailable."""
         self.diagram_selector.blockSignals(True)
-        self.diagram_selector.setCurrentText("Normal")
+        self.diagram_selector.setCurrentIndex(0)
         self.diagram_selector.blockSignals(False)
         result_type = self.diagram_selector.currentText()
-        self._update_result_diagrams_button(result_type)
         self._update_scale_controls(result_type)
 
-    def _update_result_diagrams_button(self, result_type: str) -> None:
-        """Allow the bar toggle to control color and values on deformed bars."""
-        self.result_diagrams_button.setEnabled(True)
-        self.plate_diagrams_button.setEnabled(result_type != "Reações de apoio")
+    def _select_result_kind(self, kind: str) -> None:
+        self._selected_diagrams[self.result_kind] = self.diagram_selector.currentData()
+        self.result_kind = kind
+        self.diagram_selector.blockSignals(True)
+        self.diagram_selector.clear()
+        options = BAR_DIAGRAMS if kind == "bar" else PLATE_DIAGRAMS
+        for label, key in options:
+            self.diagram_selector.addItem(label, key)
+        index = self.diagram_selector.findData(self._selected_diagrams[kind])
+        self.diagram_selector.setCurrentIndex(max(0, index))
+        self.diagram_selector.blockSignals(False)
+        self.diagram_selector.setToolTip(
+            "Esforços nos eixos locais da barra; deslocamentos nos eixos globais."
+            if kind == "bar" else
+            "Esforços e tensões nos eixos locais da placa; deslocamentos nos eixos globais."
+        )
+        self._window.selected_analysis_diagram = self.diagram_selector.currentData()
+        self._update_result_kind_icons()
+        self._window.scene.set_analysis_result_kind(kind, self._window.selected_analysis_diagram)
+        self._window._sync_analysis_result()
+        self._update_scale_controls(self.diagram_selector.currentText())
+        self.adjustSize()
+        self.reposition()
+
+    def select_diagram(self, key: str) -> None:
+        kind = "plate" if any(value == key for _label, value in PLATE_DIAGRAMS[:8]) else "bar"
+        if key.startswith("Deformação"):
+            kind = self.result_kind
+        if kind != self.result_kind:
+            self.result_kind_switch._buttons[kind].setChecked(True)
+            self.result_kind_switch._select(kind)
+        index = self.diagram_selector.findData(key)
+        if index >= 0:
+            self.diagram_selector.setCurrentIndex(index)
+
+    def _update_result_kind_icons(self) -> None:
+        icons = Path(__file__).parents[1] / "resources" / "icons"
+        for kind, name in (("bar", "result-diagram.svg"), ("plate", "plate.svg")):
+            pixmap = QIcon(str(icons / name)).pixmap(QSize(34, 34))
+            painter = QPainter(pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), QColor("#ffffff" if kind == self.result_kind else "#57606a"))
+            painter.end()
+            self.result_kind_switch._buttons[kind].setIcon(QIcon(pixmap))
 
     def _deformation_scale_changed(self, position: int) -> None:
         result_type = self.diagram_selector.currentText()
@@ -2633,7 +2686,7 @@ class AnalysisTopPalette(QFrame):
 
     def _update_scale_controls(self, result_type: str) -> None:
         deformation = result_type.startswith("Deformação")
-        enabled = deformation or result_type != "Reações de apoio"
+        enabled = deformation or (self.result_kind == "bar" and result_type != "Reações de apoio")
         self.deformation_scale_button.setEnabled(enabled)
         if not enabled:
             self.deformation_scale_popup.hide()
@@ -2694,6 +2747,9 @@ class AnalysisTopPalette(QFrame):
             self._tooltip.dismiss()
             self.deformation_scale_popup.hide()
         self.setVisible(visible)
+        if visible:
+            self.adjustSize()
+            self.reposition()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if isinstance(watched, QToolButton):

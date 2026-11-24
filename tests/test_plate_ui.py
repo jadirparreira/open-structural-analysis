@@ -417,6 +417,7 @@ def test_deformation_hides_original_plate_mesh_during_hover(window):
     )]
     scene._hovered = ('plate', 'P1')
     scene._sync_highlights()
+    scene.set_analysis_result_kind('plate')
     scene.set_analysis_result('Result', 'Deformação XYZ')
     scene.set_analysis_visible(True)
 
@@ -459,25 +460,32 @@ def test_node_markers_follow_deformation_scale_and_return_to_original_position(w
     assert scene._node_glyph_points.points[node_index] == pytest.approx(original)
 
 
-def test_analysis_palette_has_independent_bar_and_plate_diagram_toggles(window):
+def test_analysis_palette_switch_selects_diagram_family_and_remembers_each_selection(window):
     palette = window.analysis_top_palette
-    assert palette.result_diagrams_button.toolTip() == 'Diagrama nas barras'
-    assert palette.plate_diagrams_button.toolTip() == 'Diagrama nas placas'
     assert palette.result_diagrams_button.isChecked()
-    assert palette.plate_diagrams_button.isChecked()
-
-    palette.plate_diagrams_button.setChecked(False)
+    assert not palette.plate_diagrams_button.isChecked()
+    palette.diagram_selector.setCurrentText('Cortante Y (Vy)')
+    assert window.selected_analysis_diagram == 'Cortante Y'
     assert not window.scene.analysis_view_state()['plate_diagrams_visible']
-    assert palette.result_diagrams_button.isChecked()
 
-    palette.diagram_selector.setCurrentText('Deformação XYZ')
-    assert palette.result_diagrams_button.isEnabled()
-    assert palette.plate_diagrams_button.isEnabled()
-
-    palette.result_diagrams_button.setChecked(False)
+    palette.plate_diagrams_button.click()
+    labels = [palette.diagram_selector.itemText(i) for i in range(palette.diagram_selector.count())]
+    assert 'Cortante Y (Qy)' in labels
+    assert 'Tensão normal Y (σy)' in labels
+    assert 'Tensão de cisalhamento XY (τxy)' in labels
+    assert 'Cortante Y (Vy)' not in labels
+    assert not palette.result_diagrams_button.isChecked()
+    assert window.scene.analysis_view_state()['result_kind'] == 'plate'
     assert not window.scene.analysis_view_state()['result_diagrams_visible']
-    palette.result_diagrams_button.setChecked(True)
-    assert window.scene.analysis_view_state()['result_diagrams_visible']
+    palette.diagram_selector.setCurrentText('Tensão normal Y (σy)')
+    assert window.selected_analysis_diagram == 'Tensão normal Y (σy)'
+    assert not palette.deformation_scale_button.isEnabled()
+
+    palette.result_diagrams_button.click()
+    assert palette.diagram_selector.currentText() == 'Cortante Y (Vy)'
+    assert palette.deformation_scale_button.isEnabled()
+    palette.plate_diagrams_button.click()
+    assert palette.diagram_selector.currentText() == 'Tensão normal Y (σy)'
 
 
 def test_plate_diagram_toggle_shows_and_hides_colored_plate_results(window):
@@ -498,7 +506,8 @@ def test_plate_diagram_toggle_shows_and_hides_colored_plate_results(window):
         }},
     })]
 
-    scene.set_analysis_result('Result', 'Fletor Y')
+    scene.set_analysis_result_kind('plate')
+    scene.set_analysis_result('Result', 'Fletor X (Mx)')
     scene.set_analysis_visible(True)
     assert len(scene._plate_result_actors) == 2
     scale = scene._result_color_scale_widget
@@ -567,3 +576,110 @@ def test_plate_edge_selector_unavailable_when_all_edges_have_bars(window):
     assert panel._plate_edge_index == -1
     assert all(not field.isEnabled() for field in panel._plate_edge_inputs.values())
     assert all(not button.isEnabled() for button in panel._plate_edge_variable_buttons.values())
+
+
+def test_analysis_family_switch_renders_only_selected_family_in_deformation(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    scene.render_model(model)
+    nodes = {name: {"coordinates": point, "DZ": -0.01}
+             for name, point in zip(("a", "b", "c", "d"),
+                                    ((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))}
+    model.analysis_results = [AnalysisResult(
+        model.revision, "Result",
+        member_results={"B1": {"samples": (
+            {"x": 0, "deflection_z": 0}, {"x": 4, "deflection_z": -0.01},
+        )}},
+        plate_results={"P1": {"nodes": nodes, "elements": {"Q1": {"nodes": tuple(nodes)}}}},
+    )]
+    window.refresh_analysis_palette()
+    scene.set_analysis_visible(True)
+    palette = window.analysis_top_palette
+    palette.diagram_selector.setCurrentText("Deformação Z (Dz)")
+    assert scene._result_actors
+    assert not scene._plate_result_actors
+    assert scene._plate_actors['P1'].GetVisibility()
+
+    palette.plate_diagrams_button.click()
+    palette.diagram_selector.setCurrentText("Deformação Z (Dz)")
+    assert not scene._result_actors
+    assert scene._plate_result_actors
+    assert not scene._plate_actors['P1'].GetVisibility()
+    assert scene._member_line_actor.GetVisibility()
+
+    palette.result_diagrams_button.click()
+    assert scene._result_actors
+    assert not scene._plate_result_actors
+    assert scene._plate_actors['P1'].GetVisibility()
+
+
+def test_plate_components_have_matching_contours_point_values_and_units(window):
+    from osa.domain import AnalysisResult
+
+    model, scene = window.model, window.scene
+    model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    scene.render_model(model)
+    nodes = {name: {"coordinates": point}
+             for name, point in zip(("a", "b", "c", "d"),
+                                    ((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))}
+    element = {"nodes": tuple(nodes), "moment": [11, 22, 33],
+               "shear": [44, 55], "membrane": [66, 77, 88]}
+    plate_result = {"nodes": nodes, "elements": {"Q1": element}}
+    model.analysis_results = [AnalysisResult(model.revision, "Result", plate_results={"P1": plate_result})]
+    window.refresh_analysis_palette()
+    scene.set_analysis_visible(True)
+    palette = window.analysis_top_palette
+    palette.plate_diagrams_button.click()
+    for diagram, value, unit in (
+        ("Fletor X (Mx)", -11, "kN·m/m"),
+        ("Fletor Y (My)", -22, "kN·m/m"),
+        ("Momento volvente XY (Mxy)", 33, "kN·m/m"),
+        ("Cortante X (Qx)", 44, "kN/m"),
+        ("Cortante Y (Qy)", 55, "kN/m"),
+        ("Tensão normal X (σx)", 66, "kN/m²"),
+        ("Tensão normal Y (σy)", 77, "kN/m²"),
+        ("Tensão de cisalhamento XY (τxy)", 88, "kN/m²"),
+    ):
+        palette.diagram_selector.setCurrentText(diagram)
+        assert scene._result_color_scale_widget._unit == unit
+        assert window._sample_analysis_plate(plate_result, diagram, np.array([2, 1.5, 0])) == pytest.approx(value)
+        assert not scene._result_actors
+        mapper = scene._plate_result_actors[0].GetMapper()
+        mapper.Update()
+        surface = mapper.GetInput()
+        import pyvista as pv
+        assert np.allclose(pv.wrap(surface)["result_value"], value)
+
+
+def test_analysis_selector_widths_stay_fixed_after_style_polish_and_family_changes():
+    from PySide6.QtGui import QFont
+    from PySide6.QtTest import QTest
+
+    app = QApplication.instance() or QApplication([])
+    previous_font = app.font()
+    app.setFont(QFont('Sans', 12))
+    window = MainWindow()
+    try:
+        window.show()
+        window.show_editor()
+        palette = window.analysis_top_palette
+        palette.set_analysis_visible(True)
+        palette.set_combinations(('Combinação 01',))
+        palette.set_analysis_ready(True)
+        measurements = []
+        for kind in ('bar', 'plate', 'bar', 'plate'):
+            palette.result_kind_switch._buttons[kind].click()
+            QTest.qWait(200)
+            measurements.append((palette.width(), palette.combination_selector.width(),
+                                 palette.diagram_selector.width()))
+            for selector in (palette.combination_selector, palette.diagram_selector):
+                assert selector.minimumWidth() == selector.maximumWidth() == selector.width()
+        assert len(set(measurements)) == 1
+    finally:
+        window.scene.plotter.close()
+        window.hide()
+        window.deleteLater()
+        app.processEvents()
+        app.setFont(previous_font)
