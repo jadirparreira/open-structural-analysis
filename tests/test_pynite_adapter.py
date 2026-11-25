@@ -1,3 +1,5 @@
+from math import dist
+
 import numpy as np
 import pytest
 
@@ -14,6 +16,40 @@ from osa.services import ModelService
 from osa.services.action_service import ActionService
 
 
+class _TestActor:
+    class _Mapper:
+        def SetResolveCoincidentTopologyToPolygonOffset(self):
+            pass
+
+        def SetResolveCoincidentTopologyLineOffsetParameters(self, *_values):
+            pass
+
+        def SetRelativeCoincidentTopologyLineOffsetParameters(self, *_values):
+            pass
+
+    def __init__(self):
+        self._mapper = self._Mapper()
+
+    def SetObjectName(self, name):
+        self.name = name
+
+    def GetMapper(self):
+        return self._mapper
+
+
+def _vertical_action_totals(model):
+    totals = {}
+    for action in model.actions.values():
+        if not action.kind.endswith("_Z") or len(action.components) != 2:
+            continue
+        member = model.bars[action.target]
+        start = model.nodes[member.start_node]
+        end = model.nodes[member.end_node]
+        length = dist((start.x, start.y, start.z), (end.x, end.y, end.z))
+        totals[action.load_case] = totals.get(action.load_case, 0.0) + sum(action.components) * length / 2.0
+    return totals
+
+
 def test_mezanino_is_analyzed_with_its_actions_and_an_implicit_combination():
     model = StructuralModel()
     CommandSession(ModelService(model)).submit("mezanino")
@@ -27,7 +63,9 @@ def test_mezanino_is_analyzed_with_its_actions_and_an_implicit_combination():
     assert len(result.node_results) == 34
     assert len(result.member_results) == 54
     assert stages == ["model", "loads", "combinations", "solve", "results"]
-    assert sum(node["RXN_FZ"] for node in result.node_results.values()) == pytest.approx(252.968, abs=0.001)
+    assert sum(node["RXN_FZ"] for node in result.node_results.values()) == pytest.approx(
+        -sum(_vertical_action_totals(model).values()), abs=0.001,
+    )
     assert max(abs(node["DZ"]) for node in result.node_results.values()) > 0
     assert min(node["DZ"] for node in result.node_results.values()) < 0
     assert min(
@@ -81,7 +119,7 @@ def test_slab_supported_beam_results_keep_the_full_original_member_length():
 
         def add_mesh(self, mesh, **options):
             self.meshes.append((mesh, options))
-            return object()
+            return _TestActor()
 
     plotter = Plotter()
     actors, _positions, _labels = ResultRenderer().render(plotter, model, result, "Fletor Y")
@@ -144,6 +182,7 @@ def test_slab_supported_beam_results_keep_the_full_original_member_length():
 def test_plate_result_contours_color_faces_and_mesh_from_plate_result_values():
     model = StructuralModel()
     model.add_plate(((0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)))
+    model.add_bar("B1", "N1", "N2")
     nodes = {
         "FE::1": {"coordinates": (0, 0, 0)},
         "FE::2": {"coordinates": (2, 0, 0)},
@@ -166,7 +205,7 @@ def test_plate_result_contours_color_faces_and_mesh_from_plate_result_values():
 
         def add_mesh(self, mesh, **options):
             self.meshes.append((mesh, options))
-            return object()
+            return _TestActor()
 
     plotter = Plotter()
     actors, _positions, labels = ResultRenderer().render_plate_contours(
@@ -178,7 +217,8 @@ def test_plate_result_contours_color_faces_and_mesh_from_plate_result_values():
     mesh, mesh_options = plotter.meshes[1]
     assert surface.faces.size > 0
     assert surface_options["scalars"] == "result_value"
-    assert surface.point_data["result_value"].shape == (4,)
+    assert surface.point_data["result_value"].shape == (81,)
+    assert surface.point_data["result_value"][[0, 8, 80, 72]] == pytest.approx((-1.0, -1.0, -1.0, -1.0))
     assert surface_options["n_colors"] == 14
     assert surface_options["interpolate_before_map"] is True
     assert surface_options["show_scalar_bar"] is False
@@ -190,7 +230,7 @@ def test_plate_result_contours_color_faces_and_mesh_from_plate_result_values():
         Plotter(), model, "Peso próprio",
     )
     assert selfweight_actors
-    assert any(label.endswith("kN/m²") for label in selfweight_labels)
+    assert any(label.endswith("kN/m") for label in selfweight_labels)
 
 
 def test_plate_result_interpolation_modes_apply_element_node_and_macro_averaging():
@@ -226,7 +266,7 @@ def test_plate_result_interpolation_modes_apply_element_node_and_macro_averaging
 
         def add_mesh(self, mesh, **options):
             self.meshes.append((mesh, options))
-            return object()
+            return _TestActor()
 
     renderer = ResultRenderer()
     centers_plotter = Plotter()
@@ -235,8 +275,8 @@ def test_plate_result_interpolation_modes_apply_element_node_and_macro_averaging
     )
     center_surface, center_options = centers_plotter.meshes[0]
     second_center_surface = centers_plotter.meshes[2][0]
-    assert center_surface.cell_data["result_value"] == pytest.approx((1.0,))
-    assert second_center_surface.cell_data["result_value"] == pytest.approx((11.0,))
+    assert center_surface.cell_data["result_value"] == pytest.approx((-1.0,))
+    assert second_center_surface.cell_data["result_value"] == pytest.approx((-11.0,))
     assert center_options["preference"] == "cell"
     assert center_options["interpolate_before_map"] is False
 
@@ -244,29 +284,35 @@ def test_plate_result_interpolation_modes_apply_element_node_and_macro_averaging
     renderer.render_plate_contours(
         raw_plotter, model, result, "Fletor Y", display_mode="nos_sem_media",
     )
-    raw_surface, _options = raw_plotter.meshes[0]
-    raw_second_surface = raw_plotter.meshes[2][0]
-    assert len(raw_surface.points) == len(raw_second_surface.points) == 4
-    assert raw_surface.point_data["result_value"] == pytest.approx((0, 0, 0, 0))
-    assert raw_second_surface.point_data["result_value"] == pytest.approx((10, 10, 10, 10))
+    raw_surfaces = [mesh for mesh, options in raw_plotter.meshes if options.get("name", "").startswith("result-plate:")]
+    raw_surface, raw_second_surface = raw_surfaces
+    assert len(raw_surface.points) == len(raw_second_surface.points) == 81
+    assert raw_surface.point_data["result_value"] == pytest.approx(np.zeros(81))
+    assert raw_second_surface.point_data["result_value"] == pytest.approx(np.full(81, -10.0))
 
     averaged_plotter = Plotter()
     renderer.render_plate_contours(
         averaged_plotter, model, result, "Fletor Y", display_mode="nos_media",
     )
-    averaged_first = averaged_plotter.meshes[0][0].point_data["result_value"]
-    averaged_second = averaged_plotter.meshes[2][0].point_data["result_value"]
-    assert averaged_first[1:3] == pytest.approx((5.0, 5.0))
-    assert averaged_second[0] == pytest.approx(5.0)
+    averaged_surfaces = [
+        mesh for mesh, options in averaged_plotter.meshes
+        if options.get("name", "").startswith("result-plate:")
+    ]
+    averaged_first, averaged_second = (mesh.point_data["result_value"] for mesh in averaged_surfaces)
+    assert averaged_first[8::9] == pytest.approx(np.full(9, -5.0))
+    assert averaged_second[::9] == pytest.approx(np.full(9, -5.0))
 
     macro_plotter = Plotter()
     renderer.render_plate_contours(
         macro_plotter, model, result, "Fletor Y", display_mode="nos_media_macro",
     )
-    macro_first = macro_plotter.meshes[0][0].point_data["result_value"]
-    macro_second = macro_plotter.meshes[2][0].point_data["result_value"]
-    assert macro_first == pytest.approx((0, 0, 0, 0))
-    assert macro_second == pytest.approx((10, 10, 10, 10))
+    macro_surfaces = [
+        mesh for mesh, options in macro_plotter.meshes
+        if options.get("name", "").startswith("result-plate:")
+    ]
+    macro_first, macro_second = (mesh.point_data["result_value"] for mesh in macro_surfaces)
+    assert macro_first == pytest.approx(np.zeros(81))
+    assert macro_second == pytest.approx(np.full(81, -10.0))
 
 
 def test_result_color_map_uses_equal_width_discrete_bands():
@@ -312,12 +358,12 @@ def test_deformation_color_range_is_shared_by_plates_and_bars():
 
         def add_mesh(self, mesh, **options):
             self.meshes.append((mesh, options))
-            return object()
+            return _TestActor()
 
     plotter = Plotter()
     ResultRenderer().render_plate_contours(plotter, model, result, "Deformação XYZ")
     surface, options = plotter.meshes[0]
-    assert surface.point_data["result_value"] == pytest.approx((0.0, 0.01, 0.02, 0.03))
+    assert surface.point_data["result_value"][[0, 8, 80, 72]] == pytest.approx((0.0, 0.01, 0.02, 0.03))
     assert options["clim"] == pytest.approx((0.0, 0.30))
 
     import pyvista as pv
@@ -343,6 +389,11 @@ def test_plate_pressure_is_resolved_into_local_normal_nodal_forces():
                 "P1": (("P1::Q1", ("N1", "N2", "N3", "N4"),
                         ((0, 0, 0), (2, 0, 0), (2, 3, 1), (0, 3, 1))),)
             }
+            local_y = np.array((0.0, 3.0, 1.0)) / np.sqrt(10.0)
+            self._osa_plate_surface_axes = {
+                "P1": (np.array((0.0, 0.0, 0.0)), np.array((1.0, 0.0, 0.0)),
+                       local_y, 0.0, 2.0, 0.0, np.sqrt(10.0))
+            }
         def add_node_load(self, *load):
             self.loads.append(load)
 
@@ -351,7 +402,7 @@ def test_plate_pressure_is_resolved_into_local_normal_nodal_forces():
 
     LoadCaseBuilder._apply_action(target, action)
 
-    assert len(target.loads) == 12
+    assert len(target.loads) == 8
     totals = {
         direction: sum(load[2] for load in target.loads if load[1] == direction)
         for direction in ("FX", "FY", "FZ")
@@ -379,7 +430,15 @@ def test_explicit_combination_multiplies_all_three_factor_columns():
 
     result = PyniteAdapter().run(model, AnalysisRequest(("ELU",)))[0]
 
-    assert sum(node["RXN_FZ"] for node in result.node_results.values()) == pytest.approx(362.458, abs=0.001)
+    load_totals = _vertical_action_totals(model)
+    expected_reaction = -(
+        1.25 * load_totals["Peso próprio"]
+        + 1.35 * load_totals["Ação permanente"]
+        + 1.50 * load_totals["Ação variável"]
+    )
+    assert sum(node["RXN_FZ"] for node in result.node_results.values()) == pytest.approx(
+        expected_reaction, abs=0.001,
+    )
 
 
 def test_default_analysis_combinations_are_available_for_mezanino():

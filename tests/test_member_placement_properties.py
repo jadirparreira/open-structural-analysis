@@ -393,7 +393,10 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
     camera.SetViewUp(0, 1, 0)
     camera.SetParallelScale(10)
     camera.SetClippingRange(0.1, 100)
-    scene._snap_types["intersection"] = False
+    scene._snap_enabled = True
+    scene._snap_types.update(
+        endpoint=False, center=False, intersection=False, perpendicular=True,
+    )
     monkeypatch.setattr(scene, "_measurement_visible_points", lambda screens, *_args, **_kwargs: np.ones(len(screens), bool))
     messages = []
     monkeypatch.setattr(window.history, "append", messages.append)

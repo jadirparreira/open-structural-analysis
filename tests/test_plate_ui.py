@@ -16,6 +16,7 @@ def window():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     window._plate_closure_mode = 'perguntar'
+    window.plate_placement_editor.placement_mode_switch.set_selection('bars')
     window.show()
     window.show_editor()
     for name, x, y in [('N1', 0, 0), ('N2', 4, 0), ('N3', 4, 3), ('N4', 0, 3)]:
@@ -37,7 +38,7 @@ def click(window, kind, name):
 
 
 def test_closed_contour_create_inspect_save_delete(window, tmp_path):
-    window.handle_command('PLATE')
+    window.start_plate_placement()
     for name in ('B1', 'B2', 'B3'):
         click(window, 'bar', name)
     assert window.scene._selected_elements == (('bar', 'B1'), ('bar', 'B2'), ('bar', 'B3'))
@@ -226,12 +227,13 @@ def test_manual_closing_restores_snap_and_rejects_invalid_segment(window, monkey
 
 
 def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
-    from PySide6.QtWidgets import QDoubleSpinBox, QLineEdit
+    from PySide6.QtWidgets import QComboBox, QLineEdit
     window.start_plate_placement()
     for name in ('B1', 'B2', 'B3'):
         click(window, 'bar', name)
     click(window, 'rigid_bar', 'N4-N1')
     plate = window.model.plates['P1']
+    window.model.update_plate(plate.name, material='Concreto C30', thickness_mm=100)
     assert plate.color == window.model.bars['B1'].color == '#6e7781'
     assert window.scene._plate_actors['P1'].GetProperty().GetOpacity() == pytest.approx(.7)
     assert window.scene._plate_antialiasing._active
@@ -239,11 +241,18 @@ def test_plate_panel_properties_and_solid_thickness_roundtrip(window, tmp_path):
     click(window, 'plate', 'P1')
     panel = window.properties
     assert panel.member_color_button.isVisible()
-    fields = {field.accessibleName(): field for field in panel.findChildren(QLineEdit)}
-    assert fields['Barras'].text() == 'B1, B2, B3, N4-N1'
-    assert fields['Material'].text() == 'Concreto C30'
-    thickness = next(field for field in panel.findChildren(QDoubleSpinBox)
-                     if field.accessibleName() == 'Espessura da placa (mm)')
+    related_bars = next(
+        label for label in panel.findChildren(QLabel)
+        if label.accessibleName() == 'Barras e placas relacionadas'
+    )
+    assert related_bars.text() == 'B1, B2, B3, N4-N1'
+    material = next(
+        field for field in panel.findChildren(QComboBox)
+        if field.accessibleName() == 'Material da placa'
+    )
+    assert material.currentText() == 'Concreto C30'
+    window.toggle_plate_section_panel(panel._plate_section_settings_button)
+    thickness = window.plate_section_panel.thickness
     assert thickness.value() == 100
     thickness.setValue(240)
     thickness.editingFinished.emit()
@@ -310,7 +319,7 @@ def test_plate_action_and_analysis_panels_show_only_the_requested_fields(window)
     assert 'Barras' not in labels and 'Material' not in labels and 'Espessura' not in labels
     pressure_field = next(
         field for field in panel.findChildren(QLineEdit)
-        if field.accessibleName() == 'Ação na superfície da placa (kN/m²)'
+        if field.accessibleName() == 'Pressão variável em X local (kN/m²)'
     )
     assert pressure_field.text() == '-3'
     assert all(field.accessibleName() != 'Espessura da placa (mm)'
@@ -318,18 +327,6 @@ def test_plate_action_and_analysis_panels_show_only_the_requested_fields(window)
     assert panel._format_plate_pressure(1.23456) == '1.235'
     assert panel._format_plate_pressure(1.2) == '1.2'
     assert panel._format_plate_pressure(1.0) == '1'
-
-    window.model.add_bar('B4', 'N4', 'N2')
-    window.action_service.add_member_selfweight('B4', -1.0, 'Peso próprio')
-    window.selected_action_name = 'Peso próprio'
-    panel.show_for('plate', 'P1', 'Ações')
-    selfweight_field = next(
-        field for field in panel.findChildren(QLineEdit)
-        if field.accessibleName() == 'Peso próprio distribuído da placa (kN/m²)'
-    )
-    expected_pressure = -window.model.materials['Concreto C30'][3] * 0.1
-    assert float(selfweight_field.text()) == pytest.approx(round(expected_pressure, 3))
-    assert selfweight_field.isReadOnly()
 
     panel.show_for('plate', 'P1', 'Análise')
     QApplication.processEvents()

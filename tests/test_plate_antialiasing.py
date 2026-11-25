@@ -14,11 +14,20 @@ from osa.rendering.scene_batched import StructureScene
 
 
 class _PlateScene:
+    @staticmethod
+    def _add_plate_local_axes(_plate):
+        pass
+
+    @staticmethod
+    def _update_plate_connection_symbols(_name):
+        pass
+
     _add_plates = StructureScene._add_plates
     _plate_meshes = StructureScene._plate_meshes
     _detailed_plate_meshes = StructureScene._detailed_plate_meshes
     _plate_display_contour = StructureScene._plate_display_contour
     _plate_fe_wire_mesh = StructureScene._plate_fe_wire_mesh
+    _plate_fe_display_nodes = StructureScene._plate_fe_display_nodes
     _deformed_plate_names = StructureScene._deformed_plate_names
     _update_plate_edge_style = StructureScene._update_plate_edge_style
     _update_plate_antialiasing = StructureScene._update_plate_antialiasing
@@ -95,30 +104,30 @@ def _project(plotter, point, height):
 
 
 def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
-    plotter = pv.Plotter(off_screen=True, window_size=(500, 500))
-    try:
-        plotter.set_background('white')
-        original_oit = plotter.renderer.GetUseOIT()
-        antialiasing = PlateAntialiasing(plotter.renderer)
-        antialiasing.set_active(True)
-        plotter.add_mesh(pv.Plane(i_size=2, j_size=2), color='#6e7781', opacity=.7)
-        plotter.add_mesh(pv.Line((-1, -.8, 0), (1, .8, 0)), color='#24292f', line_width=2)
-        plotter.view_xy()
-        plotter.camera.parallel_projection = True
-        plotter.camera.parallel_scale = 1.5
-        images, effective_samples = [], []
-        for samples in (2, 4, 8):
+    images, effective_samples = [], []
+    for samples in (2, 4, 8):
+        plotter = pv.Plotter(off_screen=True, window_size=(500, 500))
+        try:
+            plotter.set_background('white')
+            original_oit = plotter.renderer.GetUseOIT()
             plotter.render_window.SetMultiSamples(samples)
+            antialiasing = PlateAntialiasing(plotter.renderer)
+            antialiasing.set_active(True)
+            plotter.add_mesh(pv.Plane(i_size=2, j_size=2), color='#6e7781', opacity=.7)
+            plotter.add_mesh(pv.Line((-1, -.8, 0), (1, .8, 0)), color='#24292f', line_width=2)
+            plotter.view_xy()
+            plotter.camera.parallel_projection = True
+            plotter.camera.parallel_scale = 1.5
             images.append(plotter.screenshot(return_img=True).copy())
             effective_samples.append(plotter.render_window.GetRenderFramebuffer().GetMultiSamples())
-        for index in range(2):
-            # Drivers can cap the requested sample count to a lower value.
-            if effective_samples[index] != effective_samples[index + 1]:
-                assert np.any(images[index] != images[index + 1])
-        antialiasing.set_active(False)
-        assert plotter.renderer.GetUseOIT() == original_oit
-    finally:
-        plotter.close()
+            antialiasing.set_active(False)
+            assert plotter.renderer.GetUseOIT() == original_oit
+        finally:
+            plotter.close()
+    for index in range(2):
+        # Drivers can cap the requested sample count to a lower value.
+        if effective_samples[index] != effective_samples[index + 1]:
+            assert np.any(images[index] != images[index + 1])
 
 
 @pytest.mark.parametrize('direction', [(-1, -1, 1), (1, 1, 1)])

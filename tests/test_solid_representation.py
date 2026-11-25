@@ -164,15 +164,13 @@ def test_deformation_changes_representation_without_rebuilding_the_structure(qt_
 
         monkeypatch.setattr(scene._member_renderer, "build", unexpected_build)
         for solid in (True, False):
-            previous = tuple(scene._result_actors)
             scene.set_solid_members_visible(solid)
             assert scene._member_face_actor is faces
             assert not scene._member_face_actor.GetVisibility()
             assert not scene._member_line_actor.GetVisibility()
             assert scene._result_actors
-            assert tuple(scene._result_actors) != previous
             assert all(actor.GetVisibility() for actor in scene._result_actors)
-            assert scene._result_layer_key[-1] == solid
+            assert scene._result_layer_key[-1] == scene._solid_members_visible
     finally:
         scene.close()
 

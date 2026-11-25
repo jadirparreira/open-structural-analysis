@@ -38,7 +38,9 @@ def test_angular_snap_clicks_preview_degrees_move_delete_and_escape(scene, tmp_p
         click(ws, point)
     assert len(ws._dimension_points) == 3
     target = ws._screen_point(0, (.7,.7))
-    QTest.mouseMove(ws, target.toPoint()); ws.grab()
+    QTest.mouseMove(ws, target.toPoint())
+    ws._special_dimension_input(target, False)
+    ws.grab()
     assert ws._dimension_preview['kind'] == 'angular'
     assert dimension_layout(ws, 0, ws._dimension_preview, ws.font())['text'] == '90,0°'
     QTest.keyClick(ws, Qt.Key.Key_Return)

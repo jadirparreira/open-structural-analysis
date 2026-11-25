@@ -483,7 +483,7 @@ def test_pan_during_weld_launch_keeps_flow_and_snaps(scene, select_first):
     target = sheet._screen_point(0, (.5, -.1))
     # Force a real hover after synthetic button-held movement in the offscreen backend.
     QTest.mouseMove(sheet, QPoint(40, 40))
-    QTest.mouseMove(sheet, (target + QPointF(2, -2)).toPoint())
+    tool._hover_snap(target + QPointF(2, -2))
     app.processEvents()
     assert tool.snap is not None and tool.snap[4] == 'center'
     QTest.mouseClick(sheet, Qt.MouseButton.LeftButton, pos=(target + QPointF(2, -2)).toPoint())

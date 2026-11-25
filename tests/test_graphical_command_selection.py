@@ -210,18 +210,14 @@ def test_subtract_end_uses_intersection_of_ctrl_selected_faces(window, monkeypat
 
 
 @pytest.mark.parametrize("preselected", [False, True])
-def test_reverse_applies_to_every_selected_member(window, monkeypatch, preselected):
+def test_reverse_is_disabled_with_canonical_member_orientation(window, preselected):
     if preselected:
         select(window, ("bar", "B1"), ("bar", "B2"))
     window.start_reverse_member()
-    if not preselected:
-        ctrl_click(window, monkeypatch, ("bar", "B1"))
-        ctrl_click(window, monkeypatch, ("bar", "B2"))
-        assert window.model.bars["B1"].start_node == "N1"
-        enter(window)
-    assert window.model.bars["B1"].start_node == "N2"
-    assert window.model.bars["B2"].start_node == "N3"
+    assert window.model.bars["B1"].start_node == "N1"
+    assert window.model.bars["B2"].start_node == "N2"
     assert window.model.bars["B3"].start_node == "N3"
+    assert window._command_mode is None
 
 
 @pytest.mark.parametrize("preselected", [False, True])
@@ -475,6 +471,7 @@ def test_action_launcher_applies_pressure_to_multiple_plates(window, monkeypatch
 
 def test_component_toggle_hides_geometry_and_survives_scene_refresh(window):
     from osa.domain.entities import NodeComponentAssignment
+    window.palette.show_group('Geometria')
     window.model.update_node_component('N1', NodeComponentAssignment('base_plate', ()))
     window.scene.render_model(window.model)
     scene = window.scene
