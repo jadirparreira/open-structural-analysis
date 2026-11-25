@@ -22,6 +22,7 @@ class _PlateScene:
     _deformed_plate_names = StructureScene._deformed_plate_names
     _update_plate_edge_style = StructureScene._update_plate_edge_style
     _update_plate_antialiasing = StructureScene._update_plate_antialiasing
+    _subtract_plate_meshes = StructureScene._subtract_plate_meshes
     _solid_highlight_line_width = 2.0
     _detailing_session_active = False
 
