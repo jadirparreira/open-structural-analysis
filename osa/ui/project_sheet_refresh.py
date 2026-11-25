@@ -1,0 +1,80 @@
+"""Regenerate older sheet linework away from the interface thread."""
+from __future__ import annotations
+
+import logging
+from threading import Event
+
+from PySide6.QtCore import QObject, QRunnable, Signal
+
+from .detailing_preview import DetailingViewPreview, _ViewGeometryCalculator
+
+_LOG = logging.getLogger(__name__)
+
+
+class SheetLineworkSignals(QObject):
+    finished = Signal(object, object, int, int, object, object, object, object, bool)
+
+
+class SheetLineworkTask(QRunnable):
+    def __init__(self, signals, model, source, revision, group_revision, jobs, cancelled: Event):
+        super().__init__()
+        self.signals = signals
+        self.model = model
+        self.source = source
+        self.revision = revision
+        self.group_revision = group_revision
+        self.jobs = jobs
+        self.cancelled = cancelled
+
+    def run(self) -> None:
+        calculator = _ViewGeometryCalculator()
+        calculator._detail_scene = self.source
+        for sheet_name, view, projection, had_segments, excluded_owners in self.jobs:
+            if self.cancelled.is_set():
+                return
+            segments, owners, success = (), (), False
+            try:
+                group = view.get("component_detail_group")
+                if isinstance(group, dict) and group.get("component_id") == "base_plate":
+                    from .dialogs import ComponentDetailsDialog
+
+                    nodes = [name for name in group.get("members", ())
+                             if name in self.model.nodes and self.model.nodes[name].component is not None]
+                    if not nodes:
+                        raise ValueError("O componente do detalhe não está disponível.")
+                    parameters = dict(self.model.nodes[nodes[0]].component.parameters)
+                    generated = ComponentDetailsDialog._build_group_views(
+                        self.model, self.source._marker_radius_current, {"nodes": nodes, "parameters": parameters},
+                    )
+                    direction = next(key for _name, title, key in ComponentDetailsDialog._VIEW_DEFINITIONS
+                                     if title.casefold() == str(group.get("direction", "")).casefold())
+                    data = generated[direction]
+                    filtered = [(line, owner) for line, owner in zip(data["segments"], data["segment_owners"])
+                                if owner not in excluded_owners]
+                    segments = tuple(line for line, _owner in filtered)
+                    owners = tuple(owner for _line, owner in filtered)
+                else:
+                    DetailingViewPreview.set_view(
+                        calculator, self.model, projection["plane"], projection["coordinate"],
+                        upper_offset_cm=float(projection.get("upper_offset_cm", 50.0)),
+                        lower_offset_cm=float(projection.get("lower_offset_cm", 50.0)),
+                        orientation=str(projection.get("orientation", "Superior para inferior")),
+                        rotation_degrees=float(projection.get("rotation_degrees", 0.0)),
+                        excluded_owners=excluded_owners,
+                    )
+                    segments, owners = tuple(calculator._segments_2d), tuple(calculator._segment_sources)
+                # Do not replace an existing drawing with an empty result if
+                # the projection pipeline silently failed.
+                success = bool(segments) or not had_segments or bool(excluded_owners)
+            except Exception:  # noqa: BLE001 - keep the saved view if regeneration fails
+                _LOG.exception("Não foi possível atualizar a vista %s", sheet_name)
+            if not self.cancelled.is_set():
+                try:
+                    self.signals.finished.emit(
+                        sheet_name, view, self.revision, self.group_revision, projection,
+                        excluded_owners, segments, owners, success,
+                    )
+                except RuntimeError:
+                    # The application can close while this global-pool task is
+                    # running. Its window then owns no live signal receiver.
+                    return

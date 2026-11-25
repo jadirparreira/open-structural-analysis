@@ -267,6 +267,19 @@ class ModelService:
         """Copy selected nodes, members, and rigid bars to a translated position."""
         return self.model.copy_elements(node_names, member_names, offset, rigid_bar_names)
 
+    def copy_elements_with_plates(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
+        plate_names: tuple[str, ...] = (),
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes, members, rigid bars and plates by translation."""
+        return self.model.copy_elements_with_plates(
+            node_names, member_names, offset, rigid_bar_names, plate_names,
+        )
+
     def create_rigid_bar(self, start_node: str, end_node: str):
         return self.model.add_rigid_bar(start_node, end_node)
 
@@ -284,6 +297,9 @@ class ModelService:
 
     def update_support_stiffness(self, name: str, stiffness: tuple[float, ...]):
         return self.model.update_node_support_stiffness(name, stiffness)
+
+    def update_support_directions(self, name: str, directions: tuple[str, ...]):
+        return self.model.update_node_support_directions(name, directions)
 
     def update_member_nodes(self, name: str, start_node: str, end_node: str):
         return self.model.update_bar(name, start_node, end_node)
@@ -321,6 +337,21 @@ class ModelService:
     def update_member_solid_section_offsets(self, name: str, offsets: tuple[float, ...]):
         return self.model.update_member_solid_section_offsets(name, offsets)
 
+    def update_plate_positioning_displacement(self, name: str, displacement: float):
+        return self.model.update_plate(
+            name, positioning_displacement=displacement,
+        )
+
+    def update_plate_edge_positioning(self, name: str, edge_positioning):
+        return self.model.update_plate(name, edge_positioning=edge_positioning)
+
+    def add_detail_subtraction(
+        self, target_kind: str, target_name: str, cutter_kind: str, cutter_name: str,
+    ):
+        return self.model.add_detail_subtraction(
+            target_kind, target_name, cutter_kind, cutter_name,
+        )
+
     def update_member_color(self, name: str, color: str):
         return self.model.update_member_color(name, color)
 
@@ -343,6 +374,26 @@ class ModelService:
             raise ValueError(f"Não foi possível obter o peso linear das barras: {names}.")
         return tuple(weights)
 
+    def plate_selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
+        """Retorna pesos superficiais em kN/m², opcionalmente filtrados por material."""
+        material_key = material.casefold() if material is not None else None
+        weights = []
+        for plate in self.model.plates.values():
+            if material_key is not None and plate.material.casefold() != material_key:
+                continue
+            values = self.model.materials.get(plate.material)
+            if values is None or len(values) < 4:
+                continue
+            pressure = -float(values[3]) * plate.thickness_mm / 1000.0
+            if not math.isfinite(pressure):
+                raise ValueError(f"Não foi possível obter o peso superficial da placa '{plate.name}'.")
+            weights.append((plate.name, pressure))
+        return tuple(weights)
+
+    def selfweights(self, material: str | None = None) -> tuple[tuple[str, float], ...]:
+        """Retorna pesos próprios de barras e placas no material informado."""
+        return (*self.member_selfweights(material), *self.plate_selfweights(material))
+
     def member_selfweight(self, name: str) -> float:
         """Calcula o peso linear atualizado de uma barra em kN/m."""
         member = self.model.bars[name]
@@ -357,8 +408,8 @@ class ModelService:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Não foi possível calcular o peso linear da barra '{name}'.") from error
-        # kg/m * 10 N/kg / 1000 = kg/m / 100 kN/m.
-        return -properties.mass_kg_m / 100.0
+        # Use the same acceleration as the kN/m³ -> kg/m³ conversion above.
+        return -properties.mass_kg_m * 9.80665e-3
 
     def remove_node(self, name: str) -> None:
         self.model.remove_node(name)
@@ -425,6 +476,10 @@ class ModelService:
                     if node_name in (rigid.start_node, rigid.end_node)
                     and rigid.name not in rigid_bar_set
                 ],
+                "plates": [
+                    plate.name for plate in self.model.plates.values()
+                    if node_name in plate.vertex_nodes
+                ],
             }
             for node_name in nodes
             if any(
@@ -435,6 +490,9 @@ class ModelService:
                 node_name in (rigid.start_node, rigid.end_node)
                 and rigid.name not in rigid_bar_set
                 for rigid in self.model.rigid_bars.values()
+            ) or any(
+                node_name in plate.vertex_nodes
+                for plate in self.model.plates.values()
             )
         ]
         affected_nodes = tuple(

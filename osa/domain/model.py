@@ -13,13 +13,21 @@ from .entities import (
     ActionGroup,
     AnalysisResult,
     Bar,
+    DetailEndCut,
     LoadCase,
     LoadCombination,
     Node,
+    NodeComponentAssignment,
+    Plate,
     ReferenceAxis,
     RigidBar,
 )
 from .errors import DuplicateMemberError, DuplicateNodeCoordinatesError, EntityNotFoundError
+from .node_components import (
+    BASE_PLATE_PLANES,
+    default_hook_headings,
+    node_component_definition,
+)
 
 
 class StructuralModel:
@@ -32,10 +40,12 @@ class StructuralModel:
     def __init__(self, *, materials=None, material_types=None, sections=None) -> None:
         self.nodes: dict[str, Node] = {}
         self.node_display_names: dict[str, str] = {}
+        self.plate_display_names: dict[str, str] = {}
         self.bars: dict[str, Bar] = {}
         self.verification_element_names: dict[str, str] = {}
         self.verification_element_groups: list[dict[str, object]] = []
         self.rigid_bars: dict[str, RigidBar] = {}
+        self.plates: dict[str, Plate] = {}
         self.axes: dict[str, tuple[ReferenceAxis, ...]] = {axis: () for axis in ("X", "Y", "Z")}
         self.references: dict[str, DrawingReference] = {}
         self.materials = {name: tuple(values) for name, values in (materials or {}).items()}
@@ -55,6 +65,7 @@ class StructuralModel:
         self._restraint_lengths_cache = None
         # Proveniência e pendências de conversores externos, persistidas no .osa.
         self.import_metadata: dict = {}
+        self.detailing_data: dict = {}
         self.revision = 0
         self.scene_views: dict[str, set[str]] = {"Completo": set()}
         self.scene_view_hidden_rigid_bars: dict[str, set[str]] = {"Completo": set()}
@@ -65,8 +76,777 @@ class StructuralModel:
     def members(self) -> dict[str, Bar]:
         return self.bars
 
+    def add_plate(
+        self, contour, *, name: str | None = None, supports=(), color="#6e7781",
+        thickness_mm=100.0, material: str | None = None, positioning_displacement=0.0,
+        edge_positioning=(), restrictions=(False, False, False),
+        restriction_stiffness=(0.0, 0.0, 0.0),
+        restriction_directions=("=", "=", "="),
+        allow_warped=False,
+        edge_connections=None,
+    ) -> Plate:
+        from osa.services.plate_contour import plate_contour
+
+        points = tuple(tuple(point) for point in contour)
+        ordered = plate_contour(
+            zip(points, points[1:] + points[:1]),
+            allow_warped=allow_warped,
+        )
+        if name is None:
+            number = 1
+            while f"P{number}" in self.plates:
+                number += 1
+            name = f"P{number}"
+        if not isinstance(name, str) or not name.startswith("P") or not name[1:].isdigit() or int(name[1:]) < 1 or name in self.plates:
+            raise ValueError("A identidade da placa é inválida ou duplicada.")
+        supports = tuple(tuple(item) for item in supports)
+        if any(len(item) != 2 or item[0] not in {"bar", "rigid_bar"}
+               or item[1] not in (self.bars if item[0] == "bar" else self.rigid_bars)
+               for item in supports) or len(set(supports)) != len(supports):
+            raise ValueError("As barras de apoio da placa são inválidas.")
+        if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
+            raise ValueError("A cor da placa é inválida.")
+        thickness_mm = float(thickness_mm)
+        if not math.isfinite(thickness_mm) or thickness_mm < 0:
+            raise ValueError("A espessura da placa deve ser não negativa e finita.")
+        if material is None:
+            material = (
+                "Concreto C30"
+                if self.material_types.get("Concreto C30") == "Concreto"
+                else next(
+                    (candidate for candidate, kind in self.material_types.items() if kind == "Concreto"),
+                    "Concreto C30",
+                )
+            )
+        if not isinstance(material, str) or not material.strip():
+            raise ValueError("A placa deve possuir um material válido.")
+        if material != "Indefinido" and self.material_types and (
+            material not in self.materials
+            or self.material_types.get(material) not in {"Concreto", "Aço", "Madeira"}
+        ):
+            raise ValueError("A placa deve usar um material cadastrado de concreto, aço ou madeira.")
+        positioning_displacement = float(positioning_displacement)
+        if not math.isfinite(positioning_displacement):
+            raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        edge_positioning = self._validated_plate_edge_positioning(edge_positioning, supports)
+        restrictions = self._validated_plate_restrictions(restrictions)
+        restriction_stiffness = self._validated_plate_restriction_stiffness(
+            restriction_stiffness,
+        )
+        restriction_directions = self._validated_plate_restriction_directions(
+            restriction_directions,
+        )
+        new_nodes: dict[str, Node] = {}
+        vertex_nodes = []
+        next_node_index = 1
+        for point in ordered:
+            existing_name = next(
+                (
+                    node.name for node in self.nodes.values()
+                    if math.dist(point, (node.x, node.y, node.z)) <= self.coordinate_tolerance
+                ),
+                None,
+            )
+            if existing_name is None:
+                existing_name = next(
+                    (
+                        node.name for node in new_nodes.values()
+                        if math.dist(point, (node.x, node.y, node.z)) <= self.coordinate_tolerance
+                    ),
+                    None,
+                )
+            if existing_name is None:
+                while f"N{next_node_index}" in self.nodes or f"N{next_node_index}" in new_nodes:
+                    next_node_index += 1
+                existing_name = f"N{next_node_index}"
+                next_node_index += 1
+                coordinates = self._coordinates(*point)
+                new_nodes[existing_name] = Node(existing_name, *coordinates)
+            vertex_nodes.append(existing_name)
+        plate = Plate(
+            name=name, contour=ordered, supports=supports, color=color.lower(),
+            thickness_mm=thickness_mm, material=material,
+            positioning_displacement=positioning_displacement,
+            edge_positioning=edge_positioning,
+            restrictions=restrictions,
+            restriction_stiffness=restriction_stiffness,
+            restriction_directions=restriction_directions,
+            vertex_nodes=tuple(vertex_nodes),
+            edge_connections=self._validated_plate_edge_connections(
+                tuple((index, "supported") for index in range(len(ordered)))
+                if edge_connections is None else edge_connections,
+                len(ordered),
+            ),
+        )
+        self.nodes.update(new_nodes)
+        self.plates[name] = plate
+        self._touch()
+        return plate
+
+    def update_plate(
+        self, name: str, *, color=None, thickness_mm=None, material=None,
+        positioning_displacement=None, edge_positioning=None,
+        restrictions=None, restriction_stiffness=None,
+        restriction_directions=None,
+        edge_connections=None,
+    ) -> None:
+        plate = self.plates[name]
+        if color is None:
+            color = plate.color
+        if not isinstance(color, str) or len(color) != 7 or color[0] != "#" or any(c not in "0123456789abcdefABCDEF" for c in color[1:]):
+            raise ValueError("A cor da placa é inválida.")
+        thickness = plate.thickness_mm if thickness_mm is None else float(thickness_mm)
+        if not math.isfinite(thickness) or thickness < 0:
+            raise ValueError("A espessura da placa deve ser não negativa e finita.")
+        material = plate.material if material is None else str(material).strip()
+        if not material:
+            raise ValueError("A placa deve possuir um material válido.")
+        if material != "Indefinido" and self.material_types and (
+            material not in self.materials
+            or self.material_types.get(material) not in {"Concreto", "Aço", "Madeira"}
+        ):
+            raise ValueError("A placa deve usar um material cadastrado de concreto, aço ou madeira.")
+        displacement = (
+            plate.positioning_displacement if positioning_displacement is None
+            else float(positioning_displacement)
+        )
+        if not math.isfinite(displacement):
+            raise ValueError("O deslocamento de posicionamento deve ser finito.")
+        edges = (
+            plate.edge_positioning if edge_positioning is None
+            else self._validated_plate_edge_positioning(edge_positioning, plate.supports)
+        )
+        restrictions = (
+            plate.restrictions if restrictions is None
+            else self._validated_plate_restrictions(restrictions)
+        )
+        restriction_stiffness = (
+            plate.restriction_stiffness if restriction_stiffness is None
+            else self._validated_plate_restriction_stiffness(restriction_stiffness)
+        )
+        restriction_directions = (
+            plate.restriction_directions if restriction_directions is None
+            else self._validated_plate_restriction_directions(restriction_directions)
+        )
+        updated = replace(
+            plate, color=color.lower(), thickness_mm=thickness, material=material,
+            positioning_displacement=displacement, edge_positioning=edges,
+            restrictions=restrictions, restriction_stiffness=restriction_stiffness,
+            restriction_directions=restriction_directions,
+            edge_connections=(plate.edge_connections if edge_connections is None else
+                              self._validated_plate_edge_connections(edge_connections, len(plate.contour))),
+        )
+        if updated != plate:
+            self.plates[name] = updated
+            self._touch()
+
+    @staticmethod
+    def _validated_plate_edge_connections(values, edge_count):
+        result = []
+        for item in values:
+            if len(item) != 2:
+                raise ValueError("Vinculação de aresta inválida.")
+            index, state = item
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < edge_count:
+                raise ValueError("Índice de aresta inválido.")
+            if state not in {"free", "supported", "fixed"} or any(i == index for i, _ in result):
+                raise ValueError("Vinculação de aresta inválida ou duplicada.")
+            result.append((index, state))
+        return tuple(sorted(result))
+
+    @staticmethod
+    def _validated_plate_restrictions(values):
+        values = tuple(values)
+        if len(values) != 3:
+            raise ValueError("Informe as restrições da placa para Dx, Dy e Dz.")
+        if any(not isinstance(value, bool) for value in values):
+            raise ValueError("As restrições Dx, Dy e Dz devem ser verdadeiras ou falsas.")
+        return values
+
+    @staticmethod
+    def _validated_plate_restriction_stiffness(values):
+        values = tuple(float(value) for value in values)
+        if len(values) != 3 or any(not math.isfinite(value) or value < 0.0 for value in values):
+            raise ValueError(
+                "As rigidezes de mola distribuídas de Dx, Dy e Dz devem ser não negativas e finitas."
+            )
+        return values
+
+    @staticmethod
+    def _validated_plate_restriction_directions(values):
+        values = tuple(values)
+        if len(values) != 3 or any(value not in {"-", "=", "+"} for value in values):
+            raise ValueError("O sentido das molas Dx, Dy e Dz deve ser -, = ou +.")
+        return values
+
+    @staticmethod
+    def _validated_plate_edge_positioning(values, supports):
+        valid_names = {name for _kind, name in supports}
+        normalized = []
+        seen = set()
+        for item in values:
+            if len(item) != 3:
+                raise ValueError("Cada aresta deve ter nome, deslocamento e inclinação.")
+            edge_name, displacement, angle = item
+            if not isinstance(edge_name, str) or edge_name not in valid_names or edge_name in seen:
+                raise ValueError("A identificação da aresta da placa é inválida.")
+            displacement, angle = float(displacement), float(angle)
+            if not math.isfinite(displacement) or not math.isfinite(angle):
+                raise ValueError("Os parâmetros da aresta devem ser finitos.")
+            seen.add(edge_name)
+            normalized.append((edge_name, displacement, angle))
+        return tuple(normalized)
+
+    def _validated_detail_subtractions(self, target_kind, target_name, values):
+        elements = {"bar": self.bars, "plate": self.plates}
+        targets = elements.get(target_kind)
+        if targets is None or target_name not in targets:
+            raise ValueError("O elemento que receberá a subtração não existe.")
+        normalized = []
+        seen = set()
+        for item in values:
+            if len(item) != 2:
+                raise ValueError("Cada subtração deve identificar um elemento.")
+            cutter_kind, cutter_name = item
+            cutters = elements.get(cutter_kind)
+            if cutters is None or cutter_name not in cutters:
+                raise ValueError("O elemento de referência da subtração não existe.")
+            if (cutter_kind, cutter_name) == (target_kind, target_name):
+                raise ValueError("Um elemento não pode ser subtraído de si mesmo.")
+            pair = cutter_kind, cutter_name
+            if pair in seen:
+                raise ValueError("Esse elemento já foi usado para subtrair o alvo.")
+            seen.add(pair)
+            normalized.append(pair)
+        return tuple(normalized)
+
+    def update_detail_subtractions(
+        self, target_kind: str, target_name: str, cutters,
+    ) -> None:
+        normalized = self._validated_detail_subtractions(
+            target_kind, target_name, cutters,
+        )
+        elements = self.bars if target_kind == "bar" else self.plates
+        element = elements[target_name]
+        if element.detail_subtractions == normalized:
+            return
+        elements[target_name] = replace(element, detail_subtractions=normalized)
+        self._touch()
+
+    def add_detail_subtraction(
+        self, target_kind: str, target_name: str, cutter_kind: str, cutter_name: str,
+    ) -> None:
+        elements = self.bars if target_kind == "bar" else self.plates if target_kind == "plate" else None
+        if elements is None or target_name not in elements:
+            raise ValueError("O elemento que receberá a subtração não existe.")
+        current = elements[target_name].detail_subtractions
+        self.update_detail_subtractions(
+            target_kind, target_name, (*current, (cutter_kind, cutter_name)),
+        )
+
+    @staticmethod
+    def _validated_detail_end_cuts(values) -> tuple[DetailEndCut, ...]:
+        normalized = []
+        identifiers = set()
+        for item in values:
+            try:
+                cut = item if isinstance(item, DetailEndCut) else DetailEndCut(**item)
+                point = tuple(float(value) for value in cut.point)
+                normal = tuple(float(value) for value in cut.normal)
+                planes = tuple(
+                    (tuple(float(value) for value in plane_point),
+                     tuple(float(value) for value in plane_normal))
+                    for plane_point, plane_normal in cut.planes
+                )
+            except (TypeError, ValueError, KeyError) as error:
+                raise ValueError("A configuração do corte de extremidade é inválida.") from error
+            if (
+                len(point) != 3 or len(normal) != 3
+                or not all(math.isfinite(value) for value in (*point, *normal))
+                or math.sqrt(sum(value * value for value in normal)) <= 1e-12
+                or not isinstance(cut.identifier, str) or not cut.identifier
+                or cut.identifier in identifiers
+                or not isinstance(cut.reference_label, str) or not cut.reference_label
+                or any(
+                    len(plane_point) != 3 or len(plane_normal) != 3
+                    or not all(math.isfinite(value) for value in (*plane_point, *plane_normal))
+                    or math.sqrt(sum(value * value for value in plane_normal)) <= 1e-12
+                    for plane_point, plane_normal in planes
+                )
+            ):
+                raise ValueError("A configuração do corte de extremidade é inválida.")
+            magnitude = math.sqrt(sum(value * value for value in normal))
+            identifiers.add(cut.identifier)
+            normalized_planes = tuple(
+                (plane_point, tuple(
+                    value / math.sqrt(sum(component * component for component in plane_normal))
+                    for value in plane_normal
+                ))
+                for plane_point, plane_normal in planes
+            )
+            normalized.append(DetailEndCut(
+                cut.identifier, point, tuple(value / magnitude for value in normal),
+                cut.reference_label, normalized_planes,
+            ))
+        return tuple(normalized)
+
+    def update_detail_end_cuts(self, member_name: str, values) -> None:
+        member = self.bars.get(member_name)
+        if member is None:
+            raise ValueError("A barra que receberá o corte não existe.")
+        normalized = self._validated_detail_end_cuts(values)
+        if member.detail_end_cuts == normalized:
+            return
+        self.bars[member_name] = replace(member, detail_end_cuts=normalized)
+        self._touch()
+
+    def add_detail_end_cut(
+        self, member_name: str, identifier: str, point, normal, reference_label: str,
+        planes=(),
+    ) -> None:
+        member = self.bars.get(member_name)
+        if member is None:
+            raise ValueError("A barra que receberá o corte não existe.")
+        self.update_detail_end_cuts(member_name, (*member.detail_end_cuts, DetailEndCut(
+            identifier, tuple(point), tuple(normal), reference_label, tuple(planes),
+        )))
+
+    def _remove_detail_subtraction_references(self, removed_kind: str, removed_name: str) -> None:
+        removed = (removed_kind, removed_name)
+        for elements in (self.bars, self.plates):
+            for name, element in tuple(elements.items()):
+                if removed in element.detail_subtractions:
+                    elements[name] = replace(
+                        element,
+                        detail_subtractions=tuple(
+                            cutter for cutter in element.detail_subtractions
+                            if cutter != removed
+                        ),
+                    )
+
+    def remove_plate(self, name: str) -> None:
+        if name not in self.plates:
+            raise ValueError("Placa não encontrada.")
+        vertex_nodes = self.plates[name].vertex_nodes
+        del self.plates[name]
+        self.plate_display_names.pop(name, None)
+        self._remove_detail_subtraction_references("plate", name)
+        for action_name, action in tuple(self.actions.items()):
+            if action.target == name:
+                del self.actions[action_name]
+        self._delete_orphan_nodes(vertex_nodes)
+        self._touch()
+
+    def split_plate(
+        self, name: str, first_point, second_point, *, tolerance: float = 0.002,
+    ) -> tuple[Plate, Plate]:
+        """Split a plate by a chord between two points on its boundary."""
+        from osa.services.plate_operations import split_plate_contour
+
+        source = self.plates.get(name)
+        if source is None:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        first_contour, second_contour = split_plate_contour(
+            source.contour, first_point, second_point, tolerance=tolerance,
+        )
+        candidate = StructuralModel(
+            materials=self.materials, material_types=self.material_types, sections=self.sections,
+        )
+        candidate.nodes = self.nodes.copy()
+        candidate.bars = self.bars.copy()
+        candidate.rigid_bars = self.rigid_bars.copy()
+        candidate.plates = self.plates.copy()
+        candidate.plates.pop(name)
+        candidate.actions = self.actions.copy()
+        candidate.node_display_names = self.node_display_names.copy()
+        candidate.plate_display_names = self.plate_display_names.copy()
+        candidate.plate_display_names.pop(name, None)
+        if name in self.plate_display_names:
+            candidate.plate_display_names[name] = self.plate_display_names[name]
+        candidate.import_metadata = self.import_metadata.copy()
+        candidate.scene_views = {key: set(value) for key, value in self.scene_views.items()}
+
+        def child_supports(contour):
+            retained = []
+            edges = tuple(zip(contour, (*contour[1:], contour[0])))
+            for kind, support_name in source.supports:
+                element = (self.bars if kind == "bar" else self.rigid_bars)[support_name]
+                start_node = self.nodes[element.start_node]
+                end_node = self.nodes[element.end_node]
+                start = (start_node.x, start_node.y, start_node.z)
+                end = (end_node.x, end_node.y, end_node.z)
+                if any(
+                    self._points_on_same_segment(edge_start, edge_end, start, end, tolerance)
+                    for edge_start, edge_end in edges
+                ):
+                    retained.append((kind, support_name))
+            return tuple(retained)
+
+        plate_properties = {
+            "color": source.color,
+            "thickness_mm": source.thickness_mm,
+            "material": source.material,
+            "positioning_displacement": source.positioning_displacement,
+            "restrictions": source.restrictions,
+            "restriction_stiffness": source.restriction_stiffness,
+            "restriction_directions": source.restriction_directions,
+        }
+        first_plate = candidate.add_plate(
+            first_contour, name=name, supports=child_supports(first_contour),
+            edge_connections=self._remap_plate_edge_connections((source,), first_contour),
+            edge_positioning=tuple(
+                item for item in source.edge_positioning
+                if item[0] in {support_name for _kind, support_name in child_supports(first_contour)}
+            ),
+            **plate_properties,
+        )
+        first_plate = replace(first_plate, detail_subtractions=source.detail_subtractions)
+        candidate.plates[name] = first_plate
+        second_supports = child_supports(second_contour)
+        second_plate = candidate.add_plate(
+            second_contour, supports=second_supports,
+            edge_connections=self._remap_plate_edge_connections((source,), second_contour),
+            edge_positioning=tuple(
+                item for item in source.edge_positioning
+                if item[0] in {support_name for _kind, support_name in second_supports}
+            ),
+            **plate_properties,
+        )
+        second_plate = replace(second_plate, detail_subtractions=source.detail_subtractions)
+        candidate.plates[second_plate.name] = second_plate
+
+        plate_actions = tuple(
+            action for action in self.actions.values() if action.target == name
+        )
+        for action in plate_actions:
+            candidate.actions.pop(action.name, None)
+            routes: list[tuple[str, int | None]] = []
+            if action.kind.startswith("plate_edge_"):
+                try:
+                    old_edge_index = int(action.kind.rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    old_edge_index = -1
+                if 0 <= old_edge_index < len(source.contour):
+                    old_start = source.contour[old_edge_index]
+                    old_end = source.contour[(old_edge_index + 1) % len(source.contour)]
+                    for plate in (first_plate, second_plate):
+                        for edge_index, (start, end) in enumerate(zip(
+                            plate.contour, (*plate.contour[1:], plate.contour[0]),
+                        )):
+                            if (
+                                self._points_on_same_segment(start, end, old_start, old_end, tolerance)
+                            ):
+                                routes.append((plate.name, edge_index))
+            else:
+                routes.extend(((first_plate.name, None), (second_plate.name, None)))
+            for route_index, (target, edge_index) in enumerate(routes):
+                kind = action.kind
+                if edge_index is not None:
+                    kind = f"{kind.rsplit(':', 1)[0]}:{edge_index}"
+                action_name = action.name if route_index == 0 else f"{action.name} ({target})"
+                suffix = 2
+                base_name = action_name
+                while action_name in candidate.actions:
+                    action_name = f"{base_name}, {suffix}"
+                    suffix += 1
+                candidate.actions[action_name] = replace(
+                    action, name=action_name, target=target, kind=kind,
+                )
+
+        self.nodes.clear()
+        self.nodes.update(candidate.nodes)
+        self.plates.clear()
+        self.plates.update(candidate.plates)
+        self.actions.clear()
+        self.actions.update(candidate.actions)
+        self.plate_display_names.clear()
+        self.plate_display_names.update(candidate.plate_display_names)
+        self._touch()
+        return self.plates[name], self.plates[second_plate.name]
+
+    @staticmethod
+    def _points_on_same_segment(first_start, first_end, second_start, second_end, tolerance) -> bool:
+        from osa.services.plate_operations import _project_to_edge
+
+        return all(
+            _project_to_edge(point, second_start, second_end)[2] <= tolerance
+            for point in (first_start, first_end)
+        )
+
+    def join_plates(self, first_name: str, second_name: str) -> Plate:
+        """Merge two coplanar plates that share complete boundary edges."""
+        from osa.services.plate_operations import merge_plate_contours
+
+        if first_name == second_name:
+            raise ValueError("Selecione duas placas diferentes para unir.")
+        first = self.plates.get(first_name)
+        second = self.plates.get(second_name)
+        if first is None or second is None:
+            raise EntityNotFoundError("Uma das placas selecionadas não foi encontrada.")
+        structural_properties = (
+            "thickness_mm", "material", "positioning_displacement", "restrictions",
+            "restriction_stiffness", "restriction_directions",
+        )
+        if any(getattr(first, key) != getattr(second, key) for key in structural_properties):
+            raise ValueError("As placas precisam ter os mesmos parâmetros estruturais para serem unidas.")
+        merged_contour, shared_edges = merge_plate_contours(first.contour, second.contour)
+        shared_supports = set()
+        for kind, support_name in set((*first.supports, *second.supports)):
+            element = (self.bars if kind == "bar" else self.rigid_bars).get(support_name)
+            if element is None:
+                continue
+            a = self.nodes[element.start_node]
+            b = self.nodes[element.end_node]
+            endpoints = ((a.x, a.y, a.z), (b.x, b.y, b.z))
+            if all(
+                any(self._points_on_same_segment(point, point, start, end, 1e-8) for start, end in shared_edges)
+                for point in endpoints
+            ):
+                shared_supports.add((kind, support_name))
+        supports = tuple(dict.fromkeys(
+            support for support in (*first.supports, *second.supports)
+            if support not in shared_supports
+        ))
+        edge_values = {}
+        for edge_name, displacement, angle in (*first.edge_positioning, *second.edge_positioning):
+            value = displacement, angle
+            if edge_name in edge_values and edge_values[edge_name] != value:
+                raise ValueError("As placas têm posicionamentos de borda diferentes.")
+            edge_values[edge_name] = value
+        edge_positioning = tuple(
+            (name, *value) for name, value in edge_values.items()
+            if ("bar", name) in supports or ("rigid_bar", name) in supports
+        )
+
+        first_surface_actions = sorted(
+            (action.kind, action.components, action.load_case)
+            for action in self.actions.values()
+            if action.target == first_name and action.kind.startswith("plate_surface_pressure")
+        )
+        second_surface_actions = sorted(
+            (action.kind, action.components, action.load_case)
+            for action in self.actions.values()
+            if action.target == second_name and action.kind.startswith("plate_surface_pressure")
+        )
+        if first_surface_actions != second_surface_actions:
+            raise ValueError("As placas precisam ter as mesmas ações de superfície para serem unidas.")
+
+        candidate = StructuralModel(
+            materials=self.materials, material_types=self.material_types, sections=self.sections,
+        )
+        candidate.nodes = self.nodes.copy()
+        candidate.bars = self.bars.copy()
+        candidate.rigid_bars = self.rigid_bars.copy()
+        candidate.plates = self.plates.copy()
+        candidate.plates.pop(first_name)
+        candidate.plates.pop(second_name)
+        candidate.actions = self.actions.copy()
+        candidate.plate_display_names = self.plate_display_names.copy()
+        first_display_name = candidate.plate_display_names.get(first_name)
+        candidate.plate_display_names.pop(second_name, None)
+        candidate.plate_display_names.pop(first_name, None)
+        if first_display_name is not None:
+            candidate.plate_display_names[first_name] = first_display_name
+
+        merged = candidate.add_plate(
+            merged_contour,
+            edge_connections=self._remap_plate_edge_connections((first, second), merged_contour),
+            name=first_name,
+            supports=supports,
+            color=first.color,
+            thickness_mm=first.thickness_mm,
+            material=first.material,
+            positioning_displacement=first.positioning_displacement,
+            edge_positioning=edge_positioning,
+            restrictions=first.restrictions,
+            restriction_stiffness=first.restriction_stiffness,
+            restriction_directions=first.restriction_directions,
+        )
+        merged = replace(
+            merged,
+            detail_subtractions=tuple(dict.fromkeys(
+                cutter for cutter in (*first.detail_subtractions, *second.detail_subtractions)
+                if cutter != ("plate", second_name) and cutter != ("plate", first_name)
+            )),
+        )
+        candidate.plates[first_name] = merged
+        candidate._delete_orphan_nodes((*first.vertex_nodes, *second.vertex_nodes))
+
+        contour_edges = tuple(zip(merged.contour, (*merged.contour[1:], merged.contour[0])))
+        for action_name, action in tuple(candidate.actions.items()):
+            if action.target not in {first_name, second_name}:
+                continue
+            candidate.actions.pop(action_name, None)
+            if action.target == second_name and action.kind.startswith("plate_surface_pressure"):
+                continue
+            routed_kinds = [action.kind]
+            if action.kind.startswith("plate_edge_"):
+                try:
+                    old_index = int(action.kind.rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                source = first if action.target == first_name else second
+                if not 0 <= old_index < len(source.contour):
+                    continue
+                old_start = source.contour[old_index]
+                old_end = source.contour[(old_index + 1) % len(source.contour)]
+                edge_indices = [
+                    index for index, (start, end) in enumerate(contour_edges)
+                    if self._points_on_same_segment(start, end, old_start, old_end, 1e-8)
+                ]
+                if not edge_indices:
+                    continue
+                routed_kinds = [
+                    f"{action.kind.rsplit(':', 1)[0]}:{edge_index}"
+                    for edge_index in edge_indices
+                ]
+            for route_index, kind in enumerate(routed_kinds):
+                routed_name = action_name if route_index == 0 else f"{action_name} ({first_name} borda {route_index + 1})"
+                suffix = 2
+                base_name = routed_name
+                while routed_name in candidate.actions:
+                    routed_name = f"{base_name}, {suffix}"
+                    suffix += 1
+                candidate.actions[routed_name] = replace(
+                    action, name=routed_name, target=first_name, kind=kind,
+                )
+
+        for plate in tuple(candidate.plates.values()):
+            if plate.name == first_name or ("plate", second_name) not in plate.detail_subtractions:
+                continue
+            candidate.plates[plate.name] = replace(
+                plate,
+                detail_subtractions=tuple(dict.fromkeys(
+                    ("plate", first_name) if cutter == ("plate", second_name) else cutter
+                    for cutter in plate.detail_subtractions
+                    if cutter != ("plate", plate.name)
+                )),
+            )
+
+        self.nodes.clear()
+        self.nodes.update(candidate.nodes)
+        self.plates.clear()
+        self.plates.update(candidate.plates)
+        self.actions.clear()
+        self.actions.update(candidate.actions)
+        self.plate_display_names.clear()
+        self.plate_display_names.update(candidate.plate_display_names)
+        self._touch()
+        return self.plates[first_name]
+
+    def _remap_plate_edge_connections(self, plates, contour):
+        result = []
+        for index, start in enumerate(contour):
+            end = contour[(index + 1) % len(contour)]
+            states = set()
+            for plate in plates:
+                values = dict(plate.edge_connections)
+                for old_index, old_start in enumerate(plate.contour):
+                    old_end = plate.contour[(old_index + 1) % len(plate.contour)]
+                    if self._plate_contours_share_edge((start, end), (old_start, old_end)):
+                        states.add(values.get(old_index, "fixed"))
+            if len(states) > 1:
+                raise ValueError("Não é possível unir arestas com vinculações diferentes.")
+            if states and states != {"fixed"}:
+                result.append((index, next(iter(states))))
+        return tuple(result)
+
+    def plate_edge_bars(self, name: str, edge_index: int, *, include_rigid=False) -> tuple[str, ...]:
+        """Find bars overlapping the analytical plate edge by a nonzero length."""
+        plate = self.plates[name]
+        start = plate.contour[edge_index]
+        end = plate.contour[(edge_index + 1) % len(plate.contour)]
+        vector = tuple(b - a for a, b in zip(start, end))
+        length2 = sum(value * value for value in vector)
+        tolerance = 1e-7
+        if length2 <= tolerance ** 2:
+            return ()
+        matches = []
+        members = (*self.bars.values(), *self.rigid_bars.values()) if include_rigid else self.bars.values()
+        for bar in members:
+            fractions = []
+            for node_name in (bar.start_node, bar.end_node):
+                node = self.nodes[node_name]
+                point = (node.x, node.y, node.z)
+                fraction = sum((p - a) * v for p, a, v in zip(point, start, vector)) / length2
+                projected = tuple(a + fraction * v for a, v in zip(start, vector))
+                if math.dist(point, projected) > tolerance:
+                    break
+                fractions.append(fraction)
+            if len(fractions) == 2:
+                overlap = min(1.0, max(fractions)) - max(0.0, min(fractions))
+                if overlap * math.sqrt(length2) > tolerance:
+                    matches.append(bar.name)
+        return tuple(matches)
+
+    def related_plates(self, name: str) -> tuple[str, ...]:
+        """Return plates that share a boundary edge or boundary bar with a plate."""
+        if name not in self.plates:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        plate = self.plates[name]
+        support_set = set(plate.supports)
+        related = []
+        for other_name, other in self.plates.items():
+            if other_name == name:
+                continue
+            if support_set.intersection(other.supports) or self._plate_contours_share_edge(
+                plate.contour, other.contour,
+            ):
+                related.append(other_name)
+        return tuple(related)
+
+    @staticmethod
+    def _plate_contours_share_edge(first, second, tolerance=1e-8) -> bool:
+        def edges(contour):
+            return zip(contour, (*contour[1:], contour[0]))
+
+        def overlap_length(a0, a1, b0, b1):
+            axis = tuple(a1[index] - a0[index] for index in range(3))
+            other = tuple(b1[index] - b0[index] for index in range(3))
+            length = math.sqrt(sum(value * value for value in axis))
+            other_length = math.sqrt(sum(value * value for value in other))
+            if length <= tolerance or other_length <= tolerance:
+                return 0.0
+
+            cross = (
+                axis[1] * other[2] - axis[2] * other[1],
+                axis[2] * other[0] - axis[0] * other[2],
+                axis[0] * other[1] - axis[1] * other[0],
+            )
+            if math.sqrt(sum(value * value for value in cross)) > tolerance * length * other_length:
+                return 0.0
+
+            offset = tuple(b0[index] - a0[index] for index in range(3))
+            distance_cross = (
+                offset[1] * axis[2] - offset[2] * axis[1],
+                offset[2] * axis[0] - offset[0] * axis[2],
+                offset[0] * axis[1] - offset[1] * axis[0],
+            )
+            if math.sqrt(sum(value * value for value in distance_cross)) / length > tolerance:
+                return 0.0
+
+            unit = tuple(value / length for value in axis)
+            projections = (
+                0.0,
+                length,
+                sum(offset[index] * unit[index] for index in range(3)),
+                sum((b1[index] - a0[index]) * unit[index] for index in range(3)),
+            )
+            return min(max(projections), length) - max(min(projections), 0.0)
+
+        return any(
+            overlap_length(a0, a1, b0, b1) > tolerance
+            for a0, a1 in edges(first)
+            for b0, b1 in edges(second)
+        )
+
     def _touch(self) -> None:
         self.revision += 1
+        for name, plate in tuple(self.plates.items()):
+            supports = tuple((kind, bar) for kind, bar in plate.supports
+                             if bar in (self.bars if kind == "bar" else self.rigid_bars))
+            if supports != plate.supports:
+                self.plates[name] = replace(plate, supports=supports)
         self.analysis_results.clear()
         self.verification_results.clear()
         self._restraint_lengths_cache = None
@@ -75,6 +855,9 @@ class StructuralModel:
         }
         self.node_display_names = {
             name: value for name, value in self.node_display_names.items() if name in self.nodes
+        }
+        self.plate_display_names = {
+            name: value for name, value in self.plate_display_names.items() if name in self.plates
         }
         self.verification_element_groups = [
             group for group in self.verification_element_groups
@@ -225,12 +1008,8 @@ class StructuralModel:
     def update_node(self, name: str, x: float, y: float, z: float) -> Node:
         if name not in self.nodes:
             raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
-        coordinates = self.node_coordinates(x, y, z)
-        self._ensure_unique_coordinates(coordinates, ignore=name)
-        node = replace(self.nodes[name], x=coordinates[0], y=coordinates[1], z=coordinates[2])
-        self.nodes[name] = node
-        self._touch()
-        return node
+        self.update_nodes_coordinates({name: (x, y, z)})
+        return self.nodes[name]
 
     def set_node_display_name(self, name: str, value: str) -> None:
         if name not in self.nodes:
@@ -242,20 +1021,58 @@ class StructuralModel:
             self.node_display_names.pop(name, None)
         self._touch()
 
+    def set_plate_display_name(self, name: str, value: str) -> None:
+        if name not in self.plates:
+            raise EntityNotFoundError(f"Placa '{name}' não encontrada.")
+        value = value.strip()
+        if value:
+            self.plate_display_names[name] = value
+        else:
+            self.plate_display_names.pop(name, None)
+        self._touch()
+
+    def move_elements(self, targets, offset) -> tuple[str, ...]:
+        """Translate each selected/shared vertex once and update connected geometry."""
+        if len(offset) != 3 or not all(math.isfinite(float(value)) for value in offset):
+            raise ValueError("Informe um deslocamento finito em três coordenadas.")
+        names = set()
+        for kind, name in targets:
+            if kind == "node":
+                if name not in self.nodes:
+                    raise ValueError(f"Nó '{name}' não encontrado.")
+                names.add(name)
+            elif kind in {"bar", "rigid_bar"}:
+                element = (self.bars if kind == "bar" else self.rigid_bars).get(name)
+                if element is None:
+                    raise ValueError(f"Elemento '{name}' não encontrado.")
+                names.update((element.start_node, element.end_node))
+            elif kind == "plate":
+                plate = self.plates.get(name)
+                if plate is None:
+                    raise ValueError(f"Placa '{name}' não encontrada.")
+                names.update(plate.vertex_nodes)
+            else:
+                raise ValueError("Selecione nós, barras ou placas para mover.")
+        changes = {
+            name: tuple(value + float(delta) for value, delta in zip(
+                (self.nodes[name].x, self.nodes[name].y, self.nodes[name].z), offset,
+            )) for name in names
+        }
+        self.update_nodes_coordinates(changes)
+        return tuple(sorted(names))
+
     def update_nodes_coordinates(
         self, changes: dict[str, tuple[float, float, float]],
     ) -> None:
-        """Apply a coordinate edit to several nodes as one validated change."""
+        """Apply node edits and follow shared plate boundary vertices atomically."""
         if not changes:
             return
         for name in changes:
             if name not in self.nodes:
                 raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
-        final = {
-            name: self.node_coordinates(*changes[name]) if name in changes
-            else (node.x, node.y, node.z)
-            for name, node in self.nodes.items()
-        }
+        final = {name: (node.x, node.y, node.z) for name, node in self.nodes.items()}
+        for name, coordinates in changes.items():
+            final[name] = self.node_coordinates(*coordinates)
         for name in changes:
             coordinates = final[name]
             for other_name, other in final.items():
@@ -264,9 +1081,88 @@ class StructuralModel:
                     for a, b in zip(coordinates, other)
                 ):
                     raise DuplicateNodeCoordinatesError("Já existe um nó nessa coordenada.")
+
+        moved_nodes = {
+            name for name in changes
+            if final[name] != (self.nodes[name].x, self.nodes[name].y, self.nodes[name].z)
+        }
+        updated_plate_contours = {}
+        if moved_nodes:
+            from osa.services.plate_contour import plate_contour
+
+            for plate in self.plates.values():
+                vertex_node_names = plate.vertex_nodes
+                vertex_names_by_coordinate = {
+                    tuple(point): node_name
+                    for point, node_name in zip(plate.contour, vertex_node_names)
+                }
+                supported_nodes = set()
+                for kind, element_name in plate.supports:
+                    elements = self.bars if kind == "bar" else self.rigid_bars
+                    element = elements.get(element_name)
+                    if element is not None:
+                        supported_nodes.update((element.start_node, element.end_node))
+                for node_name in supported_nodes:
+                    node = self.nodes[node_name]
+                    vertex_names_by_coordinate.setdefault(
+                        (node.x, node.y, node.z), node_name,
+                    )
+                affected_nodes = moved_nodes & set(vertex_names_by_coordinate.values())
+                if not affected_nodes:
+                    continue
+
+                moved_vertices = {
+                    point: final[node_name]
+                    for point, node_name in vertex_names_by_coordinate.items()
+                    if node_name in affected_nodes
+                }
+                contour = tuple(
+                    moved_vertices.get(tuple(point), tuple(point))
+                    for point in plate.contour
+                )
+                if contour == plate.contour:
+                    continue
+                try:
+                    ordered_contour = plate_contour(
+                        zip(contour, (*contour[1:], contour[0])),
+                    )
+                except ValueError as error:
+                    if "coplanares" in str(error):
+                        node_name = ", ".join(sorted(affected_nodes))
+                        raise ValueError(
+                            f"Não é possível mover o nó {node_name}: a alteração deixaria a "
+                            f"placa '{plate.name}' empenada. Mantenha os vértices da placa "
+                            "no mesmo plano."
+                        ) from error
+                    raise ValueError(
+                        f"A alteração do nó tornaria inválido o contorno da placa "
+                        f"'{plate.name}': {error}"
+                    ) from error
+                node_names_by_updated_coordinate = {
+                    moved_vertices.get(point, point): node_name
+                    for point, node_name in vertex_names_by_coordinate.items()
+                }
+                updated_vertex_nodes = tuple(
+                    node_names_by_updated_coordinate[tuple(point)]
+                    for point in ordered_contour
+                    if tuple(point) in node_names_by_updated_coordinate
+                )
+                if len(updated_vertex_nodes) != len(ordered_contour):
+                    raise ValueError(
+                        f"Não foi possível manter os nós dos vértices da placa "
+                        f"'{plate.name}' associados ao contorno atualizado."
+                    )
+                updated_plate_contours[plate.name] = (
+                    ordered_contour, updated_vertex_nodes,
+                )
+
         for name in changes:
             self.nodes[name] = replace(self.nodes[name], x=final[name][0],
                                        y=final[name][1], z=final[name][2])
+        for name, (contour, vertex_nodes) in updated_plate_contours.items():
+            self.plates[name] = replace(
+                self.plates[name], contour=contour, vertex_nodes=vertex_nodes,
+            )
         self._touch()
 
     def remove_node(self, name: str) -> None:
@@ -277,8 +1173,15 @@ class StructuralModel:
             rigid.name for rigid in self.rigid_bars.values()
             if name in (rigid.start_node, rigid.end_node)
         )
+        connected.extend(
+            plate.name for plate in self.plates.values()
+            if name in plate.vertex_nodes
+        )
         if connected:
-            raise ValueError(f"O nó '{name}' pertence às barras: {', '.join(connected)}. Remova-as primeiro.")
+            raise ValueError(
+                f"O nó '{name}' está conectado a elementos: {', '.join(connected)}. "
+                "Remova-os primeiro."
+            )
         del self.nodes[name]
         self._remove_actions_for_target(name)
         self._touch()
@@ -304,6 +1207,188 @@ class StructuralModel:
         node = replace(self.nodes[name], support_stiffness=values)
         self.nodes[name] = node
         self._touch()
+        return node
+
+    def update_node_support_directions(self, name: str, directions: tuple[str, ...]) -> Node:
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        if len(directions) != 6 or any(value not in {"-", "=", "+"} for value in directions):
+            raise ValueError("Informe seis sentidos válidos para as molas do nó.")
+        node = replace(self.nodes[name], support_directions=tuple(directions))
+        self.nodes[name] = node
+        self._touch()
+        return node
+
+    def update_node_component(
+        self, name: str, component: NodeComponentAssignment | None,
+    ) -> Node:
+        """Assign or clear the component instance attached to a node."""
+        if name not in self.nodes:
+            raise EntityNotFoundError(f"Nó '{name}' não encontrado.")
+        if component is not None and (
+            not isinstance(component.component_id, str) or not component.component_id.strip()
+        ):
+            raise ValueError("A identificação do componente é inválida.")
+        if component is not None and component.component_id == "base_plate":
+            values = dict(component.parameters)
+            fixador = values.get("fixador", "Reto")
+            if fixador == "Químico":
+                fixador = "Reto"
+            if fixador not in {"Reto", "Gancho"}:
+                raise ValueError("Selecione um tipo de fixador válido.")
+            normalized = []
+            for key, default in (
+                ("largura_mm", 300.0), ("comprimento_mm", 300.0),
+                ("espessura_mm", 20.0), ("rotacao_deg", 0.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value):
+                    raise ValueError("Os parâmetros da chapa de base devem ser finitos.")
+                if key == "rotacao_deg":
+                    if not 0.0 <= value <= 259.9:
+                        raise ValueError("A rotação da chapa de base deve estar entre 0° e 259,9°.")
+                elif value <= 0.0:
+                    raise ValueError("As dimensões da chapa de base devem ser positivas e finitas.")
+                normalized.append((key, value))
+            for key in ("deslocamento_a_mm", "deslocamento_b_mm"):
+                value = float(values.get(key, 0.0))
+                if not math.isfinite(value):
+                    raise ValueError("Os deslocamentos da chapa de base devem ser finitos.")
+                normalized.append((key, value))
+            normalized.append(("material_fixador", str(values.get("material_fixador", "SAE 1020")).strip()))
+            normalized.append(("identificacao_fixador", str(values.get("identificacao_fixador", "")).strip()))
+            normalized.append(("fixador", fixador))
+            for key in ("fixadores_lado_a", "fixadores_lado_b"):
+                raw_count = float(values.get(key, 2))
+                if (
+                    not math.isfinite(raw_count) or raw_count < 2.0
+                    or raw_count > 100.0 or not raw_count.is_integer()
+                ):
+                    raise ValueError("Cada lado deve ter entre 2 e 100 fixadores inteiros.")
+                normalized.append((key, int(raw_count)))
+            for key, default in (
+                ("distancia_a_mm", 50.0),
+                ("comprimento_fixador_mm", 300.0), ("embutimento_mm", 150.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("As dimensões dos fixadores devem ser positivas e finitas.")
+                normalized.append((key, value))
+            plane = str(values.get("plano", "XY+"))
+            if plane not in BASE_PLATE_PLANES:
+                raise ValueError("Selecione um plano válido para a chapa de base/topo.")
+            normalized.append(("material_chapa", str(values.get("material_chapa", "ASTM A36")).strip()))
+            normalized.append(("plano", plane))
+            if fixador == "Gancho":
+                leg = float(values.get("perna_mm", 200.0))
+                if not math.isfinite(leg) or leg <= 0.0:
+                    raise ValueError("A perna do fixador deve ser positiva e finita.")
+                normalized.append(("perna_mm", leg))
+                headings = default_hook_headings(dict(normalized))
+                for index, radial_heading in enumerate(headings):
+                    key = f"rotacao_global_gancho_{index}_deg"
+                    legacy_key = f"rotacao_gancho_{index}_deg"
+                    if key in values:
+                        raw_rotation = float(values[key])
+                    elif legacy_key in values:
+                        raw_rotation = radial_heading + float(values[legacy_key])
+                    else:
+                        raw_rotation = radial_heading + float(values.get("rotacao_gancho_deg", 0.0))
+                    if not math.isfinite(raw_rotation):
+                        raise ValueError("A rotação do gancho deve ser finita.")
+                    hook_rotation = round(raw_rotation % 360.0, 1)
+                    if hook_rotation >= 360.0:
+                        hook_rotation = 0.0
+                    normalized.append((key, hook_rotation))
+            diameter = float(values.get("diametro_mm", 16.0))
+            if not math.isfinite(diameter) or diameter <= 0.0:
+                raise ValueError("O diâmetro da barra deve ser positivo e finito.")
+            normalized.append(("diametro_mm", diameter))
+            parameter_values = dict(normalized)
+            if parameter_values["distancia_a_mm"] * 2.0 >= min(
+                parameter_values["largura_mm"], parameter_values["comprimento_mm"],
+            ):
+                raise ValueError("A distância da borda deve ser menor que a metade do menor lado da chapa.")
+            if parameter_values["diametro_mm"] * 1.1 >= parameter_values["distancia_a_mm"]:
+                raise ValueError("A distância da borda deve acomodar a arruela dos fixadores.")
+            minimum_length = (
+                parameter_values["embutimento_mm"] + parameter_values["espessura_mm"]
+                + parameter_values["diametro_mm"] * 1.25
+            )
+            if parameter_values["comprimento_fixador_mm"] <= minimum_length:
+                raise ValueError(
+                    "O comprimento do fixador deve permitir o embutimento, atravessar a chapa "
+                    "e receber arruela e porca."
+                )
+            component = NodeComponentAssignment(component.component_id, tuple(normalized))
+        elif component is not None and component.component_id == "stair_plate":
+            values = dict(component.parameters)
+            normalized = [("madeira_ativa", bool(values.get("madeira_ativa", True))),
+                          ("material_chapa", str(values.get("material_chapa", "ASTM A36")).strip())]
+            for key, default in (
+                ("largura_mm", 200.0), ("comprimento_mm", 300.0),
+                ("espessura_mm", 6.3),
+                ("madeira_largura_mm", 280.0),
+                ("madeira_comprimento_mm", 800.0),
+                ("madeira_espessura_mm", 20.0),
+            ):
+                value = float(values.get(key, default))
+                if not math.isfinite(value) or value <= 0.0:
+                    raise ValueError("As dimensões da chapa e do degrau devem ser positivas e finitas.")
+                normalized.append((key, value))
+            for key in (
+                "deslocamento_a_mm", "deslocamento_b_mm",
+                "madeira_deslocamento_a_mm", "madeira_deslocamento_b_mm",
+            ):
+                value = float(values.get(key, 0.0))
+                if not math.isfinite(value):
+                    raise ValueError("Os deslocamentos da chapa e do degrau devem ser finitos.")
+                normalized.append((key, value))
+            raw_outline = values.get("madeira_geometria_mm", ())
+            if raw_outline:
+                try:
+                    outline = tuple(
+                        tuple(float(coordinate) for coordinate in point)
+                        for point in raw_outline
+                    )
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValueError("As coordenadas do degrau personalizado são inválidas.") from error
+                if any(len(point) != 2 for point in outline):
+                    raise ValueError("Cada vértice do degrau personalizado deve ter coordenadas X e Y.")
+                if len(outline) > 1 and outline[-1] == outline[0]:
+                    outline = outline[:-1]
+                if len(outline) < 3 or any(
+                    not math.isfinite(coordinate)
+                    for point in outline for coordinate in point
+                ):
+                    raise ValueError("O degrau personalizado deve ter ao menos três vértices finitos.")
+                if len(set(outline)) != len(outline):
+                    raise ValueError("Os vértices do degrau personalizado não podem se repetir.")
+                area_twice = sum(
+                    first[0] * second[1] - second[0] * first[1]
+                    for first, second in zip(outline, (*outline[1:], outline[0]))
+                )
+                if abs(area_twice) <= 1e-6:
+                    raise ValueError("A geometria personalizada do degrau deve delimitar uma área.")
+                normalized.append(("madeira_geometria_mm", outline))
+            rotation = float(values.get("rotacao_deg", 0.0))
+            if not math.isfinite(rotation):
+                raise ValueError("A rotação da chapa de degrau deve ser finita.")
+            normalized.append(("rotacao_deg", round(rotation % 360.0, 1)))
+            component = NodeComponentAssignment(component.component_id, tuple(normalized))
+        previous = self.nodes[name]
+        node = replace(previous, component=component)
+        if node != previous:
+            self.nodes[name] = node
+            definitions = (
+                node_component_definition(previous.component.component_id)
+                if previous.component is not None else None,
+                node_component_definition(component.component_id) if component is not None else None,
+            )
+            if any(item is not None and item.interacts_with_model for item in definitions):
+                self._touch()
+            else:
+                self.view_revision += 1
         return node
 
     def set_reference_axes(self, axes: dict[str, tuple[ReferenceAxis, ...]]) -> None:
@@ -379,6 +1464,7 @@ class StructuralModel:
             return
         member = self.bars[name]
         del self.bars[name]
+        self._remove_detail_subtraction_references("bar", name)
         self._remove_actions_for_target(name)
         self._delete_orphan_nodes((member.start_node, member.end_node))
         self._touch()
@@ -395,7 +1481,8 @@ class StructuralModel:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace one bar with collinear segments and intermediate nodes.
 
-        ``node_names`` contains only the new internal nodes.  The generated
+        ``node_names`` supplies names for new internal nodes; nodes already at
+        the division points are reused with their properties intact. The generated
         members inherit the source member's analytical properties; releases
         and solid-face offsets remain only at the original outer ends.
         """
@@ -418,6 +1505,10 @@ class StructuralModel:
         start_coordinates = (start.x, start.y, start.z)
         direction = (end.x - start.x, end.y - start.y, end.z - start.z)
         member_length = math.hypot(*direction)
+        split_axis = (
+            tuple(value / member_length for value in direction)
+            if member_length > self.coordinate_tolerance else None
+        )
         if segment_lengths is None:
             positions = tuple(index / len(member_names) for index in range(1, len(member_names)))
         else:
@@ -441,10 +1532,17 @@ class StructuralModel:
         )
         if len(set(coordinates)) != len(coordinates):
             raise ValueError("A divisão criaria nós coincidentes na precisão de um milímetro.")
-        for coordinate in coordinates:
-            self._ensure_unique_coordinates(coordinate)
+        existing_nodes = {
+            (node.x, node.y, node.z): node.name for node in self.nodes.values()
+        }
+        internal_names = tuple(
+            existing_nodes.get(coordinate, proposed)
+            for proposed, coordinate in zip(node_names, coordinates)
+        )
+        if source.start_node in internal_names or source.end_node in internal_names:
+            raise ValueError("A divisão criaria um segmento de comprimento nulo.")
 
-        chain = (source.start_node, *node_names, source.end_node)
+        chain = (source.start_node, *internal_names, source.end_node)
         pairs = tuple(frozenset((chain[index], chain[index + 1])) for index in range(len(member_names)))
         existing_pairs = {
             frozenset((member.start_node, member.end_node))
@@ -456,7 +1554,8 @@ class StructuralModel:
 
         new_nodes = {
             node_name: Node(node_name, *coordinate)
-            for node_name, coordinate in zip(node_names, coordinates)
+            for node_name, coordinate in zip(internal_names, coordinates)
+            if node_name not in self.nodes
         }
         new_bars = {}
         for index, member_name in enumerate(member_names):
@@ -484,6 +1583,16 @@ class StructuralModel:
                 source.solid_face_angles[2] if index == len(member_names) - 1 else 0.0,
                 source.solid_face_angles[3] if index == len(member_names) - 1 else 0.0,
             )
+            if split_axis is None or index not in {0, len(member_names) - 1}:
+                end_cuts = ()
+            else:
+                endpoint_sign = -1.0 if index == 0 else 1.0
+                end_cuts = tuple(
+                    cut for cut in source.detail_end_cuts
+                    if endpoint_sign * sum(
+                        value * axis for value, axis in zip(cut.normal, split_axis)
+                    ) > 0.0
+                )
             new_bars[member_name] = replace(
                 source,
                 name=member_name,
@@ -493,6 +1602,7 @@ class StructuralModel:
                 solid_face_offsets=offsets,
                 solid_face_angles=angles,
                 rotation_flexibility_percent=rotation_percent,
+                detail_end_cuts=end_cuts,
             )
 
         member_actions = tuple(
@@ -520,7 +1630,7 @@ class StructuralModel:
                     suffix += 1
                 self.actions[action_name] = replace(action, name=action_name, target=member_name)
         self._touch()
-        return tuple(node_names), tuple(member_names)
+        return internal_names, tuple(member_names)
 
     def join_bars(self, first_name: str, second_name: str) -> Bar:
         """Merge two contiguous, collinear bars and remove their shared node."""
@@ -657,6 +1767,22 @@ class StructuralModel:
             raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
         if any(set(names).intersection(group["members"]) for group in self.verification_element_groups):
             raise ValueError("Uma ou mais barras já pertencem a um grupo de elementos.")
+        first_bar = self.bars[names[0]]
+        section_signature = (
+            first_bar.section,
+            first_bar.profile,
+            tuple(sorted(first_bar.geometry_dict().items())),
+            first_bar.section_mirrored,
+        )
+        for name in names[1:]:
+            bar = self.bars[name]
+            if (
+                bar.section,
+                bar.profile,
+                tuple(sorted(bar.geometry_dict().items())),
+                bar.section_mirrored,
+            ) != section_signature:
+                raise ValueError("As barras devem possuir a mesma seção para serem agrupadas.")
         connected = {names[0]}
         while True:
             endpoints = {
@@ -672,22 +1798,32 @@ class StructuralModel:
             connected = expanded
         if len(connected) != len(names):
             raise ValueError("As barras devem formar uma sequência conectada na mesma reta.")
-        first = self.bars[names[0]]
-        a = self.nodes[first.start_node]
-        b = self.nodes[first.end_node]
-        origin = (a.x, a.y, a.z)
-        direction = (b.x - a.x, b.y - a.y, b.z - a.z)
+        points = [
+            (self.nodes[node_name].x, self.nodes[node_name].y, self.nodes[node_name].z)
+            for name in names
+            for node_name in (self.bars[name].start_node, self.bars[name].end_node)
+        ]
+        # Use the longest span across the selected chain as its reference axis.
+        # A short first segment can have a slightly different slope after its
+        # coordinates are rounded, even when the full chain follows one line.
+        origin, end = max(
+            ((first, second) for index, first in enumerate(points) for second in points[index + 1:]),
+            key=lambda pair: sum((right - left) ** 2 for left, right in zip(*pair)),
+        )
+        direction = tuple(right - left for left, right in zip(origin, end))
         length = math.sqrt(sum(v * v for v in direction))
         if length <= self.coordinate_tolerance:
             raise ValueError("As barras devem possuir comprimento positivo.")
-        for name in names:
-            bar = self.bars[name]
-            for node_name in (bar.start_node, bar.end_node):
-                point = self.nodes[node_name]
-                delta = (point.x - origin[0], point.y - origin[1], point.z - origin[2])
-                cross = (direction[1]*delta[2]-direction[2]*delta[1], direction[2]*delta[0]-direction[0]*delta[2], direction[0]*delta[1]-direction[1]*delta[0])
-                if math.sqrt(sum(v*v for v in cross)) > max(1e-9 * length * math.sqrt(sum(v*v for v in delta)), self.node_rounding_tolerance * length):
-                    raise ValueError("As barras devem estar alinhadas na mesma reta.")
+        for point in points:
+            delta = tuple(value - base for value, base in zip(point, origin))
+            cross = (
+                direction[1] * delta[2] - direction[2] * delta[1],
+                direction[2] * delta[0] - direction[0] * delta[2],
+                direction[0] * delta[1] - direction[1] * delta[0],
+            )
+            distance = math.sqrt(sum(value * value for value in cross)) / length
+            if distance > self.node_rounding_tolerance:
+                raise ValueError("As barras devem estar alinhadas na mesma reta.")
         group = {"members": names, "name": ""}
         self.verification_element_groups.append(group)
         self._touch_verification_group(names)
@@ -770,6 +1906,34 @@ class StructuralModel:
         self._touch()
         return self.bars[first_name]
 
+    def copy_element_properties(self, kind, source_name, target_name, properties):
+        """Copy selected properties without changing identity, geometry or positioning."""
+        if kind == "bar":
+            if "offsets" in properties:
+                raise ValueError("Deslocamentos não podem ser copiados na Geometria.")
+            return self.copy_bar_properties(source_name, target_name, properties)
+        fields = {
+            "node": {"component": ("component",), "restrictions": (
+                "supports", "support_stiffness", "support_directions",
+            )},
+            "plate": {"color": ("color",), "material": ("material",),
+                      "section": ("thickness_mm",), "restrictions": (
+                          "restrictions", "restriction_stiffness", "restriction_directions",
+                      )},
+        }.get(kind)
+        if fields is None or not properties or set(properties).difference(fields):
+            raise ValueError("Selecione propriedades válidas para copiar.")
+        collection = self.nodes if kind == "node" else self.plates
+        if source_name == target_name:
+            raise ValueError("Selecione referência e destino diferentes.")
+        if source_name not in collection or target_name not in collection:
+            raise ValueError("Referência ou destino não encontrado.")
+        source = collection[source_name]
+        changes = {field: getattr(source, field) for key in properties for field in fields[key]}
+        collection[target_name] = replace(collection[target_name], **changes)
+        self._touch()
+        return collection[target_name]
+
     def copy_bar_properties(
         self,
         source_name: str,
@@ -832,10 +1996,25 @@ class StructuralModel:
         whose endpoint pair already exists are skipped, which makes copying
         onto an existing position idempotent.
         """
+        copied_nodes, copied_members, _copied_plates = self.copy_elements_with_plates(
+            node_names, member_names, offset, rigid_bar_names, (),
+        )
+        return copied_nodes, copied_members
+
+    def copy_elements_with_plates(
+        self,
+        node_names: tuple[str, ...],
+        member_names: tuple[str, ...],
+        offset: tuple[float, float, float],
+        rigid_bar_names: tuple[str, ...] = (),
+        plate_names: tuple[str, ...] = (),
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Copy selected nodes, members, rigid bars and plates by translation."""
         selected_nodes = tuple(dict.fromkeys(node_names))
         selected_members = tuple(dict.fromkeys(member_names))
         selected_rigid_bars = tuple(dict.fromkeys(rigid_bar_names))
-        if not selected_nodes and not selected_members and not selected_rigid_bars:
+        selected_plates = tuple(dict.fromkeys(plate_names))
+        if not selected_nodes and not selected_members and not selected_rigid_bars and not selected_plates:
             raise ValueError("Selecione pelo menos um nó ou elemento para copiar.")
         if any(name not in self.nodes for name in selected_nodes):
             raise EntityNotFoundError("Um dos nós selecionados não foi encontrado.")
@@ -843,6 +2022,16 @@ class StructuralModel:
             raise EntityNotFoundError("Uma das barras selecionadas não foi encontrada.")
         if any(name not in self.rigid_bars for name in selected_rigid_bars):
             raise EntityNotFoundError("Uma das barras rígidas selecionadas não foi encontrada.")
+        if any(name not in self.plates for name in selected_plates):
+            raise EntityNotFoundError("Uma das placas selecionadas não foi encontrada.")
+        for plate_name in selected_plates:
+            plate = self.plates[plate_name]
+            if len(plate.vertex_nodes) != len(plate.contour) or any(
+                node_name not in self.nodes for node_name in plate.vertex_nodes
+            ):
+                raise ValueError(
+                    f"A placa '{plate_name}' não possui nós válidos associados aos vértices."
+                )
 
         try:
             translation = tuple(float(value) for value in offset)
@@ -861,6 +2050,10 @@ class StructuralModel:
         for rigid_name in selected_rigid_bars:
             rigid = self.rigid_bars[rigid_name]
             for node_name in (rigid.start_node, rigid.end_node):
+                if node_name not in source_node_names:
+                    source_node_names.append(node_name)
+        for plate_name in selected_plates:
+            for node_name in self.plates[plate_name].vertex_nodes:
                 if node_name not in source_node_names:
                     source_node_names.append(node_name)
 
@@ -913,6 +2106,7 @@ class StructuralModel:
             for member in self.bars.values()
         }
         new_bars: dict[str, Bar] = {}
+        copied_member_map: dict[str, str] = {}
         next_member_index = 1
         for source_name in selected_members:
             source = self.bars[source_name]
@@ -922,6 +2116,10 @@ class StructuralModel:
                 raise ValueError("A cópia criaria uma barra de comprimento zero na precisão de um milímetro.")
             pair = frozenset((start_node, end_node))
             if pair in existing_pairs:
+                copied_member_map[source_name] = next(
+                    name for name, member in (*self.bars.items(), *new_bars.items())
+                    if frozenset((member.start_node, member.end_node)) == pair
+                )
                 continue
             while f"B{next_member_index}" in self.bars or f"B{next_member_index}" in new_bars:
                 next_member_index += 1
@@ -933,6 +2131,7 @@ class StructuralModel:
                 start_node=start_node,
                 end_node=end_node,
             )
+            copied_member_map[source_name] = member_name
             existing_pairs.add(pair)
 
         existing_rigid_pairs = {
@@ -940,6 +2139,7 @@ class StructuralModel:
             for rigid in self.rigid_bars.values()
         }
         new_rigid_bars: dict[str, RigidBar] = {}
+        copied_rigid_map: dict[str, str] = {}
         for source_name in selected_rigid_bars:
             source = self.rigid_bars[source_name]
             start_node = node_map[source.start_node]
@@ -948,19 +2148,94 @@ class StructuralModel:
                 raise ValueError("A cópia criaria uma barra rígida de comprimento zero.")
             pair = frozenset((start_node, end_node))
             if pair in existing_rigid_pairs:
+                copied_rigid_map[source_name] = next(
+                    name for name, rigid in (*self.rigid_bars.items(), *new_rigid_bars.items())
+                    if frozenset((rigid.start_node, rigid.end_node)) == pair
+                )
                 continue
             rigid_name = f"{start_node}-{end_node}"
             if rigid_name in self.rigid_bars or rigid_name in new_rigid_bars:
                 raise ValueError(f"Já existe uma barra rígida chamada '{rigid_name}'.")
             new_rigid_bars[rigid_name] = RigidBar(rigid_name, start_node, end_node)
+            copied_rigid_map[source_name] = rigid_name
             existing_rigid_pairs.add(pair)
 
-        if new_nodes or new_bars or new_rigid_bars:
+        def same_contour(first, second) -> bool:
+            if len(first) != len(second):
+                return False
+            count = len(first)
+            for ordered in (second, tuple(reversed(second))):
+                for shift in range(count):
+                    if all(
+                        same_coordinates(first[index], ordered[(index + shift) % count])
+                        for index in range(count)
+                    ):
+                        return True
+            return False
+
+        new_plates: dict[str, Plate] = {}
+        copied_plate_names: list[str] = []
+        copied_plate_sources: dict[str, str] = {}
+        next_plate_index = 1
+        for source_name in selected_plates:
+            source = self.plates[source_name]
+            contour = tuple(
+                (
+                    new_nodes[node_map[node_name]].x,
+                    new_nodes[node_map[node_name]].y,
+                    new_nodes[node_map[node_name]].z,
+                ) if node_map[node_name] in new_nodes else (
+                    self.nodes[node_map[node_name]].x,
+                    self.nodes[node_map[node_name]].y,
+                    self.nodes[node_map[node_name]].z,
+                )
+                for node_name in source.vertex_nodes
+            )
+            if any(same_contour(contour, plate.contour) for plate in self.plates.values()) or any(
+                same_contour(contour, plate.contour) for plate in new_plates.values()
+            ):
+                continue
+            while f"P{next_plate_index}" in self.plates or f"P{next_plate_index}" in new_plates:
+                next_plate_index += 1
+            plate_name = f"P{next_plate_index}"
+            next_plate_index += 1
+            support_map = {
+                **{("bar", old): ("bar", new) for old, new in copied_member_map.items()},
+                **{("rigid_bar", old): ("rigid_bar", new) for old, new in copied_rigid_map.items()},
+            }
+            supports = tuple(support_map.get(item, item) for item in source.supports)
+            remapped_support_names = {
+                old_name: new_item[1]
+                for (kind, old_name), new_item in support_map.items()
+                if (kind, old_name) in source.supports
+            }
+            edge_positioning = tuple(
+                (remapped_support_names.get(edge_name, edge_name), displacement, angle)
+                for edge_name, displacement, angle in source.edge_positioning
+            )
+            new_plates[plate_name] = replace(
+                source,
+                name=plate_name,
+                contour=contour,
+                supports=supports,
+                edge_positioning=edge_positioning,
+                vertex_nodes=tuple(node_map[node_name] for node_name in source.vertex_nodes),
+            )
+            copied_plate_names.append(plate_name)
+            copied_plate_sources[source_name] = plate_name
+
+        if new_nodes or new_bars or new_rigid_bars or new_plates:
             self.nodes.update(new_nodes)
             self.bars.update(new_bars)
             self.rigid_bars.update(new_rigid_bars)
+            self.plates.update(new_plates)
+            for hidden in self.scene_views.values():
+                hidden.update(
+                    copied_name for source_name, copied_name in copied_plate_sources.items()
+                    if source_name in hidden
+                )
             self._touch()
-        return tuple(new_nodes), tuple(new_bars)
+        return tuple(new_nodes), tuple(new_bars), tuple(copied_plate_names)
 
     def _validate_rigid_bar_nodes(
         self, start_node: str, end_node: str, ignore: str = "",
@@ -1073,7 +2348,7 @@ class StructuralModel:
         removing_bars: set[str] | None = None,
         removing_rigid_bars: set[str] | None = None,
     ) -> tuple[str, ...]:
-        """Find candidate nodes with no remaining structural or rigid members."""
+        """Find candidate nodes unused by remaining bars, rigid bars, or plates."""
         removed_bars = removing_bars or set()
         removed_rigid_bars = removing_rigid_bars or set()
         connected = {
@@ -1087,6 +2362,11 @@ class StructuralModel:
             for name, rigid in self.rigid_bars.items()
             if name not in removed_rigid_bars
             for node_name in (rigid.start_node, rigid.end_node)
+        )
+        connected.update(
+            node_name
+            for plate in self.plates.values()
+            for node_name in plate.vertex_nodes
         )
         return tuple(
             name for name in dict.fromkeys(candidates)
@@ -1103,7 +2383,7 @@ class StructuralModel:
 
     def remove_orphaned_actions(self) -> tuple[str, ...]:
         """Remove actions whose target no longer exists in the model."""
-        valid_targets = set(self.nodes) | set(self.bars) | set(self.rigid_bars)
+        valid_targets = set(self.nodes) | set(self.bars) | set(self.rigid_bars) | set(self.plates)
         orphaned = tuple(
             name for name, action in self.actions.items()
             if action.target not in valid_targets
@@ -1417,8 +2697,10 @@ class StructuralModel:
             self._touch()
 
     def clear(self) -> None:
+        self.plates.clear()
         self.references.clear()
         self.import_metadata.clear()
+        self.detailing_data.clear()
         self.nodes.clear(); self.bars.clear(); self.rigid_bars.clear(); self.axes = {axis: () for axis in ("X", "Y", "Z")}
         self.actions.clear(); self.action_groups.clear()
         self.action_group_aliases.clear()

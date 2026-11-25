@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import logging
 from math import cos, radians, sin
+from threading import Event, Lock
+from time import perf_counter, sleep
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import pyvista as pv
 import vtk
-from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QFrame, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 from pyvistaqt import QtInteractor
 
-from osa.ui.detailing_preview import DetailingViewPreview, _ViewGeometryCalculator
+from osa.domain.node_components import node_component_geometry_signature
+from osa.ui.detailing_preview import DetailingViewPreview, _ModelSnapshot, _ViewGeometryCalculator
+from osa.rendering.batched_renderer import _merge_unique_line_meshes
+from osa.rendering.solid_member_renderer import SolidMemberRenderer
+
+_LOG = logging.getLogger(__name__)
 
 
 class DetailingViewViewport(QFrame):
@@ -25,6 +34,7 @@ class DetailingViewViewport(QFrame):
     _isometric_directions = DetailingViewPreview._isometric_directions
     _scene_cache_limit = 8
     _dxf_cache_limit = 8
+    _shared_scene_cache = WeakKeyDictionary()
 
     def __init__(self, parent=None, *, antialiasing_samples: int = 4) -> None:
         super().__init__(parent)
@@ -61,12 +71,25 @@ class DetailingViewViewport(QFrame):
         self._fit_parallel_scale = 1.0
         self._zoom_factor = 1.0
         self._is_shutdown = False
+        self._worker_lock = Lock()
+        self._worker_cancel = Event()
+        self._worker_snapshot_key = None
+        self._worker_snapshot = None
+        self._worker_source = None
+        self._worker_signals = _ViewportRenderSignals()
+        self._worker_signals.finished.connect(self._accept_scene)
+        self._loading_label = QLabel("Preparando vista…", self)
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setStyleSheet("background: #ffffff; color: #57606a; padding: 8px;")
+        self._loading_label.adjustSize()
+        self._loading_label.hide()
 
     def shutdown(self) -> None:
         """Release the VTK render window before its owning dialog is destroyed."""
         if self._is_shutdown:
             return
         self._is_shutdown = True
+        self._worker_cancel.set()
         self._render_generation += 1
         self._render_pending = False
         self._plotter.close()
@@ -82,21 +105,26 @@ class DetailingViewViewport(QFrame):
         return (
             id(model),
             getattr(model, "revision", None),
+            node_component_geometry_signature(model),
             plane,
             cls._coordinate_key(plane, coordinate),
             float(settings.get("upper_offset_cm", 50.0)),
             float(settings.get("lower_offset_cm", 50.0)),
             settings.get("orientation", "Superior para inferior"),
             float(settings.get("rotation_degrees", 0.0)),
+            getattr(model, "verification_group_revision", None),
         )
 
     def request_view(self, model, plane: str, coordinate, **settings) -> None:
         """Prepare and show a view without constructing export linework."""
         self._render_generation += 1
+        self._worker_cancel.set()
+        self._worker_cancel = Event()
         self._render_pending = True
         self._current_model = model
         self._current_view = (plane, coordinate, dict(settings))
         if model is None:
+            self._loading_label.hide()
             self._clear_view()
             self.view_ready.emit(False)
             return
@@ -104,24 +132,41 @@ class DetailingViewViewport(QFrame):
         cache_key = self._view_key(model, plane, coordinate, settings)
         cached = self._scene_cache.get(cache_key)
         if cached is None:
-            try:
-                surfaces, edges = self._build_scene_meshes(model, plane, coordinate, settings)
-            except (IndexError, KeyError, RuntimeError, TypeError, ValueError):
-                self._clear_view()
-                self.view_ready.emit(False)
-                return
-            if surfaces is None or edges is None:
-                self._clear_view()
-                self.view_ready.emit(False)
-                return
-            cached = (surfaces, edges)
-            self._scene_cache[cache_key] = cached
-            self._scene_cache.move_to_end(cache_key)
-            while len(self._scene_cache) > self._scene_cache_limit:
-                self._scene_cache.popitem(last=False)
-        else:
-            self._scene_cache.move_to_end(cache_key)
+            shared = self._shared_scene_cache.get(model)
+            cached = shared.get(cache_key) if shared is not None else None
+            if cached is not None:
+                self._scene_cache[cache_key] = cached
+                while len(self._scene_cache) > self._scene_cache_limit:
+                    self._scene_cache.popitem(last=False)
+                shared.move_to_end(cache_key)
+        if cached is None:
+            snapshot_key = (id(model), getattr(model, "revision", None),
+                            node_component_geometry_signature(model),
+                            getattr(model, "verification_group_revision", None))
+            if snapshot_key != self._worker_snapshot_key:
+                self._worker_snapshot_key = snapshot_key
+                self._worker_snapshot = _ModelSnapshot(model)
+                scene = self._detail_scene_for_model(model)
+                self._worker_source = _DetachedDetailingScene(scene) if scene is not None else None
+            self._clear_view()
+            self._render_pending = True
+            self.view_ready.emit(False)
+            self._loading_label.adjustSize()
+            self._loading_label.move((self.width() - self._loading_label.width()) // 2,
+                                     (self.height() - self._loading_label.height()) // 2)
+            self._loading_label.show()
+            self._loading_label.raise_()
+            QThreadPool.globalInstance().start(_ViewportRenderTask(
+                self._worker_signals, self._worker_lock, self._worker_cancel,
+                self._render_generation, cache_key, self._worker_snapshot,
+                self._worker_source, plane, coordinate, dict(settings),
+            ))
+            return
+        self._scene_cache.move_to_end(cache_key)
+        self._show_cached_scene(cached, plane, coordinate, settings)
 
+    def _show_cached_scene(self, cached, plane, coordinate, settings) -> None:
+        self._loading_label.hide()
         try:
             self._show_scene(cached[0], cached[1], plane, coordinate, settings)
         except (IndexError, KeyError, RuntimeError, TypeError, ValueError):
@@ -131,9 +176,37 @@ class DetailingViewViewport(QFrame):
         self._render_pending = False
         self.view_ready.emit(True)
 
+    @Slot(int, object, object)
+    def _accept_scene(self, generation, cache_key, cached) -> None:
+        if self._is_shutdown or generation != self._render_generation or self._current_model is None:
+            return
+        if (cache_key[1] != getattr(self._current_model, "revision", None)
+                or cache_key[2] != node_component_geometry_signature(self._current_model)
+                or cache_key[-1] != getattr(self._current_model, "verification_group_revision", None)):
+            plane, coordinate, settings = self._current_view
+            self.request_view(self._current_model, plane, coordinate, **settings)
+            return
+        if cached is None:
+            self._loading_label.hide()
+            self._clear_view()
+            self.view_ready.emit(False)
+            return
+        self._scene_cache[cache_key] = cached
+        self._scene_cache.move_to_end(cache_key)
+        while len(self._scene_cache) > self._scene_cache_limit:
+            self._scene_cache.popitem(last=False)
+        shared = self._shared_scene_cache.setdefault(self._current_model, OrderedDict())
+        shared[cache_key] = cached
+        shared.move_to_end(cache_key)
+        while len(shared) > self._scene_cache_limit:
+            shared.popitem(last=False)
+        plane, coordinate, settings = self._current_view
+        self._show_cached_scene(cached, plane, coordinate, settings)
+
     def _build_scene_meshes(self, model, plane: str, coordinate, settings):
         calculator = _ViewGeometryCalculator()
         calculator._mesh_cache_owner = model
+        calculator._detail_scene = self._detail_scene_for_model(model)
         DetailingViewPreview._ensure_model_meshes(calculator, model)
         if not calculator._solid_meshes:
             return None, None
@@ -173,6 +246,7 @@ class DetailingViewViewport(QFrame):
                     local_mesh = solid.copy(deep=True)
                     local_mesh.transform(transform, inplace=True)
                     solids.append(local_mesh)
+                normal = (0.0, 0.0, 1.0)
                 normal_axis, coordinate_value = 2, 0.0
             elif plane_data is not None:
                 normal, normal_axis, _view_up = plane_data
@@ -191,23 +265,34 @@ class DetailingViewViewport(QFrame):
                 lower, upper = upper, lower
             surfaces = []
             surface_member_names = []
-            for member_name, solid in zip(calculator._solid_member_names, solids):
+            for index, (member_name, solid) in enumerate(zip(calculator._solid_member_names, solids)):
+                if index % 16 == 0 and getattr(self, "_yield_geometry", False):
+                    sleep(0.001)
                 clipped = DetailingViewPreview._clip_to_depth_range(
                     solid, normal, normal_axis, lower, upper
                 )
                 if clipped is not None and clipped.n_points and clipped.n_cells:
                     surfaces.append(clipped)
                     surface_member_names.append(member_name)
-            edge_meshes = [
-                mesh.extract_feature_edges(
+            curves = calculator._ensure_model_curve_edges(model, surface_member_names)
+            edge_meshes = []
+            for member_name, mesh in zip(surface_member_names, surfaces):
+                edges = mesh.extract_feature_edges(
                     boundary_edges=True,
                     feature_edges=True,
                     manifold_edges=False,
                     non_manifold_edges=True,
                     feature_angle=25.0,
                 )
-                for mesh in surfaces
-            ]
+                curve = curves.get(member_name)
+                if curve is not None and custom_transform is not None:
+                    curve = curve.copy(deep=True)
+                    curve.transform(custom_transform, inplace=True)
+                if curve is not None:
+                    curve = calculator._clip_curve_edges(curve, normal_axis, lower, upper)
+                edge_meshes.append(
+                    pv.merge((edges, curve), merge_points=False) if curve is not None and curve.n_lines else edges
+                )
 
         interfaces_by_member = DetailingViewPreview._group_interface_planes(model)
         if plane == "custom" and custom_transform is not None:
@@ -232,13 +317,92 @@ class DetailingViewViewport(QFrame):
             filtered_edge_meshes.append(edge_mesh)
         edge_meshes = filtered_edge_meshes
 
-        surfaces = [mesh for mesh in surfaces if mesh.n_points and mesh.n_cells]
-        edge_meshes = [mesh for mesh in edge_meshes if mesh.n_points and mesh.n_lines]
-        if not surfaces or not edge_meshes:
+        aligned_geometry = [
+            (surface, edges, member_name)
+            for surface, edges, member_name in zip(surfaces, edge_meshes, surface_member_names)
+            if surface.n_points and surface.n_cells and edges.n_points and edges.n_lines
+        ]
+        if not aligned_geometry:
             return None, None
+        surfaces = [surface for surface, _edges, _name in aligned_geometry]
+        edge_meshes = [edges for _surface, edges, _name in aligned_geometry]
+        surface_member_names = [name for _surface, _edges, name in aligned_geometry]
+        camera_direction = self._view_camera_direction(plane, coordinate, settings)
+        view_up = self._view_camera_up(plane, coordinate, settings, camera_direction)
+        silhouettes = self._view_silhouette_edges(surfaces, camera_direction, view_up)
+        edge_meshes = [
+            _merge_unique_line_meshes(edges, silhouette)
+            for edges, silhouette in zip(edge_meshes, silhouettes)
+        ]
+        edge_meshes = [
+            self._without_group_interface_edges(
+                edge_mesh, interfaces_by_member.get(member_name, ()),
+            )
+            if interfaces_by_member.get(member_name, ()) else edge_mesh
+            for member_name, edge_mesh in zip(surface_member_names, edge_meshes)
+        ]
         surface_scene = pv.merge(surfaces, merge_points=False)
         edge_scene = pv.merge(edge_meshes, merge_points=False)
         return surface_scene, edge_scene
+
+    def _view_camera_direction(self, plane: str, coordinate, settings) -> np.ndarray:
+        if plane in self._isometric_directions:
+            direction = np.asarray(self._isometric_directions[plane], dtype=float)
+        elif plane == "custom":
+            points = np.asarray(coordinate, dtype=float)
+            direction = np.cross(points[1] - points[0], points[2] - points[0])
+        else:
+            direction = np.asarray(self._plane_data[plane][0], dtype=float)
+        direction /= max(float(np.linalg.norm(direction)), 1e-12)
+        if (
+            plane not in self._isometric_directions
+            and settings.get("orientation", "Superior para inferior") == "Inferior para superior"
+        ):
+            direction *= -1.0
+        return direction
+
+    def _view_camera_up(
+        self, plane: str, coordinate, settings, camera_direction: np.ndarray,
+    ) -> np.ndarray:
+        if plane in self._isometric_directions:
+            up = np.asarray((0.0, 0.0, 1.0), dtype=float)
+        elif plane == "custom":
+            points = np.asarray(coordinate, dtype=float)
+            u_axis = points[1] - points[0]
+            u_axis /= max(float(np.linalg.norm(u_axis)), 1e-12)
+            up = np.cross(camera_direction, u_axis)
+        else:
+            up = np.asarray(self._plane_data[plane][2], dtype=float)
+        view_direction = -camera_direction
+        angle = radians(-float(settings.get("rotation_degrees", 0.0)))
+        up = (
+            up * cos(angle)
+            + np.cross(view_direction, up) * sin(angle)
+            + view_direction * np.dot(view_direction, up) * (1.0 - cos(angle))
+        )
+        up -= np.dot(up, camera_direction) * camera_direction
+        return up / max(float(np.linalg.norm(up)), 1e-12)
+
+    @staticmethod
+    def _view_silhouette_edges(
+        surfaces: list[pv.PolyData], camera_direction: np.ndarray, view_up: np.ndarray,
+    ) -> list[pv.PolyData]:
+        """Add camera-dependent contours, including smooth tube and fastener walls."""
+        bounds = np.asarray([mesh.bounds for mesh in surfaces], dtype=float)
+        minimum = np.asarray((bounds[:, 0].min(), bounds[:, 2].min(), bounds[:, 4].min()))
+        maximum = np.asarray((bounds[:, 1].max(), bounds[:, 3].max(), bounds[:, 5].max()))
+        center = (minimum + maximum) / 2.0
+        distance = max(float(np.linalg.norm(maximum - minimum)) * 3.0, 1.0)
+        camera = vtk.vtkCamera()
+        camera.SetFocalPoint(center)
+        camera.SetPosition(center + camera_direction * distance)
+        camera.SetViewUp(view_up)
+        camera.ParallelProjectionOn()
+        output = []
+        for mesh in surfaces:
+            silhouette = SolidMemberRenderer.silhouette_for(mesh, camera)
+            output.append(silhouette if silhouette.n_lines else pv.PolyData())
+        return output
 
     @staticmethod
     def _without_group_interface_edges(edge_mesh, interface_planes):
@@ -356,6 +520,12 @@ class DetailingViewViewport(QFrame):
 
     def generate_dxf_segments(self, model, plane: str, coordinate, **settings):
         """Run the exact vector hidden-line pipeline only when DXF is requested."""
+        return self.generate_dxf_segments_with_sources(
+            model, plane, coordinate, **settings,
+        )[0]
+
+    def generate_dxf_segments_with_sources(self, model, plane: str, coordinate, **settings):
+        """Return the projected linework and the model element owning each segment."""
         cache_key = self._view_key(model, plane, coordinate, settings)
         cached = self._dxf_cache.get(cache_key)
         if cached is not None:
@@ -363,16 +533,25 @@ class DetailingViewViewport(QFrame):
             return cached
         calculator = _ViewGeometryCalculator()
         calculator._mesh_cache_owner = model
+        calculator._detail_scene = self._detail_scene_for_model(model)
         DetailingViewPreview.set_view(
             calculator, model, plane, coordinate, **settings
         )
         segments = tuple(calculator._segments_2d)
+        sources = tuple(calculator._segment_sources)
         if segments:
-            self._dxf_cache[cache_key] = segments
+            self._dxf_cache[cache_key] = (segments, sources)
             self._dxf_cache.move_to_end(cache_key)
             while len(self._dxf_cache) > self._dxf_cache_limit:
                 self._dxf_cache.popitem(last=False)
-        return segments
+        return segments, sources
+
+    def _detail_scene_for_model(self, model):
+        dialog = self.window()
+        host = dialog.parent() if dialog is not None else None
+        if getattr(host, "model", None) is not model:
+            return None
+        return getattr(host, "scene", None)
 
     def _clear_view(self) -> None:
         self._plotter.clear()
@@ -436,6 +615,9 @@ class DetailingViewViewport(QFrame):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if hasattr(self, "_loading_label"):
+            self._loading_label.move((self.width() - self._loading_label.width()) // 2,
+                                     (self.height() - self._loading_label.height()) // 2)
         if self._fit_spans is None:
             return
         aspect = max(self._plotter.width(), 1) / max(self._plotter.height(), 1)
@@ -445,5 +627,84 @@ class DetailingViewViewport(QFrame):
         self._plotter.render()
 
     def closeEvent(self, event) -> None:
-        self._plotter.close()
+        self.shutdown()
         super().closeEvent(event)
+
+
+class _DetachedDetailingScene:
+    """Geometry-only counterpart of the scene; safe to use outside the GUI thread."""
+
+    def __init__(self, scene) -> None:
+        from osa.rendering.batched_renderer import BatchedMemberRenderer
+        from osa.rendering.scene_batched import StructureScene
+
+        self._model = None
+        self._detailing_session_active = False
+        self._solid_members_visible = False
+        self._member_renderer = BatchedMemberRenderer()
+        self._marker_radius_current = max(float(getattr(scene, "_marker_radius_current", 0.05)), 1e-4)
+        self._detail_subtraction_meshes = {}
+        self._detail_subtraction_failures = set()
+        self._yield_geometry = True
+        last_yield = perf_counter()
+
+        def yield_control():
+            nonlocal last_yield
+            if perf_counter() - last_yield >= 0.004:
+                sleep(0.001)
+                last_yield = perf_counter()
+
+        self._detail_view_yield = yield_control
+        for name in (
+            "_plate_display_contour", "_detailed_plate_meshes", "_plate_meshes", "_subtract_plate_meshes",
+            "_build_detail_subtraction_meshes", "_detail_subtractions_by_target", "detailing_view_solid_meshes",
+        ):
+            setattr(self, name, getattr(StructureScene, name).__get__(self))
+        # This helper is a staticmethod. Bind it directly as a function so the
+        # detached scene doesn't receive itself as the target mesh argument.
+        self._detail_end_cut_mesh = StructureScene._detail_end_cut_mesh
+
+
+class _ViewportGeometryBuilder:
+    _plane_data = DetailingViewViewport._plane_data
+    _isometric_directions = DetailingViewViewport._isometric_directions
+    _build_scene_meshes = DetailingViewViewport._build_scene_meshes
+    _view_camera_direction = DetailingViewViewport._view_camera_direction
+    _view_camera_up = DetailingViewViewport._view_camera_up
+    _view_silhouette_edges = staticmethod(DetailingViewViewport._view_silhouette_edges)
+    _without_group_interface_edges = staticmethod(DetailingViewViewport._without_group_interface_edges)
+
+    def __init__(self, source) -> None:
+        self._source = source
+        self._yield_geometry = True
+
+    def _detail_scene_for_model(self, _model):
+        return self._source
+
+
+class _ViewportRenderSignals(QObject):
+    finished = Signal(int, object, object)
+
+
+class _ViewportRenderTask(QRunnable):
+    def __init__(self, signals, lock, cancel, generation, cache_key, model, source, plane, coordinate, settings):
+        super().__init__()
+        self.signals, self.lock, self.cancel = signals, lock, cancel
+        self.generation, self.cache_key = generation, cache_key
+        self.model, self.source = model, source
+        self.plane, self.coordinate, self.settings = plane, coordinate, settings
+
+    def run(self) -> None:
+        with self.lock:
+            if self.cancel.is_set():
+                return
+            try:
+                surfaces, edges = _ViewportGeometryBuilder(self.source)._build_scene_meshes(
+                    self.model, self.plane, self.coordinate, self.settings,
+                )
+                cached = (surfaces, edges) if surfaces is not None and edges is not None else None
+            except Exception:  # noqa: BLE001 - release the preview after any worker failure
+                _LOG.exception("Não foi possível preparar a prévia de detalhamento")
+                cached = None
+            if not self.cancel.is_set():
+                self.signals.finished.emit(self.generation, self.cache_key, cached)

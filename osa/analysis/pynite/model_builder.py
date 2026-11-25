@@ -6,6 +6,8 @@ convertidas explicitamente de mm para m na fronteira com o solver.
 
 from __future__ import annotations
 
+import math
+from itertools import pairwise
 from math import atan2, degrees
 
 import numpy as np
@@ -13,6 +15,8 @@ import numpy as np
 from osa.domain import StructuralModel
 from osa.domain.member_axes import member_basis
 from osa.services import SectionPropertyService, calculate_rigid_bar_properties
+
+from .plate_mesh import _plate_local_basis, generate_plate_mesh
 
 
 class ModelBuilder:
@@ -25,9 +29,20 @@ class ModelBuilder:
         except ImportError as error:
             raise RuntimeError("PyNiteFEA não está disponível neste ambiente.") from error
         target = FEModel3D()
+        target._osa_member_segments = {}
+        target._osa_plate_elements = {}
+        target._osa_plate_edges = {}
+        target._osa_plate_surface_axes = {}
+        target._osa_node_coordinates = {}
+        target._osa_disconnected_plate_nodes = set()
+        target._osa_original_node_names = set(source.nodes)
         rotationally_unconnected = self._rotationally_unconnected_nodes(source)
+        node_fixed_supports = {}
+        node_spring_stiffness = {}
+        node_spring_directions = {}
         for node in source.nodes.values():
             target.add_node(node.name, node.x, node.y, node.z)
+            target._osa_node_coordinates[node.name] = (node.x, node.y, node.z)
             supports = list(node.supports)
             stiffness = node.support_stiffness
             if node.name in rotationally_unconnected:
@@ -44,12 +59,20 @@ class ModelBuilder:
                 supports[index] and stiffness[index] <= 0.0
                 for index in range(6)
             ]
+            node_fixed_supports[node.name] = fixed_supports
+            node_spring_stiffness[node.name] = [
+                stiffness[index] if supports[index] and stiffness[index] > 0.0 else 0.0
+                for index in range(6)
+            ]
+            node_spring_directions[node.name] = [
+                {
+                    None if node.support_directions[index] == "="
+                    else node.support_directions[index]
+                } if value > 0.0 else set()
+                for index, value in enumerate(node_spring_stiffness[node.name])
+            ]
             if any(fixed_supports):
                 target.def_support(node.name, *fixed_supports)
-
-            for index, dof in enumerate(("DX", "DY", "DZ", "RX", "RY", "RZ")):
-                if supports[index] and stiffness[index] > 0.0:
-                    target.def_support_spring(node.name, dof, stiffness[index])
         for material_name, values in source.materials.items():
             elastic_modulus_kn_m2, shear_modulus_kn_m2, poisson_ratio, unit_weight_kn_m3 = values[:4]
             target.add_material(
@@ -59,6 +82,187 @@ class ModelBuilder:
                 poisson_ratio,
                 unit_weight_kn_m3,
             )
+        for plate in source.plates.values():
+            if plate.material == "Indefinido" or plate.material not in source.materials:
+                raise ValueError(f"Defina o material da placa '{plate.name}' antes de analisar.")
+            if not math.isfinite(plate.thickness_mm) or plate.thickness_mm <= 0:
+                raise ValueError(f"Defina a seção e a espessura da placa '{plate.name}' antes de analisar.")
+        plate_mesh = generate_plate_mesh(source.plates)
+        # Detect real analytical edge/bar overlaps, including plates created
+        # from coordinates (which need not contain explicit support references).
+        edge_interfaces = []
+        for plate in source.plates.values():
+            states = dict(plate.edge_connections)
+            for edge in range(len(plate.contour)):
+                bars = source.plate_edge_bars(plate.name, edge, include_rigid=True)
+                if bars:
+                    edge_interfaces.append((
+                        plate, edge, bars, states.get(edge, "fixed"),
+                    ))
+
+        def on_segment(point, start, end):
+            start, end, point = np.asarray(start), np.asarray(end), np.asarray(point)
+            vector = end - start
+            length2 = float(vector @ vector)
+            if length2 <= 1e-16:
+                return False
+            ratio = float((point - start) @ vector / length2)
+            return -1e-8 <= ratio <= 1 + 1e-8 and np.linalg.norm(point - start - ratio * vector) <= 1e-7
+
+        def interfaces_at(point):
+            return [
+                (plate, bars, state) for plate, edge, bars, state in edge_interfaces
+                if on_segment(point, plate.contour[edge], plate.contour[(edge + 1) % len(plate.contour)])
+                and any(on_segment(
+                    point,
+                    tuple(getattr(source.nodes[(source.bars.get(bar) or source.rigid_bars[bar]).start_node], axis) for axis in "xyz"),
+                    tuple(getattr(source.nodes[(source.bars.get(bar) or source.rigid_bars[bar]).end_node], axis) for axis in "xyz"),
+                ) for bar in bars)
+            ]
+
+        plate_node_names = []
+        beam_mesh_names = []
+        beam_mesh_members = []
+        for index, point in enumerate(plate_mesh.nodes, start=1):
+            coordinates = tuple(float(value) for value in point)
+            interfaces = interfaces_at(point)
+            separate = bool(interfaces) and not any(state == "fixed" for _, _, state in interfaces)
+            existing = next(
+                (node.name for node in source.nodes.values()
+                 if math.dist(coordinates, (node.x, node.y, node.z)) <= 1e-8),
+                None,
+            )
+            structural_node = existing
+            if separate:
+                existing = None
+            if existing is None:
+                existing = f"FE::N{index}"
+                target.add_node(existing, *coordinates)
+                target._osa_node_coordinates[existing] = coordinates
+                node_fixed_supports[existing] = [False] * 6
+                node_spring_stiffness[existing] = [0.0] * 6
+                node_spring_directions[existing] = [set() for _ in range(6)]
+            plate_node_names.append(existing)
+            if separate:
+                target._osa_disconnected_plate_nodes.add(existing)
+            connected = {bar for _, bars, state in interfaces if state != "free" for bar in bars}
+            beam_node = existing
+            if separate and connected:
+                beam_node = structural_node or f"FE::BeamN{index}"
+                if beam_node not in target.nodes:
+                    target.add_node(beam_node, *coordinates)
+                    target._osa_node_coordinates[beam_node] = coordinates
+                from .plate_connections import PlateTranslationLink
+                stiffness = max(
+                    source.materials[plate.material][0] * plate.thickness_mm / 1000.0
+                    for plate, _, state in interfaces if state == "supported"
+                ) * 1e5
+                link_name = f"FE::PlateLink{index}"
+                target.springs[link_name] = PlateTranslationLink(
+                    link_name, target.nodes[existing], target.nodes[beam_node], stiffness,
+                    target.load_combos,
+                )
+            beam_mesh_names.append(beam_node)
+            beam_mesh_members.append(connected)
+        # Articulated beam ends can now have a separate plate node. Revisit
+        # their unused rotational DOFs using actual solver connectivity.
+        for name in self._rotationally_unconnected_nodes(source, set(plate_node_names)):
+            for dof in range(3, 6):
+                if source.nodes[name].support_stiffness[dof] <= 0:
+                    node_fixed_supports[name][dof] = True
+            target.def_support(name, *node_fixed_supports[name])
+        for plate in source.plates.values():
+            contour_points = np.asarray(plate.contour, dtype=float)
+            local_x, local_y, _normal = _plate_local_basis(plate.contour)
+            relative_contour = contour_points - contour_points[0]
+            local_x_values = relative_contour @ local_x
+            local_y_values = relative_contour @ local_y
+            target._osa_plate_surface_axes[plate.name] = (
+                contour_points[0], local_x, local_y,
+                float(local_x_values.min()), float(local_x_values.max()),
+                float(local_y_values.min()), float(local_y_values.max()),
+            )
+            if plate.material not in source.materials:
+                raise ValueError(f"A laje '{plate.name}' não possui um material cadastrado.")
+            if source.material_types and source.material_types.get(plate.material) not in {"Concreto", "Aço", "Madeira"}:
+                raise ValueError(f"A placa '{plate.name}' deve usar concreto, aço ou madeira.")
+            plate_elements = []
+            for index, connectivity in enumerate(plate_mesh.elements[plate.name], start=1):
+                element_name = f"{plate.name}::Q{index}"
+                node_names = tuple(plate_node_names[node_index] for node_index in connectivity)
+                coordinates = tuple(tuple(float(value) for value in plate_mesh.nodes[node_index])
+                                    for node_index in connectivity)
+                target.add_quad(
+                    element_name, *node_names, plate.thickness_mm / 1000.0, plate.material,
+                )
+                plate_elements.append((element_name, node_names, coordinates))
+            target._osa_plate_elements[plate.name] = tuple(plate_elements)
+            for edge_index, (start, end) in enumerate(zip(
+                plate.contour, (*plate.contour[1:], plate.contour[0]),
+            )):
+                start_point = np.asarray(start, dtype=float)
+                edge_vector = np.asarray(end, dtype=float) - start_point
+                edge_length_squared = float(np.dot(edge_vector, edge_vector))
+                edge_nodes = {}
+                if edge_length_squared > 0.0:
+                    for _, node_names, coordinates in plate_elements:
+                        for node_name, coordinate in zip(node_names, coordinates):
+                            point = np.asarray(coordinate, dtype=float)
+                            ratio = float(np.dot(point - start_point, edge_vector) / edge_length_squared)
+                            projected = start_point + ratio * edge_vector
+                            if -1e-8 <= ratio <= 1.0 + 1e-8 and np.linalg.norm(point - projected) <= 1e-7:
+                                edge_nodes[round(min(1.0, max(0.0, ratio)), 10)] = node_name
+                target._osa_plate_edges[(plate.name, edge_index)] = tuple(
+                    (node_name, ratio) for ratio, node_name in sorted(edge_nodes.items())
+                )
+
+        restrained_nodes = set()
+        for plate in source.plates.values():
+            if not any(plate.restrictions):
+                continue
+            tributary_areas = {}
+            for connectivity in plate_mesh.elements[plate.name]:
+                points = np.asarray([plate_mesh.nodes[index] for index in connectivity], dtype=float)
+                area = 0.5 * float(np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0])))
+                area += 0.5 * float(np.linalg.norm(np.cross(points[2] - points[0], points[3] - points[0])))
+                for node_index in connectivity:
+                    tributary_areas[node_index] = tributary_areas.get(node_index, 0.0) + area / 4.0
+            for node_index, tributary_area in tributary_areas.items():
+                node_name = plate_node_names[node_index]
+                for dof in range(3):
+                    if not plate.restrictions[dof]:
+                        continue
+                    spring_coefficient = plate.restriction_stiffness[dof]
+                    if spring_coefficient > 0.0:
+                        # A distributed foundation coefficient (kN/m³) times
+                        # the node's tributary area (m²) gives a PyNite spring
+                        # stiffness in kN/m.
+                        node_spring_stiffness[node_name][dof] += (
+                            spring_coefficient * tributary_area
+                        )
+                        node_spring_directions[node_name][dof].add(
+                            None if plate.restriction_directions[dof] == "="
+                            else plate.restriction_directions[dof]
+                        )
+                    else:
+                        node_fixed_supports[node_name][dof] = True
+                        restrained_nodes.add(node_name)
+        for node_name in restrained_nodes:
+            target.def_support(node_name, *node_fixed_supports[node_name])
+        dofs = ("DX", "DY", "DZ", "RX", "RY", "RZ")
+        for node_name, stiffnesses in node_spring_stiffness.items():
+            for index, stiffness in enumerate(stiffnesses):
+                if stiffness > 0.0 and not node_fixed_supports[node_name][index]:
+                    directions = node_spring_directions[node_name][index]
+                    if len(directions) > 1:
+                        raise ValueError(
+                            f"O nó '{node_name}' recebeu molas incompatíveis no mesmo "
+                            f"grau de liberdade {dofs[index]} (bilateral e/ou sentidos opostos)."
+                        )
+                    direction = next(iter(directions), None)
+                    target.def_support_spring(
+                        node_name, dofs[index], stiffness, direction=direction,
+                    )
         for member in source.bars.values():
             if member.material not in source.materials:
                 raise ValueError(f"A barra '{member.name}' não possui material válido.")
@@ -82,34 +286,18 @@ class ModelBuilder:
                 properties.i_minor_mm4 * 1e-12,
                 properties.j_mm4 * 1e-12,
             )
-            # Perfis não simétricos são inicializados pelos eixos principais;
-            # a rotação escolhida pelo usuário é aplicada ao eixo local x.
-            target.add_member(
-                member.name, member.start_node, member.end_node, member.material,
-                section_name,
-            )
-            # PyNite uses global Y up, while OSA draws its sections with Z up.
-            # Convert the full frame, not just the user's roll angle. All local
-            # loads, releases, inertias and results then use the drawn axes.
-            analysis_member = target.members[member.name]
-            basis = member_basis(source.nodes[member.start_node], source.nodes[member.end_node], member.rotation)
-            if basis is not None:
-                reference = analysis_member.T()[:3, :3]
-                analysis_member.rotation = degrees(atan2(
-                    float(np.dot(basis[1], reference[2])),
-                    float(np.dot(basis[1], reference[1])),
-                ))
             releases = list(member.releases)
             for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
                 releases[index] = releases[index] or percent >= 100
-            if any(releases):
-                # The application exposes the pair-by-pair order (a/b), while
-                # PyNite groups all six local DOFs by member end.
-                dxa, dxb, dya, dyb, dza, dzb, rxa, rxb, rya, ryb, rza, rzb = releases
-                target.def_releases(
-                    member.name, dxa, dya, dza, rxa, rya, rza,
-                    dxb, dyb, dzb, rxb, ryb, rzb,
-                )
+            stations = self._mesh_stations(
+                source, member.start_node, member.end_node,
+                [node for node, bars in zip(beam_mesh_names, beam_mesh_members) if member.name in bars],
+                [point for point, bars in zip(plate_mesh.nodes, beam_mesh_members) if member.name in bars], True,
+            )
+            self._add_member_segments(
+                target, source, member.name, stations, member.material, section_name,
+                member.rotation, releases, target._osa_member_segments,
+            )
         for rigid in source.rigid_bars.values():
             properties = calculate_rigid_bar_properties(source, rigid)
             if properties is None:
@@ -136,17 +324,74 @@ class ModelBuilder:
                 properties.iz_m4,
                 properties.j_m4,
             )
-            target.add_member(
-                rigid.name,
-                rigid.start_node,
-                rigid.end_node,
-                material_name,
-                section_name,
+            stations = self._mesh_stations(
+                source, rigid.start_node, rigid.end_node,
+                [node for node, bars in zip(beam_mesh_names, beam_mesh_members) if rigid.name in bars],
+                [point for point, bars in zip(plate_mesh.nodes, beam_mesh_members) if rigid.name in bars], True,
+            )
+            self._add_member_segments(
+                target, source, rigid.name, stations, material_name, section_name,
+                0, [False] * 12, target._osa_member_segments,
             )
         return target
 
     @staticmethod
-    def _rotationally_unconnected_nodes(source: StructuralModel) -> set[str]:
+    def _mesh_stations(source, start_name, end_name, mesh_node_names, mesh_nodes, enabled):
+        start, end = source.nodes[start_name], source.nodes[end_name]
+        a = np.array((start.x, start.y, start.z), dtype=float)
+        vector = np.array((end.x - start.x, end.y - start.y, end.z - start.z), dtype=float)
+        length_squared = float(np.dot(vector, vector))
+        stations = [(0.0, start_name), (1.0, end_name)]
+        if enabled and length_squared > 0.0:
+            for name, coordinates in zip(mesh_node_names, mesh_nodes):
+                point = np.asarray(coordinates, dtype=float)
+                ratio = float(np.dot(point - a, vector) / length_squared)
+                if 1e-8 < ratio < 1.0 - 1e-8 and np.linalg.norm(point - (a + ratio * vector)) <= 1e-7:
+                    stations.append((ratio, name))
+        ordered = []
+        for ratio, name in sorted(stations):
+            if ordered and abs(ratio - ordered[-1][0]) <= 1e-8:
+                continue
+            ordered.append((ratio, name))
+        return tuple(ordered)
+
+    @staticmethod
+    def _add_member_segments(target, source, original_name, stations, material, section, rotation, releases, mapping):
+        rows = []
+        for index, ((start_ratio, start_node), (end_ratio, end_node)) in enumerate(pairwise(stations)):
+            name = original_name if index == 0 else f"{original_name}::FE{index + 1}"
+            target.add_member(name, start_node, end_node, material, section)
+            if target._osa_disconnected_plate_nodes:
+                from .plate_connections import PlateAwareMember
+                target.members[name] = PlateAwareMember(
+                    target, name, target.nodes[start_node], target.nodes[end_node], material, section,
+                )
+            analysis_member = target.members[name]
+            member = source.bars.get(original_name)
+            if member is not None:
+                basis = member_basis(source.nodes[member.start_node], source.nodes[member.end_node], rotation)
+                if basis is not None:
+                    reference = analysis_member.T()[:3, :3]
+                    analysis_member.rotation = degrees(atan2(
+                        float(np.dot(basis[1], reference[2])),
+                        float(np.dot(basis[1], reference[1])),
+                    ))
+            segment_releases = list(releases)
+            if index > 0:
+                segment_releases[0::2] = [False] * 6
+            if index < len(stations) - 2:
+                segment_releases[1::2] = [False] * 6
+            if any(segment_releases):
+                dxa, dxb, dya, dyb, dza, dzb, rxa, rxb, rya, ryb, rza, rzb = segment_releases
+                target.def_releases(
+                    name, dxa, dya, dza, rxa, rya, rza,
+                    dxb, dyb, dzb, rxb, ryb, rzb,
+                )
+            rows.append((name, start_ratio, end_ratio))
+        mapping[original_name] = tuple(rows)
+
+    @staticmethod
+    def _rotationally_unconnected_nodes(source: StructuralModel, plate_nodes=None) -> set[str]:
         """Return nodes whose incident members all release local RY and RZ."""
         incident: dict[str, list[tuple[bool, bool]]] = {name: [] for name in source.nodes}
         for member in source.bars.values():
@@ -156,7 +401,12 @@ class ModelBuilder:
         for rigid in source.rigid_bars.values():
             incident[rigid.start_node].append((False, False))
             incident[rigid.end_node].append((False, False))
+        plate_points = [point for plate in source.plates.values() for point in plate.contour]
         return {
             name for name, releases in incident.items()
             if releases and all(release_y and release_z for release_y, release_z in releases)
+            and not (name in plate_nodes if plate_nodes is not None else any(
+                math.dist((source.nodes[name].x, source.nodes[name].y, source.nodes[name].z), point) <= 1e-8
+                for point in plate_points
+            ))
         }

@@ -7,13 +7,15 @@ small, GPU-friendly batches while a cell-data index preserves picking.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from math import cos, pi, sin
 from types import SimpleNamespace
 
 import numpy as np
 import pyvista as pv
+import manifold3d
+import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 from vtkmodules.vtkFiltersGeometry import vtkDataSetSurfaceFilter
 
@@ -38,6 +40,186 @@ def _empty_mesh() -> pv.PolyData:
 
 def _merge(parts: list[pv.PolyData]) -> pv.PolyData:
     return pv.merge(parts, merge_points=False) if parts else _empty_mesh()
+
+
+def _clip_line_mesh_outside_cutters(
+    lines: pv.PolyData, cutters: Iterable[pv.PolyData],
+) -> pv.PolyData:
+    """Trim source-profile edges against the same solids used for CSG cuts."""
+    segments: list[tuple[np.ndarray, np.ndarray]] = []
+    points = np.asarray(lines.points, dtype=float)
+    cells = np.asarray(lines.lines, dtype=np.int64)
+    offset = 0
+    while offset < len(cells):
+        count = int(cells[offset])
+        ids = cells[offset + 1:offset + count + 1]
+        offset += count + 1
+        segments.extend(
+            (points[first], points[second])
+            for first, second in zip(ids, ids[1:])
+            if np.linalg.norm(points[second] - points[first]) > 1e-12
+        )
+
+    for cutter in cutters:
+        if not segments or not cutter.n_cells:
+            continue
+        locator = vtk.vtkStaticCellLocator()
+        locator.SetDataSet(cutter)
+        locator.BuildLocator()
+        distance = vtk.vtkImplicitPolyDataDistance()
+        distance.SetInput(cutter)
+        remaining: list[tuple[np.ndarray, np.ndarray]] = []
+        for start, end in segments:
+            direction = end - start
+            length_squared = float(np.dot(direction, direction))
+            intersections = vtk.vtkPoints()
+            intersected_cells = vtk.vtkIdList()
+            locator.IntersectWithLine(
+                tuple(start), tuple(end), 1e-9, intersections, intersected_cells,
+            )
+            parameters = [0.0, 1.0]
+            for index in range(intersections.GetNumberOfPoints()):
+                hit = np.asarray(intersections.GetPoint(index), dtype=float)
+                parameter = float(np.dot(hit - start, direction) / length_squared)
+                if 1e-9 < parameter < 1.0 - 1e-9:
+                    parameters.append(parameter)
+            parameters.sort()
+            unique_parameters = [parameters[0]]
+            for parameter in parameters[1:]:
+                if parameter - unique_parameters[-1] > 1e-8:
+                    unique_parameters.append(parameter)
+            for first, second in zip(unique_parameters, unique_parameters[1:]):
+                interval_start = start + direction * first
+                interval_end = start + direction * second
+                midpoint = (interval_start + interval_end) * 0.5
+                if distance.EvaluateFunction(tuple(midpoint)) >= -1e-9:
+                    remaining.append((interval_start, interval_end))
+        segments = remaining
+
+    if not segments:
+        return _empty_mesh()
+    output_points = np.empty((len(segments) * 2, 3), dtype=float)
+    output_lines = np.empty(len(segments) * 3, dtype=np.int64)
+    for index, (start, end) in enumerate(segments):
+        output_points[index * 2:index * 2 + 2] = (start, end)
+        output_lines[index * 3:index * 3 + 3] = (2, index * 2, index * 2 + 1)
+    return pv.PolyData(output_points, lines=output_lines)
+
+
+def _merge_unique_line_meshes(*meshes: pv.PolyData) -> pv.PolyData:
+    """Join line meshes while removing coincident edge segments."""
+    unique: dict[tuple[tuple[int, ...], tuple[int, ...]], tuple[np.ndarray, np.ndarray]] = {}
+    tolerance = 1e-7
+    for mesh in meshes:
+        points = np.asarray(mesh.points, dtype=float)
+        cells = np.asarray(mesh.lines, dtype=np.int64)
+        offset = 0
+        while offset < len(cells):
+            count = int(cells[offset])
+            ids = cells[offset + 1:offset + count + 1]
+            offset += count + 1
+            for first, second in zip(ids, ids[1:]):
+                a, b = points[first], points[second]
+                key_a = tuple(np.rint(a / tolerance).astype(np.int64))
+                key_b = tuple(np.rint(b / tolerance).astype(np.int64))
+                key = (key_a, key_b) if key_a <= key_b else (key_b, key_a)
+                unique.setdefault(key, (a.copy(), b.copy()))
+    if not unique:
+        return _empty_mesh()
+    segments = tuple(unique.values())
+    output_points = np.asarray(segments, dtype=float).reshape((-1, 3))
+    output_lines = np.empty(len(segments) * 3, dtype=np.int64)
+    for index in range(len(segments)):
+        output_lines[index * 3:index * 3 + 3] = (2, index * 2, index * 2 + 1)
+    return pv.PolyData(output_points, lines=output_lines)
+
+
+def _boolean_difference_mesh(base: pv.PolyData, cutter: pv.PolyData) -> pv.PolyData | None:
+    """Compute a guarded solid difference with the manifold CSG kernel."""
+    if base.GetNumberOfPolys() == 0 or cutter.GetNumberOfPolys() == 0:
+        return None
+    try:
+        def to_manifold(mesh: pv.PolyData):
+            triangles = mesh.triangulate().clean()
+            packed_faces = np.asarray(triangles.faces, dtype=np.int64)
+            if not len(packed_faces) or len(packed_faces) % 4:
+                return None
+            faces = packed_faces.reshape((-1, 4))
+            if np.any(faces[:, 0] != 3):
+                return None
+            solid = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(triangles.points, dtype=np.float32, order="C"),
+                tri_verts=np.asarray(faces[:, 1:], dtype=np.uint32, order="C"),
+            ))
+            return solid if solid.status() == manifold3d.Error.NoError else None
+
+        solid = to_manifold(base)
+        tool = to_manifold(cutter)
+        if solid is None or tool is None or solid.is_empty():
+            return None
+        base_volume = float(solid.volume())
+        difference = solid - tool
+        if difference.status() != manifold3d.Error.NoError or difference.is_empty():
+            return None
+        volume = float(difference.volume())
+        tolerance = max(base_volume * 1e-7, 1e-12)
+        # Reject degenerate results that would make a beam appear to vanish
+        # because of a bad or self-intersecting input surface.
+        if (
+            not np.isfinite(volume) or volume <= tolerance
+            or volume >= base_volume - tolerance
+            or volume > base_volume + tolerance
+        ):
+            return None
+        output = difference.to_mesh()
+        vertices = np.asarray(output.vert_properties, dtype=float)[:, :3]
+        triangles = np.asarray(output.tri_verts, dtype=np.int64)
+        packed = np.column_stack((np.full(len(triangles), 3, dtype=np.int64), triangles)).ravel()
+        result = pv.PolyData(vertices, faces=packed).clean()
+        return result if result.GetNumberOfPolys() else None
+    except Exception:
+        # Invalid/self-intersecting inputs must never produce a partial mesh or
+        # take down the detailing scene.
+        return None
+
+
+def _boolean_intersection_mesh(base: pv.PolyData, cutter: pv.PolyData) -> pv.PolyData | None:
+    """Return the solid overlap used to preview material removed by a cutter."""
+    if base.GetNumberOfPolys() == 0 or cutter.GetNumberOfPolys() == 0:
+        return None
+    try:
+        def to_manifold(mesh: pv.PolyData):
+            triangles = mesh.triangulate().clean()
+            packed_faces = np.asarray(triangles.faces, dtype=np.int64)
+            if not len(packed_faces) or len(packed_faces) % 4:
+                return None
+            faces = packed_faces.reshape((-1, 4))
+            if np.any(faces[:, 0] != 3):
+                return None
+            solid = manifold3d.Manifold(manifold3d.Mesh(
+                vert_properties=np.asarray(triangles.points, dtype=np.float32, order="C"),
+                tri_verts=np.asarray(faces[:, 1:], dtype=np.uint32, order="C"),
+            ))
+            return solid if solid.status() == manifold3d.Error.NoError else None
+
+        solid = to_manifold(base)
+        tool = to_manifold(cutter)
+        if solid is None or tool is None or solid.is_empty() or tool.is_empty():
+            return None
+        overlap = solid ^ tool
+        if overlap.status() != manifold3d.Error.NoError or overlap.is_empty():
+            return None
+        volume = float(overlap.volume())
+        if not np.isfinite(volume) or volume <= max(float(solid.volume()) * 1e-7, 1e-12):
+            return None
+        output = overlap.to_mesh()
+        vertices = np.asarray(output.vert_properties, dtype=float)[:, :3]
+        triangles = np.asarray(output.tri_verts, dtype=np.int64)
+        packed = np.column_stack((np.full(len(triangles), 3, dtype=np.int64), triangles)).ravel()
+        result = pv.PolyData(vertices, faces=packed).clean()
+        return result if result.GetNumberOfPolys() else None
+    except Exception:
+        return None
 
 
 def _rgb(color: str, factor: float = 1.0) -> np.ndarray:
@@ -215,6 +397,7 @@ class PreparedSceneGeometry:
     source_member_batch: MemberBatch
     source_member_key: tuple[object, ...]
     solid_positioning_enabled: bool
+    filtered_member_batches: dict[frozenset[str], tuple[MemberBatch, int]]
 
 
 def prepare_scene_geometry(
@@ -261,6 +444,27 @@ def prepare_scene_geometry(
         progress("Preparando a geometria das barras…")
     source_member_batch = member_renderer.build(model, marker_radius, yield_control=yield_control)
     member_batch = member_renderer.filter_members(source_member_batch, set(visible_bars))
+    # Most scene-view switches are cold immediately after opening a project.
+    # Build these CPU-only batches alongside the initial geometry so the first
+    # switch does not stall the UI. Keep the same memory ceiling as the live
+    # scene cache; views beyond the budget will still be generated on demand.
+    filtered_member_batches: dict[frozenset[str], tuple[MemberBatch, int]] = {}
+    filtered_member_batches_size = 0
+    if progress is not None and len(model.scene_views) > 1:
+        progress("Preparando as vistas salvas…")
+    for view_name, hidden in model.scene_views.items():
+        if view_name == model.active_scene_view:
+            continue
+        visible_key = frozenset(set(model.bars).difference(hidden))
+        if visible_key in filtered_member_batches:
+            continue
+        if yield_control is not None:
+            yield_control()
+        filtered_batch = member_renderer.filter_members(source_member_batch, set(visible_key))
+        cached_size = _member_batch_memory_bytes(filtered_batch)
+        if cached_size <= 40 * 1024 * 1024 and filtered_member_batches_size + cached_size <= 40 * 1024 * 1024:
+            filtered_member_batches[visible_key] = (filtered_batch, cached_size)
+            filtered_member_batches_size += cached_size
     if progress is not None:
         progress("Preparando os nós e apoios…")
     node_batch = BatchedNodeRenderer(glyphs=True).build(SimpleNamespace(nodes=visible_nodes), marker_radius)
@@ -301,12 +505,38 @@ def prepare_scene_geometry(
     grid_renderer = GridRenderer()
     if progress is not None:
         progress("Preparando a grade da cena…")
-    grid_renderer.update(model.nodes.values(), model.axes, reference_plane, plane_level)
+    grid_renderer.update(
+        model.nodes.values(), model.axes, reference_plane, plane_level,
+        plates=model.plates.values(),
+    )
     return PreparedSceneGeometry(
         member_batch, node_batch, rigid_names, rigid_mesh,
         member_key, node_key, rigid_key, grid_renderer, visible_bars, visible_nodes,
         source_member_batch, source_member_key, solid_positioning_enabled,
+        filtered_member_batches,
     )
+
+
+def _member_batch_memory_bytes(batch: MemberBatch) -> int:
+    """Estimate NumPy-backed storage for a filtered member batch."""
+    meshes = (
+        batch.lines, batch.fallback_lines, batch.faces, batch.edges,
+        *batch.axes, batch.releases, *batch.silhouette_faces_by_color.values(),
+    )
+    total = 0
+    seen: set[int] = set()
+    for mesh in meshes:
+        identity = id(mesh)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += np.asarray(mesh.points).nbytes
+        for cells in (mesh.lines, mesh.faces, mesh.verts, mesh.strips):
+            if len(cells):
+                total += np.asarray(cells).nbytes
+        for attributes in (mesh.point_data, mesh.cell_data, mesh.field_data):
+            total += sum(np.asarray(values).nbytes for values in attributes.values())
+    return total
 
 
 class BatchedRigidBarRenderer:
@@ -348,6 +578,10 @@ class BatchedMemberRenderer:
 
     def build(
         self, model, marker_radius: float, *, yield_control: Callable[[], None] | None = None,
+        subtraction_meshes: Mapping[
+            tuple[str, str], tuple[tuple[tuple[str, str], pv.PolyData], ...],
+        ] | None = None,
+        subtraction_failures: set[tuple[str, str, str, str]] | None = None,
     ) -> MemberBatch:
         names = tuple(model.bars)
         line_segments: list[tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
@@ -470,30 +704,72 @@ class BatchedMemberRenderer:
             transformed_face_points = _transformed_points(
                 face_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
             )
+            member_cutters = (subtraction_meshes or {}).get(("bar", member_name), ())
+            applied_member_cutters = []
+            if member_cutters:
+                member_mesh = pv.PolyData(
+                    transformed_face_points, faces=face_connectivity,
+                ).triangulate().clean()
+            for cutter_reference, cutter in member_cutters:
+                result = _boolean_difference_mesh(member_mesh, cutter)
+                if result is not None:
+                    member_mesh = result
+                    applied_member_cutters.append(cutter)
+                elif subtraction_failures is not None:
+                    subtraction_failures.add(("bar", member_name, *cutter_reference))
+            if applied_member_cutters:
+                transformed_face_points = np.asarray(member_mesh.points)
+                member_faces = np.asarray(member_mesh.faces, dtype=np.int64)
+                member_face_count = member_mesh.n_cells
+            else:
+                member_faces = face_connectivity
+                member_face_count = face_count
             face_points.append(transformed_face_points)
-            face_cells.append(_offset_cells(face_connectivity, face_offset))
-            face_indices.extend([element_index] * face_count)
-            face_colors.extend([color] * face_count)
+            face_cells.append(_offset_cells(member_faces, face_offset))
+            face_indices.extend([element_index] * member_face_count)
+            face_colors.extend([color] * member_face_count)
             face_point_count += len(transformed_face_points)
             face_point_ranges[member_name] = (face_offset, face_point_count)
             face_cell_ranges[member_name] = (face_cell_offset, len(face_indices))
 
             edge_offset = edge_point_count
             edge_cell_offset = len(edge_indices)
-            transformed_edge_points = _transformed_points(
-                edge_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
-            )
+            if applied_member_cutters:
+                cut_boundary_edges = member_mesh.extract_feature_edges(
+                    boundary_edges=True, feature_edges=True,
+                    manifold_edges=False, non_manifold_edges=False,
+                    feature_angle=25.0,
+                )
+                transformed_source_edge_points = _transformed_points(
+                    edge_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
+                )
+                source_edges = pv.PolyData(
+                    transformed_source_edge_points, lines=edge_connectivity,
+                )
+                source_edges = _clip_line_mesh_outside_cutters(
+                    source_edges, tuple(applied_member_cutters),
+                )
+                edge_mesh = _merge_unique_line_meshes(cut_boundary_edges, source_edges)
+                transformed_edge_points = np.asarray(edge_mesh.points)
+                member_edges = np.asarray(edge_mesh.lines, dtype=np.int64)
+                member_edge_count = edge_mesh.n_cells
+            else:
+                transformed_edge_points = _transformed_points(
+                    edge_vertices, solid_origin, solid_delta, solid_y, solid_z, face_angles,
+                )
+                member_edges = edge_connectivity
+                member_edge_count = edge_count
             edge_points.append(transformed_edge_points)
-            edge_cells.append(_offset_cells(edge_connectivity, edge_offset))
-            edge_indices.extend([element_index] * edge_count)
-            edge_colors.extend([edge_color] * edge_count)
+            edge_cells.append(_offset_cells(member_edges, edge_offset))
+            edge_indices.extend([element_index] * member_edge_count)
+            edge_colors.extend([edge_color] * member_edge_count)
             edge_point_count += len(transformed_edge_points)
             edge_point_ranges[member_name] = (edge_offset, edge_point_count)
             edge_cell_ranges[member_name] = (edge_cell_offset, len(edge_indices))
-            outline_sources[member_name] = (transformed_edge_points, edge_connectivity)
+            outline_sources[member_name] = (transformed_edge_points, member_edges)
             if member.section in self._silhouette_sections:
                 silhouette_sources[member_name] = pv.PolyData(
-                    transformed_face_points, faces=face_connectivity,
+                    transformed_face_points, faces=member_faces,
                 )
                 silhouette_member_colors[member_name] = tuple(int(channel) for channel in color)
 

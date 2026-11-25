@@ -17,7 +17,7 @@ def cantilever(end, rotation=0):
     model.add_node("N2", *end)
     model.add_bar("B1", "N1", "N2")
     model.update_node_supports("N1", (True,) * 6)
-    material = "Concreto Estrutural"
+    material = "Concreto C30"
     model.update_bar_material("B1", material, model.materials[material])
     model.update_bar_section("B1", "Retangular")
     model.update_member_profile("B1", "Retangular", {"b": 200, "h": 400})
@@ -47,7 +47,7 @@ def test_vertical_cantilever_uses_inertia_about_its_drawn_local_y(rotation):
 
     result = PyniteAdapter().run(model, AnalysisRequest())[0]
     displacement = np.array([result.node_results["N2"][f"D{axis}"] for axis in "XYZ"])
-    elastic_modulus = model.materials["Concreto Estrutural"][0]
+    elastic_modulus = model.materials["Concreto C30"][0]
     iy = 0.2 * 0.4**3 / 12
     np.testing.assert_allclose(displacement, z * (-10 * 4**3 / (3 * elastic_modulus * iy)), atol=1e-12)
     assert result.member_results["B1"]["start"]["moment_y"] == pytest.approx(40)

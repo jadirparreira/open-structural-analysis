@@ -98,6 +98,26 @@ def test_scene_renders_only_visible_members_and_previews_hidden_ones(qt_app):
     assert not bool(dict(zip(targets, selectable))[("bar", "B2")])
     assert bool(dict(zip(targets, selectable))[("bar", "B1")])
 
+
+def test_open_prepares_saved_scene_view_batches_for_first_switch(qt_app):
+    model = _model()
+    model.add_scene_view("Esquerda")
+    model.set_scene_members_hidden({"B1"}, True)
+    model.add_scene_view("Direita")
+    model.set_scene_members_hidden({"B2"}, True)
+    model.select_scene_view("Completo")
+
+    prepared = prepare_scene_geometry(model, solid_positioning_enabled=False)
+    assert set(prepared.filtered_member_batches) == {frozenset({"B2"}), frozenset({"B1"})}
+
+    scene = StructureScene()
+    scene.render_model(model, prepared_geometry=prepared)
+    assert set(scene._filtered_member_batches) == set(prepared.filtered_member_batches)
+
+    model.select_scene_view("Esquerda")
+    scene.render_model(model)
+    assert scene._member_batch.names == ("B2",)
+
     scene.set_scene_selection_mode(None)
     model.set_scene_members_hidden({"B2"}, True)
     scene.render_model(model)

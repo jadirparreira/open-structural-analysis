@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-structural-analysis"
-version = "2026.4"
+version = "2026.5"
 description = "Open-source structural bar-modeling application"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -16,12 +16,14 @@ dependencies = [
     "pyvistaqt>=0.11",
     "numpy>=1.26",
     "scipy>=1.11",
+    "gmsh>=4.13,<5",
     "PyNiteFEA>=1.5",
     "mcp>=1.26,<2",
     "ezdxf>=1.4.3,<2",
     "python-docx>=1.2.0",
     "latex2mathml>=3.81.1",
     "mathml2omml-as>=0.1.0",
+    "manifold3d>=3.3,<4",
 ]
 
 [project.optional-dependencies]

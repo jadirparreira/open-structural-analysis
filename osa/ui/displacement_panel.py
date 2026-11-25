@@ -4,6 +4,7 @@ from math import isfinite
 
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QDoubleValidator, QRegularExpressionValidator, QTransform
+from PySide6.QtWidgets import QScrollArea
 
 from osa.sections import section_shape
 
@@ -34,6 +35,7 @@ class DisplacementPanel(QFrame):
         layout.addSpacing(6)
 
         controls = QWidget()
+        self._controls_widget = controls
         grid = QGridLayout(controls)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(8)
@@ -161,7 +163,11 @@ class DisplacementPanel(QFrame):
                     self._end_angle_changed(selected_endpoint, selected_axis)
                 )
                 endpoint_grid.addWidget(field_box, (row - 1) * 2 + 1, column)
+        self._endpoint_widget = QWidget(values)
+        self._endpoint_widget.setLayout(endpoint_grid)
         parameter_grid = QGridLayout()
+        self._parameter_widget = QWidget(values)
+        self._parameter_widget.setLayout(parameter_grid)
         parameter_grid.setContentsMargins(0, 0, 0, 0)
         parameter_grid.setHorizontalSpacing(8)
         parameter_grid.setVerticalSpacing(5)
@@ -183,15 +189,99 @@ class DisplacementPanel(QFrame):
             )
             self._position_parameter_inputs[parameter] = field
             parameter_grid.addWidget(field_box, 1, column)
-        values_layout.addLayout(parameter_grid)
-        values_layout.addLayout(endpoint_grid)
+        values_layout.addWidget(self._parameter_widget)
+        values_layout.addWidget(self._endpoint_widget)
+        plate_displacement = QWidget(values)
+        plate_layout = QVBoxLayout(plate_displacement)
+        plate_layout.setContentsMargins(0, 0, 0, 0)
+        plate_layout.setSpacing(5)
+        self._plate_alignment_buttons: dict[str, QToolButton] = {}
+        alignment_controls = QWidget(plate_displacement)
+        alignment_layout = QVBoxLayout(alignment_controls)
+        alignment_layout.setContentsMargins(0, 0, 0, 0)
+        alignment_layout.setSpacing(8)
+        alignment_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        for alignment, icon, accessible_name in (
+            ("upper", self._positioning_icon(0), "Alinhar a face superior da placa ao plano"),
+            ("center", QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "dot.svg")), "Centralizar a placa no plano"),
+            ("lower", self._positioning_icon(180), "Alinhar a face inferior da placa ao plano"),
+        ):
+            if alignment == "center":
+                button = QToolButton(alignment_controls)
+                button.setFixedSize(34, 34)
+                button.setStyleSheet(
+                    "QToolButton { border: 1px solid #d0d7de; border-radius: 17px; padding: 0; "
+                    "background: #ffffff; }"
+                    "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+                    "QToolButton:pressed { background: #d0d7de; }"
+                )
+            else:
+                button = self._square_control(alignment_controls)
+            button.setCheckable(True)
+            button.setIcon(icon)
+            button.setIconSize(QSize(18, 18))
+            button.setAccessibleName(accessible_name)
+            button.clicked.connect(
+                lambda _checked=False, selected=alignment:
+                self._plate_alignment_requested(selected)
+            )
+            self._plate_alignment_buttons[alignment] = button
+            alignment_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        plate_layout.addWidget(alignment_controls)
+        plate_label = QLabel("X local")
+        plate_label.setObjectName("propertySection")
+        plate_layout.addWidget(plate_label)
+        plate_box, plate_field = self._offset_input(values)
+        plate_field.setAccessibleName("X local perpendicular ao plano da placa (mm)")
+        plate_field.setToolTip(
+            "Valor positivo desloca a placa no sentido da normal global do plano; "
+            "valor negativo desloca no sentido oposto."
+        )
+        plate_field.editingFinished.connect(self._plate_displacement_changed)
+        plate_layout.addWidget(plate_box)
+        self._plate_edge_scroll = QScrollArea(plate_displacement)
+        self._plate_edge_scroll.setObjectName("plateEdgeScroll")
+        self._plate_edge_scroll.setWidgetResizable(True)
+        self._plate_edge_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._plate_edge_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._plate_edge_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._plate_edge_scroll.setMaximumHeight(16777215)
+        self._plate_edge_scroll.setStyleSheet(
+            "QScrollArea#plateEdgeScroll { background: transparent; border: 0; }"
+            "QScrollArea#plateEdgeScroll QWidget#qt_scrollarea_viewport { background: transparent; }"
+            "QWidget#plateEdgeContent { background: transparent; }"
+        )
+        self._plate_edge_scroll.viewport().setAutoFillBackground(False)
+        self._plate_edge_content = QWidget(self._plate_edge_scroll)
+        self._plate_edge_content.setObjectName("plateEdgeContent")
+        self._plate_edge_content.setAutoFillBackground(False)
+        self._plate_edge_grid = QGridLayout(self._plate_edge_content)
+        self._plate_edge_grid.setContentsMargins(0, 0, 0, 0)
+        self._plate_edge_grid.setHorizontalSpacing(6)
+        self._plate_edge_grid.setVerticalSpacing(5)
+        for column in range(2):
+            self._plate_edge_grid.setColumnStretch(column, 1)
+        self._plate_edge_scroll.setWidget(self._plate_edge_content)
+        plate_layout.addWidget(self._plate_edge_scroll)
+        self._plate_edge_inputs: dict[tuple[str, str], QLineEdit] = {}
+        self._plate_edge_widgets: list[QWidget] = []
+        self._plate_displacement_container = plate_displacement
+        self._plate_displacement_input = plate_field
+        values_layout.addWidget(plate_displacement)
+        plate_displacement.hide()
 
         layout.addWidget(values)
         layout.addStretch()
         self._member_name = ""
         self._member_names: tuple[str, ...] = ()
+        self._plate_name = ""
         self._group_endpoint_faces: dict[str, tuple[str, int]] = {}
         self._is_group_positioning = False
+        layout.activate()
         self.hide()
 
     @staticmethod
@@ -264,8 +354,32 @@ class DisplacementPanel(QFrame):
         )
         self.raise_()
 
+    def _resize_to_visible_contents(self, *, minimum_height: int) -> None:
+        """Recompute the panel height from the currently visible controls."""
+        self.setMinimumHeight(minimum_height)
+        values_layout = self._plate_displacement_container.parentWidget().layout()
+        layouts = (
+            self._plate_edge_grid,
+            self._plate_displacement_container.layout(),
+            values_layout,
+            self.layout(),
+        )
+        for layout in layouts:
+            layout.invalidate()
+            layout.activate()
+        self._plate_displacement_container.parentWidget().updateGeometry()
+        self._plate_displacement_container.updateGeometry()
+        self.updateGeometry()
+        self.adjustSize()
+        self.resize(self.width(), max(minimum_height, self.sizeHint().height()))
+
     def configure_for(self, member_name: str) -> None:
         """Load the selected member's positioning values before displaying the panel."""
+        self._plate_name = ""
+        self._plate_displacement_container.hide()
+        self._controls_widget.show()
+        self._parameter_widget.show()
+        self._endpoint_widget.show()
         self._member_name = member_name
         selected = self.window.properties._selected_names("bar")
         self._member_names = tuple(
@@ -314,9 +428,215 @@ class DisplacementPanel(QFrame):
             self._update_end_angle_inputs()
             self._update_position_buttons()
             self._update_solid_offset_inputs()
-        self.layout().activate()
-        self.adjustSize()
-        self.resize(self.width(), self.sizeHint().height())
+        self._resize_to_visible_contents(minimum_height=250)
+
+    def configure_for_plate(self, plate_name: str) -> None:
+        """Load the selected plate's normal and per-edge detailing controls."""
+        self._plate_name = plate_name if plate_name in self.window.model.plates else ""
+        self._member_name = ""
+        self._member_names = ()
+        self._group_endpoint_faces = {}
+        self._is_group_positioning = False
+        plate_mode = bool(self._plate_name)
+        self.setMinimumHeight(0)
+        self.title.setText("Posicionamento da placa")
+        self._controls_widget.setVisible(not plate_mode)
+        self._parameter_widget.setVisible(not plate_mode)
+        self._endpoint_widget.setVisible(not plate_mode)
+        self._plate_displacement_container.setVisible(plate_mode)
+        self._plate_displacement_input.setEnabled(plate_mode)
+        if plate_mode:
+            plate = self.window.model.plates[self._plate_name]
+            self._plate_displacement_input.setText(
+                self._format_solid_offset(plate.positioning_displacement)
+            )
+            self._update_plate_alignment_buttons()
+            self._configure_plate_edge_inputs(plate)
+        else:
+            self._plate_displacement_input.clear()
+            self._clear_plate_edge_inputs()
+        self._resize_to_visible_contents(minimum_height=0 if plate_mode else 250)
+
+    def _clear_plate_edge_inputs(self) -> None:
+        self._plate_edge_inputs.clear()
+        for widget in self._plate_edge_widgets:
+            widget.setParent(None)
+            widget.deleteLater()
+        self._plate_edge_widgets.clear()
+
+    def _configure_plate_edge_inputs(self, plate) -> None:
+        self._clear_plate_edge_inputs()
+        self._plate_edge_content.setMinimumHeight(0)
+        saved = {name: (offset, angle) for name, offset, angle in plate.edge_positioning}
+        for edge_index, (_kind, edge_name) in enumerate(plate.supports):
+            offset, angle = saved.get(edge_name, (0.0, 0.0))
+            label_row = edge_index * 2
+            field_row = label_row + 1
+            for column, role, suffix, unit, value, description in (
+                (0, "YZ", "YZ", "mm", offset,
+                 f"Deslocamento da aresta {edge_name}: positivo aumenta e negativo reduz a placa"),
+                (1, "alpha", "α", "°", angle,
+                 f"Inclinação da face lateral da aresta {edge_name}: 0° é perpendicular ao plano; "
+                 "ângulo positivo inclina o topo para dentro da placa"),
+            ):
+                label = QLabel(f"{edge_name}-{suffix}")
+                label.setObjectName("propertySection")
+                label.setToolTip(description)
+                self._plate_edge_grid.addWidget(label, label_row, column)
+                box, field = self._offset_input(self._plate_displacement_container, unit=unit)
+                if role == "alpha":
+                    limit = float(self.window.solid_face_angle_limit_degrees)
+                    validator = QDoubleValidator(-limit, limit, 2, field)
+                    validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+                    field.setValidator(validator)
+                field.setText(self._format_plate_edge_value(value))
+                field.setAccessibleName(
+                    f"{edge_name}-{suffix}: {description} ({'mm' if unit == 'mm' else 'graus'})"
+                )
+                field.setToolTip(description + (", em milímetros." if unit == "mm" else ", em graus."))
+                field.editingFinished.connect(
+                    lambda selected_edge=edge_name:
+                    self._plate_edge_positioning_changed(selected_edge)
+                )
+                self._plate_edge_grid.addWidget(box, field_row, column)
+                self._plate_edge_inputs[(edge_name, role)] = field
+                self._plate_edge_widgets.extend((label, box))
+        edge_count = len(plate.supports)
+        self._plate_edge_scroll.setVisible(edge_count > 0)
+        self._plate_edge_grid.activate()
+        visible_rows = min(edge_count, 4) * 2
+        visible_height = 0
+        for row in range(visible_rows):
+            item_heights = [
+                self._plate_edge_grid.itemAtPosition(row, column).sizeHint().height()
+                for column in range(2)
+                if self._plate_edge_grid.itemAtPosition(row, column) is not None
+            ]
+            # QSS minimum heights are applied during widget polish; keep enough
+            # room for the labels and unit boxes even before the first show.
+            row_floor = 22 if row % 2 == 0 else 34
+            visible_height += max([row_floor, *item_heights])
+        if visible_rows > 1:
+            visible_height += self._plate_edge_grid.verticalSpacing() * (visible_rows - 1)
+        margins = self._plate_edge_grid.contentsMargins()
+        visible_height += margins.top() + margins.bottom()
+        if edge_count > 0:
+            visible_height += 2
+        content_rows = edge_count * 2
+        content_height = 0
+        for row in range(content_rows):
+            item_heights = [
+                self._plate_edge_grid.itemAtPosition(row, column).sizeHint().height()
+                for column in range(2)
+                if self._plate_edge_grid.itemAtPosition(row, column) is not None
+            ]
+            row_floor = 22 if row % 2 == 0 else 34
+            content_height += max([row_floor, *item_heights])
+        if content_rows > 1:
+            content_height += self._plate_edge_grid.verticalSpacing() * (content_rows - 1)
+        content_height += margins.top() + margins.bottom()
+        content_height = max(visible_height, content_height)
+        self._plate_edge_content.setMinimumHeight(content_height)
+        self._plate_edge_content.updateGeometry()
+        self._plate_edge_scroll.updateGeometry()
+        if edge_count > 0:
+            self._plate_edge_scroll.setMinimumHeight(visible_height)
+        else:
+            self._plate_edge_scroll.setMinimumHeight(0)
+        self._plate_edge_scroll.setMaximumHeight(max(0, visible_height))
+        self._plate_edge_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if edge_count > 4
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+    def _plate_edge_positioning_changed(self, edge_name: str) -> None:
+        plate_name = self._plate_name
+        if not plate_name or plate_name not in self.window.model.plates:
+            return
+        plate = self.window.model.plates[plate_name]
+        values = {name: (offset, angle) for name, offset, angle in plate.edge_positioning}
+        try:
+            offset = float(self._plate_edge_inputs[(edge_name, "YZ")].text().strip().replace(",", "."))
+            angle = float(self._plate_edge_inputs[(edge_name, "alpha")].text().strip().replace(",", "."))
+            if not isfinite(offset) or not isfinite(angle):
+                raise ValueError
+        except (KeyError, ValueError):
+            self._configure_plate_edge_inputs(plate)
+            return
+        values[edge_name] = (offset, angle)
+        ordered = tuple(
+            (name, *values.get(name, (0.0, 0.0)))
+            for _kind, name in plate.supports
+        )
+        try:
+            self.window.model_service.update_plate_edge_positioning(
+                plate_name, ordered,
+            )
+        except ValueError:
+            self._configure_plate_edge_inputs(plate)
+            return
+        self.window.scene.update_plate_rendering(plate_name)
+
+    @staticmethod
+    def _format_plate_edge_value(value: float) -> str:
+        formatted = f"{float(value):.2f}".rstrip("0").rstrip(".")
+        return formatted or "0"
+
+    def _plate_displacement_changed(self) -> None:
+        name = self._plate_name
+        field = self._plate_displacement_input
+        if not name or name not in self.window.model.plates:
+            return
+        try:
+            value_mm = float(field.text().strip().replace(",", "."))
+            if not isfinite(value_mm):
+                raise ValueError
+        except ValueError:
+            self.configure_for_plate(name)
+            return
+        try:
+            self.window.model_service.update_plate_positioning_displacement(
+                name, value_mm / 1000.0,
+            )
+        except ValueError:
+            self.configure_for_plate(name)
+            return
+        self.window.scene.update_plate_rendering(name)
+        self.window.properties.update_positioning_status(name)
+        self._update_plate_alignment_buttons()
+
+    def _plate_alignment_requested(self, alignment: str) -> None:
+        """Align a plate face with its analytical plane or center it on the plane."""
+        name = self._plate_name
+        if not name or name not in self.window.model.plates:
+            return
+        plate = self.window.model.plates[name]
+        half_thickness_mm = plate.thickness_mm / 2.0
+        displacement_mm = {
+            "upper": -half_thickness_mm,
+            "center": 0.0,
+            "lower": half_thickness_mm,
+        }.get(alignment)
+        if displacement_mm is None:
+            return
+        self._plate_displacement_input.setText(self._format_solid_offset(displacement_mm / 1000.0))
+        self._plate_displacement_changed()
+
+    def _update_plate_alignment_buttons(self) -> None:
+        name = self._plate_name
+        if not name or name not in self.window.model.plates:
+            for button in self._plate_alignment_buttons.values():
+                button.setChecked(False)
+            return
+        plate = self.window.model.plates[name]
+        displacement_mm = plate.positioning_displacement * 1000.0
+        targets_mm = {
+            "upper": -plate.thickness_mm / 2.0,
+            "center": 0.0,
+            "lower": plate.thickness_mm / 2.0,
+        }
+        for alignment, button in self._plate_alignment_buttons.items():
+            button.setChecked(abs(displacement_mm - targets_mm[alignment]) <= 1e-6)
 
     def _members(self) -> list:
         return [self.window.model.bars[name] for name in self._member_names

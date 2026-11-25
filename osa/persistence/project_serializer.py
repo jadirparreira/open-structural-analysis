@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 from itertools import product
 from math import floor, isfinite
 import copy
+import math
 from typing import Any
 
 from osa.domain import (
@@ -15,9 +16,11 @@ from osa.domain import (
     ActionGroup,
     AnalysisResult,
     Bar,
+    DetailEndCut,
     LoadCase,
     LoadCombination,
     Node,
+    NodeComponentAssignment,
     ReferenceAxis,
     RigidBar,
     StructuralModel,
@@ -43,6 +46,19 @@ def _coordinate_cell(coordinates: tuple[float, ...], width: float) -> tuple[int,
             width_numerator, width_denominator = width.as_integer_ratio()
             cells.append((numerator * width_denominator) // (denominator * width_numerator))
     return tuple(cells)
+
+
+def _node_component(value: Any) -> NodeComponentAssignment | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("component_id"), str):
+        raise ValueError("A configuração do componente do nó é inválida.")
+    parameters = value.get("parameters", ())
+    if isinstance(parameters, dict):
+        parameters = tuple(parameters.items())
+    return NodeComponentAssignment(
+        value["component_id"], tuple((str(key), parameter) for key, parameter in parameters),
+    )
 
 
 class ProjectSerializer:
@@ -75,12 +91,14 @@ class ProjectSerializer:
             "analysis_axes": ANALYSIS_AXES,
             "nodes": [asdict(node) for node in model.nodes.values()],
             "node_display_names": model.node_display_names,
+            "plate_display_names": model.plate_display_names,
             "members": [asdict(member) for member in model.bars.values()],
             "verification_element_names": model.verification_element_names,
             "verification_element_groups": model.verification_element_groups,
             # "bars" mantém interoperabilidade com leitores antigos.
             "bars": [asdict(member) for member in model.bars.values()],
             "rigid_bars": [asdict(rigid) for rigid in model.rigid_bars.values()],
+            "plates": [asdict(plate) for plate in model.plates.values()],
             "axes": {direction: [asdict(axis) for axis in axes] for direction, axes in model.axes.items()},
             "references": [dump_reference(reference) for reference in model.references.values()],
             "materials": {
@@ -108,6 +126,8 @@ class ProjectSerializer:
         }
         if model.import_metadata:
             data["import_metadata"] = copy.deepcopy(model.import_metadata)
+        if model.detailing_data:
+            data["detailing_data"] = copy.deepcopy(model.detailing_data)
         if thumbnail:
             data["thumbnail"] = {"format": "png", "data": thumbnail}
         return data
@@ -132,6 +152,57 @@ class ProjectSerializer:
             data.pop("bars", None)
 
         candidate = type(model)()
+        # Restore saved materials before validating plates that reference them.
+        if file_format == FORMAT_V2:
+            materials = data.get("materials", {})
+            # Keep current catalog defaults when loading older projects, then
+            # overlay project-specific edits and custom materials.
+            catalog_materials = dict(candidate.materials)
+            catalog_types = dict(candidate.material_types)
+            loaded_materials = {}
+            loaded_types = {}
+            for name, item in materials.items():
+                # Generic materials are migrated to specified catalog grades.
+                if name in {"Aço Estrutural", "Concreto Estrutural"}:
+                    continue
+                default_values = catalog_materials.get(name, ())
+                default_strength = tuple(default_values[4:6]) if len(default_values) >= 6 else (0.0, 0.0)
+                loaded_materials[name] = self._material_values(
+                    item["values"], default_strength=default_strength,
+                )
+                loaded_types[name] = item.get("type", catalog_types.get(name, ""))
+            candidate.materials = {**catalog_materials, **loaded_materials}
+            candidate.material_types = {**catalog_types, **loaded_types}
+        legacy_materials = {
+            "Madeira Estrutural": ("Madeira", (12000000.0, 750000.0, 0.35, 4.903325, 0.0, 0.0)),
+        }
+        referenced_materials = {
+            item.get("material")
+            for collection in (data.get("members", data.get("bars", ())), data.get("plates", ()))
+            for item in collection
+        }
+        migrated_concrete = "Concreto Estrutural" in referenced_materials
+        for name in referenced_materials & legacy_materials.keys():
+            kind, values = legacy_materials[name]
+            candidate.materials.setdefault(name, values)
+            if not candidate.material_types.get(name):
+                candidate.material_types[name] = kind
+
+        saved_bar_subtractions = tuple(
+            (item.get("name"), item.get("detail_subtractions", ()))
+            for item in data.get("members", data.get("bars", ()))
+            if isinstance(item, dict) and item.get("detail_subtractions")
+        )
+        saved_plate_subtractions = tuple(
+            (item.get("name"), item.get("detail_subtractions", ()))
+            for item in data.get("plates", ())
+            if isinstance(item, dict) and item.get("detail_subtractions")
+        )
+        saved_bar_end_cuts = tuple(
+            (item.get("name"), item.get("detail_end_cuts", ()))
+            for item in data.get("members", data.get("bars", ()))
+            if isinstance(item, dict) and item.get("detail_end_cuts")
+        )
         for item in data.get("references", ()):
             candidate.add_reference(load_reference(item))
             if yield_control is not None:
@@ -146,10 +217,19 @@ class ProjectSerializer:
             if yield_control is not None and index % 128 == 0:
                 yield_control()
             coordinates = candidate._coordinates(item["x"], item["y"], item["z"])
+            support_directions = tuple(
+                item.get("support_directions", ("=",) * 6)
+            )
+            if len(support_directions) != 6 or any(
+                direction not in {"-", "=", "+"} for direction in support_directions
+            ):
+                raise ValueError("Os sentidos das molas do nó são inválidos.")
             node = Node(
                 item["name"], *coordinates,
                 tuple(bool(value) for value in item.get("supports", (False,) * 6)),
                 tuple(float(value) for value in item.get("support_stiffness", (0.0,) * 6)),
+                _node_component(item.get("component")),
+                support_directions,
             )
             cell = _coordinate_cell(coordinates, cell_width)
             for delta in neighbors:
@@ -218,6 +298,11 @@ class ProjectSerializer:
             if previous is not None:
                 member_pairs.remove(frozenset((previous.start_node, previous.end_node)))
             member_pairs.add(frozenset((member.start_node, member.end_node)))
+            if member.material == "Concreto Estrutural":
+                member = replace(
+                    member, material="Concreto C30",
+                    material_values=tuple(candidate.materials["Concreto C30"][:4]),
+                )
             candidate.bars[member.name] = member
             if consume:
                 members[index] = None
@@ -229,13 +314,6 @@ class ProjectSerializer:
         ):
             raise ValueError("Os nomes dos elementos de verificação são inválidos.")
         candidate.verification_element_names = dict(raw_names)
-        raw_node_names = data.get("node_display_names", {})
-        if not isinstance(raw_node_names, dict) or any(
-            not isinstance(name, str) or name not in candidate.nodes or not isinstance(value, str)
-            for name, value in raw_node_names.items()
-        ):
-            raise ValueError("Os nomes personalizados dos nós são inválidos.")
-        candidate.node_display_names = dict(raw_node_names)
         raw_groups = data.get("verification_element_groups", [])
         if not isinstance(raw_groups, list):
             raise ValueError("Os grupos de elementos de verificação são inválidos.")
@@ -261,6 +339,73 @@ class ProjectSerializer:
                 raise ValueError("A identidade da barra rígida deve indicar seus nós.")
             rigid_pairs.add(frozenset((rigid.start_node, rigid.end_node)))
             candidate.rigid_bars[rigid.name] = rigid
+
+        for item in data.get("plates", ()):
+            supports = item.get("supports")
+            if supports is None:
+                contour = item["contour"]
+                edges = list(zip(contour, contour[1:] + contour[:1]))
+                supports = []
+                for kind, members in (("bar", candidate.bars), ("rigid_bar", candidate.rigid_bars)):
+                    for name, member in members.items():
+                        nodes = [candidate.nodes[member.start_node], candidate.nodes[member.end_node]]
+                        points = [(node.x, node.y, node.z) for node in nodes]
+                        if any(all(math.dist(p, q) <= 1e-8 for p, q in zip(points, edge))
+                               or all(math.dist(p, q) <= 1e-8 for p, q in zip(points, reversed(edge)))
+                               for edge in edges):
+                            supports.append((kind, name))
+            candidate.add_plate(item["contour"], name=item["name"], supports=supports,
+                                color=item.get("color", "#b7c6d5"),
+                                thickness_mm=item.get("thickness_mm", 100.0),
+                                material=("Concreto C30" if item.get("material") == "Concreto Estrutural"
+                                          else item.get("material")),
+                                positioning_displacement=item.get("positioning_displacement", 0.0),
+                                edge_positioning=item.get("edge_positioning", ()),
+                                restrictions=item.get("restrictions", (False, False, False)),
+                                restriction_stiffness=item.get(
+                                    "restriction_stiffness", (0.0, 0.0, 0.0),
+                                ),
+                                restriction_directions=item.get(
+                                    "restriction_directions", ("=", "=", "="),
+                                ),
+                                edge_connections=item.get("edge_connections", ()),
+                                allow_warped=True)
+
+        raw_node_names = data.get("node_display_names", {})
+        if not isinstance(raw_node_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.nodes or not isinstance(value, str)
+            for name, value in raw_node_names.items()
+        ):
+            raise ValueError("Os nomes personalizados dos nós são inválidos.")
+        candidate.node_display_names = dict(raw_node_names)
+        raw_plate_names = data.get("plate_display_names", {})
+        if not isinstance(raw_plate_names, dict) or any(
+            not isinstance(name, str) or name not in candidate.plates or not isinstance(value, str)
+            for name, value in raw_plate_names.items()
+        ):
+            raise ValueError("Os nomes personalizados das placas são inválidos.")
+        candidate.plate_display_names = dict(raw_plate_names)
+
+        for name, cuts in saved_bar_subtractions:
+            candidate.update_detail_subtractions("bar", name, cuts)
+        for name, cuts in saved_plate_subtractions:
+            candidate.update_detail_subtractions("plate", name, cuts)
+        for name, cuts in saved_bar_end_cuts:
+            candidate.update_detail_end_cuts(
+                name,
+                tuple(
+                    DetailEndCut(
+                        str(item["identifier"]), tuple(item["point"]),
+                        tuple(item["normal"]), str(item["reference_label"]),
+                        tuple(
+                            (tuple(plane[0]), tuple(plane[1]))
+                            for plane in item.get("planes", ())
+                        ),
+                    )
+                    if isinstance(item, dict) else item
+                    for item in cuts
+                ),
+            )
 
         candidate.set_reference_axes({
             direction: tuple(
@@ -302,25 +447,6 @@ class ProjectSerializer:
             if active_view not in candidate.scene_views:
                 raise ValueError("A vista ativa é inválida.")
             candidate.active_scene_view = active_view
-            materials = data.get("materials", {})
-            # Keep current catalog defaults when loading older projects, then
-            # overlay project-specific edits and custom materials.
-            catalog_materials = dict(candidate.materials)
-            catalog_types = dict(candidate.material_types)
-            loaded_materials = {}
-            loaded_types = {}
-            for name, item in materials.items():
-                # The old generic steel is replaced by the specified A36 entry.
-                if name == "Aço Estrutural":
-                    continue
-                default_values = catalog_materials.get(name, ())
-                default_strength = tuple(default_values[4:6]) if len(default_values) >= 6 else (0.0, 0.0)
-                loaded_materials[name] = self._material_values(
-                    item["values"], default_strength=default_strength,
-                )
-                loaded_types[name] = item.get("type", catalog_types.get(name, ""))
-            candidate.materials = {**catalog_materials, **loaded_materials}
-            candidate.material_types = {**catalog_types, **loaded_types}
             a36_values = candidate.materials.get("ASTM A36")
             if a36_values is not None:
                 for member_name, member in tuple(candidate.bars.items()):
@@ -379,20 +505,24 @@ class ProjectSerializer:
                 AnalysisResult(
                     # Older analyses used PyNite's Y-up frame for local
                     # properties. Keep their data, but require a fresh solve.
-                    int(item["model_revision"]) if data.get("analysis_axes") == ANALYSIS_AXES else -1,
+                    int(item["model_revision"])
+                    if data.get("analysis_axes") == ANALYSIS_AXES and not migrated_concrete else -1,
                     item["load_reference"],
                     item.get("node_results", {}) if consume else dict(item.get("node_results", {})),
                     item.get("member_results", {}) if consume else dict(item.get("member_results", {})),
+                    item.get("plate_results", {}) if consume else dict(item.get("plate_results", {})),
                 )
                 for item in data.get("results", ())
             ]
 
         model.nodes = candidate.nodes
         model.node_display_names = candidate.node_display_names
+        model.plate_display_names = candidate.plate_display_names
         model.bars = candidate.bars
         model.verification_element_names = candidate.verification_element_names
         model.verification_element_groups = candidate.verification_element_groups
         model.rigid_bars = candidate.rigid_bars
+        model.plates = candidate.plates
         model.axes = candidate.axes
         model.references = candidate.references
         model.materials = candidate.materials
@@ -413,4 +543,8 @@ class ProjectSerializer:
         model.view_revision += 1
         metadata = data.get("import_metadata", {})
         model.import_metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+        detailing_data = data.get("detailing_data", {})
+        model.detailing_data = (
+            copy.deepcopy(detailing_data) if isinstance(detailing_data, dict) else {}
+        )
         model.revision += 1

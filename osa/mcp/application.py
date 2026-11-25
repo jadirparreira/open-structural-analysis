@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import threading
 from collections.abc import Callable
+from dataclasses import asdict
 from math import isfinite
 from typing import Any
 
@@ -23,25 +24,32 @@ from osa.domain import (
     ReferenceAxis,
     StructuralModel,
 )
+from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS, PLATE_FIELDS
+from osa.rendering.plate_result_display import is_plate_result_display_mode
 from osa.services import ActionService, ModelService, ResultService
+from osa.services.action_service import SELFWEIGHT_ACTION_KINDS
 from osa.services.section_property_service import SectionPropertyService
+
+from .features import CurrentFeatures
 
 ANALYSIS_DIAGRAMS = (
     "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
     "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
 )
+ANALYSIS_DIAGRAMS += tuple(PLATE_FIELDS)
 ANALYSIS_LIMIT_STATES = ("CAR", "ELU", "ELS")
-APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise")
+APPLICATION_SESSIONS = ("Geometria", "Verificação", "Ações", "Análise", "Detalhamento")
 _PALETTE_GROUPS = {
     "Geometria": "Geometria",
     "Verificação": "Memorial",
     "Ações": "Ações",
     "Análise": "Análise",
+    "Detalhamento": "Detalhamento",
 }
 _LEGACY_SESSION_NAMES = {"Memorial": "Verificação"}
 
 
-class McpApplication:
+class McpApplication(CurrentFeatures):
     """Fachada thread-safe no nível da aplicação para o servidor MCP."""
 
     def __init__(
@@ -60,7 +68,12 @@ class McpApplication:
         on_analysis_view_changed: Callable[[str, str], None] | None = None,
         get_analysis_view_state: Callable[[], dict[str, Any]] | None = None,
         on_analysis_diagrams_changed: Callable[[bool], None] | None = None,
+        on_analysis_display_changed: Callable[[dict[str, Any]], None] | None = None,
         on_session_changed: Callable[[str], None] | None = None,
+        get_detailing_data: Callable[[], dict] | None = None,
+        on_detailing_changed: Callable[[], None] | None = None,
+        on_project_saved: Callable[[Any], None] | None = None,
+        can_reverse_member: Callable[[], bool] | None = None,
         get_session: Callable[[], str | None] | None = None,
         model_lock=None,
         execute_on_model_thread: Callable[..., Any] | None = None,
@@ -80,7 +93,12 @@ class McpApplication:
         self._on_analysis_view_changed = on_analysis_view_changed
         self._get_analysis_view_state = get_analysis_view_state
         self._on_analysis_diagrams_changed = on_analysis_diagrams_changed
+        self._on_analysis_display_changed = on_analysis_display_changed
         self._on_session_changed = on_session_changed
+        self._get_detailing_data = get_detailing_data
+        self._on_detailing_changed = on_detailing_changed
+        self._on_project_saved = on_project_saved
+        self._can_reverse_member = can_reverse_member
         self._get_session = get_session
         # FastMCP may execute requests concurrently. Standalone callers share
         # the scene lock; the Qt executor additionally places live-model work
@@ -93,6 +111,9 @@ class McpApplication:
         self._analysis_view = {
             "selected_combination": None,
             "selected_diagram": "Normal",
+            "result_kind": "bar", "plate_diagrams_visible": False,
+            "deformation_scale": 1.0, "diagram_scale": 1.0,
+            "plate_result_display_mode": "nos_media_macro",
             "result_diagrams_visible": True,
         }
         self._result_service = ResultService(model)
@@ -113,7 +134,7 @@ class McpApplication:
             if on_started is not None:
                 on_started()
             try:
-                if executor is not None and name == "run_analysis":
+                if executor is not None and name in {"run_analysis", "run_verification"}:
                     return attribute(*args, **kwargs)
 
                 def invoke():
@@ -144,7 +165,7 @@ class McpApplication:
         normalized = _LEGACY_SESSION_NAMES.get(normalized, normalized)
         if normalized not in APPLICATION_SESSIONS:
             raise ValueError(
-                "Sessão desconhecida. Use Geometria, Verificação, Ações ou Análise."
+                "Sessão desconhecida. Use Geometria, Verificação, Ações, Análise ou Detalhamento."
             )
         if self._on_session_changed is None:
             raise ValueError("A navegação visual do OpenSA não está disponível.")
@@ -160,6 +181,8 @@ class McpApplication:
             "revision": self.model.revision,
             "nodes": len(self.model.nodes),
             "members": len(self.model.bars),
+            "plates": len(self.model.plates),
+            "verification_results": len(self.model.verification_results),
             "rigid_bars": len(self.model.rigid_bars),
             "actions": len(self.model.actions),
             "load_cases": len(self.model.load_cases),
@@ -509,9 +532,8 @@ class McpApplication:
             "ready": bool(current_results),
             "available_combinations": list(self.model.load_combinations),
             "result_combinations": [result.load_reference for result in current_results],
-            "selected_combination": view["selected_combination"],
-            "selected_diagram": view["selected_diagram"],
-            "result_diagrams_visible": view["result_diagrams_visible"],
+            **view,
+            "available_diagrams": self.get_capabilities()["analysis_diagrams"],
         }
 
     def run_analysis(self, combinations: list[str] | None = None) -> dict[str, Any]:
@@ -569,6 +591,7 @@ class McpApplication:
                     "model_revision": result.model_revision,
                     "nodes": len(result.node_results),
                     "members": len(result.member_results),
+                    "plates": len(result.plate_results),
                 }
                 for result in results
             ],
@@ -611,6 +634,25 @@ class McpApplication:
             members.append({"name": name, **values})
         return {"revision": self.model.revision, "combination": combination, "members": members}
 
+    def get_plate_analysis_results(
+        self,
+        combination: str,
+        plate_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Retorna deslocamentos nodais e esforços locais dos elementos de laje."""
+        from osa.analysis.plate_postprocessing import ensure_plate_postprocessing
+        ensure_plate_postprocessing(self.model)
+        result = self._analysis_result(combination)
+        names = tuple(plate_names) if plate_names is not None else tuple(result.plate_results)
+        unknown = set(names) - set(result.plate_results)
+        if unknown:
+            raise ValueError("Lajes sem resultado: " + ", ".join(sorted(unknown)) + ".")
+        return {
+            "revision": self.model.revision,
+            "combination": combination,
+            "plates": [{"name": name, **result.plate_results[name]} for name in names],
+        }
+
     def get_support_reactions(
         self,
         combination: str,
@@ -619,7 +661,7 @@ class McpApplication:
         """Retorna as reações nos nós apoiados."""
         result = self._analysis_result(combination)
         names = tuple(node_names) if node_names is not None else tuple(self.model.nodes)
-        unknown = set(names) - set(result.node_results)
+        unknown = (set(names) - set(self.model.nodes)) | (set(names) - set(result.node_results))
         if unknown:
             raise ValueError("Nós sem resultado: " + ", ".join(sorted(unknown)) + ".")
         reaction_keys = ("RXN_FX", "RXN_FY", "RXN_FZ", "RXN_MX", "RXN_MY", "RXN_MZ")
@@ -633,32 +675,58 @@ class McpApplication:
         return {"revision": self.model.revision, "combination": combination, "reactions": reactions}
 
     def set_analysis_view(
-        self,
-        combination: str | None = None,
-        diagram: str | None = None,
+        self, combination: str | None = None, diagram: str | None = None,
+        result_kind: str | None = None, deformation_scale: float | None = None,
+        diagram_scale: float | None = None, plate_result_display_mode: str | None = None,
     ) -> dict[str, Any]:
-        """Seleciona a combinação e o tipo de diagrama exibido na interface."""
+        """Seleciona família/diagrama e configura escalas e interpolação como na paleta de análise."""
         current_results = self._result_service.current()
-        selected_combination = combination
-        if (
-            selected_combination is not None
-            and selected_combination not in {result.load_reference for result in current_results}
-        ):
+        view = self._analysis_view_state()
+        selected_combination = combination if combination is not None else view['selected_combination']
+        if selected_combination is not None and selected_combination not in {r.load_reference for r in current_results}:
             raise ValueError(f"Não há resultado válido para a combinação '{selected_combination}'.")
-        selected_diagram = self._analysis_view["selected_diagram"] if diagram is None else diagram
-        if selected_diagram not in ANALYSIS_DIAGRAMS:
-            raise ValueError(f"Diagrama desconhecido: '{selected_diagram}'.")
-        self._analysis_view.update({
-            "selected_combination": selected_combination,
-            "selected_diagram": selected_diagram,
-        })
-        if self._on_analysis_view_changed is None:
+        if result_kind is not None and result_kind not in {"bar", "plate"}:
+            raise ValueError("result_kind deve ser bar ou plate.")
+        kind = result_kind or view.get('result_kind', 'bar')
+        bar_options, plate_options = dict(BAR_DIAGRAMS), dict(PLATE_DIAGRAMS)
+        if result_kind is None and diagram is not None:
+            if diagram in plate_options and diagram not in bar_options:
+                kind = 'plate'
+            elif diagram in {key for _label, key in BAR_DIAGRAMS[:6]} or (diagram in bar_options and diagram not in plate_options):
+                kind = 'bar'
+        options = bar_options if kind == 'bar' else plate_options
+        requested = diagram
+        if requested is None:
+            requested = view['selected_diagram'] if kind == view.get('result_kind', 'bar') else next(iter(options.values()))
+        selected_diagram = options.get(requested, requested)
+        if selected_diagram not in set(options.values()):
+            raise ValueError(f"Diagrama '{requested}' não pertence à família {kind}. Consulte get_capabilities.")
+        if deformation_scale is not None:
+            value = float(deformation_scale)
+            if not isfinite(value) or not (value == 1 or (10 <= value <= 100 and value % 10 == 0)):
+                raise ValueError("deformation_scale: use 1 ou de 10 a 100 em passos de 10.")
+        if diagram_scale is not None:
+            value = float(diagram_scale)
+            if not isfinite(value) or not (0.1 <= value <= 1.0) or abs(value * 10 - round(value * 10)) > 1e-8:
+                raise ValueError("diagram_scale: use de 0.1 a 1.0 em passos de 0.1.")
+        if plate_result_display_mode is not None and not is_plate_result_display_mode(plate_result_display_mode):
+            raise ValueError("Modo de resultados de placas inválido; consulte get_capabilities.")
+        state = {**view, 'selected_combination': selected_combination, 'selected_diagram': selected_diagram,
+                 'result_kind': kind, 'result_diagrams_visible': kind == 'bar', 'plate_diagrams_visible': kind == 'plate'}
+        for key, value in (('deformation_scale', deformation_scale), ('diagram_scale', diagram_scale),
+                           ('plate_result_display_mode', plate_result_display_mode)):
+            if value is not None:
+                state[key] = value
+        if self._on_analysis_display_changed is not None:
+            self._on_analysis_display_changed(state)
+        elif self._on_analysis_view_changed is not None:
+            if result_kind is not None or any(v is not None for v in (deformation_scale, diagram_scale, plate_result_display_mode)):
+                raise ValueError("Os novos controles de análise não estão conectados à interface.")
+            self._on_analysis_view_changed(selected_combination or '', selected_diagram)
+        else:
             raise ValueError("A visualização da análise não está disponível.")
-        self._on_analysis_view_changed(selected_combination or "", selected_diagram)
-        state = self.get_analysis_state()
-        state["selected_combination"] = selected_combination
-        state["selected_diagram"] = selected_diagram
-        return state
+        self._analysis_view.update(state)
+        return self.get_analysis_state()
 
     def set_analysis_diagrams_visible(self, visible: bool) -> dict[str, Any]:
         """Mostra ou oculta os diagramas de resultados na cena."""
@@ -666,10 +734,11 @@ class McpApplication:
             raise TypeError("visible deve ser booleano.")
         if self._on_analysis_diagrams_changed is None:
             raise ValueError("A visualização da análise não está disponível.")
-        self._analysis_view["result_diagrams_visible"] = visible
+        flag = "plate_diagrams_visible" if self._analysis_view_state().get("result_kind") == "plate" else "result_diagrams_visible"
+        self._analysis_view[flag] = visible
         self._on_analysis_diagrams_changed(visible)
         state = self.get_analysis_state()
-        state["result_diagrams_visible"] = visible
+        state[flag] = visible
         return state
 
     def _analysis_result(self, combination: str):
@@ -729,6 +798,15 @@ class McpApplication:
         self._notify_model_changed()
         return {"revision": self.model.revision, "action": self._action_payload(action)}
 
+    def add_plate_pressure(self, plate_name: str, pressure: float, load_case: str) -> dict[str, Any]:
+        self._validate_load_target(plate_name, "plate", load_case)
+        self._ensure_load_case_accepts_loads(load_case)
+        action = self.action_service.add_plate_surface_pressure(
+            plate_name, self._finite_load_value(pressure, "pressure"), load_case,
+        )
+        self._notify_model_changed()
+        return {"revision": self.model.revision, "action": self._action_payload(action)}
+
     def update_applied_load(
         self,
         action_name: str,
@@ -740,14 +818,17 @@ class McpApplication:
         value: float | None = None,
         load_case: str | None = None,
         reference: str | None = None,
+        pressure_profiles: list[float] | None = None,
+        edge_index: int | None = None,
     ) -> dict[str, Any]:
         """Atualiza uma carga aplicada preservando o nome automático da ação."""
         current = self.model.actions.get(action_name)
         if current is None:
             raise ValueError(f"Ação '{action_name}' não encontrada.")
-        if current.kind == "member_distributed_force_selfweight_Z":
+        if current.kind in SELFWEIGHT_ACTION_KINDS:
             raise ValueError("O peso próprio deve ser alterado por apply_selfweight ou remove_selfweight.")
-        if all(value is None for value in (target, direction, initial, final, value, load_case, reference)):
+        if all(v is None for v in (target, direction, initial, final, value, load_case, reference,
+                                   pressure_profiles, edge_index)):
             raise ValueError("Informe pelo menos um parâmetro para atualizar a ação.")
 
         updated_target = current.target if target is None else str(target)
@@ -756,6 +837,41 @@ class McpApplication:
         self._ensure_load_case_accepts_loads(updated_load_case)
 
         kind = current.kind
+        if pressure_profiles is not None and kind != "plate_surface_pressure":
+            raise ValueError("pressure_profiles aplica-se apenas a pressões de placas.")
+        if edge_index is not None and not kind.startswith("plate_edge_"):
+            raise ValueError("edge_index aplica-se apenas a cargas de aresta.")
+        if kind.startswith("plate_edge_"):
+            self._validate_load_target(updated_target, "plate", updated_load_case)
+            old_kind, old_edge = kind.rsplit(":", 1)
+            edge = int(old_edge) if edge_index is None else edge_index
+            if not 0 <= edge < len(self.model.plates[updated_target].contour):
+                raise ValueError("A aresta selecionada não pertence à placa.")
+            if self.model.plate_edge_bars(updated_target, edge):
+                raise ValueError("Esta aresta coincide com uma barra. Lance a ação pela barra.")
+            axis = old_kind.rsplit("_", 1)[-1] if direction is None else direction.upper()
+            self._validate_direction(axis)
+            ref = old_kind.rsplit("_", 2)[-2] if reference is None else reference.casefold()
+            moment = kind.startswith("plate_edge_moment_")
+            if ref not in {"global", "local"} or (moment and ref != "local"):
+                raise ValueError("Referência inválida; momentos de aresta usam eixos locais.")
+            if moment:
+                if initial is not None or final is not None:
+                    raise ValueError("Momentos de aresta devem usar value.")
+                components = current.components if value is None else (self._finite_load_value(value, "value"),)
+            else:
+                if value is not None or (initial is None) != (final is None):
+                    raise ValueError("Forças de aresta devem usar initial e final juntos.")
+                components = current.components if initial is None else (
+                    self._finite_load_value(initial, "initial"), self._finite_load_value(final, "final"),
+                )
+            prefix = "plate_edge_moment" if moment else "plate_edge_distributed_force"
+            action = self.action_service.update_action(
+                action_name, kind=f"{prefix}_{ref}_{axis}:{edge}", target=updated_target,
+                components=tuple(components), load_case=updated_load_case,
+            )
+            self._notify_model_changed()
+            return {"revision": self.model.revision, "action": self._action_payload(action)}
         if kind.startswith("node_force_"):
             target_kind = "node"
             prefix = "node_force_"
@@ -768,6 +884,9 @@ class McpApplication:
         elif kind.startswith("member_distributed_force_"):
             target_kind = "bar"
             prefix = "member_distributed_force_"
+        elif kind == "plate_surface_pressure":
+            target_kind = "plate"
+            prefix = kind
         else:
             raise ValueError(f"O tipo de ação '{kind}' não pode ser atualizado pelo MCP.")
         self._validate_load_target(updated_target, target_kind, updated_load_case)
@@ -789,6 +908,15 @@ class McpApplication:
                 self._finite_load_value(final, "final"),
             )
             kind = f"{prefix}{'local_' if updated_reference == 'local' else ''}{updated_direction}"
+        elif kind == "plate_surface_pressure":
+            if direction is not None or initial is not None or final is not None or reference is not None:
+                raise ValueError("Pressão de laje deve ser atualizada usando apenas value.")
+            if pressure_profiles is not None:
+                if value is not None or len(pressure_profiles) != 4:
+                    raise ValueError("Informe quatro pressões [Xi,Xf,Yi,Yf] em kN/m², sem value.")
+                components = tuple(self._finite_load_value(v, "pressure_profiles") for v in pressure_profiles)
+            else:
+                components = current.components if value is None else (self._finite_load_value(value, "value"),)
         else:
             if initial is not None or final is not None or reference is not None:
                 raise ValueError("Esta ação concentrada deve ser atualizada usando apenas value.")
@@ -814,7 +942,7 @@ class McpApplication:
         load_case: str,
         materials: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Substitui as cargas do caso pelo peso próprio dos materiais selecionados."""
+        """Replace a load case with selfweight loads for selected bars and plates."""
         self._validate_load_case(load_case)
         selected_materials = tuple(materials) if materials is not None else tuple(self.model.materials)
         unknown = next((material for material in selected_materials if material not in self.model.materials), None)
@@ -822,9 +950,9 @@ class McpApplication:
             raise ValueError(f"Material '{unknown}' não encontrado.")
         weights: list[tuple[str, float]] = []
         for material in selected_materials:
-            weights.extend(self.model_service.member_selfweights(material))
+            weights.extend(self.model_service.selfweights(material))
         if not weights:
-            raise ValueError("Não há barras com propriedades para aplicar o peso próprio.")
+            raise ValueError("Não há barras ou placas com propriedades para aplicar o peso próprio.")
         actions = self.action_service.replace_action_with_selfweight(load_case, tuple(weights))
         self._notify_model_changed()
         return {
@@ -879,6 +1007,8 @@ class McpApplication:
             raise ValueError(f"Nó '{name}' não encontrado.")
         if kind == "bar" and name not in self.model.bars:
             raise ValueError(f"Barra '{name}' não encontrado.")
+        if kind == "plate" and name not in self.model.plates:
+            raise ValueError(f"Laje '{name}' não encontrada.")
 
     def _ensure_load_case_accepts_loads(self, load_case: str) -> None:
         if self.action_service.has_selfweight(load_case):
@@ -1007,38 +1137,18 @@ class McpApplication:
         """Retorna os nós do projeto atualmente aberto."""
         return {
             "revision": self.model.revision,
-            "nodes": [
-                {
-                    "name": node.name,
-                    "x": node.x,
-                    "y": node.y,
-                    "z": node.z,
-                    "supports": list(node.supports),
-                    "support_stiffness": list(node.support_stiffness),
-                }
-                for node in self.model.nodes.values()
-            ],
+            "nodes": [{**self._node_payload(node), "display_name": self.model.node_display_names.get(node.name, "")}
+                      for node in self.model.nodes.values()],
         }
 
     def list_members(self) -> dict[str, Any]:
         """Retorna as barras do projeto atualmente aberto."""
         return {
             "revision": self.model.revision,
-            "members": [
-                {
-                    "name": member.name,
-                    "start_node": member.start_node,
-                    "end_node": member.end_node,
-                    "material": member.material,
-                    "section": member.section,
-                    "profile": member.profile,
-                    "geometry": member.geometry_dict(),
-                    "rotation": member.rotation,
-                    "verification_name": self.model.verification_element_names.get(member.name, ""),
-                    "verification_group": self.model.verification_group_for(member.name),
-                }
-                for member in self.model.bars.values()
-            ],
+            "members": [{**self._member_payload(member),
+                         "verification_name": self.model.verification_element_names.get(member.name, ""),
+                         "verification_group": self.model.verification_group_for(member.name)}
+                        for member in self.model.bars.values()],
         }
 
     def group_verification_elements(self, member_names: list[str]) -> dict[str, Any]:
@@ -1112,17 +1222,19 @@ class McpApplication:
             "reference_axes_visible",
             "node_labels_visible",
             "member_labels_visible",
+            "plate_labels_visible",
             "local_axes_visible",
             "nodes_visible",
             "solid_members_visible",
             "member_releases_visible",
             "semirigid_links_visible",
             "node_supports_visible",
-            "snap_enabled",
+            "node_components_visible",
             "node_forces_visible",
             "node_moments_visible",
             "member_forces_visible",
             "member_moments_visible",
+            "plate_pressures_visible",
         }
         unknown = set(options) - available
         if unknown:
@@ -1135,9 +1247,6 @@ class McpApplication:
             raise ValueError("A cena visual do OpenSA não está disponível.")
         view = dict(self._get_view_state())
         for option, visible in options.items():
-            if option == "snap_enabled":
-                view[option] = True
-                continue
             self._on_view_changed(option, visible)
             view[option] = visible
         return {"view": view}
@@ -1208,6 +1317,7 @@ class McpApplication:
         z: float | None = None,
         supports: list[bool] | None = None,
         support_stiffness: list[float] | None = None,
+        support_directions: list[str] | None = None,
     ) -> dict[str, Any]:
         """Atualiza propriedades de um nó sem permitir alterar sua identidade."""
         node = self.model.nodes.get(node_name)
@@ -1231,10 +1341,15 @@ class McpApplication:
         normalized_stiffness = self._normalize_nonnegative_values(
             support_stiffness, 6, "rigidezes de mola",
         )
+        if support_directions is not None and (
+            len(support_directions) != 6 or any(value not in {"-", "=", "+"} for value in support_directions)
+        ):
+            raise ValueError("Informe seis sentidos válidos -, = ou + para as molas do nó.")
         if (
             normalized_coordinates is None
             and normalized_supports is None
             and normalized_stiffness is None
+            and support_directions is None
         ):
             raise ValueError("Informe pelo menos uma propriedade do nó para alterar.")
 
@@ -1244,6 +1359,8 @@ class McpApplication:
             node = self.model_service.update_supports(node_name, normalized_supports)
         if normalized_stiffness is not None:
             node = self.model_service.update_support_stiffness(node_name, normalized_stiffness)
+        if support_directions is not None:
+            node = self.model_service.update_support_directions(node_name, tuple(support_directions))
         self._notify_model_changed()
         return {"revision": self.model.revision, "node": self._node_payload(node)}
 
@@ -1272,7 +1389,7 @@ class McpApplication:
         member_names: list[str],
         width_mm: float,
         height_mm: float,
-        material: str = "Concreto Estrutural",
+        material: str = "Concreto C30",
     ) -> dict[str, Any]:
         """Aplica uma seção retangular com dimensões explícitas em milímetros."""
         return self.set_member_properties(
@@ -1357,13 +1474,15 @@ class McpApplication:
         }
 
     def split_member(self, member_name: str, parts: int) -> dict[str, Any]:
-        """Divide uma barra em partes iguais, criando nós intermediários."""
+        """Divide uma barra em partes iguais e reutiliza nós existentes nos pontos internos."""
+        previous_nodes = set(self.model.nodes)
         node_names, member_names = self.model_service.split_member(member_name, parts)
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
             "source_member": member_name,
-            "created_nodes": list(node_names),
+            "created_nodes": [name for name in node_names if name not in previous_nodes],
+            "internal_nodes": list(node_names),
             "created_members": list(member_names),
             "members": [self._member_payload(self.model.bars[name]) for name in member_names],
         }
@@ -1379,7 +1498,9 @@ class McpApplication:
         }
 
     def reverse_member(self, member_name: str) -> dict[str, Any]:
-        """Inverte os nós inicial e final de uma barra."""
+        """Inverte os nós inicial/final; rejeita se a interface mantém orientação canônica automática."""
+        if self._can_reverse_member is not None and not self._can_reverse_member():
+            raise ValueError('A orientação canônica automática está ativa; a interface não permite inverter barras.')
         member = self.model_service.reverse_member(member_name)
         self._notify_model_changed()
         return {"revision": self.model.revision, "member": self._member_payload(member)}
@@ -1403,14 +1524,16 @@ class McpApplication:
         member_names: list[str] | None,
         offset: tuple[float, float, float],
         rigid_bar_names: list[str] | None = None,
+        plate_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Copia nós, barras e barras rígidas por translação."""
+        """Copia nós, barras, barras rígidas e placas por translação."""
         rigid_bars_before = set(self.model.rigid_bars)
-        copied_nodes, copied_members = self.model_service.copy_elements(
+        copied_nodes, copied_members, copied_plates = self.model_service.copy_elements_with_plates(
             tuple(node_names or ()),
             tuple(member_names or ()),
             offset,
             tuple(rigid_bar_names or ()),
+            tuple(plate_names or ()),
         )
         copied_rigid_bars = sorted(set(self.model.rigid_bars) - rigid_bars_before)
         self._notify_model_changed()
@@ -1419,7 +1542,18 @@ class McpApplication:
             "created_nodes": list(copied_nodes),
             "created_members": list(copied_members),
             "created_rigid_bars": copied_rigid_bars,
+            "created_plates": list(copied_plates),
             "members": [self._member_payload(self.model.bars[name]) for name in copied_members],
+            "plates": [
+                {
+                    "name": name,
+                    "contour": [list(point) for point in self.model.plates[name].contour],
+                    "thickness_mm": self.model.plates[name].thickness_mm,
+                    "material": self.model.plates[name].material,
+                    "vertex_nodes": list(self.model.plates[name].vertex_nodes),
+                }
+                for name in copied_plates
+            ],
             "rigid_bars": [
                 {
                     "name": name,
@@ -1483,6 +1617,8 @@ class McpApplication:
         solid_face_offsets_mm: list[float] | None = None,
         solid_section_offsets_mm: list[float] | None = None,
         color: str | None = None,
+        section_mirrored: bool | None = None,
+        solid_face_angles_deg: list[float] | None = None,
     ) -> dict[str, Any]:
         """Atualiza qualquer combinação de propriedades editáveis das barras."""
         if not member_names:
@@ -1509,6 +1645,10 @@ class McpApplication:
         if color is not None:
             self._validate_color(color)
 
+        if section_mirrored is not None and not isinstance(section_mirrored, bool):
+            raise ValueError("section_mirrored deve ser booleano.")
+        face_angles = (self.model._member_solid_face_angles(solid_face_angles_deg)
+                       if solid_face_angles_deg is not None else None)
         for name in names:
             member = self.model.bars[name]
             target_material = material or member.material
@@ -1572,6 +1712,10 @@ class McpApplication:
                 member = self.model_service.update_member_solid_section_offsets(
                     name, section_offsets,
                 )
+            if section_mirrored is not None:
+                member = self.model_service.set_section_mirrored(name, section_mirrored)
+            if face_angles is not None:
+                member = self.model_service.update_member_solid_face_angles(name, face_angles)
             if color is not None:
                 member = self.model_service.update_member_color(name, color)
 
@@ -1634,6 +1778,11 @@ class McpApplication:
             "solid_face_offsets_mm": [value * 1000.0 for value in member.solid_face_offsets],
             "solid_section_offsets_mm": [value * 1000.0 for value in member.solid_section_offsets],
             "color": member.color,
+            "section_mirrored": member.section_mirrored,
+            "solid_face_angles_deg": list(member.solid_face_angles),
+            "calculation_property_overrides": dict(member.calculation_property_overrides),
+            "detail_subtractions": list(member.detail_subtractions),
+            "detail_end_cuts": [asdict(cut) for cut in member.detail_end_cuts],
         }
 
     @staticmethod
@@ -1645,6 +1794,8 @@ class McpApplication:
             "z": node.z,
             "supports": list(node.supports),
             "support_stiffness": list(node.support_stiffness),
+            "support_directions": list(node.support_directions),
+            "component": asdict(node.component) if node.component else None,
         }
 
     @staticmethod

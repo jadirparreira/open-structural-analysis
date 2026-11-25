@@ -38,10 +38,46 @@ class Node:
     supports: tuple[bool, bool, bool, bool, bool, bool] = (False,) * 6
     # Translational stiffnesses use kN/m; rotational stiffnesses use kN·m/rad.
     support_stiffness: tuple[float, float, float, float, float, float] = (0.0,) * 6
+    component: NodeComponentAssignment | None = None
+    # Direction of support springs: '-' and '+' are unilateral; '=' is bilateral.
+    support_directions: tuple[str, str, str, str, str, str] = ("=",) * 6
 
     @property
     def support(self) -> Support:
         return Support.from_tuple(self.supports)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeComponentAssignment:
+    """A component instance attached to a node, with component-owned parameters."""
+
+    component_id: str
+    parameters: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NodeComponentDefinition:
+    """Metadata used by future node-component implementations and the UI."""
+
+    component_id: str
+    name: str
+    interacts_with_model: bool = False
+    has_3d_representation: bool = False
+    parametric: bool = False
+    parameters: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DetailEndCut:
+    """A detailing-only end cut defined by one or more oriented planes."""
+
+    identifier: str
+    point: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    reference_label: str
+    planes: tuple[
+        tuple[tuple[float, float, float], tuple[float, float, float]], ...
+    ] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +119,10 @@ class Member:
     # Overrides used only by member verification, in native units: lengths in
     # metres and Ct/Cb dimensionless. Missing entries retain automatic values.
     calculation_property_overrides: tuple[tuple[str, float], ...] = ()
+    # References to solids subtracted from this member in detailing only.
+    detail_subtractions: tuple[tuple[str, str], ...] = ()
+    # Face-plane cuts that remove one protruding end, only in detailing.
+    detail_end_cuts: tuple[DetailEndCut, ...] = ()
 
     def geometry_dict(self) -> dict[str, float]:
         return dict(self.section_geometry)
@@ -95,6 +135,35 @@ class RigidBar:
     name: str
     start_node: str
     end_node: str
+
+
+@dataclass(frozen=True, slots=True)
+class Plate:
+    """Contorno geométrico de uma placa, em metros."""
+
+    name: str
+    contour: tuple[tuple[float, float, float], ...]
+    supports: tuple[tuple[str, str], ...] = ()
+    color: str = "#6e7781"
+    thickness_mm: float = 100.0
+    material: str = "Concreto C30"
+    # Deslocamento visual em metros ao longo da normal global orientada do plano.
+    positioning_displacement: float = 0.0
+    # Só afetam a geometria exibida no detalhamento; a análise usa plate.contour.
+    # Itens: nome da barra de contorno, deslocamento (mm), inclinação (graus).
+    edge_positioning: tuple[tuple[str, float, float], ...] = ()
+    # References to solids subtracted from this plate in detailing only.
+    detail_subtractions: tuple[tuple[str, str], ...] = ()
+    # Global translational restraints applied over the full plate surface.
+    restrictions: tuple[bool, bool, bool] = (False, False, False)
+    # Distributed spring coefficients in kN/m³ (foundation modulus).
+    restriction_stiffness: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Global displacement direction: negative, bilateral, or positive.
+    restriction_directions: tuple[str, str, str] = ("=", "=", "=")
+    # Structural node identity at every contour vertex, in contour order.
+    vertex_nodes: tuple[str, ...] = ()
+    # Sparse contour-edge overrides: free, supported, fixed. Missing = legacy fixed.
+    edge_connections: tuple[tuple[int, str], ...] = ()
 
 
 # Compatibilidade pública com o nome utilizado até agora.
@@ -167,3 +236,4 @@ class AnalysisResult:
     load_reference: str
     node_results: MutableMapping[str, Any] = field(default_factory=dict)
     member_results: MutableMapping[str, Any] = field(default_factory=dict)
+    plate_results: MutableMapping[str, Any] = field(default_factory=dict)

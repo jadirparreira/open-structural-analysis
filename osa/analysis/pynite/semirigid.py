@@ -31,40 +31,46 @@ def install_semirigid_connections(target, source) -> None:
         if not any(0 < value < 100 for value in source_member.rotation_flexibility_percent):
             continue
 
-        physical_member = target.members.get(name)
-        if physical_member is None or getattr(physical_member, "_osa_semirigid_installed", False):
-            continue
+        segments = getattr(target, "_osa_member_segments", {}).get(name, ((name, 0.0, 1.0),))
+        endpoint_specs = ((segments[0][0], "start"), (segments[-1][0], "end"))
+        springs_by_member = {}
+        for segment_name, endpoint in endpoint_specs:
+            physical_member = target.members.get(segment_name)
+            if physical_member is None:
+                continue
+            springs = _spring_stiffnesses(physical_member, source_member, endpoint)
+            if springs:
+                springs_by_member.setdefault(segment_name, {})[endpoint] = springs
+        for segment_name, endpoint_springs in springs_by_member.items():
+            physical_member = target.members[segment_name]
+            if not getattr(physical_member, "_osa_semirigid_installed", False):
+                _install_member_end_springs(physical_member, endpoint_springs)
 
-        original_descritize = physical_member.descritize
-        endpoint_springs = {
-            "start": _spring_stiffnesses(physical_member, source_member, "start"),
-            "end": _spring_stiffnesses(physical_member, source_member, "end"),
-        }
-        all_springs = {**endpoint_springs["start"], **endpoint_springs["end"]}
-        if not all_springs:
-            continue
-        _patch_member(physical_member, all_springs)
 
-        def descritize_with_connections(
-            original_descritize=original_descritize,
-            physical_member=physical_member,
-            endpoint_springs=endpoint_springs,
-        ) -> None:
-            original_descritize()
-            submembers = tuple(physical_member.sub_members.values())
-            if not submembers:
-                return
-            if len(submembers) == 1:
-                _patch_member(
-                    submembers[0],
-                    {**endpoint_springs["start"], **endpoint_springs["end"]},
-                )
-                return
+def _install_member_end_springs(physical_member, endpoint_springs: dict[str, dict[int, float]]) -> None:
+    original_descritize = physical_member.descritize
+    springs = {dof: value for endpoint in endpoint_springs.values() for dof, value in endpoint.items()}
+    _patch_member(physical_member, springs)
+
+    def descritize_with_connections(
+        original_descritize=original_descritize,
+        physical_member=physical_member,
+        endpoint_springs=endpoint_springs,
+    ) -> None:
+        original_descritize()
+        submembers = tuple(physical_member.sub_members.values())
+        if not submembers:
+            return
+        if len(submembers) == 1:
+            _patch_member(submembers[0], springs)
+            return
+        if "start" in endpoint_springs:
             _patch_member(submembers[0], endpoint_springs["start"])
+        if "end" in endpoint_springs:
             _patch_member(submembers[-1], endpoint_springs["end"])
 
-        physical_member.descritize = descritize_with_connections
-        physical_member._osa_semirigid_installed = True
+    physical_member.descritize = descritize_with_connections
+    physical_member._osa_semirigid_installed = True
 
 
 def _spring_stiffnesses(submember, source_member, endpoint: str) -> dict[int, float]:

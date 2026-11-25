@@ -127,6 +127,88 @@ def test_copy_accepts_ctrl_rectangle(window, monkeypatch):
     assert window._command_mode == "copy_elements_reference_placement"
 
 
+def test_detailing_commands_pick_through_node_components(window):
+    scene = window.scene
+
+    window.start_connect_member_ends()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    window.start_detail_subtraction()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    window.start_member_endpoint_alignment()
+    assert scene._node_component_pick_through
+    window.cancel_member_placement()
+    assert not scene._node_component_pick_through
+
+    scene._node_component_pick_through = True
+    assert scene._pick_node_component((0, 0)) is None
+    scene._node_component_pick_through = False
+
+
+def test_subtract_end_routes_from_bar_selection_to_reference_face(window):
+    window.start_detail_end_cut()
+    assert window._command_mode == "detail_end_cut_target_selection"
+    assert window.scene._node_component_pick_through
+
+    click(window, ("bar", "B1"))
+    assert window._command_mode == "detail_end_cut_face_selection"
+    assert window._detail_end_cut_target == "B1"
+    assert window.scene._detail_end_cut_target == "B1"
+
+    window.cancel_member_placement()
+    assert window._command_mode is None
+    assert window._detail_end_cut_target is None
+    assert not window.scene._node_component_pick_through
+
+
+def test_subtract_end_chooses_the_protruding_side_from_face_position(window, monkeypatch):
+    window._command_mode = "detail_end_cut_face_selection"
+    window._detail_end_cut_target = "B1"
+    monkeypatch.setattr(window, "refresh_scene", lambda **_kwargs: None)
+
+    window._apply_detail_end_cut_face(
+        ("plate", "P-reference", 0, (0.7, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    )
+    assert window.model.bars["B1"].detail_end_cuts == ()
+    window._confirm_command_selection()
+
+    cuts = window.model.bars["B1"].detail_end_cuts
+    assert len(cuts) == 1
+    assert cuts[0].point == pytest.approx((0.7, 0.0, 0.0))
+    assert cuts[0].normal == pytest.approx((1.0, 0.0, 0.0))
+    assert cuts[0].reference_label == "Placa P-reference"
+    assert window._command_mode == "detail_end_cut_target_selection"
+
+
+def test_subtract_end_uses_intersection_of_ctrl_selected_faces(window, monkeypatch):
+    window._command_mode = "detail_end_cut_face_selection"
+    window._detail_end_cut_target = "B1"
+    monkeypatch.setattr(window, "refresh_scene", lambda **_kwargs: None)
+
+    window._apply_detail_end_cut_face(
+        ("plate", "P-x", 0, (0.7, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    )
+    window._apply_detail_end_cut_face(
+        ("plate", "P-y", 1, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        add_face=True,
+    )
+
+    assert window.model.bars["B1"].detail_end_cuts == ()
+    window._confirm_command_selection()
+
+    cuts = window.model.bars["B1"].detail_end_cuts
+    assert len(cuts) == 1
+    assert cuts[0].point == pytest.approx((0.7, 0.0, 0.0))
+    assert cuts[0].normal == pytest.approx((1.0, 0.0, 0.0))
+    assert "P-x" in cuts[0].reference_label and "P-y" in cuts[0].reference_label
+    assert window._command_mode == "detail_end_cut_target_selection"
+
+
 @pytest.mark.parametrize("preselected", [False, True])
 def test_reverse_applies_to_every_selected_member(window, monkeypatch, preselected):
     if preselected:
@@ -314,3 +396,121 @@ def test_escape_cancels_pending_multi_selection_without_model_changes(window, mo
         assert window._command_mode is None
         assert window.model.revision == revision
         assert len(window.model.bars) == 3
+
+
+def test_move_selection_reference_destination_and_escape(window, monkeypatch):
+    monkeypatch.setattr(window, 'refresh_scene', lambda **kwargs: None)
+    select(window, ('bar', 'B1'), ('node', 'N2'))
+    window.start_move_elements()
+    window._confirm_copy_elements()
+    assert window._command_mode == 'move_elements_reference_placement'
+    window._handle_copy_placement_point((0, 0, 0))
+    window._handle_copy_placement_point((0, 1, 0))
+    assert window.model.nodes['N1'].y == 1
+    assert window.model.nodes['N2'].y == 1
+    assert window.model.nodes['N3'].y == 0
+    assert window._command_mode is None
+    assert not window.scene._member_placement_mode
+    window.start_move_elements()
+    window.cancel_member_placement()
+    assert window._command_mode is None
+    assert not window.selected_elements
+
+
+@pytest.mark.parametrize('kind', ['node', 'plate'])
+def test_property_copy_switch_uses_matching_reference_and_destinations(window, kind):
+    if kind == 'node':
+        source, target = 'N1', 'N2'
+        window.model.update_node_supports(source, (True,) * 6)
+    else:
+        source = window.model.add_plate(((0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)), thickness_mm=180).name
+        target = window.model.add_plate(((3, 0, 0), (5, 0, 0), (5, 2, 0), (3, 2, 0))).name
+    window.start_copy_member_properties()
+    window.member_property_copy_panel.kind_switch._buttons[kind].click()
+    assert window._copy_properties_reference is None
+    select(window, (kind, source))
+    window._confirm_command_selection()
+    assert window._copy_properties_reference == source
+    select(window, (kind, target))
+    window._confirm_command_selection()
+    if kind == 'node':
+        assert window.model.nodes[target].supports == (True,) * 6
+    else:
+        assert window.model.plates[target].thickness_mm == 180
+    window.cancel_member_placement()
+
+
+def test_property_copy_panel_resizes_immediately_when_switching_kinds(window, qt_app):
+    window.start_copy_member_properties()
+    panel = window.member_property_copy_panel
+    heights = {}
+    for kind in ('bar', 'node', 'plate', 'bar', 'node', 'plate'):
+        panel.kind_switch._buttons[kind].click()
+        if kind in heights:
+            assert panel.height() == heights[kind]
+        heights[kind] = panel.height()
+        assert all(panel.rect().contains(box.geometry()) for box in panel.checkboxes.values())
+        qt_app.processEvents()
+        assert panel.height() == heights[kind]
+    assert heights['node'] < heights['plate'] < heights['bar']
+    window.cancel_member_placement()
+
+
+def test_action_launcher_applies_pressure_to_multiple_plates(window, monkeypatch):
+    from types import SimpleNamespace
+    plates = [window.model.add_plate(((x, 0, 0), (x+2, 0, 0), (x+2, 2, 0), (x, 2, 0))) for x in (0, 3)]
+    monkeypatch.setattr('osa.ui.main_window.ActionDialog', lambda *_: SimpleNamespace(
+        move=lambda *_: None, rect=lambda: QRect(),
+        exec=lambda: QDialog.DialogCode.Accepted,
+        launch_data=lambda: ('plate', 'local', {'PX': (-2., -4.), 'PY': (-1.,)}),
+    ))
+    window.start_load_command()
+    select(window, *(('plate', plate.name) for plate in plates))
+    window._confirm_command_selection()
+    actions = [action for action in window.model.actions.values() if action.kind == 'plate_surface_pressure']
+    assert {action.target for action in actions} == {plate.name for plate in plates}
+    assert all(action.components == (-2., -4., -1., -1.) for action in actions)
+    window.cancel_member_placement()
+
+
+def test_component_toggle_hides_geometry_and_survives_scene_refresh(window):
+    from osa.domain.entities import NodeComponentAssignment
+    window.model.update_node_component('N1', NodeComponentAssignment('base_plate', ()))
+    window.scene.render_model(window.model)
+    scene = window.scene
+    assert scene._node_component_actors
+    assignment = window.model.nodes['N1'].component
+    revision = window.model.revision
+    action = next(action for action in window.top_icon_palette.geometry_options_menu.actions() if action.text() == 'Componente')
+    assert action.isChecked()
+    action.defaultWidget().click()
+    assert not action.isChecked()
+    assert not scene._node_component_actors
+    assert not scene._node_component_pick_actors
+    scene.render_model(window.model)
+    assert not scene._node_component_actors
+    action.defaultWidget().click()
+    assert action.isChecked()
+    assert scene._node_component_actors
+    assert window.model.nodes['N1'].component == assignment
+    assert window.model.revision == revision
+
+
+@pytest.mark.parametrize('other_section', ['Geometria', 'Ações', 'Análise', 'Memorial'])
+def test_detailing_shows_components_and_restores_hidden_preference(window, other_section):
+    from osa.domain.entities import NodeComponentAssignment
+    window.palette.show_group('Geometria')
+    window.model.update_node_component('N1', NodeComponentAssignment('base_plate', ()))
+    window.scene.render_model(window.model)
+    button = window.top_icon_palette._visibility_buttons['components']
+    button.setChecked(False)
+    assert not window.scene._node_component_actors
+    window.palette.show_group('Detalhamento')
+    assert window.scene._node_component_actors
+    assert not button.isChecked()
+    window.scene.render_model(window.model)
+    assert window.scene._node_component_actors
+    window.palette.show_group(other_section)
+    assert not window.scene._node_component_actors
+    assert not button.isChecked()
+    button.setChecked(True)

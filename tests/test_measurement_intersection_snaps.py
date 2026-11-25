@@ -263,6 +263,60 @@ def test_scene_does_not_snap_to_apparent_crossings_at_different_depths(scene):
     assert scene._measurement_target(np.zeros(3))[1] is None
 
 
+def test_intersection_snap_uses_plate_contour_edges_not_internal_mesh_lines(scene):
+    model = StructuralModel()
+    model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    render(scene, model)
+    scene.set_member_placement_mode(True)
+    scene._snap_types.update(endpoint=False, center=False, perpendicular=False)
+
+    scene.set_member_preview_start((1.0, 1.5, 0.0))
+    outer_edge_point = np.asarray((4.0, 1.5, 0.0))
+    point_at(scene, outer_edge_point)
+    candidate = scene._intersection_snap_target()
+
+    assert candidate is not None
+    np.testing.assert_allclose(candidate[0], outer_edge_point, atol=1e-9)
+
+    # An arbitrary position on the same outer edge is not an intersection.
+    point_at(scene, np.asarray((4.0, 0.8, 0.0)))
+    assert scene._intersection_snap_target() is None
+
+    scene.set_member_preview_start(None)
+    point_at(scene, outer_edge_point)
+    assert scene._intersection_snap_target() is None
+
+    # This point lies on the FE mesh inside the plate, away from its contour.
+    point_at(scene, np.asarray((2.0, 1.5, 0.0)))
+    assert scene._intersection_snap_target() is None
+
+
+@pytest.mark.parametrize("rigid", [False, True])
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_bar_intersection_with_orthogonal_guide(scene, rigid, axis):
+    model = StructuralModel()
+    # Rotate the same inclined bar/guide setup through all global axes.
+    def rotate(point):
+        return np.roll(np.asarray(point, dtype=float), axis)
+    add_line(model, "A", rotate((3, -2, 0)), rotate((5, 2, 0)), rigid=rigid)
+    render(scene, model)
+    scene.set_member_placement_mode(True)
+    scene.set_member_preview_start(rotate((0, 0, 0)))
+    scene._snap_types.update(endpoint=False, center=False, perpendicular=False)
+    crossing = rotate((4, 0, 0))
+    point_at(scene, crossing)
+    candidate = scene._intersection_snap_target()
+    assert candidate is not None
+    np.testing.assert_allclose(candidate[0], crossing, atol=1e-9)
+
+    # The same bar offers no arbitrary edge or apparent-depth candidate.
+    point_at(scene, rotate((3.5, -1, 0)))
+    assert scene._intersection_snap_target() is None
+    scene.set_member_preview_start(rotate((0, 0, 1)))
+    point_at(scene, crossing)
+    assert scene._intersection_snap_target() is None
+
+
 def test_hidden_solid_edges_do_not_offer_features_or_perpendiculars(scene):
     render(scene, rectangular_member(), solid=True, front=True)
     scene.set_measurement_mode(True)

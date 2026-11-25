@@ -90,9 +90,21 @@ class AxesPanel(QFrame):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(7)
 
-        title = QLabel("Eixos")
+        title_row = QWidget(self)
+        title_layout = QHBoxLayout(title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(4)
+        title = QLabel("Eixos", title_row)
         title.setObjectName("propertyTitle")
-        layout.addWidget(title)
+        title_layout.addWidget(title)
+        title_layout.addStretch(1)
+        self.visibility_checkbox = QCheckBox(title_row)
+        self.visibility_checkbox.setObjectName("referenceAxesVisibleCheckbox")
+        self.visibility_checkbox.setAccessibleName("Exibir eixos")
+        self.visibility_checkbox.setToolTip("Exibir eixos na cena")
+        self.visibility_checkbox.setChecked(bool(window.scene._reference_axes_visible))
+        title_layout.addWidget(self.visibility_checkbox)
+        layout.addWidget(title_row)
 
         self._axis_lists: dict[str, QTableWidget] = {}
         for axis in ("X", "Y", "Z"):

@@ -1,5 +1,11 @@
+import re
+
 from .common import *
+from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
+from .selector import SelectorComboBox
+from PySide6.QtWidgets import QAbstractItemView, QWidgetAction
+from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS, PLATE_FIELDS, plate_diagram_tooltip
 
 
 def _command_tooltip(label: str, command: str) -> str:
@@ -18,7 +24,7 @@ class PaletteTooltip(QLabel):
         self.setObjectName("paletteTooltip")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pending: tuple[QToolButton, str, str, int] | None = None
+        self._pending: tuple[QWidget, str, str, int] | None = None
         self._show_timer = QTimer(self)
         self._show_timer.setSingleShot(True)
         self._show_timer.timeout.connect(self._show_pending)
@@ -30,22 +36,62 @@ class PaletteTooltip(QLabel):
         self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._fade_animation.finished.connect(self._fade_finished)
 
-    def schedule_for(self, button: QToolButton, text: str, gap: int = 10) -> None:
+    def track(self, widget: QWidget, text: str, placement: str = "below") -> None:
+        """Use this visual tooltip for any interactive control in a top palette."""
+        widget.setToolTip(text)
+        widget.setProperty("paletteTooltip", text)
+        widget.setProperty("paletteTooltipPlacement", placement)
+        if not widget.accessibleName():
+            widget.setAccessibleName(widget.text() if hasattr(widget, "text") else text)
+        if not widget.property("paletteTooltipTracked"):
+            widget.installEventFilter(self)
+            widget.setProperty("paletteTooltipTracked", True)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        selector_view = watched.parentWidget() if (
+            isinstance(watched, QWidget) and watched.property("paletteTooltipSelectorView")
+        ) else None
+        if isinstance(selector_view, QAbstractItemView):
+            if event.type() in (QEvent.Type.MouseMove, QEvent.Type.ToolTip):
+                position = event.position().toPoint() if hasattr(event, "position") else event.pos()
+                index = selector_view.indexAt(position)
+                text = str(index.data(Qt.ItemDataRole.ToolTipRole) or "") if index.isValid() else ""
+                if text:
+                    self._schedule(selector_view, text, "below", 10)
+                else:
+                    self.dismiss()
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self.dismiss()
+            if event.type() == QEvent.Type.ToolTip:
+                return True
+        if isinstance(watched, QWidget) and watched.property("paletteTooltipTracked"):
+            if event.type() == QEvent.Type.Enter:
+                # Read the live tooltip so controls with changing descriptions stay current.
+                text = watched.toolTip() or str(watched.property("paletteTooltip") or "")
+                placement = str(watched.property("paletteTooltipPlacement") or "below")
+                self._schedule(watched, text, placement, 10)
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
+
+    def schedule_for(self, button: QWidget, text: str, gap: int = 10) -> None:
         self._schedule(button, text, "right", gap)
 
-    def schedule_below(self, button: QToolButton, text: str) -> None:
+    def schedule_below(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "below", 10)
 
-    def schedule_upper_right(self, button: QToolButton, text: str) -> None:
+    def schedule_upper_right(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "upper-right", 10)
 
-    def schedule_left(self, button: QToolButton, text: str) -> None:
+    def schedule_left(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "left", 10)
 
-    def schedule_above(self, button: QToolButton, text: str) -> None:
+    def schedule_above(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "above", 10)
 
-    def _schedule(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
+    def _schedule(self, button: QWidget, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
         self._pending = button, text, placement, gap
         if self.isVisible():
@@ -62,7 +108,7 @@ class PaletteTooltip(QLabel):
             return
         self._show_now(button, text, placement, gap)
 
-    def _show_now(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
+    def _show_now(self, button: QWidget, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
         self._pending = None
         self.setText(text)
@@ -71,28 +117,33 @@ class PaletteTooltip(QLabel):
         if parent is None:
             return
         if placement == "below":
-            button_position = button.mapTo(parent, QPoint(0, button.height() + 10))
+            global_position = button.mapToGlobal(QPoint(0, button.height() + 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x() + (button.width() - self.width()) // 2,
                 button_position.y(),
             )
         elif placement == "upper-right":
-            button_position = button.mapTo(parent, QPoint(button.width() + 10, -self.height() - 10))
+            global_position = button.mapToGlobal(QPoint(button.width() + 10, -self.height() - 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(button_position)
         elif placement == "above":
-            button_position = button.mapTo(parent, QPoint(0, -self.height() - 10))
+            global_position = button.mapToGlobal(QPoint(0, -self.height() - 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x() + (button.width() - self.width()) // 2,
                 button_position.y(),
             )
         elif placement == "left":
-            button_position = button.mapTo(parent, QPoint(-self.width() - 10, 0))
+            global_position = button.mapToGlobal(QPoint(-self.width() - 10, 0))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x(),
                 button_position.y() + (button.height() - self.height()) // 2,
             )
         else:
-            button_position = button.mapTo(parent, QPoint(button.width() + gap, 0))
+            global_position = button.mapToGlobal(QPoint(button.width() + gap, 0))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x(),
                 button_position.y() + (button.height() - self.height()) // 2,
@@ -121,6 +172,46 @@ class PaletteTooltip(QLabel):
             self._opacity_effect.setOpacity(0.0)
             return
         self._animate_to(0.0, hide_when_done=True)
+
+
+def _register_palette_tooltips(palette: QFrame) -> None:
+    """Normalize tooltip presentation for every interactive control in a top palette."""
+    tooltip = getattr(palette, "_tooltip", None)
+    if tooltip is None:
+        tooltip = PaletteTooltip(palette.window())
+        palette._tooltip = tooltip
+
+    controls = (QToolButton, QPushButton, QCheckBox, QRadioButton, QComboBox,
+                QAbstractSpinBox, QSlider, QLineEdit)
+    for widget in palette.findChildren(QWidget):
+        # Group menus already label each option in the menu itself. The hidden
+        # source buttons used to build those entries also don't need a tooltip.
+        ancestor = widget.parentWidget()
+        inside_group_menu = False
+        while ancestor is not None and ancestor is not palette:
+            if isinstance(ancestor, QMenu):
+                inside_group_menu = True
+                break
+            ancestor = ancestor.parentWidget()
+        if inside_group_menu or widget.property("paletteMenuItem"):
+            continue
+        if isinstance(widget, QComboBox):
+            view = widget.view()
+            viewport = view.viewport()
+            if not viewport.property("paletteTooltipSelectorView"):
+                viewport.setProperty("paletteTooltipSelectorView", True)
+                viewport.installEventFilter(tooltip)
+        if not isinstance(widget, controls):
+            continue
+        text = widget.toolTip().strip() or widget.accessibleName().strip()
+        if not text and hasattr(widget, "text"):
+            text = str(widget.text()).strip()
+        if not text:
+            # Keep icon-only controls understandable even if a tooltip was omitted.
+            name = widget.objectName()
+            text = " ".join(part for part in re.split(r"(?<=[a-z])(?=[A-Z])|[_-]+", name) if part)
+        if text:
+            tooltip.track(widget, text)
 
 
 class FloatingPalette(QFrame):
@@ -198,6 +289,7 @@ class FloatingPalette(QFrame):
         self._add_group("Detalhamento", "detailing-map.svg", ())
         self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
         self.toggle_group("Geometria", animate=False)
+        _register_palette_tooltips(self)
 
     def _add_group(
         self,
@@ -288,7 +380,9 @@ class FloatingPalette(QFrame):
         command_mode = getattr(self.window, "_command_mode", None)
         if command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
-            "connect_member_ends_selection",
+            "connect_member_ends_selection", "detail_subtraction_target_selection",
+            "detail_subtraction_cutter_selection", "detail_end_cut_target_selection",
+            "detail_end_cut_face_selection",
         } and next_group != "Detalhamento":
             self.window.cancel_member_placement()
         elif name != "Geometria" and command_mode in {
@@ -327,12 +421,29 @@ class FloatingPalette(QFrame):
                 self.window.prepare_analysis_palette()
             self.window.analysis_top_palette.set_analysis_visible(next_group == "Análise")
         if hasattr(self.window, "detailing_top_palette"):
-            self.window.detailing_top_palette.set_detailing_visible(next_group == "Detalhamento")
+            project_mode = getattr(self.window, "_detailing_project_mode", False)
+            self.window.detailing_top_palette.set_detailing_visible(
+                next_group == "Detalhamento" and not project_mode
+            )
+        if hasattr(self.window, "detailing_mode_palette"):
+            self.window.detailing_mode_palette.set_detailing_visible(next_group == "Detalhamento")
+        if hasattr(self.window, "project_sheets_palette"):
+            self.window.project_sheets_palette.set_project_mode(
+                next_group == "Detalhamento"
+                and getattr(self.window, "_detailing_project_mode", False)
+            )
         if hasattr(self.window, "scene"):
-            self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
             self.window.scene.set_solid_positioning_enabled(next_group == "Detalhamento")
-            self.window.scene.set_actions_visible(next_group == "Ações")
-            self.window.scene.set_analysis_visible(next_group == "Análise")
+            self.window.scene.set_detailing_session_active(next_group == "Detalhamento")
+            if next_group == "Ações":
+                self.window.scene.set_actions_visible(True)
+                self.window.scene.set_analysis_visible(False)
+            elif next_group == "Análise":
+                self.window.scene.set_analysis_visible(True)
+                self.window.scene.set_actions_visible(False)
+            else:
+                self.window.scene.set_actions_visible(False)
+                self.window.scene.set_analysis_visible(False)
             self.window.scene.set_verification_group_selection_active(
                 next_group in {"Memorial", "Detalhamento"},
             )
@@ -383,6 +494,7 @@ class FloatingPalette(QFrame):
             "nodes_visible",
             "node_labels_visible",
             "member_labels_visible",
+            "plate_labels_visible",
             "local_axes_visible",
             "member_releases_visible",
             "semirigid_links_visible",
@@ -475,7 +587,6 @@ class MemberPropertyCopyPanel(QFrame):
         ("material", "Material"),
         ("section", "Seção"),
         ("rotation", "Rotação"),
-        ("offsets", "Deslocamento"),
         ("releases", "Vinculações"),
     )
 
@@ -499,11 +610,15 @@ class MemberPropertyCopyPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
-        title = QLabel("Copiar propriedades da barra", self)
-        title.setObjectName("memberPropertyCopyTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(title)
+        from .dialogs import _SettingsChoiceSwitch
+        self.kind = "bar"
+        self.kind_switch = _SettingsChoiceSwitch(
+            (("node", "Nó"), ("bar", "Barra"), ("plate", "Placa")),
+            self.kind, self._change_kind, self,
+        )
+        layout.addWidget(self.kind_switch, 0, Qt.AlignmentFlag.AlignHCenter)
         choices = QGridLayout()
+        self._choices_layout = choices
         choices.setContentsMargins(0, 0, 0, 0)
         choices.setHorizontalSpacing(12)
         choices.setVerticalSpacing(0)
@@ -517,6 +632,35 @@ class MemberPropertyCopyPanel(QFrame):
         layout.addLayout(choices)
         self.adjustSize()
         self.hide()
+
+    def _change_kind(self, kind: str) -> None:
+        self.kind = kind
+        for checkbox in self.checkboxes.values():
+            self._choices_layout.removeWidget(checkbox)
+            checkbox.hide()
+            checkbox.setParent(None)
+            checkbox.deleteLater()
+        self.checkboxes = {}
+        options = {
+            "node": (("component", "Componente"), ("restrictions", "Restrições")),
+            "bar": self._options,
+            "plate": (("color", "Cor"), ("material", "Material"),
+                      ("section", "Seção"), ("restrictions", "Restrições")),
+        }[kind]
+        for index, (key, label) in enumerate(options):
+            checkbox = QCheckBox(label, self)
+            checkbox.setAccessibleName(f"Copiar {label.casefold()}")
+            checkbox.setChecked(True)
+            self.checkboxes[key] = checkbox
+            self._choices_layout.addWidget(checkbox, index // 2, index % 2)
+            checkbox.show()
+        self._choices_layout.invalidate()
+        self.layout().invalidate()
+        self.layout().activate()
+        self.resize(self.sizeHint())
+        self.layout().setGeometry(self.rect())
+        self.reposition()
+        self.window._copy_property_kind_changed()
 
     def begin(self, button: QToolButton) -> None:
         self._button = button
@@ -647,6 +791,8 @@ class VerificationTopPalette(QFrame):
         self.utilization_button.setAccessibleName(utilization_tooltip)
         self.hide()
 
+        _register_palette_tooltips(self)
+
     def _identifier_button(self, icon_name: str, label: str, kind: str) -> QToolButton:
         button = QToolButton(self)
         button.setFixedSize(24, 24)
@@ -724,6 +870,23 @@ class DetailingTopPalette(QFrame):
         separator.setFixedHeight(18)
         separator.setStyleSheet("QFrame { color: #d0d7de; }")
         layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.align_faces_button = QToolButton(self)
+        self.align_faces_button.setFixedSize(30, 30)
+        self.align_faces_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "align-faces.svg"))
+        )
+        self.align_faces_button.setIconSize(QSize(21, 21))
+        self.align_faces_button.setToolTip("Alinhar faces")
+        self.align_faces_button.setProperty("paletteTooltip", "Alinhar faces")
+        self.align_faces_button.setAccessibleName("Alinhar faces")
+        self.align_faces_button.clicked.connect(window.start_face_alignment)
+        self.align_faces_button.installEventFilter(self)
+        self.align_faces_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.align_faces_button)
         self.additional_detailing_button = QToolButton(self)
         self.additional_detailing_button.setFixedSize(30, 30)
         self.additional_detailing_button.setIcon(
@@ -760,23 +923,43 @@ class DetailingTopPalette(QFrame):
             "QToolButton:pressed { background: #d0d7de; }"
         )
         layout.addWidget(self.connect_ends_button)
-        button = QToolButton(self)
-        button.setFixedSize(30, 30)
-        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "scan-square.svg")))
-        button.setIconSize(QSize(21, 21))
-        button.setToolTip("Gerenciar vistas")
-        button.setProperty("paletteTooltip", "Gerenciar vistas")
-        button.setAccessibleName("Gerenciar vistas")
-        button.installEventFilter(self)
-        button.clicked.connect(window.open_detailing_views)
-        button.setStyleSheet(
+        self.subtract_end_button = QToolButton(self)
+        self.subtract_end_button.setFixedSize(30, 30)
+        self.subtract_end_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "subtract-end.svg"))
+        )
+        self.subtract_end_button.setIconSize(QSize(21, 21))
+        self.subtract_end_button.setToolTip("Subtrair extremidade")
+        self.subtract_end_button.setProperty("paletteTooltip", "Subtrair extremidade")
+        self.subtract_end_button.setAccessibleName("Subtrair extremidade")
+        self.subtract_end_button.clicked.connect(window.start_detail_end_cut)
+        self.subtract_end_button.installEventFilter(self)
+        self.subtract_end_button.setStyleSheet(
             "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #d0d7de; }"
         )
-        layout.addWidget(button)
-        self.manage_views_button = button
+        layout.addWidget(self.subtract_end_button)
+        self.subtract_button = QToolButton(self)
+        self.subtract_button.setFixedSize(30, 30)
+        self.subtract_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "subtract-shape.svg"))
+        )
+        self.subtract_button.setIconSize(QSize(21, 21))
+        self.subtract_button.setToolTip("Subtrair trecho")
+        self.subtract_button.setProperty("paletteTooltip", "Subtrair trecho")
+        self.subtract_button.setAccessibleName("Subtrair trecho")
+        self.subtract_button.clicked.connect(window.start_detail_subtraction)
+        self.subtract_button.installEventFilter(self)
+        self.subtract_button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        layout.addWidget(self.subtract_button)
         self.hide()
+
+        _register_palette_tooltips(self)
 
     def set_detailing_visible(self, visible: bool) -> None:
         if not visible:
@@ -816,9 +999,11 @@ class DetailingTopPalette(QFrame):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched in (
             self.name_button,
+            self.align_faces_button,
             self.additional_detailing_button,
             self.connect_ends_button,
-            self.manage_views_button,
+            self.subtract_button,
+            self.subtract_end_button,
         ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))
@@ -827,6 +1012,557 @@ class DetailingTopPalette(QFrame):
             elif event.type() == QEvent.Type.ToolTip:
                 return True
         return super().eventFilter(watched, event)
+
+
+class DetailingModePalette(QFrame):
+    """Small mode switch centered below the detailing toolbar."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self._selected = 0
+        self.setObjectName("detailingModePalette")
+        self.setFixedSize(186, 30)
+        self.setStyleSheet(
+            "QFrame#detailingModePalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        self._indicator = QFrame(self)
+        self._indicator.setObjectName("detailingModeIndicator")
+        self._indicator.setStyleSheet(
+            "QFrame#detailingModeIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        self._buttons: list[QToolButton] = []
+        self._button_group = QButtonGroup(self)
+        self._button_group.setExclusive(True)
+        for index, label in enumerate(("Modelo", "Projeto")):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(88, 22)
+            button.setAccessibleName(label)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 11px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(index == self._selected)
+            button.clicked.connect(lambda _checked=False, choice=index: self._select(choice))
+            self._button_group.addButton(button)
+            layout.addWidget(button)
+            self._buttons.append(button)
+        self._indicator.setGeometry(self._indicator_geometry())
+        self._indicator.lower()
+        self._update_text()
+        self.hide()
+
+        _register_palette_tooltips(self)
+
+    def _indicator_geometry(self) -> QRect:
+        return QRect(4 + 88 * self._selected, 5, 86, 20)
+
+    def _update_text(self) -> None:
+        for index, button in enumerate(self._buttons):
+            color = "#ffffff" if index == self._selected else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _select(self, index: int) -> None:
+        if index == self._selected:
+            return
+        self._selected = index
+        animation = QPropertyAnimation(self._indicator, b"geometry", self)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(self._indicator.geometry())
+        animation.setEndValue(self._indicator_geometry())
+        animation.start()
+        self._indicator_animation = animation
+        self._update_text()
+        self._window.set_detailing_project_mode(index == 1)
+
+    def set_detailing_visible(self, visible: bool) -> None:
+        if not visible and self._selected == 1:
+            self._buttons[0].setChecked(True)
+            self._select(0)
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def set_project_mode(self, active: bool) -> None:
+        index = int(bool(active))
+        self._buttons[index].setChecked(True)
+        self._select(index)
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        self._window.detailing_top_palette.adjustSize()
+        self._window.detailing_top_palette.reposition()
+        top = self._window.detailing_top_palette
+        x = (self._window.width() - self.width()) // 2
+        y = top.y() + top.height() + 8
+        self.move(x, y)
+        self.raise_()
+
+
+class ProjectSheetsPalette(QFrame):
+    """Sheet selector and controls shown in project view mode."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self._sheet_names = ["01 - Folha Geral"]
+        self._project_settings = default_project_settings()
+        self._sheet_settings = {
+            self._sheet_names[0]: default_project_sheet_settings(self._sheet_names[0]),
+        }
+        self._sheet_views: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self._sheet_texts: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self._sheet_lines: dict[str, list[dict]] = {self._sheet_names[0]: []}
+        self.setObjectName("projectSheetsPalette")
+        self.setStyleSheet(
+            "QFrame#projectSheetsPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+            "QComboBox { min-width: 300px; min-height: 30px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QToolButton { min-width: 30px; min-height: 30px; border: 0; border-radius: 6px; "
+            "background: transparent; color: #24292f; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:disabled { color: #afb8c1; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+        self.sheet_selector = SelectorComboBox(self)
+        self.sheet_selector.setToolTip("Folha de projeto")
+        self.sheet_selector.setAccessibleName("Folha de projeto")
+        self.sheet_selector.addItems(self._sheet_names)
+        self.sheet_selector.currentTextChanged.connect(self._on_sheet_selected)
+        layout.addWidget(self.sheet_selector)
+        self.settings_button = self._action_button(
+            "settings.svg", "Configurar projeto", window.open_project_sheet_settings,
+        )
+        self.settings_button.setEnabled(True)
+        layout.addWidget(self.settings_button)
+        self.identify_button = self._action_button(
+            "tag.svg", "Identificador de elemento", window.start_project_view_identification,
+        )
+        self.identify_button.setEnabled(True)
+        self.detail_identifier_button = self._action_button(
+            "detail-identifier.svg", "Identificador de detalhe",
+            window.start_project_detail_identifier,
+        )
+        self.detail_identifier_button.setIconSize(QSize(21, 21))
+        self.section_button = self._action_button(
+            "section-cut.svg", "Corte", window.start_project_section,
+        )
+        self.section_button.setIconSize(QSize(21, 21))
+        self.elevation_identifier_button = self._action_button(
+            "elevation-identifier.svg", "Identificador de elevação",
+            window.start_project_elevation_identifier,
+        )
+        self.elevation_identifier_button.setIconSize(QSize(21, 21))
+        self.hide_view_elements_button = self._action_button(
+            "lightbulb-off.svg", "Ocultar elemento",
+            lambda: window.start_project_sheet_visibility("hide"),
+        )
+        self.reveal_view_elements_button = self._action_button(
+            "lightbulb.svg", "Reexibir elemento",
+            lambda: window.start_project_sheet_visibility("reveal"),
+        )
+        self.reveal_all_view_elements_button = self._action_button(
+            "lightbulb-all.svg", "Reexibir todos elementos",
+            lambda: window.start_project_sheet_visibility("reveal_all"),
+        )
+        self.weld_button = self._action_button(
+            "weld.svg", "Marca de solda", window.start_project_weld,
+        )
+        self.weld_button.setIconSize(QSize(21, 21))
+        self.member_break_button = self._action_button(
+            "member-break.svg", "Zig-zag", window.start_project_member_break,
+        )
+        self.member_break_button.setIconSize(QSize(21, 21))
+        self.dimension_button = self._action_button(
+            "dimension.svg", "Cota alinhada", window.start_project_view_dimension,
+        )
+        self.dimension_button.setIconSize(QSize(21, 21))
+        self.orthogonal_dimension_button = self._action_button(
+            "dimension-orthogonal.svg", "Cota ortogonal",
+            window.start_project_view_orthogonal_dimension,
+        )
+        self.orthogonal_dimension_button.setIconSize(QSize(21, 21))
+        self.angular_dimension_button = self._action_button(
+            "dimension-angular.svg", "Cota angular", window.start_project_view_angular_dimension,
+        )
+        self.level_dimension_button = self._action_button(
+            "dimension-level.svg", "Cota de nível", window.start_project_view_level_dimension,
+        )
+        self.angular_dimension_button.setIconSize(QSize(21, 21))
+        self.level_dimension_button.setIconSize(QSize(21, 21))
+        self.sheet_text_button = self._action_button(
+            "square-text.svg", "Inserir texto na folha", window.start_project_sheet_text,
+        )
+        self.sheet_text_button.setIconSize(QSize(21, 21))
+        self.sheet_table_button = self._action_button(
+            "insert-table.svg", "Inserir tabela", window.open_project_sheet_tables,
+        )
+        self.sheet_table_button.setIconSize(QSize(21, 21))
+        self.sheet_line_button = self._action_button(
+            "draw-line.svg", "Desenhar linha na folha", window.start_project_sheet_line,
+        )
+        self.sheet_line_button.setIconSize(QSize(21, 21))
+        self.sheet_rectangle_button = self._action_button(
+            "draw-rectangle.svg", "Desenhar retângulo na folha", window.start_project_sheet_rectangle,
+        )
+        self.sheet_rectangle_button.setIconSize(QSize(21, 21))
+        self.sheet_circle_button = self._action_button(
+            "draw-circle.svg", "Desenhar círculo na folha", window.start_project_sheet_circle,
+        )
+        self.sheet_circle_button.setIconSize(QSize(21, 21))
+        self.sheet_image_button = self._action_button(
+            "image.svg", "Inserir imagem na folha", window.start_project_sheet_image,
+        )
+        self.sheet_image_button.setIconSize(QSize(21, 21))
+        self.manage_views_button = self._action_button(
+            "scan-square.svg", "Adicionar vistas", window.open_detailing_views,
+        )
+        self.manage_views_button.setIconSize(QSize(21, 21))
+        layout.addWidget(self.manage_views_button)
+        self.component_details_button = self._action_button(
+            "component.svg", "Adicionar detalhe",
+            window.open_component_details,
+        )
+        self.component_details_button.setIconSize(QSize(21, 21))
+        layout.addWidget(self.component_details_button)
+        self.visibility_group_button = self._group_button("lightbulb.svg", "Visualização", (
+            self.hide_view_elements_button, self.reveal_view_elements_button, self.reveal_all_view_elements_button,
+        ))
+        self.model_elements_group_button = self._group_button("tag.svg", "Elementos do modelo", (
+            self.identify_button, self.detail_identifier_button, self.section_button,
+            self.elevation_identifier_button, self.member_break_button, self.weld_button,
+        ))
+        self.dimensions_group_button = self._group_button("dimension.svg", "Cotas", (
+            self.dimension_button, self.orthogonal_dimension_button, self.angular_dimension_button, self.level_dimension_button,
+        ))
+        self.drawing_group_button = self._group_button("draw-line.svg", "Desenho", (
+            self.sheet_line_button, self.sheet_rectangle_button, self.sheet_circle_button,
+        ))
+        self.insert_group_button = self._group_button("image.svg", "Inserir", (
+            self.sheet_image_button, self.sheet_text_button, self.sheet_table_button,
+        ))
+        layout.addWidget(self.visibility_group_button)
+        layout.addWidget(self.model_elements_group_button)
+        layout.addWidget(self.dimensions_group_button)
+        layout.addWidget(self.drawing_group_button)
+        layout.addWidget(self.insert_group_button)
+        self._on_sheet_selected(self.sheet_selector.currentText())
+        self.hide()
+
+        _register_palette_tooltips(self)
+
+    def _action_button(self, icon_filename: str, tooltip: str, callback) -> QToolButton:
+        button = QToolButton(self)
+        button.setFixedSize(30, 30)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+        button.setIconSize(QSize(17, 17))
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.clicked.connect(callback)
+        return button
+
+    def _group_button(self, icon_filename: str, tooltip: str, tools) -> QToolButton:
+        button = self._action_button(icon_filename, tooltip, lambda: None)
+        button.setIconSize(QSize(21, 21))
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+        menu = QMenu(button)
+        menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(
+            "QMenu { background: #ffffff; border: 1px solid #d0d7de; padding: 5px; color: #24292f; }"
+            "QMenu::item { padding: 7px 28px 7px 10px; }"
+            "QMenu::item:selected { background: #eaeef2; }"
+            "QMenu::item:disabled { color: #8c959f; }"
+        )
+        for tool in tools:
+            tool.setProperty("paletteMenuItem", True)
+            action = menu.addAction(tool.icon(), tool.toolTip())
+            action.triggered.connect(tool.click)
+            tool.hide()
+        button.setMenu(menu)
+        return button
+
+    def set_project_mode(self, active: bool) -> None:
+        self.setVisible(active)
+        if active:
+            self.reposition()
+
+    def restore_detailing_state(self, state: dict | None) -> None:
+        state = state if isinstance(state, dict) else {}
+        names = state.get("sheet_names", [])
+        names = [name for name in names if isinstance(name, str) and name.strip()]
+        if not names:
+            names = ["01 - Folha Geral"]
+        raw_settings = state.get("sheet_settings", {})
+        raw_views = state.get("sheet_views", {})
+        raw_texts = state.get("sheet_texts", {})
+        raw_lines = state.get("sheet_lines", {})
+        self._sheet_names = list(names)
+        self._sheet_settings = {}
+        self._sheet_views = {}
+        for name in names:
+            settings = default_project_sheet_settings(name)
+            if isinstance(raw_settings, dict) and isinstance(raw_settings.get(name), dict):
+                saved = raw_settings[name]
+                settings.update(saved)
+                settings["visible_fields"] = {
+                    **default_project_sheet_settings(name)["visible_fields"],
+                    **saved.get("visible_fields", {}),
+                }
+            self._sheet_settings[name] = settings
+            saved_views = raw_views.get(name, []) if isinstance(raw_views, dict) else []
+            self._sheet_views[name] = [
+                dict(view) for view in saved_views if isinstance(view, dict)
+            ] if isinstance(saved_views, list) else []
+            texts = raw_texts.get(name, []) if isinstance(raw_texts, dict) else []
+            lines = raw_lines.get(name, []) if isinstance(raw_lines, dict) else []
+            self._sheet_texts[name] = [dict(item) for item in texts if isinstance(item, dict)] if isinstance(texts, list) else []
+            self._sheet_lines[name] = [dict(item) for item in lines if isinstance(item, dict)] if isinstance(lines, list) else []
+        project_settings = default_project_settings()
+        saved_project_settings = state.get("project_settings", {})
+        if isinstance(saved_project_settings, dict):
+            project_settings.update(saved_project_settings)
+        self._project_settings = project_settings
+        self.sheet_selector.blockSignals(True)
+        self.sheet_selector.clear()
+        self.sheet_selector.addItems(self._sheet_names)
+        active_sheet = state.get("active_sheet")
+        active_index = self._sheet_names.index(active_sheet) if active_sheet in self._sheet_names else 0
+        self.sheet_selector.setCurrentIndex(active_index)
+        self.sheet_selector.blockSignals(False)
+        has_sheets = bool(self._sheet_names)
+        self.sheet_selector.setEnabled(has_sheets)
+        self.settings_button.setEnabled(True)
+        self._on_sheet_selected(self.sheet_selector.currentText())
+
+    def _on_sheet_selected(self, sheet_name: str) -> None:
+        self._window.refresh_project_sheet_views(sheet_name)
+        settings = self._sheet_settings.get(sheet_name)
+        if settings is not None:
+            self._window.project_sheet_workspace.set_sheet_settings(
+                sheet_name, settings, self._project_settings, len(self._sheet_names),
+            )
+            self._window.project_sheet_workspace.set_sheet_views(
+                self._sheet_views.get(sheet_name, ()), clear_selection=True,
+            )
+            self._window.project_sheet_workspace.set_sheet_annotations(
+                self._sheet_texts.get(sheet_name, ()), self._sheet_lines.get(sheet_name, ()),
+            )
+        else:
+            self._window.project_sheet_workspace.set_sheet_settings(
+                "", default_project_sheet_settings(""), self._project_settings,
+                len(self._sheet_names),
+            )
+            self._window.project_sheet_workspace.set_sheet_views((), clear_selection=True)
+            self._window.project_sheet_workspace.set_sheet_annotations((), ())
+
+    def add_view_to_active_sheet(self, view: dict) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        if not sheet_name:
+            return
+        self._sheet_views.setdefault(sheet_name, []).append(view)
+        self._window.project_sheet_workspace.set_sheet_views(self._sheet_views[sheet_name])
+        self._window.project_sheet_workspace.select_view(len(self._sheet_views[sheet_name]) - 1)
+        self._window._store_detailing_state()
+
+    def remove_view_from_active_sheet(self, index: int) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        views = self._sheet_views.get(sheet_name, [])
+        if not 0 <= index < len(views):
+            return
+        views.pop(index)
+        self._window.project_sheet_workspace.set_sheet_views(views, clear_selection=True)
+        self._window._store_detailing_state()
+
+    def remove_component_detail_group_from_active_sheet(self, group_id: str) -> None:
+        sheet_name = self.sheet_selector.currentText()
+        views = self._sheet_views.get(sheet_name, [])
+        remaining = [
+            view for view in views
+            if not isinstance(view.get("component_detail_group"), dict)
+            or str(view["component_detail_group"].get("id")) != str(group_id)
+        ]
+        if len(remaining) == len(views):
+            return
+        self._sheet_views[sheet_name] = remaining
+        self._window.project_sheet_workspace.set_sheet_views(remaining, clear_selection=True)
+        self._window._store_detailing_state()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        top = self._window.detailing_top_palette
+        top.adjustSize()
+        top.reposition()
+        self.setFixedHeight(top.height())
+        self.move((self._window.width() - self.width()) // 2, top.y())
+        self.raise_()
+
+    def _sheet_name_dialog(
+        self, title: str = "Adicionar folha", current_name: str = "",
+    ) -> tuple[bool, str]:
+        dialog = QInputDialog(self._window)
+        dialog.setWindowTitle(title)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setLabelText("Nome da folha:")
+        dialog.setTextValue(current_name)
+        dialog.setOkButtonText("Salvar" if current_name else "Adicionar")
+        dialog.setCancelButtonText("Cancelar")
+        dialog.setStyleSheet(
+            "QInputDialog { background: #ffffff; border: 0; }"
+            "QLabel { color: #57606a; }"
+            "QLineEdit { min-height: 34px; border: 1px solid #d0d7de; border-radius: 6px; "
+            "padding: 2px 9px; background: #ffffff; }"
+            "QPushButton { min-height: 34px; padding: 4px 16px; border: 0; border-radius: 6px; "
+            "background: #f6f8fa; color: #57606a; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        for button in dialog.findChildren(QPushButton):
+            button.setIcon(QIcon())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        return accepted, dialog.textValue().strip()
+
+    def _add_sheet(self) -> None:
+        accepted, name = self._sheet_name_dialog()
+        if not accepted or not name:
+            return
+        if any(sheet.partition(" - ")[2] == name for sheet in self._sheet_names):
+            QMessageBox.warning(self._window, "Adicionar folha", "Já existe uma folha com esse nome.")
+            return
+        next_index = max(
+            (int(sheet[:2]) for sheet in self._sheet_names if sheet[:2].isdigit()),
+            default=0,
+        ) + 1
+        sheet_label = f"{next_index:02d} - {name}"
+        self._sheet_names.append(sheet_label)
+        self._sheet_settings[sheet_label] = default_project_sheet_settings(sheet_label)
+        self._sheet_views[sheet_label] = []
+        self._sheet_texts[sheet_label] = []
+        self._sheet_lines[sheet_label] = []
+        self.sheet_selector.addItem(sheet_label)
+        self.sheet_selector.setCurrentText(sheet_label)
+        self.sheet_selector.setEnabled(True)
+        self.settings_button.setEnabled(True)
+        self._window._store_detailing_state()
+
+    def _rename_sheet(self, sheet_label: str | None = None) -> str | None:
+        index = (
+            self._sheet_names.index(sheet_label)
+            if sheet_label in self._sheet_names
+            else self.sheet_selector.currentIndex()
+        )
+        if index < 0 or index >= len(self._sheet_names):
+            return None
+        old_label = self._sheet_names[index]
+        old_name = old_label.partition(" - ")[2]
+        accepted, name = self._sheet_name_dialog("Renomear folha", old_name)
+        if not accepted or not name or name == old_name:
+            return None
+        if any(
+            index_other != index and sheet.partition(" - ")[2] == name
+            for index_other, sheet in enumerate(self._sheet_names)
+        ):
+            QMessageBox.warning(self._window, "Renomear folha", "Já existe uma folha com esse nome.")
+            return None
+        index_label = old_label.partition(" - ")[0]
+        new_label = f"{index_label} - {name}"
+        settings = self._sheet_settings.pop(old_label)
+        settings["subject"] = name
+        self._sheet_settings[new_label] = settings
+        self._sheet_views[new_label] = self._sheet_views.pop(old_label, [])
+        self._sheet_texts[new_label] = self._sheet_texts.pop(old_label, [])
+        self._sheet_lines[new_label] = self._sheet_lines.pop(old_label, [])
+        self._sheet_names[index] = new_label
+        self.sheet_selector.setItemText(index, new_label)
+        if self.sheet_selector.currentIndex() == index:
+            self._on_sheet_selected(new_label)
+        self._window._store_detailing_state()
+        return new_label
+
+    def reorder_sheet(self, sheet_label: str, requested_number: str) -> str:
+        if sheet_label not in self._sheet_names:
+            return sheet_label
+        old_index = self._sheet_names.index(sheet_label)
+        ordered = [
+            (
+                label.partition(" - ")[2],
+                self._sheet_settings[label],
+                self._sheet_views.get(label, []),
+                self._sheet_texts.get(label, []),
+                self._sheet_lines.get(label, []),
+            )
+            for label in self._sheet_names
+        ]
+        selected = ordered.pop(old_index)
+        new_index = max(0, min(int(requested_number) - 1, len(ordered)))
+        ordered.insert(new_index, selected)
+
+        self._sheet_names = []
+        self._sheet_settings = {}
+        self._sheet_views = {}
+        self._sheet_texts = {}
+        self._sheet_lines = {}
+        for index, (title, settings, views, texts, lines) in enumerate(ordered, start=1):
+            label = f"{index:02d} - {title}"
+            settings["sheet_number"] = f"{index:02d}"
+            self._sheet_names.append(label)
+            self._sheet_settings[label] = settings
+            self._sheet_views[label] = views
+            self._sheet_texts[label] = texts
+            self._sheet_lines[label] = lines
+
+        self.sheet_selector.blockSignals(True)
+        self.sheet_selector.clear()
+        self.sheet_selector.addItems(self._sheet_names)
+        self.sheet_selector.setCurrentIndex(new_index)
+        self.sheet_selector.blockSignals(False)
+        selected_label = self._sheet_names[new_index]
+        self._on_sheet_selected(selected_label)
+        self._window._store_detailing_state()
+        return selected_label
+
+    def _remove_sheet(self) -> None:
+        name = self.sheet_selector.currentText()
+        if not name:
+            return
+        if not self._window.confirm_remove_project_sheet(name):
+            return
+        index = self.sheet_selector.currentIndex()
+        self._sheet_names.pop(index)
+        self._sheet_settings.pop(name, None)
+        self._sheet_views.pop(name, None)
+        self._sheet_texts.pop(name, None)
+        self._sheet_lines.pop(name, None)
+        self.sheet_selector.removeItem(index)
+        has_sheets = bool(self._sheet_names)
+        self.sheet_selector.setEnabled(has_sheets)
+        self.settings_button.setEnabled(True)
+        if not has_sheets:
+            self._on_sheet_selected("")
+        else:
+            current_index = self.sheet_selector.currentIndex()
+            current_label = self._sheet_names[current_index]
+            self.reorder_sheet(current_label, f"{current_index + 1:02d}")
+        self._window._store_detailing_state()
 
 
 class TopIconPalette(QFrame):
@@ -842,16 +1578,56 @@ class TopIconPalette(QFrame):
         self._visibility_buttons: dict[str, QToolButton] = {}
         self._solid_node_states: dict[str, tuple[bool, bool]] | None = None
         self._window = window
-        for filename, tooltip, kind in (("hash.svg", "Plano", "grid"),
+        self.identifier_group_button, self.identifier_group_menu = self._create_popup_group(
+            "tag.svg", "Identificadores"
+        )
+        self.geometry_options_button, self.geometry_options_menu = self._create_popup_group(
+            "axis-3d.svg", "Opções de geometria"
+        )
+        self.scene_options_button, self.scene_options_menu = self._create_popup_group(
+            "hash.svg", "Opções de cena"
+        )
+        self.member_tools_button, self.member_tools_menu = self._create_popup_group(
+            "member-spline.svg", "Barras"
+        )
+        self.plate_tools_button, self.plate_tools_menu = self._create_popup_group(
+            "plate.svg", "Placas"
+        )
+        group_buttons = {
+            "grid": self.scene_options_button,
+            "node": self.identifier_group_button,
+            "bar": self.identifier_group_button,
+            "plate": self.identifier_group_button,
+            "axes": self.geometry_options_button,
+            "releases": self.geometry_options_button,
+            "semirigid": self.geometry_options_button,
+            "supports": self.geometry_options_button,
+            "components": self.geometry_options_button,
+        }
+        group_menus = {
+            "grid": self.scene_options_menu,
+            "node": self.identifier_group_menu,
+            "bar": self.identifier_group_menu,
+            "plate": self.identifier_group_menu,
+            "axes": self.geometry_options_menu,
+            "releases": self.geometry_options_menu,
+            "semirigid": self.geometry_options_menu,
+            "supports": self.geometry_options_menu,
+            "components": self.geometry_options_menu,
+        }
+        self._added_popup_groups: set[QToolButton] = set()
+        for filename, tooltip, kind in (("hash.svg", "Planos", "grid"),
                                         ("reference-axes.svg", "Eixos", "reference-axes"),
-                                        ("box.svg", "Seções sólidas", "solid"),
+                                        ("box.svg", "Seções", "solid"),
                                         ("node-circle.svg", "Nós", "nodes"),
                                         ("dot-n.svg", "Identificadores dos nós", "node"),
                                         ("minus-m.svg", "Identificadores das barras", "bar"),
+                                        ("square-p.svg", "Identificadores das placas", "plate"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
-                                        ("release.svg", "Vinculações das barras", "releases"),
+                                        ("release.svg", "Vinculações", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
-                                        ("support-3d.svg", "Apoios dos nós", "supports")):
+                                        ("support-3d.svg", "Apoios dos nós", "supports"),
+                                        ("component.svg", "Componente", "components")):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
             button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / filename)))
@@ -861,12 +1637,14 @@ class TopIconPalette(QFrame):
                 "reference-axes": "AXES",
                 "node": "NODELABELS",
                 "bar": "MEMBERLABELS",
+                "plate": "PLATELABELS",
                 "axes": "LOCALAXES",
                 "nodes": "NODES",
                 "solid": "SOLIDS",
                 "releases": "RELEASES",
                 "semirigid": "SEMIRIGID",
                 "supports": "SUPPORTS",
+                "components": "COMPONENTS",
             }[kind]
             palette_tooltip = _command_tooltip(tooltip, command)
             button.setToolTip(palette_tooltip)
@@ -891,6 +1669,8 @@ class TopIconPalette(QFrame):
                 button.toggled.connect(window.scene.set_semirigid_links_visible)
             elif kind == "supports":
                 button.toggled.connect(window.scene.set_node_supports_visible)
+            elif kind == "components":
+                button.toggled.connect(window.scene.set_node_components_visible)
             elif kind == "node":
                 button.toggled.connect(
                     lambda visible: window._apply_mcp_view_change("node_labels_visible", visible)
@@ -898,6 +1678,10 @@ class TopIconPalette(QFrame):
             elif kind == "bar":
                 button.toggled.connect(
                     lambda visible: window._apply_mcp_view_change("member_labels_visible", visible)
+                )
+            elif kind == "plate":
+                button.toggled.connect(
+                    lambda visible: window._apply_mcp_view_change("plate_labels_visible", visible)
                 )
             else:
                 button.toggled.connect(lambda visible, element_kind=kind:
@@ -908,7 +1692,23 @@ class TopIconPalette(QFrame):
                 "QToolButton:checked { background: #d0d7de; }"
                 "QToolButton:pressed { background: #afb8c1; }"
             )
-            layout.addWidget(button)
+            group_button = group_buttons.get(kind)
+            if kind == "reference-axes":
+                button.hide()
+            elif group_button is not None:
+                if (
+                    group_button is not self.scene_options_button
+                    and group_button not in self._added_popup_groups
+                ):
+                    layout.addWidget(group_button)
+                    self._added_popup_groups.add(group_button)
+                self._add_menu_item(group_menus[kind], button, tooltip, toggle=True)
+                button.hide()
+                if kind == "axes" and self.scene_options_button not in self._added_popup_groups:
+                    layout.addWidget(self.scene_options_button)
+                    self._added_popup_groups.add(self.scene_options_button)
+            else:
+                layout.addWidget(button)
             self._visibility_buttons[kind] = button
 
         scene_button = QToolButton(self)
@@ -919,10 +1719,10 @@ class TopIconPalette(QFrame):
         }
         scene_button.setIcon(self._scene_icons[False])
         scene_button.setIconSize(QSize(19, 19))
-        scene_tooltip = _command_tooltip("Cena", "SCENE")
+        scene_tooltip = "Visibilidade"
         scene_button.setToolTip(scene_tooltip)
         scene_button.setProperty("paletteTooltip", scene_tooltip)
-        scene_button.setAccessibleName("Cena")
+        scene_button.setAccessibleName("Visibilidade")
         scene_button.setCheckable(True)
         scene_button.setChecked(False)
         scene_button.toggled.connect(self._on_scene_toggled)
@@ -952,7 +1752,7 @@ class TopIconPalette(QFrame):
         scene_palette_layout = QHBoxLayout(self.scene_palette)
         scene_palette_layout.setContentsMargins(4, 4, 4, 4)
         scene_palette_layout.setSpacing(3)
-        self.scene_view_selector = QComboBox(self.scene_palette)
+        self.scene_view_selector = SelectorComboBox(self.scene_palette)
         self.scene_view_selector.addItem("Completo")
         self.scene_view_selector.setToolTip("Vista da cena")
         self.scene_view_selector.setAccessibleName("Vista da cena")
@@ -993,23 +1793,16 @@ class TopIconPalette(QFrame):
         self._update_scene_view_actions()
         self.scene_palette.hide()
 
-        separator = QFrame(self)
-        separator.setFrameShape(QFrame.Shape.VLine)
-        separator.setFrameShadow(QFrame.Shadow.Plain)
-        separator.setFixedHeight(18)
-        separator.setStyleSheet("QFrame { color: #d0d7de; }")
-        layout.addWidget(separator, 0, Qt.AlignmentFlag.AlignVCenter)
-
         configure_axes_button = QToolButton(self)
         configure_axes_button.setFixedSize(24, 24)
         configure_axes_button.setIcon(
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "axis-configuration.svg"))
         )
         configure_axes_button.setIconSize(QSize(19, 19))
-        configure_axes_tooltip = _command_tooltip("Configurar eixos", "CONFIGAXES")
+        configure_axes_tooltip = _command_tooltip("Eixos", "CONFIGAXES")
         configure_axes_button.setToolTip(configure_axes_tooltip)
         configure_axes_button.setProperty("paletteTooltip", configure_axes_tooltip)
-        configure_axes_button.setAccessibleName("Configurar eixos")
+        configure_axes_button.setAccessibleName("Eixos")
         configure_axes_button.setCheckable(True)
         configure_axes_button.clicked.connect(window.toggle_axes_panel)
         configure_axes_button.installEventFilter(self)
@@ -1020,6 +1813,8 @@ class TopIconPalette(QFrame):
             "QToolButton:pressed { background: #afb8c1; }"
         )
         self.configure_axes_button = configure_axes_button
+        self._add_menu_item(self.scene_options_menu, configure_axes_button, configure_axes_button.accessibleName())
+        configure_axes_button.hide()
 
         configure_reference_button = QToolButton(self)
         configure_reference_button.setFixedSize(24, 24)
@@ -1027,17 +1822,17 @@ class TopIconPalette(QFrame):
             QIcon(str(Path(__file__).parents[1] / "resources/icons/scan-box.svg"))
         )
         configure_reference_button.setIconSize(QSize(19, 19))
-        configure_reference_tooltip = _command_tooltip("Configurar referência", "CONFIGREFERENCE")
+        configure_reference_tooltip = _command_tooltip("Referências", "CONFIGREFERENCE")
         configure_reference_button.setToolTip(configure_reference_tooltip)
         configure_reference_button.setProperty("paletteTooltip", configure_reference_tooltip)
-        configure_reference_button.setAccessibleName("Configurar referência")
+        configure_reference_button.setAccessibleName("Referências")
         configure_reference_button.setCheckable(True)
         configure_reference_button.clicked.connect(window.toggle_reference_panel)
         configure_reference_button.installEventFilter(self)
         configure_reference_button.setStyleSheet(configure_axes_button.styleSheet())
-        layout.addWidget(configure_reference_button)
         self.configure_reference_button = configure_reference_button
-        layout.addWidget(configure_axes_button)
+        self._add_menu_item(self.scene_options_menu, configure_reference_button, configure_reference_button.accessibleName())
+        configure_reference_button.hide()
 
         add_member_button = QToolButton(self)
         add_member_button.setFixedSize(24, 24)
@@ -1056,8 +1851,52 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.addWidget(add_member_button)
+        layout.addWidget(self.member_tools_button)
+        self._add_menu_item(self.member_tools_menu, add_member_button, add_member_button.accessibleName())
+        add_member_button.hide()
         self.add_member_button = add_member_button
+
+        plate_button = QToolButton(self)
+        plate_button.setFixedSize(24, 24)
+        plate_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "plate.svg"))
+        )
+        plate_button.setIconSize(QSize(19, 19))
+        plate_tooltip = _command_tooltip("Placa", "PLATE")
+        plate_button.setToolTip(plate_tooltip)
+        plate_button.setProperty("paletteTooltip", plate_tooltip)
+        plate_button.setAccessibleName("Placa")
+        plate_button.clicked.connect(lambda: window.handle_command("PLATE"))
+        plate_button.installEventFilter(self)
+        plate_button.setStyleSheet(add_member_button.styleSheet())
+        layout.addWidget(self.plate_tools_button)
+        self._add_menu_item(self.plate_tools_menu, plate_button, "Adicionar placa")
+        plate_button.hide()
+        self.plate_button = plate_button
+
+        split_plate_button = QToolButton(self)
+        split_plate_button.setFixedSize(24, 24)
+        split_plate_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "split-member.svg")))
+        split_plate_button.setIconSize(QSize(19, 19))
+        split_plate_button.setAccessibleName("Dividir placa")
+        split_plate_button.setToolTip(_command_tooltip("Dividir placa", "SPLITPLATE"))
+        split_plate_button.clicked.connect(window.start_split_plate)
+        split_plate_button.setStyleSheet(add_member_button.styleSheet())
+        self._add_menu_item(self.plate_tools_menu, split_plate_button, split_plate_button.accessibleName())
+        split_plate_button.hide()
+        self.split_plate_button = split_plate_button
+
+        join_plate_button = QToolButton(self)
+        join_plate_button.setFixedSize(24, 24)
+        join_plate_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "join-member-link.svg")))
+        join_plate_button.setIconSize(QSize(19, 19))
+        join_plate_button.setAccessibleName("Unir placas")
+        join_plate_button.setToolTip(_command_tooltip("Unir placas", "JOINPLATES"))
+        join_plate_button.clicked.connect(window.start_join_plates)
+        join_plate_button.setStyleSheet(add_member_button.styleSheet())
+        self._add_menu_item(self.plate_tools_menu, join_plate_button, join_plate_button.accessibleName())
+        join_plate_button.hide()
+        self.join_plate_button = join_plate_button
 
         split_member_button = QToolButton(self)
         split_member_button.setFixedSize(24, 24)
@@ -1076,28 +1915,9 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.addWidget(split_member_button)
+        self._add_menu_item(self.member_tools_menu, split_member_button, split_member_button.accessibleName())
+        split_member_button.hide()
         self.split_member_button = split_member_button
-
-        reverse_member_button = QToolButton(self)
-        reverse_member_button.setFixedSize(24, 24)
-        reverse_member_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "reverse-member.svg"))
-        )
-        reverse_member_button.setIconSize(QSize(19, 19))
-        reverse_member_tooltip = _command_tooltip("Inverter barra", "REVERSE")
-        reverse_member_button.setToolTip(reverse_member_tooltip)
-        reverse_member_button.setProperty("paletteTooltip", reverse_member_tooltip)
-        reverse_member_button.setAccessibleName("Inverter barra")
-        reverse_member_button.clicked.connect(window.start_reverse_member)
-        reverse_member_button.installEventFilter(self)
-        reverse_member_button.setStyleSheet(
-            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
-            "QToolButton:hover { background: #eaeef2; }"
-            "QToolButton:pressed { background: #afb8c1; }"
-        )
-        layout.addWidget(reverse_member_button)
-        self.reverse_member_button = reverse_member_button
 
         join_members_button = QToolButton(self)
         join_members_button.setFixedSize(24, 24)
@@ -1116,7 +1936,8 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.insertWidget(layout.indexOf(reverse_member_button), join_members_button)
+        self._add_menu_item(self.member_tools_menu, join_members_button, join_members_button.accessibleName())
+        join_members_button.hide()
         self.join_members_button = join_members_button
 
         rigid_member_button = QToolButton(self)
@@ -1136,7 +1957,8 @@ class TopIconPalette(QFrame):
             "QToolButton:hover { background: #eaeef2; }"
             "QToolButton:pressed { background: #afb8c1; }"
         )
-        layout.insertWidget(layout.indexOf(join_members_button) + 1, rigid_member_button)
+        self._add_menu_item(self.member_tools_menu, rigid_member_button, rigid_member_button.accessibleName())
+        rigid_member_button.hide()
         self.rigid_member_button = rigid_member_button
 
         copy_properties_button = QToolButton(self)
@@ -1198,7 +2020,96 @@ class TopIconPalette(QFrame):
         )
         layout.insertWidget(layout.indexOf(copy_properties_button), copy_elements_button)
         self.copy_elements_button = copy_elements_button
+        move_elements_button = QToolButton(self)
+        move_elements_button.setFixedSize(24, 24)
+        move_elements_button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "move.svg")))
+        move_elements_button.setIconSize(QSize(19, 19))
+        move_tooltip = _command_tooltip("Mover", "MOVE")
+        move_elements_button.setToolTip(move_tooltip)
+        move_elements_button.setProperty("paletteTooltip", move_tooltip)
+        move_elements_button.setAccessibleName("Mover")
+        move_elements_button.clicked.connect(window.start_move_elements)
+        move_elements_button.installEventFilter(self)
+        move_elements_button.setStyleSheet(copy_elements_button.styleSheet())
+        layout.insertWidget(layout.indexOf(copy_elements_button), move_elements_button)
+        self.move_elements_button = move_elements_button
         self.adjustSize()
+
+        _register_palette_tooltips(self)
+
+    def _add_menu_item(
+        self, menu: QMenu, button: QToolButton, label: str, *, toggle: bool = False,
+    ) -> None:
+        button.setProperty("paletteMenuItem", True)
+        action = QWidgetAction(menu)
+        action.setText(label)
+        action.setCheckable(toggle)
+        action.setChecked(toggle and button.isChecked())
+        row = QPushButton(menu)
+        row.setAccessibleName(label)
+        row.setMinimumHeight(38)
+        row.setStyleSheet(
+            "QPushButton { background: transparent; border: 0; border-radius: 5px; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(5, 5, 15, 5)
+        layout.setSpacing(10)
+        icon = QToolButton(row)
+        icon.setFixedSize(28, 28)
+        icon.setIcon(button.icon())
+        icon.setIconSize(QSize(19, 19))
+        icon.setCheckable(toggle)
+        icon.setChecked(toggle and button.isChecked())
+        icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        icon.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        icon.setStyleSheet(
+            "QToolButton { background: transparent; border: 0; border-radius: 6px; }"
+            "QToolButton:checked { background: #d0d7de; }"
+        )
+        text = QLabel(label, row)
+        text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        text.setStyleSheet("QLabel { color: #24292f; background: transparent; border: 0; }")
+        layout.addWidget(icon)
+        layout.addWidget(text, 1)
+        # QPushButton derives its size hint from its own text, not from child
+        # widgets. Give the menu the actual size required by the icon and label.
+        row.ensurePolished()
+        text.ensurePolished()
+        row.setMinimumSize(layout.sizeHint())
+        if toggle:
+            action.toggled.connect(button.setChecked)
+            button.toggled.connect(action.setChecked)
+            action.toggled.connect(icon.setChecked)
+        else:
+            action.triggered.connect(button.click)
+        row.clicked.connect(action.trigger)
+        row.clicked.connect(menu.close)
+        action.setDefaultWidget(row)
+        menu.addAction(action)
+
+    def _create_popup_group(self, icon_filename: str, label: str) -> tuple[QToolButton, QMenu]:
+        button = QToolButton(self)
+        button.setFixedSize(24, 24)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / icon_filename)))
+        button.setIconSize(QSize(19, 19))
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+        button.setStyleSheet(
+            "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton::menu-indicator { image: none; }"
+        )
+        menu = QMenu(button)
+        menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        menu.setStyleSheet(
+            "QMenu { background: #ffffff; border: 1px solid #d0d7de; padding: 5px; color: #24292f; }"
+            "QMenu::item { padding: 7px 28px 7px 10px; }"
+            "QMenu::item:selected { background: #eaeef2; }"
+        )
+        button.setMenu(menu)
+        return button, menu
 
     def _on_scene_toggled(self, active: bool) -> None:
         self.scene_button.setIcon(self._scene_icons[bool(active)])
@@ -1208,13 +2119,13 @@ class TopIconPalette(QFrame):
             self.scene_palette.raise_()
 
     def _position_scene_palette(self) -> None:
-        button_position = self.scene_button.mapTo(self._window, QPoint(0, self.scene_button.height() + 8))
+        palette_position = self.mapTo(self._window, QPoint(0, self.height() + 4))
         self.scene_palette.adjustSize()
-        x = button_position.x() + (self.scene_button.width() - self.scene_palette.width()) // 2
+        x = palette_position.x() + (self.width() - self.scene_palette.width()) // 2
         x = max(8, min(x, self._window.width() - self.scene_palette.width() - 8))
         self.scene_palette.move(
             x,
-            button_position.y(),
+            palette_position.y(),
         )
 
     def _scene_view_action_button(self, icon_filename: str, tooltip: str, callback=None) -> QToolButton:
@@ -1348,12 +2259,14 @@ class TopIconPalette(QFrame):
             "reference_axes_visible": "reference-axes",
             "node_labels_visible": "node",
             "member_labels_visible": "bar",
+            "plate_labels_visible": "plate",
             "local_axes_visible": "axes",
             "nodes_visible": "nodes",
             "solid_members_visible": "solid",
             "member_releases_visible": "releases",
             "semirigid_links_visible": "semirigid",
             "node_supports_visible": "supports",
+            "node_components_visible": "components",
         }.get(option)
         if kind is not None:
             button = self._visibility_buttons.get(kind)
@@ -1379,10 +2292,6 @@ class TopIconPalette(QFrame):
             self._position_scene_palette()
             self.scene_palette.raise_()
 
-    def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
-        """Disable manual reversal while automatic normalization is active."""
-        self.reverse_member_button.setEnabled(not enabled)
-
     def reposition(self) -> None:
         margin = 0 if self.window().isMaximized() else WindowFrame.MARGIN
         self.move((self.window().width() - self.width()) // 2, margin + 52)
@@ -1395,7 +2304,7 @@ class TopIconPalette(QFrame):
 class ActionTopPalette(QFrame):
     """Barra superior contextual para a edição de ações estruturais."""
 
-    class ActionSelector(QComboBox):
+    class ActionSelector(SelectorComboBox):
         """Seletor que mostra o indicador de peso próprio dentro do campo."""
 
         def __init__(self, parent: QWidget | None = None) -> None:
@@ -1455,6 +2364,7 @@ class ActionTopPalette(QFrame):
             ("node-moment.svg", "Momentos nos nós", "node_moments"),
             ("member-force.svg", "Forças nas barras", "member_forces"),
             ("member-moment.svg", "Momentos nas barras", "member_moments"),
+            ("plate.svg", "Pressões nas lajes", "plate_pressures"),
         ):
             button = QToolButton(self)
             button.setFixedSize(24, 24)
@@ -1465,6 +2375,7 @@ class ActionTopPalette(QFrame):
                 "node_moments": "NODEMOMENT",
                 "member_forces": "MEMBERFORCE",
                 "member_moments": "MEMBERMOMENT",
+                "plate_pressures": "PLATEPRESSURE",
             }[kind]
             palette_tooltip = _command_tooltip(tooltip, command)
             button.setToolTip(palette_tooltip)
@@ -1501,21 +2412,6 @@ class ActionTopPalette(QFrame):
         layout.addWidget(group_actions_button)
         self.group_actions_button = group_actions_button
 
-        add_action_button = QToolButton(self)
-        add_action_button.setFixedSize(24, 24)
-        add_action_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "add-action.svg"))
-        )
-        add_action_button.setIconSize(QSize(19, 19))
-        add_action_tooltip = _command_tooltip("Adicionar ação", "ACTION")
-        add_action_button.setToolTip(add_action_tooltip)
-        add_action_button.setProperty("paletteTooltip", add_action_tooltip)
-        add_action_button.setAccessibleName("Adicionar ação")
-        add_action_button.clicked.connect(window.start_load_command)
-        add_action_button.installEventFilter(self)
-        layout.addWidget(add_action_button)
-        self.add_action_button = add_action_button
-
         # Botão de aplicação do peso próprio.
         self.selfweight_button = QToolButton(self)
         self.selfweight_button.setObjectName("selfweightButton")
@@ -1532,6 +2428,7 @@ class ActionTopPalette(QFrame):
         self.selfweight_button.installEventFilter(self)
         layout.addWidget(self.selfweight_button)
         self.adjustSize()
+        _register_palette_tooltips(self)
 
     def toggle_action_visibility_command(self, kind: str) -> None:
         button = self._action_visibility_buttons.get(kind)
@@ -1544,6 +2441,7 @@ class ActionTopPalette(QFrame):
             "node_moments_visible": "node_moments",
             "member_forces_visible": "member_forces",
             "member_moments_visible": "member_moments",
+            "plate_pressures_visible": "plate_pressures",
         }.get(option)
         button = self._action_visibility_buttons.get(kind) if kind is not None else None
         if button is not None:
@@ -1595,10 +2493,7 @@ class ActionTopPalette(QFrame):
 class AnalysisTopPalette(QFrame):
     """Barra contextual de combinação e diagrama para a seção Análise."""
 
-    diagram_options = (
-        "Normal", "Cortante Y", "Cortante Z", "Torsor", "Fletor Y", "Fletor Z",
-        "Reações de apoio", "Deformação X", "Deformação Y", "Deformação Z", "Deformação XYZ",
-    )
+    diagram_options = tuple(label for label, _key in BAR_DIAGRAMS)
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -1606,7 +2501,7 @@ class AnalysisTopPalette(QFrame):
         self.setObjectName("topIconPalette")
         self.setStyleSheet(
             "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
-            "QComboBox { min-width: 184px; min-height: 24px; padding: 0 8px; border: 0; "
+            "QComboBox { min-height: 24px; padding: 0 8px; border: 0; "
             "border-radius: 6px; background: #d0d7de; color: #24292f; }"
             "QComboBox:hover { background: #afb8c1; }"
             "QComboBox::drop-down { width: 22px; border: 0; }"
@@ -1622,54 +2517,84 @@ class AnalysisTopPalette(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         self._tooltip = PaletteTooltip(window)
         self.selectors = QWidget(self)
         selectors_layout = QHBoxLayout(self.selectors)
         selectors_layout.setContentsMargins(0, 0, 0, 0)
-        selectors_layout.setSpacing(4)
-        self.combination_selector = QComboBox(self)
+        selectors_layout.setSpacing(6)
+        self.combination_selector = SelectorComboBox(self)
         self.combination_selector.setToolTip("Combinação de carga para os diagramas")
         self.combination_selector.setAccessibleName("Combinação de análise")
         self.combination_selector.currentTextChanged.connect(window._select_analysis_combination)
-        self.diagram_selector = QComboBox(self)
-        self.diagram_selector.addItems(self.diagram_options)
+        self.diagram_selector = SelectorComboBox(self)
+        self.diagram_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.result_kind = "bar"
+        self._selected_diagrams = {"bar": "Normal", "plate": PLATE_DIAGRAMS[0][1]}
+        for label, key in BAR_DIAGRAMS:
+            self.diagram_selector.addItem(label, key)
+        # Polish first: stylesheet minimum widths can override setFixedWidth,
+        # and the inherited font must be resolved before measuring labels.
+        self.diagram_selector.ensurePolished()
+        self.combination_selector.ensurePolished()
+        # Reserve room for either family before the user switches between them.
+        diagram_width = max(
+            self.diagram_selector.fontMetrics().horizontalAdvance(label)
+            for label, _key in (*BAR_DIAGRAMS, *PLATE_DIAGRAMS)
+        ) + 48
+        self.diagram_selector.setFixedWidth(max(224, diagram_width))
+        self.combination_selector.setFixedWidth(224)
+        self.diagram_selector.setFixedHeight(24)
+        self.combination_selector.setFixedHeight(24)
         self.diagram_selector.setToolTip(
             "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada barra."
         )
         self.diagram_selector.setAccessibleName("Tipo de diagrama")
-        self.diagram_selector.currentTextChanged.connect(window._select_analysis_diagram)
+        self.diagram_selector.currentIndexChanged.connect(
+            lambda _index: window._select_analysis_diagram(self.diagram_selector.currentData())
+        )
         selectors_layout.addWidget(self.combination_selector)
         selectors_layout.addWidget(self.diagram_selector)
 
-        result_diagrams_button = QToolButton(self)
-        result_diagrams_button.setFixedSize(24, 24)
-        result_diagrams_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "result-diagram.svg"))
+        from .dialogs import _SettingsChoiceSwitch
+        self.result_kind_switch = _SettingsChoiceSwitch(
+            (("bar", "Barras"), ("plate", "Placas")), "bar", self._select_result_kind, self,
+            compact=True,
         )
-        result_diagrams_button.setIconSize(QSize(17, 17))
-        result_diagrams_tooltip = "Diagrama dos resultados"
-        result_diagrams_button.setToolTip(result_diagrams_tooltip)
-        result_diagrams_button.setProperty("paletteTooltip", result_diagrams_tooltip)
-        result_diagrams_button.setAccessibleName(result_diagrams_tooltip)
-        result_diagrams_button.setCheckable(True)
-        result_diagrams_button.setChecked(True)
-        result_diagrams_button.toggled.connect(window.scene.set_analysis_diagrams_visible)
-        result_diagrams_button.installEventFilter(self)
-        selectors_layout.addWidget(result_diagrams_button)
-        self.result_diagrams_button = result_diagrams_button
-        self.diagram_selector.currentTextChanged.connect(self._update_result_diagrams_button)
-        self._update_result_diagrams_button(self.diagram_selector.currentText())
+        self.result_kind_switch.setStyleSheet(
+            "QFrame#settingsChoiceSwitch { background: transparent; border: 0; }"
+        )
+        self.result_kind_switch._indicator.setStyleSheet(
+            "QFrame#settingsChoiceIndicator { background: #0969da; border: 0; border-radius: 6px; }"
+        )
+        icons = Path(__file__).parents[1] / "resources" / "icons"
+        for kind, icon_name, tooltip in (
+            ("bar", "result-diagram.svg", "Diagramas de barras"),
+            ("plate", "plate.svg", "Diagramas de placas"),
+        ):
+            button = self.result_kind_switch._buttons[kind]
+            button.setText("")
+            button.setIcon(QIcon(str(icons / icon_name)))
+            button.setIconSize(QSize(19, 19))
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.setProperty("paletteTooltip", tooltip)
+            button.installEventFilter(self)
+        self.result_diagrams_button = self.result_kind_switch._buttons["bar"]
+        self.plate_diagrams_button = self.result_kind_switch._buttons["plate"]
+        selectors_layout.addWidget(self.result_kind_switch)
+        self._update_result_kind_icons()
+        self._window.scene.set_analysis_result_kind("bar")
         self.deformation_scale_button = QToolButton(self)
         self.deformation_scale_button.setFixedSize(24, 24)
         self.deformation_scale_button.setIcon(
             QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "lens.svg"))
         )
         self.deformation_scale_button.setIconSize(QSize(19, 19))
-        scale_button_tooltip = "Escala de deformação"
+        scale_button_tooltip = "Escala"
         self.deformation_scale_button.setToolTip(scale_button_tooltip)
         self.deformation_scale_button.setProperty("paletteTooltip", scale_button_tooltip)
-        self.deformation_scale_button.setAccessibleName("Escala da deformação")
+        self.deformation_scale_button.setAccessibleName("Escala")
         self.deformation_scale_button.installEventFilter(self)
         self.deformation_scale_button.clicked.connect(self._toggle_deformation_scale_popup)
         selectors_layout.addWidget(self.deformation_scale_button)
@@ -1699,19 +2624,29 @@ class AnalysisTopPalette(QFrame):
             Qt.Orientation.Vertical, self.deformation_scale_popup,
         )
         self.deformation_scale_slider.setObjectName("deformationScaleSlider")
-        self.deformation_scale_slider.setRange(1, 10)
+        # The same control keeps separate positions for deformations and
+        # force diagrams, whose scale ranges have different meanings.
+        self.deformation_scale_slider.setRange(0, 10)
         self.deformation_scale_slider.setSingleStep(1)
         self.deformation_scale_slider.setPageStep(1)
-        self.deformation_scale_slider.setValue(1)
+        self.deformation_scale_slider.setTickPosition(QSlider.TickPosition.TicksBothSides)
+        self.deformation_scale_slider.setTickInterval(1)
+        self.deformation_scale_slider.setValue(0)
         self.deformation_scale_slider.setInvertedAppearance(True)
         self.deformation_scale_slider.setFixedWidth(18)
-        self.deformation_scale_slider.setFixedHeight(132)
-        self.deformation_scale_slider.setAccessibleName("Amplificação da deformação")
-        self.deformation_scale_slider.setAccessibleDescription("De 1x, deslocamento real, até 10x")
+        self.deformation_scale_slider.setFixedHeight(144)
+        self.deformation_scale_slider.setAccessibleName("Escala")
+        self._deformation_scale_position = 0
+        self._bar_diagram_scale_position = 9
         self.deformation_scale_slider.valueChanged.connect(self._deformation_scale_changed)
         popup_layout.addWidget(self.deformation_scale_slider, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.diagram_selector.currentTextChanged.connect(self._update_deformation_scale_controls)
-        self._update_deformation_scale_controls(self.diagram_selector.currentText())
+        self.deformation_scale_value = QLabel("1×", self.deformation_scale_popup)
+        self.deformation_scale_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.deformation_scale_value.setMinimumWidth(48)
+        self.deformation_scale_value.setObjectName("deformationScaleValue")
+        popup_layout.addWidget(self.deformation_scale_value)
+        self.diagram_selector.currentTextChanged.connect(self._update_scale_controls)
+        self._update_scale_controls(self.diagram_selector.currentText())
         self.pending = QFrame(self)
         self.pending.setObjectName("analysisPending")
         pending_layout = QHBoxLayout(self.pending)
@@ -1759,7 +2694,10 @@ class AnalysisTopPalette(QFrame):
         process_button.installEventFilter(self)
         layout.addWidget(process_button)
         self.process_button = process_button
+        self.pending.setFixedHeight(24)
         self.adjustSize()
+
+        _register_palette_tooltips(self)
 
     def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:
         self.combination_selector.blockSignals(True)
@@ -1769,6 +2707,7 @@ class AnalysisTopPalette(QFrame):
         self.combination_selector.setCurrentIndex(index if index >= 0 else (0 if names else -1))
         self.combination_selector.blockSignals(False)
         self.adjustSize()
+        self.reposition()
 
     def set_analysis_ready(self, ready: bool) -> None:
         self.selectors.setVisible(ready)
@@ -1776,28 +2715,125 @@ class AnalysisTopPalette(QFrame):
         if not ready:
             self.deformation_scale_popup.hide()
         self.adjustSize()
+        self.reposition()
 
     def reset_result_view(self) -> None:
         """Return to the neutral view when analysis results are unavailable."""
         self.diagram_selector.blockSignals(True)
-        self.diagram_selector.setCurrentText("Normal")
+        self.diagram_selector.setCurrentIndex(0)
         self.diagram_selector.blockSignals(False)
         result_type = self.diagram_selector.currentText()
-        self._update_result_diagrams_button(result_type)
-        self._update_deformation_scale_controls(result_type)
+        self._update_scale_controls(result_type)
 
-    def _update_result_diagrams_button(self, result_type: str) -> None:
-        """The result-visibility toggle does not apply to deformation views."""
-        self.result_diagrams_button.setEnabled(not result_type.startswith("Deformação"))
+    def _select_result_kind(self, kind: str) -> None:
+        self._selected_diagrams[self.result_kind] = self.diagram_selector.currentData()
+        self.result_kind = kind
+        self.diagram_selector.blockSignals(True)
+        self.diagram_selector.clear()
+        options = BAR_DIAGRAMS if kind == "bar" else PLATE_DIAGRAMS
+        for label, key in options:
+            self.diagram_selector.addItem(label, key)
+            if kind == "plate":
+                self.diagram_selector.setItemData(
+                    self.diagram_selector.count() - 1, plate_diagram_tooltip(key), Qt.ItemDataRole.ToolTipRole,
+                )
+        index = self.diagram_selector.findData(self._selected_diagrams[kind])
+        self.diagram_selector.setCurrentIndex(max(0, index))
+        self.diagram_selector.blockSignals(False)
+        self.diagram_selector.setToolTip(
+            "Esforços nos eixos locais da barra; deslocamentos nos eixos globais."
+            if kind == "bar" else
+            "Esforços e tensões nos eixos locais da placa; deslocamentos nos eixos globais."
+        )
+        self._window.selected_analysis_diagram = self.diagram_selector.currentData()
+        self._update_result_kind_icons()
+        self._window.scene.set_analysis_result_kind(kind, self._window.selected_analysis_diagram)
+        self._window._sync_analysis_result()
+        self._update_scale_controls(self.diagram_selector.currentText())
+        self.adjustSize()
+        self.reposition()
 
-    def _deformation_scale_changed(self, scale: int) -> None:
-        self._window.scene.set_analysis_deformation_scale(scale)
+    def select_diagram(self, key: str, result_kind: str | None = None) -> None:
+        kind = "plate" if key in PLATE_FIELDS else "bar"
+        if key.startswith("Deformação"):
+            kind = self.result_kind
+        if result_kind is not None:
+            kind = result_kind
+        if kind != self.result_kind:
+            self.result_kind_switch._buttons[kind].setChecked(True)
+            self.result_kind_switch._select(kind)
+        index = self.diagram_selector.findData(key)
+        if index >= 0:
+            self.diagram_selector.setCurrentIndex(index)
 
-    def _update_deformation_scale_controls(self, result_type: str) -> None:
-        enabled = result_type.startswith("Deformação")
+    def _update_result_kind_icons(self) -> None:
+        icons = Path(__file__).parents[1] / "resources" / "icons"
+        for kind, name in (("bar", "result-diagram.svg"), ("plate", "plate.svg")):
+            pixmap = QIcon(str(icons / name)).pixmap(QSize(34, 34))
+            painter = QPainter(pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), QColor("#ffffff" if kind == self.result_kind else "#57606a"))
+            painter.end()
+            self.result_kind_switch._buttons[kind].setIcon(QIcon(pixmap))
+
+    def _deformation_scale_changed(self, position: int) -> None:
+        result_type = self.diagram_selector.currentText()
+        if result_type.startswith("Deformação"):
+            self._deformation_scale_position = position
+            scale = self._deformation_scale_for_position(position)
+            self.deformation_scale_value.setText(f"{scale}×")
+            self.deformation_scale_slider.setToolTip(f"Escala da deformação: {scale}×")
+            self._window.scene.set_analysis_deformation_scale(scale)
+        else:
+            self._bar_diagram_scale_position = position
+            scale = self._bar_diagram_scale_for_position(position)
+            label = f"{scale:.1f}×".replace(".", ",")
+            self.deformation_scale_value.setText(label)
+            self.deformation_scale_slider.setToolTip(f"Escala do diagrama: {label}")
+            self._window.scene.set_analysis_diagram_scale(scale)
+
+    @staticmethod
+    def _deformation_scale_for_position(position: int) -> int:
+        return 1 if position == 0 else int(position) * 10
+
+    @staticmethod
+    def _bar_diagram_scale_for_position(position: int) -> float:
+        return (int(position) + 1) / 10.0
+
+    def _update_scale_controls(self, result_type: str) -> None:
+        if self.result_kind == "plate":
+            self.diagram_selector.setToolTip(plate_diagram_tooltip(result_type))
+        deformation = result_type.startswith("Deformação")
+        enabled = deformation or (self.result_kind == "bar" and result_type != "Reações de apoio")
         self.deformation_scale_button.setEnabled(enabled)
         if not enabled:
             self.deformation_scale_popup.hide()
+            return
+        slider = self.deformation_scale_slider
+        slider.blockSignals(True)
+        if deformation:
+            slider.setRange(0, 10)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setTickInterval(1)
+            slider.setAccessibleDescription("Níveis: 1× e de 10× a 100× em passos de 10×")
+            slider.setValue(self._deformation_scale_position)
+            scale = self._deformation_scale_for_position(self._deformation_scale_position)
+            label = f"{scale}×"
+            tooltip = f"Escala da deformação: {label}"
+        else:
+            slider.setRange(0, 9)
+            slider.setSingleStep(1)
+            slider.setPageStep(1)
+            slider.setTickInterval(1)
+            slider.setAccessibleDescription("Níveis: 0,1× a 1,0× em passos de 0,1×")
+            slider.setValue(self._bar_diagram_scale_position)
+            scale = self._bar_diagram_scale_for_position(self._bar_diagram_scale_position)
+            label = f"{scale:.1f}×".replace(".", ",")
+            tooltip = f"Escala do diagrama: {label}"
+        slider.blockSignals(False)
+        self.deformation_scale_value.setText(label)
+        slider.setToolTip(tooltip)
 
     def _toggle_deformation_scale_popup(self) -> None:
         if not self.deformation_scale_button.isEnabled():
@@ -1810,7 +2846,7 @@ class AnalysisTopPalette(QFrame):
         self.deformation_scale_popup.raise_()
 
     def _position_deformation_scale_popup(self) -> None:
-        self.deformation_scale_popup.setFixedWidth(max(1, self.height()))
+        self.deformation_scale_popup.setFixedWidth(max(56, self.height()))
         self.deformation_scale_popup.adjustSize()
         anchor = self.deformation_scale_button.mapToGlobal(
             QPoint(self.deformation_scale_button.width() // 2, self.deformation_scale_button.height() + 10)
@@ -1829,6 +2865,9 @@ class AnalysisTopPalette(QFrame):
             self._tooltip.dismiss()
             self.deformation_scale_popup.hide()
         self.setVisible(visible)
+        if visible:
+            self.adjustSize()
+            self.reposition()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if isinstance(watched, QToolButton):

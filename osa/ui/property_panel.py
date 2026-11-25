@@ -2,6 +2,7 @@ from math import isfinite
 
 from PySide6.QtCore import QRegularExpression, Signal
 from PySide6.QtGui import QPainterPath, QPen, QRegularExpressionValidator
+from .selector import SelectorComboBox
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
 from osa.services import calculate_rigid_bar_stiffness
@@ -110,6 +111,102 @@ class SelectionKindSwitch(QFrame):
             self._buttons[kind].setChecked(True)
 
 
+class SpringDirectionSwitch(QFrame):
+    """Compact three-state direction switch matching the settings pill style."""
+
+    value_changed = Signal(str)
+    _choices = (("-", "−"), ("=", "="), ("+", "+"))
+
+    def __init__(self, value: str = "=", parent=None) -> None:
+        super().__init__(parent)
+        self._value = value if value in {"-", "=", "+"} else "="
+        self._buttons = {}
+        self._animation = None
+        self._widths = (24, 24, 24)
+        self.setObjectName("springDirectionSwitch")
+        self.setFixedSize(sum(self._widths) + 6, 30)
+        self.setStyleSheet(
+            "QFrame#springDirectionSwitch { background: #ffffff; "
+            "border: 1px solid #d0d7de; border-radius: 15px; }"
+        )
+        self._indicator = QFrame(self)
+        self._indicator.setObjectName("plateSpringDirectionIndicator")
+        self._indicator.setStyleSheet(
+            "QFrame#plateSpringDirectionIndicator { background: #0969da; "
+            "border: 0; border-radius: 10px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        descriptions = {
+            "-": "Atua no sentido negativo do eixo global",
+            "=": "Atua nos dois sentidos do eixo global",
+            "+": "Atua no sentido positivo do eixo global",
+        }
+        for (choice, label), width in zip(self._choices, self._widths):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(width, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; "
+                "background: transparent; font-size: 13px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(choice == self._value)
+            button.setAccessibleName(descriptions[choice])
+            button.setToolTip(descriptions[choice])
+            button.clicked.connect(
+                lambda _checked=False, selected=choice: self.set_value(selected)
+            )
+            group.addButton(button)
+            layout.addWidget(button)
+            self._buttons[choice] = button
+        self._indicator.setGeometry(self._indicator_geometry())
+        self._indicator.lower()
+        self._update_text()
+
+    def _indicator_geometry(self) -> QRect:
+        index = next(
+            position for position, (value, _label) in enumerate(self._choices)
+            if value == self._value
+        )
+        return QRect(4 + sum(self._widths[:index]), 5, self._widths[index] - 2, 20)
+
+    def _update_text(self) -> None:
+        for value, button in self._buttons.items():
+            color = "#ffffff" if value == self._value else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def set_value(self, value: str) -> None:
+        if value not in self._buttons or value == self._value:
+            return
+        self._value = value
+        self._buttons[value].setChecked(True)
+        if self._animation is not None:
+            self._animation.stop()
+        animation = QPropertyAnimation(self._indicator, b"geometry", self)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(self._indicator.geometry())
+        animation.setEndValue(self._indicator_geometry())
+        self._animation = animation
+        self._update_text()
+        self.value_changed.emit(value)
+        animation.start()
+
+    @property
+    def value(self) -> str:
+        return self._value
+
+
 class PropertyPanel(QFrame):
     """Floating inspector for the currently selected node or bar."""
 
@@ -126,7 +223,7 @@ class PropertyPanel(QFrame):
         self.layout.setSpacing(7)
         self.title = QLabel()
         self.title.setObjectName("propertyTitle")
-        self.kind_selector = QComboBox()
+        self.kind_selector = SelectorComboBox()
         self.kind_selector.setAccessibleName("Propriedades dos elementos selecionados")
         self.kind_selector.currentIndexChanged.connect(self._inspected_kind_changed)
         self.kind_control = QWidget()
@@ -147,6 +244,24 @@ class PropertyPanel(QFrame):
         identity_layout.setContentsMargins(0, 0, 0, 0)
         identity_layout.setSpacing(6)
         identity_layout.addWidget(self.identity_value, 1)
+        self._node_component_button = QToolButton()
+        self._node_component_button.setFixedSize(34, 34)
+        self._node_component_button.setIcon(QIcon(str(
+            Path(__file__).parents[1] / "resources" / "icons" / "component.svg"
+        )))
+        self._node_component_button.setIconSize(QSize(18, 18))
+        self._node_component_button.setToolTip("Componente")
+        self._node_component_button.setAccessibleName("Componente do nó")
+        self._node_component_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }"
+            "QToolButton:hover { background: #eaeef2; }"
+            "QToolButton:pressed { background: #d0d7de; }"
+        )
+        self._node_component_button.clicked.connect(
+            lambda: window.show_node_components_dialog(self._selected[1])
+            if self._selected is not None else None
+        )
+        identity_layout.addWidget(self._node_component_button)
         self._calculation_properties_button = QToolButton()
         self._calculation_properties_button.setFixedSize(34, 34)
         self._calculation_properties_button.setIcon(QIcon(str(
@@ -191,7 +306,7 @@ class PropertyPanel(QFrame):
         self.verification_name_input.setMinimumWidth(0)
         self.verification_name_input.setAccessibleName("Nome do elemento")
         self.verification_name_input.setValidator(QRegularExpressionValidator(
-            QRegularExpression(r"[\p{L}\p{N}]*"), self.verification_name_input,
+            QRegularExpression(r"[\p{L}\p{N} ]*"), self.verification_name_input,
         ))
         self.verification_name_input.editingFinished.connect(self._verification_name_changed)
         self._verification_name_row = QWidget()
@@ -303,12 +418,28 @@ class PropertyPanel(QFrame):
         self.layout.addWidget(self.verify_bar_container)
         self.verify_bar_container.hide()
         self.fields: list[QDoubleSpinBox | QComboBox] = []
+        self._node_coordinate_error_active = False
         self._coordinates_widget: QWidget | None = None
         self._supports_widget: QWidget | None = None
         self._support_stiffness_inputs: list[QDoubleSpinBox] = []
+        self._support_direction_inputs: list[SpringDirectionSwitch] = []
+        self._plate_restriction_boxes: list[QCheckBox] = []
+        self._plate_restriction_stiffness_inputs: list[QDoubleSpinBox] = []
+        self._plate_restriction_direction_inputs: list[QWidget] = []
+        self._plate_section_settings_button: QToolButton | None = None
+        self._plate_section_name_display: QLineEdit | None = None
+        self._plate_section_combo: SelectorComboBox | None = None
         self._solid_offsets_widget: QWidget | None = None
+        self._supports_header: QWidget | None = None
+        self._support_group = "D"
+        self._support_group_indicator: QFrame | None = None
+        self._support_group_buttons: dict[str, QToolButton] = {}
+        self._support_group_animation: QPropertyAnimation | None = None
+        self._support_stack: QStackedWidget | None = None
         self._positioning_status: QLineEdit | None = None
         self._displacement_settings_button: QToolButton | None = None
+        self._subtractions_button: QToolButton | None = None
+        self._subtractions_status: QLineEdit | None = None
         self._releases_widget: QWidget | None = None
         self._releases_header: QWidget | None = None
         self._release_stack: QStackedWidget | None = None
@@ -327,12 +458,33 @@ class PropertyPanel(QFrame):
         self._context_widgets: list[QWidget] = []
         self._member_action_reference = "global"
         self._member_action_inputs: dict[str, QLineEdit] = {}
+        self._member_action_end_inputs: dict[str, QLineEdit] = {}
+        self._member_action_end_separators: dict[str, QLabel] = {}
+        self._member_action_variable_buttons: dict[str, QToolButton] = {}
+        self._member_action_variable_modes: dict[str, bool] = {}
         self._member_action_units: dict[str, QLabel] = {}
         self._member_action_boxes: dict[str, QFrame] = {}
         self._node_action_inputs: dict[str, QLineEdit] = {}
         self._member_action_switch_indicator: QFrame | None = None
         self._member_action_switch_buttons: dict[str, QToolButton] = {}
         self._member_action_switch_animation: QPropertyAnimation | None = None
+        self._plate_edge_reference = "global"
+        self._plate_edge_index = 0
+        self._plate_edge_inputs: dict[str, QLineEdit] = {}
+        self._plate_edge_end_inputs: dict[str, QLineEdit] = {}
+        self._plate_edge_separators: dict[str, QLabel] = {}
+        self._plate_edge_variable_buttons: dict[str, QToolButton] = {}
+        self._plate_edge_variable_modes: dict[str, bool] = {}
+        self._plate_edge_units: dict[str, QLabel] = {}
+        self._plate_edge_boxes: dict[str, QFrame] = {}
+        self._plate_edge_switch_indicator: QFrame | None = None
+        self._plate_edge_switch_buttons: dict[str, QToolButton] = {}
+        self._plate_edge_switch_animation: QPropertyAnimation | None = None
+        self._plate_pressure_inputs: dict[str, QLineEdit] = {}
+        self._plate_pressure_end_inputs: dict[str, QLineEdit] = {}
+        self._plate_pressure_separators: dict[str, QLabel] = {}
+        self._plate_pressure_variable_buttons: dict[str, QToolButton] = {}
+        self._plate_pressure_variable_modes: dict[str, bool] = {}
         self._analysis_result_view = "A"
         self._analysis_switch_indicator: QFrame | None = None
         self._analysis_switch_buttons: dict[str, QToolButton] = {}
@@ -349,6 +501,11 @@ class PropertyPanel(QFrame):
             return
         if self._selected[0] == "node" and self.window.palette.active_group == "Detalhamento":
             self.window.model.set_node_display_name(
+                self._selected[1], self.verification_name_input.text(),
+            )
+            return
+        if self._selected[0] == "plate" and self.window.palette.active_group == "Detalhamento":
+            self.window.model.set_plate_display_name(
                 self._selected[1], self.verification_name_input.text(),
             )
             return
@@ -457,6 +614,13 @@ class PropertyPanel(QFrame):
         self.kind_selector.setVisible(len(kinds) > 1 and not node_member_selection)
         self.kind_control.setVisible(len(kinds) > 1)
         self._clear_form()
+        self.verify_bar_button.setText("Verificar barra")
+        self.verify_bar_button.setAccessibleName("Verificar barra isoladamente")
+        self._calculation_properties_button.setEnabled(True)
+        self._calculation_properties_button.setToolTip("Propriedades de Cálculo")
+        self._node_component_button.hide()
+        if self._verification_memory_button is not None:
+            self._verification_memory_button.setEnabled(True)
         self.coordinates_title.hide()
         self.nodes_title.hide()
         self.solid_offsets_title.hide()
@@ -464,6 +628,207 @@ class PropertyPanel(QFrame):
         self.releases_title.hide()
         self.supports_title.hide()
         self._color_palette.hide()
+        if kind == "plate":
+            plate = self.window.model.plates[name]
+            verification_mode = section == "Memorial"
+            detailing_mode = section == "Detalhamento"
+            self.kind_control.hide()
+            self.title.setText("Placa")
+            self.name.setText("Identidade")
+            self.name.show()
+            self._identity_row.show()
+            self.identity_value.setText(name)
+            self._verification_name_row.setVisible(detailing_mode)
+            if detailing_mode:
+                self.verification_name_input.setReadOnly(False)
+                self.verification_name_input.setAccessibleName("Nome da placa")
+                with QSignalBlocker(self.verification_name_input):
+                    self.verification_name_input.setText(
+                        self.window.model.plate_display_names.get(name, "")
+                    )
+            self.verify_bar_button.setText("Verificar placa")
+            self.verify_bar_button.setAccessibleName("Verificar placa isoladamente")
+            self.verify_bar_button.setEnabled(False)
+            self.verify_bar_container.setVisible(verification_mode)
+            self.member_color_button.setVisible(section == "Geometria")
+            self.member_color_button.setToolTip("Definir cor da placa")
+            self.member_color_button.setAccessibleName("Definir cor da placa")
+            if section == "Geometria":
+                self._set_member_color_button(plate.color)
+            self._calculation_properties_button.setVisible(verification_mode)
+            self._calculation_properties_button.setEnabled(False)
+            self._calculation_properties_button.setToolTip("Propriedades da placa indisponíveis")
+            self.delete_button.hide()
+            for row in self._verification_result_rows:
+                row.setVisible(verification_mode)
+            if verification_mode:
+                self.window.close_calculation_properties_panel(
+                    self._calculation_properties_button,
+                )
+                for value in self._verification_result_values.values():
+                    value.setText("Não implementado")
+                    value.setToolTip("A verificação de placas ainda não está implementada.")
+                if self._verification_memory_button is not None:
+                    self._verification_memory_button.setEnabled(False)
+                    self._verification_memory_button.setToolTip(
+                        "Memorial indisponível: verificação de placas não implementada"
+                    )
+            elif detailing_mode:
+                self._show_plate_positioning(plate)
+            elif section not in {"Ações", "Análise"}:
+                related_names = [
+                    element_name for _kind, element_name in plate.supports
+                ]
+                for edge_index in range(len(plate.contour)):
+                    related_names.extend(
+                        self.window.model.plate_edge_bars(name, edge_index)
+                    )
+                related_names.extend(self.window.model.related_plates(name))
+                relationships = ", ".join(dict.fromkeys(related_names)) or "Nenhuma"
+                relationships_label = QLabel("Barras e placas")
+                relationships_label.setObjectName("propertySection")
+                relationships_value = QLabel(relationships)
+                relationships_value.setObjectName("identityDisplay")
+                relationships_value.setWordWrap(True)
+                relationships_value.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                relationships_value.setAccessibleName("Barras e placas relacionadas")
+                relationships_value.setToolTip(relationships)
+                self._add_context_widget(relationships_label)
+                self._add_context_widget(relationships_value)
+
+                material_label = QLabel("Material")
+                material_label.setObjectName("propertySection")
+                material_combo = SelectorComboBox()
+                material_combo.setAccessibleName("Material da placa")
+                plate_materials = [
+                    material_name for material_name in self.window.model.materials
+                    if self.window.model.material_types.get(material_name) in {"Concreto", "Aço", "Madeira"}
+                ]
+                material_combo.addItems(plate_materials)
+                if plate.material in plate_materials:
+                    material_combo.setCurrentText(plate.material)
+                else:
+                    material_combo.setCurrentIndex(-1)
+                    material_combo.setPlaceholderText("Indefinido")
+                material_combo.setEnabled(True)
+                material_combo.currentTextChanged.connect(
+                    lambda selected_material: self._plate_material_changed(
+                        name, selected_material,
+                    )
+                )
+                self._add_context_widget(material_label)
+                self._add_context_widget(material_combo)
+
+                section_label = QLabel("Seção")
+                section_label.setObjectName("propertySection")
+                section_combo = SelectorComboBox()
+                section_combo.addItem("Retangular")
+                section_combo.setPlaceholderText("Indefinido")
+                section_combo.setCurrentIndex(0 if plate.thickness_mm > 0 else -1)
+                self._plate_section_combo = section_combo
+                section_combo.currentTextChanged.connect(
+                    lambda section: self._plate_section_changed(name, section)
+                )
+                section_combo.setAccessibleName("Formato da seção da placa")
+                section_row_widget = QWidget()
+                section_row = QHBoxLayout(section_row_widget)
+                section_row.setContentsMargins(0, 0, 0, 0)
+                section_row.setSpacing(6)
+                section_row.addWidget(section_combo, 1)
+                section_button = QToolButton()
+                section_button.setIcon(QIcon(str(
+                    Path(__file__).parents[1] / "resources" / "icons" / "section-dimension.svg"
+                )))
+                section_button.setIconSize(QSize(18, 18))
+                section_button.setFixedSize(34, 34)
+                section_button.setToolTip("Configurar seção")
+                section_button.setAccessibleName("Configurar seção da placa")
+                section_button.setCheckable(True)
+                section_button.setStyleSheet(
+                    "QToolButton { background: #ffffff; border: 1px solid #d0d7de; "
+                    "border-radius: 6px; } "
+                    "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+                )
+                section_button.clicked.connect(
+                    lambda _checked=False, button=section_button:
+                    self.window.toggle_plate_section_panel(button)
+                )
+                self._plate_section_settings_button = section_button
+                section_row.addWidget(section_button)
+                self._add_context_widget(section_label)
+                self._add_context_widget(section_row_widget)
+
+                section_name = QLineEdit(self._plate_section_identity(plate))
+                section_name.setObjectName("identityDisplay")
+                section_name.setReadOnly(True)
+                section_name.setAccessibleName("Nome da seção da placa")
+                self._plate_section_name_display = section_name
+                self._add_context_widget(section_name)
+
+                restraint_label = QLabel("Restrições")
+                restraint_label.setObjectName("propertySection")
+                self._add_context_widget(restraint_label)
+                self._plate_restriction_boxes.clear()
+                self._plate_restriction_stiffness_inputs.clear()
+                self._plate_restriction_direction_inputs.clear()
+                for index, axis in enumerate(("Dx", "Dy", "Dz")):
+                    row_widget = QWidget()
+                    row = QHBoxLayout(row_widget)
+                    row.setContentsMargins(0, 0, 0, 0)
+                    row.setSpacing(8)
+                    checkbox = QCheckBox(axis)
+                    checkbox.setChecked(plate.restrictions[index])
+                    checkbox.setAccessibleName(f"Restringir {axis} da placa")
+                    checkbox.toggled.connect(
+                        lambda checked, dof=index: self._plate_restriction_changed(
+                            name, dof, checked,
+                        )
+                    )
+                    direction = SpringDirectionSwitch(
+                        plate.restriction_directions[index], row_widget,
+                    )
+                    direction.setAccessibleName(f"Sentido global da mola {axis}")
+                    direction.value_changed.connect(
+                        lambda value, dof=index: self._plate_restriction_direction_changed(
+                            name, dof, value,
+                        )
+                    )
+                    stiffness = CompactDoubleSpinBox()
+                    stiffness.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+                    stiffness.setDecimals(3)
+                    stiffness.setRange(0.0, 1_000_000_000.0)
+                    stiffness.setValue(plate.restriction_stiffness[index])
+                    stiffness.setAccessibleName(f"Mola {axis} da placa (kN/m³)")
+                    stiffness.setToolTip(
+                        "Coeficiente de mola distribuída da fundação (kN/m³); "
+                        "zero com a restrição marcada representa apoio rígido."
+                    )
+                    stiffness.editingFinished.connect(
+                        lambda dof=index: self._plate_restriction_stiffness_changed(
+                            name, dof,
+                        )
+                    )
+                    row.addWidget(checkbox)
+                    row.addWidget(direction)
+                    row.addWidget(self._editable_unit_box(stiffness, "kN/m³"), 1)
+                    self._add_context_widget(row_widget)
+                    self._plate_restriction_boxes.append(checkbox)
+                    self._plate_restriction_direction_inputs.append(direction)
+                    self._plate_restriction_stiffness_inputs.append(stiffness)
+                self._show_plate_connections(name)
+            elif section == "Ações":
+                self._show_plate_pressure_input(name)
+                self._show_plate_edge_actions(name)
+            self.layout.activate()
+            self.setMinimumHeight(0)
+            self.adjustSize()
+            self.resize(self.width(), self.sizeHint().height())
+            self.show()
+            self.reposition()
+            QTimer.singleShot(0, self._refresh_size)
+            return
         verification_mode = section == "Memorial"
         detailing_mode = section == "Detalhamento"
         show_verify_bar = (
@@ -485,8 +850,13 @@ class PropertyPanel(QFrame):
         )
         self.verification_name_input.setReadOnly(False)
         self.member_color_button.setVisible(kind == "bar" and section == "Geometria")
+        if kind == "bar":
+            self.member_color_button.setAccessibleName("Definir cor da barra")
         self._calculation_properties_button.setVisible(
             kind == "bar" and verification_mode and bool(names)
+        )
+        self._node_component_button.setVisible(
+            kind == "node" and section == "Geometria" and len(names) == 1
         )
         # Member and node deletion stays in the main delete command/shortcut,
         # keeping their property identity row free of a delete control.
@@ -684,14 +1054,19 @@ class PropertyPanel(QFrame):
                 axis_label.setObjectName("propertySection")
                 self.form.addRow(axis_label, self._editable_unit_box(field, "m"))
             form_index = self.layout.indexOf(self.form)
-            self.layout.insertWidget(form_index + 1, self.supports_title)
-            self.supports_title.show()
-            supports = QWidget()
+            supports = QStackedWidget()
             self._supports_widget = supports
+            self._support_stack = supports
             self._support_stiffness_inputs.clear()
-            supports_layout = QVBoxLayout(supports)
-            supports_layout.setContentsMargins(0, 0, 0, 0)
-            supports_layout.setSpacing(4)
+            self._support_direction_inputs.clear()
+            supports_layouts = []
+            for _group in range(2):
+                page = QWidget()
+                page_layout = QVBoxLayout(page)
+                page_layout.setContentsMargins(0, 0, 0, 0)
+                page_layout.setSpacing(4)
+                supports.addWidget(page)
+                supports_layouts.append(page_layout)
             for index, label in enumerate(("Dx", "Dy", "Dz", "Rx", "Ry", "Rz")):
                 checkbox = MixedCheckBox(label)
                 checkbox.setTristate(True)
@@ -720,12 +1095,47 @@ class PropertyPanel(QFrame):
                 value_box = self._editable_unit_box(value, unit)
                 value.valueChanged.connect(lambda _value, idx=index: self._support_stiffness_changed(idx))
                 self._support_stiffness_inputs.append(value)
+                direction_values = [
+                    self.window.model.nodes[node_name].support_directions[index]
+                    for node_name in names
+                ]
+                direction_value = direction_values[0] if self._all_equal(direction_values) else "="
+                direction = SpringDirectionSwitch(
+                    direction_value, supports.widget(0 if index < 3 else 1),
+                )
+                direction.setAccessibleName(f"Sentido da mola {label}")
+                direction.setToolTip(
+                    "− e + aplicam mola unilateral no eixo global; = aplica mola bilateral. "
+                    "O sentido só atua com a restrição marcada e rigidez maior que zero. "
+                    "Rigidez zero representa apoio rígido bilateral."
+                )
+                if not self._all_equal(direction_values):
+                    direction.setToolTip("Valores diferentes nos nós selecionados; escolha para aplicar a todos.")
+                direction.value_changed.connect(
+                    lambda selected, idx=index: self._support_direction_changed(idx, selected)
+                )
+                self._support_direction_inputs.append(direction)
                 row = QHBoxLayout()
                 row.setContentsMargins(0, 0, 0, 0)
                 row.setSpacing(8)
                 row.addWidget(checkbox)
+                row.addWidget(direction)
                 row.addWidget(value_box, 1)
-                supports_layout.addLayout(row)
+                supports_layouts[0 if index < 3 else 1].addLayout(row)
+            self._support_group = "D"
+            supports.setCurrentIndex(0)
+            supports_header = QWidget()
+            supports_header_layout = QHBoxLayout(supports_header)
+            supports_header_layout.setContentsMargins(0, 0, 0, 0)
+            supports_header_layout.setSpacing(8)
+            supports_header_layout.addWidget(self.supports_title)
+            supports_header_layout.addStretch(1)
+            supports_header_layout.addWidget(
+                self._support_group_switch(), 0, Qt.AlignmentFlag.AlignVCenter,
+            )
+            self._supports_header = supports_header
+            self.layout.insertWidget(form_index + 1, supports_header)
+            self.supports_title.show()
             self.layout.insertWidget(form_index + 2, supports)
         elif not verification_mode:
             bar = self.window.model.bars[name]
@@ -733,7 +1143,7 @@ class PropertyPanel(QFrame):
                 nodes = list(self.window.model.nodes)
                 self.layout.insertWidget(4, self.nodes_title)
                 self.nodes_title.show()
-                start, end = QComboBox(), QComboBox()
+                start, end = SelectorComboBox(), SelectorComboBox()
                 start.addItems(nodes); end.addItems(nodes)
                 for combo in (start, end):
                     combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -778,7 +1188,7 @@ class PropertyPanel(QFrame):
             material_title = QLabel("Material")
             material_title.setObjectName("propertySection")
             material_layout.addWidget(material_title)
-            material_combo = QComboBox()
+            material_combo = SelectorComboBox()
             material_combo.addItems(self.window.model.materials)
             materials = [self.window.model.bars[member_name].material for member_name in names]
             material_combo.setPlaceholderText("Variado" if not self._all_equal(materials) else "Indefinido")
@@ -791,7 +1201,7 @@ class PropertyPanel(QFrame):
             self.layout.addWidget(material_widget)
             section_label = QLabel("Seção")
             section_label.setObjectName("propertySection")
-            section_combo = QComboBox()
+            section_combo = SelectorComboBox()
             section_combo.setPlaceholderText("Indefinido")
             sections = [self.window.model.bars[member_name].section for member_name in names]
             available_sections = [
@@ -1023,10 +1433,132 @@ class PropertyPanel(QFrame):
         self._positioning_status = status
         self._solid_offsets_widget = offset_row
         self.layout.addWidget(offset_row)
+        names = self._selected_names("bar")
+        if names:
+            self._show_subtractions_row("bar", names[-1])
+
+    def _show_plate_positioning(self, plate) -> None:
+        """Show the detailing-only normal displacement control for a plate."""
+        self.layout.addWidget(self.solid_offsets_title)
+        self.solid_offsets_title.setText("Posicionamento")
+        self.solid_offsets_title.show()
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        status = QLineEdit()
+        status.setReadOnly(True)
+        status.setObjectName("identityDisplay")
+        status.setText(self._plate_positioning_summary(plate))
+        status.setAccessibleName("Deslocamento perpendicular da placa")
+        row_layout.addWidget(status, 1)
+        configure_button = QToolButton()
+        configure_button.setFixedSize(34, 34)
+        configure_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "move.svg"))
+        )
+        configure_button.setIconSize(QSize(18, 18))
+        configure_button.setToolTip("Configurar deslocamento da placa")
+        configure_button.setAccessibleName("Configurar deslocamento da placa")
+        configure_button.setCheckable(True)
+        configure_button.clicked.connect(
+            lambda _checked=False, button=configure_button:
+            self.window.toggle_displacement_panel(button)
+        )
+        configure_button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        row_layout.addWidget(configure_button)
+        self._displacement_settings_button = configure_button
+        self._positioning_status = status
+        self._solid_offsets_widget = row
+        self.layout.addWidget(row)
+        self._show_subtractions_row("plate", plate.name)
+
+    def _show_subtractions_row(self, kind: str, name: str) -> None:
+        element = (self.window.model.bars if kind == "bar" else self.window.model.plates)[name]
+        label = QLabel("Subtrações")
+        label.setObjectName("propertySection")
+        cutters = tuple(element.detail_subtractions)
+        end_cuts = tuple(getattr(element, "detail_end_cuts", ()))
+        summary_items = [cutter_name for _cutter_kind, cutter_name in cutters]
+        summary_items.extend(f"Extremidade: {cut.reference_label}" for cut in end_cuts)
+        summary = ", ".join(summary_items) or "Nenhuma"
+        value = QLineEdit(summary)
+        value.setReadOnly(True)
+        value.setObjectName("identityDisplay")
+        value.setAccessibleName("Subtrações recebidas")
+        value.setToolTip("\n".join(
+            [f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+             for cutter_kind, cutter_name in cutters]
+            + [f"Extremidade cortada pela face de {cut.reference_label}" for cut in end_cuts]
+        ) or "Nenhuma subtração aplicada")
+        self._subtractions_status = value
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(value, 1)
+        button = QToolButton()
+        button.setFixedSize(34, 34)
+        button.setIcon(QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "detailing-layout.svg")))
+        button.setIconSize(QSize(18, 18))
+        button.setToolTip("Gerenciar subtrações")
+        button.setAccessibleName("Gerenciar subtrações")
+        button.setCheckable(True)
+        button.clicked.connect(
+            lambda _checked=False, selected_kind=kind, selected_name=name, trigger=button:
+            self.window.toggle_subtractions_panel(selected_kind, selected_name, trigger)
+        )
+        button.setStyleSheet(
+            "QToolButton { background: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; } "
+            "QToolButton:hover, QToolButton:checked { background: #eaeef2; }"
+        )
+        row_layout.addWidget(button)
+        self._subtractions_button = button
+        self._add_context_widget(label)
+        self._add_context_widget(row)
+
+    def update_subtractions_status(self, kind: str, name: str) -> None:
+        if self._subtractions_status is None:
+            return
+        element = (self.window.model.bars if kind == "bar" else self.window.model.plates).get(name)
+        if element is None:
+            return
+        cutters = tuple(element.detail_subtractions)
+        end_cuts = tuple(getattr(element, "detail_end_cuts", ()))
+        summary_items = [cutter_name for _cutter_kind, cutter_name in cutters]
+        summary_items.extend(f"Extremidade: {cut.reference_label}" for cut in end_cuts)
+        tooltip_items = [
+            f"{'Barra' if cutter_kind == 'bar' else 'Placa'} {cutter_name}"
+            for cutter_kind, cutter_name in cutters
+        ]
+        tooltip_items.extend(
+            f"Extremidade cortada pela face de {cut.reference_label}" for cut in end_cuts
+        )
+        self._subtractions_status.setText(", ".join(summary_items) or "Nenhuma")
+        self._subtractions_status.setToolTip("\n".join(tooltip_items) or "Nenhuma subtração aplicada")
+
+    @classmethod
+    def _plate_positioning_summary(cls, plate) -> str:
+        value_mm = float(getattr(plate, "positioning_displacement", 0.0)) * 1000.0
+        if abs(value_mm) <= 1e-9:
+            return "X0"
+        sign = "+" if value_mm > 0 else "-"
+        return f"X{sign}{cls._format_positioning_value(abs(value_mm))}"
 
     def update_positioning_status(self, member_name: str) -> None:
         """Synchronize the compact positioning summary after an offset change."""
-        if self._selected is None or self._selected[0] != "bar" or self._positioning_status is None:
+        if self._selected is None or self._positioning_status is None:
+            return
+        if self._selected[0] == "plate":
+            if member_name == self._selected[1] and member_name in self.window.model.plates:
+                self._positioning_status.setText(
+                    self._plate_positioning_summary(self.window.model.plates[member_name])
+                )
+            return
+        if self._selected[0] != "bar":
             return
         names = self._selected_names("bar")
         if member_name not in names:
@@ -1174,11 +1706,17 @@ class PropertyPanel(QFrame):
 
     @staticmethod
     def _action_description(action) -> str:
+        if action.kind == "plate_surface_pressure_selfweight":
+            value = action.components[0] if action.components else 0.0
+            return f"Peso próprio da placa: {value:g} kN/m²"
         labels = {
             "node_force": "Força no nó",
             "node_moment": "Momento no nó",
             "member_distributed_force": "Força distribuída na barra",
             "member_moment": "Momento na barra",
+            "plate_edge_distributed_force": "Força distribuída na aresta da placa",
+            "plate_edge_moment": "Momento distribuído na aresta da placa",
+            "plate_surface_pressure": "Ação na superfície da placa",
         }
         for prefix, label in labels.items():
             if action.kind.startswith(prefix):
@@ -1449,6 +1987,10 @@ class PropertyPanel(QFrame):
         if select_available_reference:
             self._member_action_reference = self._member_action_reference_for(name, load_case)
         self._member_action_inputs.clear()
+        self._member_action_end_inputs.clear()
+        self._member_action_end_separators.clear()
+        self._member_action_variable_buttons.clear()
+        self._member_action_variable_modes.clear()
         self._member_action_units.clear()
         self._member_action_boxes.clear()
 
@@ -1486,7 +2028,13 @@ class PropertyPanel(QFrame):
             )
             value_layout = QHBoxLayout(value_box)
             value_layout.setContentsMargins(0, 0, 0, 0)
-            value_layout.setSpacing(0)
+            value_layout.setSpacing(4)
+            variable_mode = False
+            variable_visible = label.startswith("F")
+            end_value = ""
+            if variable_visible:
+                initial_text, end_value, variable_mode = self._member_distributed_input_values(label)
+                value = initial_text
             field = QLineEdit(value)
             field.setObjectName("unitValue")
             editable = not selfweight_locked and (
@@ -1508,10 +2056,135 @@ class PropertyPanel(QFrame):
             value_box.style().unpolish(value_box)
             value_box.style().polish(value_box)
             value_layout.addWidget(field, 1)
+            if label.startswith("F"):
+                end_field = QLineEdit(end_value)
+                end_field.setObjectName("unitValueEnd")
+                end_field.setMinimumWidth(0)
+                end_field.setReadOnly(not editable)
+                end_field.setPlaceholderText("—")
+                end_field.setAccessibleName(f"{label} final ({unit})")
+                end_field.setVisible(variable_visible and variable_mode)
+                end_field.editingFinished.connect(
+                    lambda field=field, action_label=label: self._member_action_changed(action_label, field)
+                )
+                self._member_action_end_inputs[label] = end_field
+                value_layout.addWidget(end_field, 1)
+                separator = QLabel("→")
+                separator.setObjectName("memberLoadEndSeparator")
+                separator.setStyleSheet("color: #8c959f; padding: 0 2px;")
+                separator.setVisible(variable_visible and variable_mode)
+                self._member_action_end_separators[label] = separator
+                value_layout.insertWidget(value_layout.count() - 1, separator)
+                toggle = QToolButton()
+                toggle.setObjectName("memberLoadShapeButton")
+                toggle.setFixedSize(34, 34)
+                toggle.setEnabled(
+                    not selfweight_locked
+                )
+                toggle.setVisible(variable_visible)
+                toggle.setIconSize(QSize(18, 18))
+                toggle.setToolTip("Usar carga variável (do início ao fim da barra)" if not variable_mode else "Usar carga uniforme")
+                toggle.setAccessibleName(toggle.toolTip())
+                toggle.setStyleSheet(
+                    "QToolButton#memberLoadShapeButton { background: #f6f8fa; border: 1px solid #d0d7de; "
+                    "border-radius: 6px; padding: 4px; }"
+                    "QToolButton#memberLoadShapeButton:hover { background: #eaeef2; }"
+                    "QToolButton#memberLoadShapeButton:pressed { background: #d8dee4; }"
+                )
+                self._set_member_load_shape_icon(toggle, variable_mode)
+                self._member_action_variable_buttons[label] = toggle
+                self._member_action_variable_modes[label] = variable_mode
+                toggle.clicked.connect(
+                    lambda _checked=False, action_label=label: self._toggle_member_load_shape(action_label)
+                )
+                row_layout.addWidget(value_box, 1)
+                row_layout.addWidget(toggle)
+            else:
+                row_layout.addWidget(value_box, 1)
             value_layout.addWidget(unit_label)
-            row_layout.addWidget(field_label)
-            row_layout.addWidget(value_box, 1)
+            row_layout.insertWidget(0, field_label)
             self._add_context_widget(row)
+
+    def _support_group_switch(self) -> QFrame:
+        switch = QFrame()
+        switch.setObjectName("supportDofGroupSwitch")
+        switch.setFixedSize(70, 30)
+        switch.setStyleSheet(
+            "QFrame#supportDofGroupSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        indicator = QFrame(switch)
+        indicator.setObjectName("supportDofGroupIndicator")
+        indicator.setStyleSheet(
+            "QFrame#supportDofGroupIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        self._support_group_indicator = indicator
+        layout = QHBoxLayout(switch)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        buttons = QButtonGroup(switch)
+        buttons.setExclusive(True)
+        for group in ("D", "R"):
+            button = QToolButton(switch)
+            button.setText(group)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(31, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(group == self._support_group)
+            button.setAccessibleName(
+                "Restrições de deslocamento" if group == "D"
+                else "Restrições de rotação"
+            )
+            button.setToolTip(button.accessibleName())
+            button.clicked.connect(
+                lambda _checked=False, selected=group: self._set_support_group(selected)
+            )
+            buttons.addButton(button)
+            layout.addWidget(button)
+            self._support_group_buttons[group] = button
+        indicator.setGeometry(self._support_group_indicator_geometry())
+        indicator.lower()
+        self._update_support_group_text()
+        return switch
+
+    def _support_group_indicator_geometry(self) -> QRect:
+        if self._support_group == "D":
+            return QRect(4, 5, 29, 20)
+        return QRect(36, 5, 29, 20)
+
+    def _update_support_group_text(self) -> None:
+        for group, button in self._support_group_buttons.items():
+            color = "#ffffff" if group == self._support_group else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _set_support_group(self, group: str) -> None:
+        if group == self._support_group or group not in {"D", "R"}:
+            return
+        self._support_group = group
+        if self._support_stack is not None:
+            self._support_stack.setCurrentIndex(0 if group == "D" else 1)
+        if self._support_group_animation is not None:
+            self._support_group_animation.stop()
+        indicator = self._support_group_indicator
+        if indicator is not None:
+            animation = QPropertyAnimation(indicator, b"geometry", indicator)
+            animation.setDuration(160)
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            animation.setStartValue(indicator.geometry())
+            animation.setEndValue(self._support_group_indicator_geometry())
+            self._support_group_animation = animation
+            animation.start()
+        self._update_support_group_text()
+        self._refresh_size()
 
     def _release_switch(self) -> QFrame:
         switch = QFrame()
@@ -1685,6 +2358,60 @@ class PropertyPanel(QFrame):
             for label in values
         )
 
+    def _member_distributed_input_values(self, label: str) -> tuple[str, str, bool]:
+        """Return start/end intensities and whether a member action is variable."""
+        names = self._selected_names("bar")
+        load_case = self.window.selected_action_name
+        components_by_member = []
+        for name in names:
+            actions = [
+                action for action in self.window.model.actions.values()
+                if action.target == name and action.load_case == load_case
+            ]
+            components_by_member.append(self._action_components_for_field("bar", label, actions))
+        if not components_by_member:
+            return "", "", False
+        if not self._all_equal(components_by_member):
+            variable = any(
+                len(values) > 1 and values[0] != values[-1]
+                for values in components_by_member
+            )
+            return "Variado", "", variable
+        components = components_by_member[0]
+        if not components:
+            return "", "", False
+        initial = components[0]
+        final = components[-1]
+        return (
+            self._formatted_number(initial),
+            self._formatted_number(final),
+            initial != final,
+        )
+
+    @staticmethod
+    def _set_member_load_shape_icon(button: QToolButton, variable: bool) -> None:
+        icon_name = "member-load-variable.svg" if variable else "member-load-uniform.svg"
+        icon_path = Path(__file__).parents[1] / "resources" / "icons" / icon_name
+        button.setIcon(QIcon(str(icon_path)))
+
+    def _toggle_member_load_shape(self, label: str) -> None:
+        variable = not self._member_action_variable_modes.get(label, False)
+        self._member_action_variable_modes[label] = variable
+        end_field = self._member_action_end_inputs.get(label)
+        toggle = self._member_action_variable_buttons.get(label)
+        if end_field is not None:
+            if variable and not end_field.text().strip():
+                end_field.setText(self._member_action_inputs[label].text())
+            end_field.setVisible(variable)
+        if separator := self._member_action_end_separators.get(label):
+            separator.setVisible(variable)
+        if toggle is not None:
+            hint = "Usar carga uniforme" if variable else "Usar carga variável (do início ao fim da barra)"
+            toggle.setToolTip(hint)
+            toggle.setAccessibleName(hint)
+            self._set_member_load_shape_icon(toggle, variable)
+        self._member_action_changed(label, self._member_action_inputs[label])
+
     @staticmethod
     def _formatted_force(values: tuple[float, ...]) -> str:
         if len(values) != 2:
@@ -1695,9 +2422,7 @@ class PropertyPanel(QFrame):
         return (
             PropertyPanel._formatted_number(initial)
             if initial == final
-            else f"{initial:.3f}".rstrip("0").rstrip(".")
-            + "; "
-            + f"{final:.3f}".rstrip("0").rstrip(".")
+            else "Variado"
         )
 
     @staticmethod
@@ -1714,6 +2439,22 @@ class PropertyPanel(QFrame):
         if reference == self._member_action_reference or not self._selected or self._selected[0] != "bar":
             return
         self._member_action_reference = reference
+        for label in ("FX", "FY", "FZ"):
+            initial_text, end_text, variable = self._member_distributed_input_values(label)
+            self._member_action_variable_modes[label] = variable
+            if input_field := self._member_action_inputs.get(label):
+                input_field.setText(initial_text)
+            if end_field := self._member_action_end_inputs.get(label):
+                end_field.setText(end_text)
+                end_field.setVisible(variable)
+            if separator := self._member_action_end_separators.get(label):
+                separator.setVisible(variable)
+            if toggle := self._member_action_variable_buttons.get(label):
+                self._set_member_load_shape_icon(toggle, variable)
+                toggle.setEnabled(not self._is_selfweight_locked(self.window.selected_action_name))
+                hint = "Usar carga uniforme" if variable else "Usar carga variável (do início ao fim da barra)"
+                toggle.setToolTip(hint)
+                toggle.setAccessibleName(hint)
         self._update_member_action_fields()
         self._animate_member_action_switch()
 
@@ -1758,7 +2499,19 @@ class PropertyPanel(QFrame):
                     or not (self._member_action_reference == "local" or label.startswith("F"))
                 )
                 input_field.setPlaceholderText("" if global_moment else "—")
-                input_field.setText(value)
+                if label.startswith("F"):
+                    initial_text, end_text, _variable = self._member_distributed_input_values(label)
+                    input_field.setText(initial_text)
+                    if end_field := self._member_action_end_inputs.get(label):
+                        end_field.setReadOnly(self._is_selfweight_locked(self.window.selected_action_name))
+                        end_field.setText(end_text)
+                        end_field.setVisible(self._member_action_variable_modes.get(label, False))
+                    if separator := self._member_action_end_separators.get(label):
+                        separator.setVisible(self._member_action_variable_modes.get(label, False))
+                    if toggle := self._member_action_variable_buttons.get(label):
+                        toggle.setEnabled(not self._is_selfweight_locked(self.window.selected_action_name))
+                else:
+                    input_field.setText(value)
                 if unit_label := self._member_action_units.get(label):
                     unit_label.setText("" if global_moment else _unit)
                 if value_box := self._member_action_boxes.get(label):
@@ -1782,11 +2535,15 @@ class PropertyPanel(QFrame):
             return
         try:
             raw_value = field.text().strip()
-            values = (0.0,) if not raw_value else tuple(
-                float(part.strip().replace(",", "."))
-                for part in raw_value.split(";")
-            )
-            if len(values) not in (1, 2) or not all(isfinite(value) for value in values):
+            initial = 0.0 if not raw_value else float(raw_value.replace(",", "."))
+            if label.startswith("F") and self._member_action_variable_modes.get(label, False):
+                end_field = self._member_action_end_inputs.get(label)
+                raw_end = end_field.text().strip() if end_field is not None else ""
+                final = 0.0 if not raw_end else float(raw_end.replace(",", "."))
+                values = (initial, final)
+            else:
+                values = (initial,)
+            if not all(isfinite(value) for value in values):
                 raise ValueError
         except ValueError:
             self._update_member_action_fields()
@@ -1815,9 +2572,6 @@ class PropertyPanel(QFrame):
                         self._member_action_reference,
                     )
         else:
-            if len(values) != 1:
-                self._update_member_action_fields()
-                return
             for member_name in self._selected_names("bar"):
                 action_service.add_member_moment(member_name, label[-1], values[0], load_case)
         self._update_member_action_fields()
@@ -1849,6 +2603,14 @@ class PropertyPanel(QFrame):
             (item for item in results if item.load_reference == selected_reference),
             results[0] if selected_reference is None else None,
         )
+        if kind == "plate":
+            plate_result = result.plate_results.get(name) if result is not None else None
+            if not isinstance(plate_result, dict):
+                message = QLabel("Estrutura não analisada")
+                self._add_context_widget(message)
+                return
+            self._show_plate_analysis_values(plate_result)
+            return
         data_key = "node_results" if kind == "node" else "member_results"
         names = self._selected_names(kind) or [name]
         values = [getattr(result, data_key).get(target) for target in names] if result is not None else []
@@ -1861,6 +2623,47 @@ class PropertyPanel(QFrame):
             self._show_node_analysis_values(self._common_analysis_values(values))
         else:
             self._show_member_analysis_values(values)
+
+    def _show_plate_analysis_values(self, result: dict) -> None:
+        elements = tuple(result.get("elements", {}).values())
+        nodes = tuple(result.get("nodes", {}).values())
+        if nodes:
+            displacement = max(
+                (sum(float(node.get(axis, 0.0)) ** 2 for axis in ("DX", "DY", "DZ")) ** 0.5
+                 for node in nodes),
+                default=0.0,
+            )
+            displacement_title = QLabel("Deslocamento máximo dos nós da malha")
+            displacement_title.setObjectName("propertySection")
+            self._add_context_widget(displacement_title)
+            displacement_value = QLabel(f"{displacement:.4g} m")
+            displacement_value.setObjectName("identityDisplay")
+            displacement_value.setAccessibleName("Deslocamento máximo da laje (m)")
+            self._add_context_widget(displacement_value)
+        components = (
+            ("Mx", "moment", 0, "kN·m/m"),
+            ("My", "moment", 1, "kN·m/m"),
+            ("Mxy", "moment", 2, "kN·m/m"),
+            ("Qx", "shear", 0, "kN/m"),
+            ("Qy", "shear", 1, "kN/m"),
+            ("Sx", "membrane", 0, "kN/m²"),
+            ("Sy", "membrane", 1, "kN/m²"),
+            ("Txy", "membrane", 2, "kN/m²"),
+        )
+        title = QLabel("Esforços máximos por elemento")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        for label, key, index, unit in components:
+            values = [abs(float(item[key][index])) for item in elements if len(item.get(key, ())) > index]
+            if not values:
+                continue
+            row_title = QLabel(label)
+            row_title.setObjectName("propertySection")
+            self._add_context_widget(row_title)
+            value = QLabel(f"{max(values):.4g} {unit}")
+            value.setObjectName("identityDisplay")
+            value.setAccessibleName(f"{label} máximo ({unit})")
+            self._add_context_widget(value)
 
     @staticmethod
     def _common_analysis_values(values: list[dict | None]) -> dict:
@@ -2161,6 +2964,15 @@ class PropertyPanel(QFrame):
             self.reposition()
 
     def _clear_form(self) -> None:
+        if self._plate_section_settings_button is not None:
+            self.window.close_plate_section_panel(self._plate_section_settings_button)
+            self._plate_section_settings_button = None
+        self._plate_section_name_display = None
+        self._plate_section_combo = None
+        if self._subtractions_button is not None:
+            self.window.close_subtractions_panel(self._subtractions_button)
+            self._subtractions_button = None
+        self._subtractions_status = None
         self._clear_context_widgets()
         if self._displacement_settings_button is not None:
             self.window.close_displacement_panel(self._displacement_settings_button)
@@ -2173,7 +2985,26 @@ class PropertyPanel(QFrame):
             self.layout.removeWidget(self._supports_widget)
             self._supports_widget.deleteLater()
             self._supports_widget = None
+            self._support_stack = None
+        if self._supports_header is not None:
+            header = self._supports_header
+            self.layout.removeWidget(header)
+            header.layout().removeWidget(self.supports_title)
+            self.supports_title.setParent(self)
+            self.supports_title.hide()
+            header.deleteLater()
+            self._supports_header = None
+        if self._support_group_animation is not None:
+            self._support_group_animation.stop()
+        self._support_group_animation = None
+        self._support_group_indicator = None
+        self._support_group_buttons.clear()
+        self._support_group = "D"
         self._support_stiffness_inputs.clear()
+        self._support_direction_inputs.clear()
+        self._plate_restriction_boxes.clear()
+        self._plate_restriction_stiffness_inputs.clear()
+        self._plate_restriction_direction_inputs.clear()
         if self._solid_offsets_widget is not None:
             self.layout.removeWidget(self._solid_offsets_widget)
             self._solid_offsets_widget.deleteLater()
@@ -2235,15 +3066,25 @@ class PropertyPanel(QFrame):
         self._analysis_switch_buttons.clear()
         self._node_action_inputs.clear()
         for widget in self._context_widgets:
+            widget.hide()
             self.layout.removeWidget(widget)
             widget.deleteLater()
         self._context_widgets.clear()
         self._member_action_inputs.clear()
+        self._member_action_end_inputs.clear()
+        self._member_action_end_separators.clear()
+        self._member_action_variable_buttons.clear()
+        self._member_action_variable_modes.clear()
         self._member_action_units.clear()
         self._member_action_boxes.clear()
 
     def _node_changed(self, axis: str) -> None:
-        if not self._selected or self._selected[0] != "node": return
+        if (
+            self._node_coordinate_error_active
+            or not self._selected
+            or self._selected[0] != "node"
+        ):
+            return
         index = ("X", "Y", "Z").index(axis)
         field = self.fields[index]
         if not isinstance(field, QDoubleSpinBox) or field.value() == field.minimum():
@@ -2254,12 +3095,26 @@ class PropertyPanel(QFrame):
             values = [node.x, node.y, node.z]
             values[index] = field.value()
             changes[name] = tuple(values)
+        if all(
+            coordinates == (self.window.model.nodes[name].x,
+                            self.window.model.nodes[name].y,
+                            self.window.model.nodes[name].z)
+            for name, coordinates in changes.items()
+        ):
+            return
         try:
             self.window.model_service.update_nodes_coordinates(changes)
         except ValueError as error:
-            self.window.show_error(str(error))
-            self.show_for("node", self._selected[1], self.window.palette.active_group or "Geometria",
-                          selection=self._selection)
+            self._node_coordinate_error_active = True
+            try:
+                self.show_for(
+                    "node", self._selected[1],
+                    self.window.palette.active_group or "Geometria",
+                    selection=self._selection,
+                )
+                self.window.show_error(str(error))
+            finally:
+                self._node_coordinate_error_active = False
             return
         for name in changes:
             self.window.refresh_node(name)
@@ -2286,6 +3141,14 @@ class PropertyPanel(QFrame):
             values = list(self.window.model.nodes[name].support_stiffness)
             values[index] = value
             self.window.model_service.update_support_stiffness(name, tuple(values))
+
+    def _support_direction_changed(self, index: int, direction: str) -> None:
+        if not self._selected or self._selected[0] != "node":
+            return
+        for name in self._selected_names("node"):
+            values = list(self.window.model.nodes[name].support_directions)
+            values[index] = direction
+            self.window.model_service.update_support_directions(name, tuple(values))
 
     def _bar_changed(self, index: int) -> None:
         if not self._selected or self._selected[0] != "bar" or len(self.fields) != 2: return
@@ -2328,14 +3191,17 @@ class PropertyPanel(QFrame):
                       selection=self.window.selected_elements)
 
     def _toggle_color_palette(self) -> None:
-        if not self._selected or self._selected[0] != "bar":
+        if not self._selected or self._selected[0] not in {"bar", "plate"}:
             return
         if self._color_palette.isVisible():
             self._color_palette.hide()
             return
         if self.window.section_panel.isVisible():
             self.window.close_section_panel(self._section_settings_button)
-        colors = [self.window.model.bars[name].color for name in self._selected_names("bar")]
+        if self._selected[0] == "plate":
+            colors = [self.window.model.plates[self._selected[1]].color]
+        else:
+            colors = [self.window.model.bars[name].color for name in self._selected_names("bar")]
         color = colors[0] if self._all_equal(colors) else ""
         self._color_palette.set_selected(color)
         self.reposition_color_palette()
@@ -2353,13 +3219,679 @@ class PropertyPanel(QFrame):
         self._color_palette.move(position)
 
     def _color_selected(self, color: str) -> None:
-        if not self._selected or self._selected[0] != "bar":
+        if not self._selected or self._selected[0] not in {"bar", "plate"}:
+            return
+        if self._selected[0] == "plate":
+            name = self._selected[1]
+            self.window.model.update_plate(name, color=color)
+            self.window.scene.update_plate_rendering(name)
+            self._set_member_color_button(color)
             return
         member_names = self._selected_names("bar")
         for member_name in member_names:
             self.window.model_service.update_member_color(member_name, color)
         self.window.refresh_member_colors(member_names)
         self._set_member_color_button(color)
+
+    def _plate_thickness_changed(self, name: str, field: QDoubleSpinBox) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        self.window.model.update_plate(name, thickness_mm=field.value())
+        self.window.scene.update_plate_rendering(name)
+
+    def _plate_material_changed(self, name: str, material: str) -> None:
+        if (
+            self._selected != ("plate", name)
+            or name not in self.window.model.plates
+            or not material
+        ):
+            return
+        try:
+            self.window.model.update_plate(name, material=material)
+        except ValueError:
+            self.show_for(
+                "plate", name, self.window.palette.active_group or "Geometria",
+                selection=self._selection,
+            )
+            return
+        self.window.refresh_scene()
+
+    def _plate_section_changed(self, name: str, section: str) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        thickness = self.window.model.plates[name].thickness_mm
+        self.window.model.update_plate(
+            name, thickness_mm=(thickness or 100.0) if section == "Retangular" else 0.0,
+        )
+        self.update_plate_section_identity(name)
+        if self.window.plate_section_panel.isVisible():
+            self.window.plate_section_panel.configure_for_plate(name)
+        self.window.refresh_scene()
+
+    @staticmethod
+    def _plate_section_identity(plate) -> str:
+        if plate.thickness_mm <= 0:
+            return "Indefinido"
+        thickness = f"{plate.thickness_mm:g}".replace(".", ",")
+        return f"R {thickness}"
+
+    def update_plate_section_identity(self, name: str) -> None:
+        if (
+            self._selected == ("plate", name)
+            and self._plate_section_name_display is not None
+            and name in self.window.model.plates
+        ):
+            self._plate_section_name_display.setText(
+                self._plate_section_identity(self.window.model.plates[name])
+            )
+            if self._plate_section_combo is not None:
+                with QSignalBlocker(self._plate_section_combo):
+                    self._plate_section_combo.setCurrentIndex(
+                        0 if self.window.model.plates[name].thickness_mm > 0 else -1
+                    )
+
+    def _show_plate_connections(self, name: str) -> None:
+        plate = self.window.model.plates[name]
+        edges = [
+            (index, self.window.model.plate_edge_bars(name, index, include_rigid=True))
+            for index in range(len(plate.contour))
+        ]
+        edges = [(index, bars) for index, bars in edges if bars]
+        title = QLabel("Vinculações")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        if not edges:
+            message = QLabel("Sem arestas sobre barras. Arestas livres.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
+            return
+        selector = SelectorComboBox()
+        selector.setAccessibleName("Aresta da placa")
+        for index, bars in edges:
+            selector.addItem(f"Aresta {index + 1} — {', '.join(bars)}", index)
+        connection = SelectorComboBox()
+        connection.setAccessibleName("Vinculação da aresta da placa")
+        for label, state in (("Livre", "free"), ("Apoiado", "supported"), ("Engastado", "fixed")):
+            connection.addItem(label, state)
+
+        def select_edge(_index=0):
+            current = self.window.model.plates[name]
+            state = dict(current.edge_connections).get(selector.currentData(), "fixed")
+            with QSignalBlocker(connection):
+                connection.setCurrentIndex(connection.findData(state))
+
+        def set_connection(_index):
+            if self._selected != ("plate", name) or name not in self.window.model.plates:
+                return
+            values = dict(self.window.model.plates[name].edge_connections)
+            values[selector.currentData()] = connection.currentData()
+            self.window.model.update_plate(name, edge_connections=tuple(values.items()))
+            self.window.refresh_scene()
+
+        select_edge()
+        selector.currentIndexChanged.connect(select_edge)
+        connection.currentIndexChanged.connect(set_connection)
+        self._add_context_widget(selector)
+        self._add_context_widget(connection)
+
+    def _plate_restriction_changed(self, name: str, index: int, restrained: bool) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        plate = self.window.model.plates[name]
+        restrictions = list(plate.restrictions)
+        restrictions[index] = bool(restrained)
+        self.window.model.update_plate(name, restrictions=tuple(restrictions))
+        self.window.refresh_scene()
+
+    def _plate_restriction_stiffness_changed(self, name: str, index: int) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        plate = self.window.model.plates[name]
+        stiffness = list(plate.restriction_stiffness)
+        stiffness[index] = self._plate_restriction_stiffness_inputs[index].value()
+        self.window.model.update_plate(name, restriction_stiffness=tuple(stiffness))
+        self.window.refresh_scene()
+
+    def _plate_restriction_direction_changed(
+        self, name: str, index: int, direction: str,
+    ) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        plate = self.window.model.plates[name]
+        directions = list(plate.restriction_directions)
+        directions[index] = direction
+        self.window.model.update_plate(name, restriction_directions=tuple(directions))
+        self.window.refresh_scene()
+
+    def _show_plate_pressure_input(self, name: str) -> None:
+        title = QLabel("Ação na superfície")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        self._plate_pressure_inputs.clear()
+        self._plate_pressure_end_inputs.clear()
+        self._plate_pressure_separators.clear()
+        self._plate_pressure_variable_buttons.clear()
+        self._plate_pressure_variable_modes.clear()
+        load_case = self.window.selected_action_name
+        if not load_case:
+            message = QLabel("Selecione uma ação ativa para lançar a pressão.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
+            return
+        action = next((item for item in self.window.model.actions.values()
+                       if item.kind == "plate_surface_pressure" and item.target == name
+                       and item.load_case == load_case), None)
+        if action is None:
+            values = (0.0, 0.0, 0.0, 0.0)
+        elif len(action.components) == 1:
+            pressure = float(action.components[0])
+            values = (pressure, pressure, 0.0, 0.0)
+        elif len(action.components) == 4:
+            values = tuple(float(value) for value in action.components)
+        else:
+            values = (0.0, 0.0, 0.0, 0.0)
+        locked = self.window.action_service.has_selfweight(load_case)
+        if self.window.action_service.has_selfweight(load_case):
+            plate = self.window.model.plates[name]
+            if self.window.action_service.has_plate_selfweight(name, load_case):
+                material = self.window.model.materials.get(plate.material)
+                pressure = 0.0 if material is None else (
+                    -float(material[3]) * float(plate.thickness_mm) / 1000.0
+                )
+            else:
+                pressure = 0.0
+            values = (pressure, pressure, 0.0, 0.0)
+        self._add_plate_pressure_axis_row(name, "X", values[0], values[1], values[0] != values[1], load_case, locked)
+        self._add_plate_pressure_axis_row(name, "Y", values[2], values[3], values[2] != values[3], load_case, locked)
+
+    def _add_plate_pressure_axis_row(
+        self, name: str, axis: str, initial: float, final: float,
+        variable: bool, load_case: str, locked: bool,
+    ) -> None:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        axis_label = QLabel(axis)
+        axis_label.setObjectName("propertySection")
+        axis_label.setFixedWidth(28)
+        value_box = QFrame()
+        value_box.setObjectName("unitValueBox")
+        value_box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox[disabledValue=\"true\"] { background: #eaeef2; border-color: #d0d7de; }"
+            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding: 0 5px; }"
+        )
+        value_layout = QHBoxLayout(value_box)
+        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setSpacing(2)
+        field = QLineEdit(self._formatted_number(initial))
+        field.setObjectName("platePressureAxisValue")
+        field.setMinimumWidth(0)
+        field.setReadOnly(locked)
+        field.setPlaceholderText("—")
+        field.setAccessibleName(f"Pressão variável em {axis} local (kN/m²)")
+        field.setToolTip(
+            "Valor positivo atua no sentido do eixo Z local da placa; negativo, no sentido oposto."
+        )
+        field.editingFinished.connect(
+            lambda field=field, selected_axis=axis: self._plate_pressure_changed(name, selected_axis, field)
+        )
+        self._plate_pressure_inputs[axis] = field
+        value_layout.addWidget(field, 1)
+        end_field = QLineEdit(self._formatted_number(final) if variable else "")
+        end_field.setObjectName("platePressureAxisEndValue")
+        end_field.setMinimumWidth(0)
+        end_field.setReadOnly(locked)
+        end_field.setPlaceholderText("—")
+        end_field.setAccessibleName(f"Pressão final em {axis} local (kN/m²)")
+        end_field.setVisible(variable)
+        end_field.editingFinished.connect(
+            lambda field=field, selected_axis=axis: self._plate_pressure_changed(name, selected_axis, field)
+        )
+        self._plate_pressure_end_inputs[axis] = end_field
+        value_layout.addWidget(end_field, 1)
+        separator = QLabel("→")
+        separator.setStyleSheet("color: #8c959f; padding: 0 2px;")
+        separator.setVisible(variable)
+        self._plate_pressure_separators[axis] = separator
+        value_layout.insertWidget(value_layout.count() - 1, separator)
+        value_layout.addWidget(QLabel("kN/m²"))
+        value_box.setProperty("disabledValue", locked)
+        value_box.style().unpolish(value_box)
+        value_box.style().polish(value_box)
+        toggle = QToolButton()
+        toggle.setObjectName("memberLoadShapeButton")
+        toggle.setFixedSize(34, 34)
+        toggle.setIconSize(QSize(18, 18))
+        toggle.setEnabled(not locked)
+        toggle.setToolTip("Usar pressão variável ao longo do eixo" if not variable else "Usar pressão uniforme")
+        toggle.setAccessibleName(toggle.toolTip())
+        toggle.setStyleSheet(
+            "QToolButton#memberLoadShapeButton { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 6px; padding: 4px; }"
+            "QToolButton#memberLoadShapeButton:hover { background: #eaeef2; }"
+            "QToolButton#memberLoadShapeButton:pressed { background: #d8dee4; }"
+        )
+        self._set_member_load_shape_icon(toggle, variable)
+        self._plate_pressure_variable_buttons[axis] = toggle
+        self._plate_pressure_variable_modes[axis] = variable
+        toggle.clicked.connect(lambda _checked=False, selected_axis=axis: self._toggle_plate_pressure_variable(name, selected_axis))
+        row_layout.addWidget(axis_label)
+        row_layout.addWidget(value_box, 1)
+        row_layout.addWidget(toggle)
+        self._add_context_widget(row)
+
+    def _plate_pressure_changed(self, name: str, axis: str, field: QLineEdit) -> None:
+        if self._selected != ("plate", name) or name not in self.window.model.plates:
+            return
+        load_case = self.window.selected_action_name
+        if not load_case or self.window.action_service.has_selfweight(load_case):
+            return
+        try:
+            initial = float(field.text().strip().replace(",", ".") or 0.0)
+            final = initial
+            if self._plate_pressure_variable_modes.get(axis, False):
+                end_field = self._plate_pressure_end_inputs[axis]
+                final = float(end_field.text().strip().replace(",", ".") or 0.0)
+            values = (initial, final)
+            if not all(isfinite(value) for value in values):
+                raise ValueError
+            x_values = values if axis == "X" else self._plate_pressure_axis_values("X")
+            y_values = values if axis == "Y" else self._plate_pressure_axis_values("Y")
+        except ValueError:
+            self._update_plate_pressure_field(name, load_case)
+            return
+        self.window.action_service.add_plate_surface_pressure_profiles(
+            name, *x_values, *y_values, load_case,
+        )
+        self.window.refresh_scene()
+
+    def _plate_pressure_axis_values(self, axis: str) -> tuple[float, float]:
+        field = self._plate_pressure_inputs.get(axis)
+        if field is None:
+            return 0.0, 0.0
+        initial = float(field.text().strip().replace(",", ".") or 0.0)
+        if self._plate_pressure_variable_modes.get(axis, False):
+            end_field = self._plate_pressure_end_inputs[axis]
+            final = float(end_field.text().strip().replace(",", ".") or 0.0)
+            return initial, final
+        return initial, initial
+
+    def _toggle_plate_pressure_variable(self, name: str, axis: str) -> None:
+        variable = not self._plate_pressure_variable_modes.get(axis, False)
+        self._plate_pressure_variable_modes[axis] = variable
+        field = self._plate_pressure_inputs[axis]
+        end_field = self._plate_pressure_end_inputs[axis]
+        if variable and not end_field.text().strip():
+            end_field.setText(field.text())
+        end_field.setVisible(variable)
+        self._plate_pressure_separators[axis].setVisible(variable)
+        toggle = self._plate_pressure_variable_buttons[axis]
+        self._set_member_load_shape_icon(toggle, variable)
+        toggle.setToolTip("Usar pressão uniforme" if variable else "Usar pressão variável ao longo do eixo")
+        toggle.setAccessibleName(toggle.toolTip())
+        self._plate_pressure_changed(name, axis, field)
+
+    def _update_plate_pressure_field(self, name: str, load_case: str) -> None:
+        action = next((item for item in self.window.model.actions.values()
+                       if item.kind == "plate_surface_pressure" and item.target == name
+                       and item.load_case == load_case), None)
+        if action is None:
+            values = (0.0, 0.0, 0.0, 0.0)
+        elif len(action.components) == 1:
+            values = (action.components[0], action.components[0], 0.0, 0.0)
+        elif len(action.components) == 4:
+            values = tuple(action.components)
+        else:
+            values = (0.0, 0.0, 0.0, 0.0)
+        for axis, start, end in (("X", values[0], values[1]), ("Y", values[2], values[3])):
+            variable = start != end
+            self._plate_pressure_variable_modes[axis] = variable
+            self._plate_pressure_inputs[axis].setText(self._formatted_number(start))
+            self._plate_pressure_end_inputs[axis].setText(self._formatted_number(end) if variable else "")
+            self._plate_pressure_end_inputs[axis].setVisible(variable)
+            self._plate_pressure_separators[axis].setVisible(variable)
+            toggle = self._plate_pressure_variable_buttons[axis]
+            self._set_member_load_shape_icon(toggle, variable)
+
+    @staticmethod
+    def _format_plate_pressure(value: float) -> str:
+        rounded = round(float(value), 3)
+        if rounded == 0.0:
+            return "0"
+        return f"{rounded:.3f}".rstrip("0").rstrip(".")
+
+    def _show_plate_edge_actions(self, name: str) -> None:
+        plate = self.window.model.plates[name]
+        load_case = self.window.selected_action_name
+        self._plate_edge_switch_buttons.clear()
+        edge_actions = [action for action in self.window.model.actions.values()
+                        if action.target == name and action.load_case == load_case
+                        and action.kind.startswith("plate_edge_")]
+        has_global = any("_global_" in action.kind for action in edge_actions)
+        has_local = any("_local_" in action.kind for action in edge_actions)
+        self._plate_edge_reference = "global" if has_global else "local" if has_local else self._plate_edge_reference
+        title = QWidget()
+        title_layout = QHBoxLayout(title)
+        title_layout.setContentsMargins(0, 7, 0, 0)
+        title_layout.setSpacing(8)
+        label = QLabel("Ação nas arestas")
+        label.setObjectName("propertySection")
+        title_layout.addWidget(label, 1)
+        switch = self._plate_edge_reference_switch(name)
+        title_layout.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._add_context_widget(title)
+
+        selector_row = QWidget()
+        selector_layout = QHBoxLayout(selector_row)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(8)
+        edge_selector = SelectorComboBox()
+        edge_selector.setObjectName("plateEdgeSelector")
+        edge_selector.setAccessibleName("Aresta da placa para aplicação da ação")
+        for index, start_node in enumerate(plate.vertex_nodes):
+            if self.window.model.plate_edge_bars(name, index):
+                continue
+            end_node = plate.vertex_nodes[(index + 1) % len(plate.vertex_nodes)]
+            edge_selector.addItem(f"{start_node} – {end_node}", index)
+        if edge_selector.count():
+            selected_index = edge_selector.findData(self._plate_edge_index)
+            edge_selector.setCurrentIndex(max(0, selected_index))
+        else:
+            edge_selector.addItem("Não disponível", -1)
+            edge_selector.setEnabled(False)
+            switch.setEnabled(False)
+        selector_layout.addWidget(edge_selector, 1)
+        self._add_context_widget(selector_row)
+        if not load_case:
+            message = QLabel("Selecione uma ação ativa para lançar cargas nas arestas.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
+            return
+
+        edge_selector.currentIndexChanged.connect(
+            lambda index: self._set_plate_edge_index(name, edge_selector.itemData(index))
+        )
+
+        self._plate_edge_inputs.clear()
+        self._plate_edge_end_inputs.clear()
+        self._plate_edge_separators.clear()
+        self._plate_edge_variable_buttons.clear()
+        self._plate_edge_variable_modes.clear()
+        self._plate_edge_units.clear()
+        self._plate_edge_boxes.clear()
+        self._plate_edge_index = edge_selector.currentData()
+        for action_label in ("FX", "FY", "FZ", "MX", "MY", "MZ"):
+            self._add_plate_edge_action_row(name, action_label, load_case)
+        self._update_plate_edge_editability(name)
+
+    def _update_plate_edge_editability(self, name: str) -> None:
+        unavailable = self._plate_edge_index < 0
+        bars = () if unavailable else self.window.model.plate_edge_bars(name, self._plate_edge_index)
+        locked = unavailable or bool(bars) or self._is_selfweight_locked(self.window.selected_action_name)
+        for label, field in self._plate_edge_inputs.items():
+            disabled = locked or (label.startswith("M") and self._plate_edge_reference == "global")
+            field.setReadOnly(disabled)
+            field.setEnabled(not disabled)
+            box = self._plate_edge_boxes[label]
+            box.setProperty("disabledValue", disabled)
+            box.style().unpolish(box)
+            box.style().polish(box)
+            if label in self._plate_edge_end_inputs:
+                self._plate_edge_end_inputs[label].setReadOnly(locked)
+                self._plate_edge_end_inputs[label].setEnabled(not locked)
+                self._plate_edge_variable_buttons[label].setEnabled(not locked)
+
+    def _plate_edge_reference_switch(self, name: str) -> QFrame:
+        switch = QFrame()
+        switch.setObjectName("plateEdgeActionReferenceSwitch")
+        switch.setFixedSize(98, 30)
+        switch.setStyleSheet(
+            "QFrame#plateEdgeActionReferenceSwitch { background: #ffffff; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        indicator = QFrame(switch)
+        indicator.setObjectName("plateEdgeActionReferenceIndicator")
+        indicator.setStyleSheet(
+            "QFrame#plateEdgeActionReferenceIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        self._plate_edge_switch_indicator = indicator
+        layout = QHBoxLayout(switch)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        buttons = QButtonGroup(switch)
+        buttons.setExclusive(True)
+        for reference, text in (("global", "Global"), ("local", "Local")):
+            button = QToolButton(switch)
+            button.setText(text)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(46, 24)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 12px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(reference == self._plate_edge_reference)
+            button.setAccessibleName(f"Exibir ações da aresta no sistema {text.lower()}")
+            button.clicked.connect(
+                lambda checked=False, selected=reference: self._set_plate_edge_reference(name, selected)
+            )
+            buttons.addButton(button)
+            layout.addWidget(button)
+            self._plate_edge_switch_buttons[reference] = button
+        indicator.setGeometry(self._plate_edge_reference_indicator_geometry())
+        indicator.lower()
+        self._update_plate_edge_reference_switch_text()
+        return switch
+
+    def _plate_edge_reference_indicator_geometry(self) -> QRect:
+        if self._plate_edge_reference == "global":
+            return QRect(4, 5, 44, 20)
+        return QRect(51, 5, 42, 20)
+
+    def _update_plate_edge_reference_switch_text(self) -> None:
+        for reference, button in self._plate_edge_switch_buttons.items():
+            color = "#ffffff" if reference == self._plate_edge_reference else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _plate_edge_action(self, name: str, label: str, load_case: str):
+        edge_index = self._plate_edge_index
+        reference = self._plate_edge_reference
+        if label.startswith("F"):
+            kind = f"plate_edge_distributed_force_{reference}_{label[-1]}:{edge_index}"
+        elif reference == "local":
+            kind = f"plate_edge_moment_local_{label[-1]}:{edge_index}"
+        else:
+            return None
+        return next((action for action in self.window.model.actions.values()
+                     if action.target == name and action.kind == kind
+                     and action.load_case == load_case), None)
+
+    def _add_plate_edge_action_row(self, name: str, label: str, load_case: str) -> None:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        field_label = QLabel(label)
+        field_label.setObjectName("propertySection")
+        field_label.setFixedWidth(28)
+        value_box = QFrame()
+        value_box.setObjectName("unitValueBox")
+        value_box.setStyleSheet(
+            "QFrame#unitValueBox { min-height: 30px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; }"
+            "QFrame#unitValueBox[disabledValue=\"true\"] { background: #eaeef2; border-color: #d0d7de; }"
+            "QFrame#unitValueBox QLineEdit { border: 0; background: transparent; color: #57606a; "
+            "padding: 2px 9px; }"
+            "QFrame#unitValueBox QLabel { color: #57606a; padding: 0 5px; }"
+        )
+        value_layout = QHBoxLayout(value_box)
+        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setSpacing(2)
+        action = self._plate_edge_action(name, label, load_case)
+        is_force = label.startswith("F")
+        variable = bool(is_force and action and len(action.components) > 1
+                        and action.components[0] != action.components[-1])
+        initial = "" if action is None else self._formatted_number(action.components[0])
+        final = "" if action is None or len(action.components) < 2 else self._formatted_number(action.components[-1])
+        field = QLineEdit(initial)
+        field.setObjectName("plateEdgeActionValue")
+        field.setMinimumWidth(0)
+        editable = (is_force or self._plate_edge_reference == "local") and not self._is_selfweight_locked(load_case)
+        field.setReadOnly(not editable)
+        field.setPlaceholderText("—")
+        field.setAccessibleName(f"Ação {label} na aresta ({'kN/m' if is_force else 'kN·m/m'})")
+        field.editingFinished.connect(
+            lambda field=field, action_label=label: self._plate_edge_action_changed(name, action_label, field)
+        )
+        self._plate_edge_inputs[label] = field
+        self._plate_edge_boxes[label] = value_box
+        value_box.setProperty(
+            "disabledValue", label.startswith("M") and self._plate_edge_reference == "global",
+        )
+        value_box.style().unpolish(value_box)
+        value_box.style().polish(value_box)
+        value_layout.addWidget(field, 1)
+        if is_force:
+            end_field = QLineEdit(final if variable else "")
+            end_field.setObjectName("plateEdgeActionEndValue")
+            end_field.setMinimumWidth(0)
+            end_field.setReadOnly(self._is_selfweight_locked(load_case))
+            end_field.setPlaceholderText("—")
+            end_field.setAccessibleName(f"Ação {label} final na aresta (kN/m)")
+            end_field.setVisible(variable)
+            end_field.editingFinished.connect(
+                lambda field=field, action_label=label: self._plate_edge_action_changed(name, action_label, field)
+            )
+            self._plate_edge_end_inputs[label] = end_field
+            value_layout.addWidget(end_field, 1)
+            separator = QLabel("→")
+            separator.setStyleSheet("color: #8c959f; padding: 0 2px;")
+            separator.setVisible(variable)
+            self._plate_edge_separators[label] = separator
+            value_layout.insertWidget(value_layout.count() - 1, separator)
+            toggle = QToolButton()
+            toggle.setObjectName("memberLoadShapeButton")
+            toggle.setFixedSize(34, 34)
+            toggle.setIconSize(QSize(18, 18))
+            toggle.setEnabled(not self._is_selfweight_locked(load_case))
+            toggle.setToolTip("Usar carga variável (de uma extremidade à outra)" if not variable else "Usar carga uniforme")
+            toggle.setAccessibleName(toggle.toolTip())
+            toggle.setStyleSheet(
+                "QToolButton#memberLoadShapeButton { background: #f6f8fa; border: 1px solid #d0d7de; "
+                "border-radius: 6px; padding: 4px; }"
+                "QToolButton#memberLoadShapeButton:hover { background: #eaeef2; }"
+                "QToolButton#memberLoadShapeButton:pressed { background: #d8dee4; }"
+            )
+            self._set_member_load_shape_icon(toggle, variable)
+            self._plate_edge_variable_buttons[label] = toggle
+            self._plate_edge_variable_modes[label] = variable
+            toggle.clicked.connect(lambda _checked=False, action_label=label: self._toggle_plate_edge_variable(name, action_label))
+            row_layout.addWidget(value_box, 1)
+            row_layout.addWidget(toggle)
+            unit = QLabel("kN/m")
+        else:
+            unit = QLabel("kN·m/m")
+            row_layout.addWidget(value_box, 1)
+        value_layout.addWidget(unit)
+        self._plate_edge_units[label] = unit
+        row_layout.insertWidget(0, field_label)
+        self._add_context_widget(row)
+
+    def _set_plate_edge_index(self, name: str, index: int) -> None:
+        self._plate_edge_index = index
+        self._update_plate_edge_editability(name)
+        if not self.window.selected_action_name:
+            return
+        for label in ("FX", "FY", "FZ", "MX", "MY", "MZ"):
+            action = self._plate_edge_action(name, label, self.window.selected_action_name)
+            field = self._plate_edge_inputs.get(label)
+            if field is None:
+                continue
+            field.setText("" if action is None else self._formatted_number(action.components[0]))
+            variable = bool(label.startswith("F") and action and len(action.components) > 1
+                            and action.components[0] != action.components[-1])
+            self._plate_edge_variable_modes[label] = variable
+            if end_field := self._plate_edge_end_inputs.get(label):
+                end_field.setText("" if action is None or len(action.components) < 2 or not variable
+                                  else self._formatted_number(action.components[-1]))
+                end_field.setVisible(variable)
+            if separator := self._plate_edge_separators.get(label):
+                separator.setVisible(variable)
+            if toggle := self._plate_edge_variable_buttons.get(label):
+                self._set_member_load_shape_icon(toggle, variable)
+                toggle.setToolTip("Usar carga uniforme" if variable else "Usar carga variável (de uma extremidade à outra)")
+                toggle.setAccessibleName(toggle.toolTip())
+
+    def _set_plate_edge_reference(self, name: str, reference: str) -> None:
+        selected_reference = "local" if reference == "local" else "global"
+        if selected_reference == self._plate_edge_reference:
+            return
+        self._plate_edge_reference = selected_reference
+        indicator = self._plate_edge_switch_indicator
+        if indicator is not None:
+            if self._plate_edge_switch_animation is not None:
+                self._plate_edge_switch_animation.stop()
+            animation = QPropertyAnimation(indicator, b"geometry", indicator)
+            animation.setDuration(160)
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            animation.setStartValue(indicator.geometry())
+            animation.setEndValue(self._plate_edge_reference_indicator_geometry())
+            self._plate_edge_switch_animation = animation
+            animation.start()
+        self._update_plate_edge_reference_switch_text()
+        self._set_plate_edge_index(name, self._plate_edge_index)
+
+    def _toggle_plate_edge_variable(self, name: str, label: str) -> None:
+        if self._plate_edge_index < 0 or self.window.model.plate_edge_bars(name, self._plate_edge_index):
+            return
+        variable = not self._plate_edge_variable_modes.get(label, False)
+        self._plate_edge_variable_modes[label] = variable
+        field = self._plate_edge_inputs[label]
+        end_field = self._plate_edge_end_inputs[label]
+        if variable and not end_field.text().strip():
+            end_field.setText(field.text())
+        end_field.setVisible(variable)
+        self._plate_edge_separators[label].setVisible(variable)
+        toggle = self._plate_edge_variable_buttons[label]
+        self._set_member_load_shape_icon(toggle, variable)
+        toggle.setToolTip("Usar carga uniforme" if variable else "Usar carga variável (de uma extremidade à outra)")
+        toggle.setAccessibleName(toggle.toolTip())
+        self._plate_edge_action_changed(name, label, field)
+
+    def _plate_edge_action_changed(self, name: str, label: str, field: QLineEdit) -> None:
+        if not self._selected or self._selected != ("plate", name):
+            return
+        if self._plate_edge_index < 0 or self.window.model.plate_edge_bars(name, self._plate_edge_index):
+            return
+        load_case = self.window.selected_action_name
+        if not load_case or (label.startswith("M") and self._plate_edge_reference == "global"):
+            return
+        try:
+            initial = float(field.text().strip().replace(",", ".") or 0.0)
+            final = initial
+            if label.startswith("F") and self._plate_edge_variable_modes.get(label, False):
+                end_field = self._plate_edge_end_inputs[label]
+                final = float(end_field.text().strip().replace(",", ".") or 0.0)
+            if not isfinite(initial) or not isfinite(final):
+                raise ValueError
+        except ValueError:
+            self._set_plate_edge_index(name, self._plate_edge_index)
+            return
+        self.window.action_service.add_plate_edge_action(
+            name, self._plate_edge_index, "force" if label.startswith("F") else "moment",
+            label[-1], initial, final, load_case,
+            self._plate_edge_reference,
+        )
+        self.window.refresh_scene()
 
     def _delete_requested(self) -> None:
         self.window.delete_selected()
@@ -2403,6 +3935,13 @@ class PropertyPanel(QFrame):
 
     def hideEvent(self, event) -> None:
         self._color_palette.hide()
+        if (
+            hasattr(self.window, "plate_section_panel")
+            and self.window.plate_section_panel.isVisible()
+        ):
+            self.window.close_plate_section_panel(
+                self._plate_section_settings_button,
+            )
         super().hideEvent(event)
 
     def _releases_changed(self, index: int, state: int) -> None:

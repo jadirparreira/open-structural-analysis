@@ -36,7 +36,15 @@ def test_material_catalog_contains_current_entries_and_a36_strengths():
     names = set(materials)
     assert names == {
         "ASTM A36", "ASTM A572 Gr 50", "NBR MR 250", "NBR AR 350",
-        "NBR AR 415", "SAE 1020", "Concreto Estrutural", "Madeira Estrutural",
+        "NBR AR 415", "SAE 1020",
+        "ASTM A500 Gr B", "ASTM A500 Gr C", "ASTM A992",
+        "NBR 7008-3 ZAR 230", "NBR 7008-3 ZAR 280", "NBR 7008-3 ZAR 345",
+        "NBR 7007 AR 350 COR",
+        "Concreto C20", "Concreto C25", "Concreto C30", "Concreto C35",
+        "Concreto C40", "Concreto C45", "Concreto C50", "Concreto C55",
+        "Concreto C60", "Concreto C70", "Concreto C80", "Concreto C90",
+        "Angelim-pedra", "Cupiúba", "Eucalipto grandis", "Garapa", "Ipê",
+        "Jatobá", "Maçaranduba", "Pinus elliottii",
     }
     assert materials["ASTM A36"]["fy_kn_m2"] == 250000.0
     assert materials["ASTM A36"]["fu_kn_m2"] == 400000.0

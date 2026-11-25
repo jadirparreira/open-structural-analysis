@@ -32,7 +32,7 @@ def test_mcp_application_switches_visual_sessions():
 
     assert application.get_session_state() == {
         "active_session": "Geometria",
-        "available_sessions": ["Geometria", "Verificação", "Ações", "Análise"],
+        "available_sessions": ["Geometria", "Verificação", "Ações", "Análise", "Detalhamento"],
     }
 
     application._on_session_changed = lambda session: (sessions.append(session), active_session.__setitem__(0, session))
@@ -73,17 +73,21 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "solid_face_offsets_mm": [0.0, 0.0],
         "solid_section_offsets_mm": [0.0, 0.0],
         "color": "#6e7781",
+        "section_mirrored": False,
+        "solid_face_angles_deg": [0.0] * 4,
+        "calculation_property_overrides": {}, "detail_subtractions": [], "detail_end_cuts": [],
     }
     assert application.get_project_summary() == {
         "revision": 3,
         "nodes": 2,
         "members": 1,
+        "plates": 0, "verification_results": 0,
         "rigid_bars": 0,
         "actions": 0,
         "load_cases": 0,
         "load_combinations": 0,
         "analysis_results": 0,
-        "materials": 8,
+        "materials": len(model.materials),
         "drawing_references": 0,
         "scene_views": 1,
         "active_scene_view": "Completo",
@@ -103,13 +107,13 @@ def test_mcp_application_can_assign_concrete_properties_and_supports():
     supports = application.set_node_supports("N1", True, True, True)
     result = application.set_member_properties(
         ["B1"],
-        "Concreto Estrutural",
+        "Concreto C30",
         "Retangular",
         {"b": 150.0, "h": 300.0},
     )
 
     assert supports["node"]["supports"] == [True, True, True, False, False, False]
-    assert result["members"][0]["material"] == "Concreto Estrutural"
+    assert result["members"][0]["material"] == "Concreto C30"
     assert result["members"][0]["section"] == "Retangular"
     assert result["members"][0]["profile"] == "R 150 x 300"
     assert result["members"][0]["geometry"] == {"b": 150.0, "h": 300.0}
@@ -136,7 +140,7 @@ def test_mcp_application_deletes_structural_elements_in_batches():
 
     preview = application.delete_elements(nodes=["N1"], dry_run=True)
     assert preview["status"] == "preview"
-    assert preview["blocked"] == [{"node": "N1", "members": ["B1"], "rigid_bars": ["N1-N3"]}]
+    assert preview["blocked"] == [{"node": "N1", "members": ["B1"], "rigid_bars": ["N1-N3"], "plates": []}]
     assert set(model.nodes) == {"N1", "N2", "N3"}
 
     blocked = application.delete_elements(nodes=["N1"])
@@ -163,9 +167,9 @@ def test_mcp_application_lists_catalog_materials_and_sections():
     _model, application = make_application()
 
     materials = application.list_materials()
-    sections = application.list_sections("Concreto Estrutural")
+    sections = application.list_sections("Concreto C30")
 
-    assert any(item["name"] == "Concreto Estrutural" for item in materials["materials"])
+    assert any(item["name"] == "Concreto C30" for item in materials["materials"])
     assert sections["sections"] == [{
         "material_type": "Concreto",
         "families": [
@@ -247,7 +251,7 @@ def test_mcp_application_updates_any_combination_of_member_properties():
 
     result = application.update_member_properties(
         ["B1"],
-        material="Concreto Estrutural",
+        material="Concreto C30",
         section="Retangular",
         geometry={"b": 200.0, "h": 400.0},
         rotation=45,
@@ -309,6 +313,7 @@ def test_mcp_application_updates_node_without_changing_its_name():
         "z": 4.0,
         "supports": [True, True, True, False, False, True],
         "support_stiffness": [10.0, 20.0, 30.0, 1.0, 2.0, 3.0],
+        "support_directions": ["="] * 6, "component": None,
     }
     assert application.list_nodes()["nodes"][0]["support_stiffness"] == [
         10.0, 20.0, 30.0, 1.0, 2.0, 3.0,
@@ -495,6 +500,7 @@ def test_mcp_application_controls_action_visibility_options():
         "node_moments_visible": True,
         "member_forces_visible": True,
         "member_moments_visible": True,
+        "plate_pressures_visible": True,
     }
     application = McpApplication(
         model,
@@ -503,9 +509,10 @@ def test_mcp_application_controls_action_visibility_options():
         get_view_state=lambda: dict(view),
     )
 
-    result = application.set_view_options({"node_forces_visible": False})
+    result = application.set_view_options({"node_forces_visible": False, "plate_pressures_visible": False})
 
     assert result["view"]["node_forces_visible"] is False
+    assert result["view"]["plate_pressures_visible"] is False
 
 
 def test_mcp_application_updates_and_deletes_rigid_bars_and_member_endpoints():
@@ -532,13 +539,14 @@ def test_mcp_application_controls_geometry_view_options():
         "reference_axes_visible": True,
         "node_labels_visible": True,
         "member_labels_visible": True,
+        "plate_labels_visible": True,
         "local_axes_visible": True,
         "nodes_visible": True,
         "solid_members_visible": True,
         "member_releases_visible": True,
         "semirigid_links_visible": True,
         "node_supports_visible": True,
-        "snap_enabled": True,
+        "node_components_visible": True,
     }
     changes = []
     application = McpApplication(
@@ -548,11 +556,11 @@ def test_mcp_application_controls_geometry_view_options():
         get_view_state=lambda: dict(view),
     )
 
-    result = application.set_view_options({"grid_visible": False, "snap_enabled": False})
+    result = application.set_view_options({"grid_visible": False, "node_components_visible": False})
 
     assert result["view"]["grid_visible"] is False
-    assert result["view"]["snap_enabled"] is True
-    assert changes == [("grid_visible", False)]
+    assert result["view"]["node_components_visible"] is False
+    assert changes == [("grid_visible", False), ("node_components_visible", False)]
     assert application.get_view_options()["view"]["grid_visible"] is False
 
 

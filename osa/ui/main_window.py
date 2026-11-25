@@ -5,15 +5,23 @@ import threading
 import uuid
 
 import numpy as np
-from PySide6.QtCore import QSettings, QThread, Signal, Slot
+from PySide6.QtCore import QSettings, QThread, QThreadPool, Signal, Slot
 
+from osa.domain.node_components import node_component_geometry_signature
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
 from osa.integrations import LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
+from osa.rendering.plate_result_display import (
+    DEFAULT_PLATE_RESULT_DISPLAY_MODE,
+    is_plate_result_display_mode,
+)
 from osa.sections import section_shape
 from osa.services import AnalysisService, ResultService
+from osa.services.steel_quantities import steel_plate_rows
+from osa.services.component_accessories import component_accessory_rows
+from osa.services.plate_contour import plate_contour
 from osa.transcriptions import is_import_path
 from osa.transcriptions.plates import require_no_pending_plates
 
@@ -21,6 +29,7 @@ from .analysis_panel import ProcessingPanel, VerificationPanel
 from .analysis_worker import AnalysisWorker
 from .axes_panel import AxesPanel
 from .calculation_properties_panel import CalculationPropertiesPanel
+from .node_components_dialog import NodeComponentsDialog
 from .command_bar import CommandBar, CommandHistory
 from .common import *
 from .dialogs import (
@@ -31,25 +40,38 @@ from .dialogs import (
     CombinationsDialog,
     DetailingExportSuccessDialog,
     DetailingViewsDialog,
+    ComponentDetailsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
+    PlateClosureDialog,
     ProgramSettingsDialog,
+    ProjectSheetSettingsDialog,
+    ProjectSheetTextDialog,
+    RemoveProjectSheetDialog,
     SelfweightDialog,
     SettingsDialog,
     UnsavedChangesDialog,
 )
 from .displacement_panel import DisplacementPanel
+from .detailing_preview import (
+    DETAILING_LINEWORK_VERSION, DetailingViewPreview, _ModelSnapshot,
+)
+from .detailing_viewport import _DetachedDetailingScene
 from .group_positioning import group_endpoint_faces
 from .home import HomePage
+from .import_dialogs import ImportReportDialog, PrjImportDialog
 from .loading_indicator import LoadingIndicator
-from .import_dialogs import PrjImportDialog, ImportReportDialog
 from .mcp_dispatcher import McpQtDispatcher
 from .member_placement_panel import MemberPlacementEditor
+from .plate_placement_panel import PlatePlacementEditor
+from .plate_section_panel import PlateSectionPanel
 from .navigation_buttons import LeftArrowButton, RightArrowButton, SlopedPlaneButton
 from .palettes import (
     ActionTopPalette,
     AnalysisTopPalette,
     DetailingTopPalette,
+    DetailingModePalette,
+    ProjectSheetsPalette,
     FloatingPalette,
     MemberPropertyCopyPanel,
     PaletteTooltip,
@@ -57,20 +79,38 @@ from .palettes import (
     VerificationTopPalette,
 )
 from .project_load_worker import ProjectLoadWorker
+from .project_sheet import (
+    ProjectSheetDetailGroupPanel,
+    ProjectSheetDetailIdentifierPanel,
+    ProjectSheetElevationIdentifierPanel,
+    ProjectSheetIdentificationPanel,
+    ProjectSheetSectionPanel,
+    ProjectSheetViewPanel,
+    ProjectSheetWorkspace,
+    default_project_sheet_settings,
+)
+from .project_sheet_refresh import SheetLineworkSignals, SheetLineworkTask
+from .sheet_tables import InsertSheetTableDialog, RevisionTableEditor, initial_revision_rows, revision_rows_for, steel_profile_rows
 from .property_panel import PropertyPanel
 from .reference_panel import ReferenceImportDialog, ReferencePanel
 from .section_panel import (
+    HPLaminadoSectionPanel,
     ILaminadoSectionPanel,
     LLaminadoSectionPanel,
     ParametricSectionPanel,
     TLaminadoSectionPanel,
     ULaminadoSectionPanel,
     WLaminadoSectionPanel,
-    HPLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
+from .subtractions_panel import SubtractionsPanel
 from .verification_worker import VerificationWorker
 from .window_frame import TitleBar, WindowFrame
+from .weld_symbols import WeldTool
+from osa.services.base_plate_details import (
+    COMPONENT_IDENTIFIER_KINDS, component_identifier, update_component_identifier,
+    ensure_base_plate_annotations,
+)
 
 
 class _ProjectLoadingDialog(QDialog):
@@ -92,11 +132,11 @@ class MainWindow(QMainWindow):
     _open_file_filter = _project_file_filter
     _import_file_filter = "Projeto PRJ (*.prj *.prj.zip)"
     _interface_commands = frozenset({
-        "bar", "split", "reverse", "join", "rigid", "copy", "cprop", "measure", "axes",
+        "bar", "plate", "split", "splitplate", "joinplates", "join", "rigid", "copy", "move", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
         "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
-        "configaxes", "nodelabels", "memberlabels", "localaxes", "nodes",
-        "solids", "releases", "semirigid", "supports", "scene", "configreference",
+        "configaxes", "nodelabels", "memberlabels", "platelabels", "localaxes", "nodes",
+        "solids", "releases", "semirigid", "supports", "components", "scene", "configreference",
     })
 
     def __init__(self) -> None:
@@ -140,6 +180,11 @@ class MainWindow(QMainWindow):
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
         self._command_mode: str | None = None
+        self._stair_geometry_capture_dialog = None
+        self._stair_geometry_capture_node: str | None = None
+        self._stair_geometry_capture_points: list[tuple[float, float, float]] = []
+        self._detailing_project_mode = False
+        self._detail_plane_return_to_project = False
         self._detailing_views_dialog_open = False
         self._detailing_views_dialog: DetailingViewsDialog | None = None
         self._reference_axis_placement_direction: str | None = None
@@ -147,15 +192,34 @@ class MainWindow(QMainWindow):
         self._member_placement_start: tuple[float, float, float] | None = None
         self._member_placement_start_snap_member_name: str | None = None
         self._member_placement_start_snap_target: tuple[str, str] | None = None
-        self._endpoint_alignment_source_bar: str | None = None
+        self._endpoint_alignment_source: tuple[str, str] | None = None
+        self._detail_subtraction_target: tuple[str, str] | None = None
+        self._detail_end_cut_target: str | None = None
+        self._detail_end_cut_reference_faces: list[tuple] = []
+        self._face_alignment_source: tuple[str, str] | None = None
+        self._face_alignment_source_hit = None
         self._connect_member_ends_first_bar: str | None = None
         self._join_member_first: str | None = None
         self._copy_properties_reference: str | None = None
         self._copy_elements_selection: list[tuple[str, str]] = []
         self._copy_elements_reference: tuple[float, float, float] | None = None
+        self._move_elements_selection: list[tuple[str, str]] = []
+        self._move_elements_reference: tuple[float, float, float] | None = None
         self._pending_action_launch: tuple[str, str, dict[str, tuple[float, ...]]] | None = None
         self._member_direction_normalization_enabled = True
         self._program_settings = QSettings("OpenStructuralAnalysis", "OpenStructuralAnalysis")
+        self._face_intersection_edges_enabled = self._program_settings.value(
+            "video/showFaceIntersectionEdges", False, type=bool,
+        )
+        plate_closure = str(self._program_settings.value("plates/closure", "perguntar"))
+        self._plate_closure_mode = plate_closure if plate_closure in {"perguntar", "automatico"} else "perguntar"
+        plate_result_mode = str(self._program_settings.value(
+            "plates/resultDisplayMode", DEFAULT_PLATE_RESULT_DISPLAY_MODE,
+        ))
+        self._plate_result_display_mode = (
+            plate_result_mode if is_plate_result_display_mode(plate_result_mode)
+            else DEFAULT_PLATE_RESULT_DISPLAY_MODE
+        )
         self._solid_face_angle_limit_degrees = self._read_solid_face_angle_limit()
         self._minimum_bar_restraint_angle_degrees = self._read_minimum_bar_restraint_angle()
         self.model.minimum_bar_restraint_angle_degrees = self._minimum_bar_restraint_angle_degrees
@@ -180,20 +244,144 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.title_bar = TitleBar(self)
         self.scene = StructureScene(shell)
+        self.scene.set_face_intersection_edges_enabled(self._face_intersection_edges_enabled)
+        self.scene.set_plate_result_display_mode(self._plate_result_display_mode)
         self.home = HomePage(shell)
         self.view_stack = QStackedWidget(shell)
         self.view_stack.addWidget(self.home)
         self.view_stack.addWidget(self.scene)
+        self.project_sheet_workspace = ProjectSheetWorkspace(shell)
+        self.project_sheet_workspace.export_button.clicked.connect(self.export_project_pdf)
+        self.project_sheet_workspace.steel_profile_rows_provider = self._steel_profile_table_rows
+        self.project_sheet_workspace.steel_plate_rows_provider = self._steel_plate_table_rows
+        self.project_sheet_workspace.accessory_rows_provider = self._accessory_table_rows
+        self.view_stack.addWidget(self.project_sheet_workspace)
         shell_layout.addWidget(self.title_bar)
         shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self._create_project_loading_overlay()
+        self._create_sheet_views_updating_dialog()
+        self.project_sheet_view_panel = ProjectSheetViewPanel(self)
+        self.project_sheet_detail_group_panel = ProjectSheetDetailGroupPanel(self)
+        self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
+        self.project_sheet_detail_identifier_panel = ProjectSheetDetailIdentifierPanel(self)
+        self.project_sheet_section_panel = ProjectSheetSectionPanel(self)
+        self.project_sheet_elevation_identifier_panel = ProjectSheetElevationIdentifierPanel(self)
+        self.project_weld_tool = WeldTool(self, self.project_sheet_workspace)
+        self.project_sheet_workspace.weld_tool = self.project_weld_tool
+        self.project_sheet_workspace.selection_changed.connect(
+            self._project_sheet_view_selected
+        )
+        self.project_sheet_workspace.identification_selection_changed.connect(
+            self._project_sheet_identification_selected
+        )
+        self.project_sheet_workspace.detail_identifier_selection_changed.connect(
+            self._project_sheet_detail_identifier_selected
+        )
+        self.project_sheet_workspace.section_selection_changed.connect(
+            self._project_sheet_section_selected
+        )
+        self.project_sheet_workspace.elevation_identifier_selection_changed.connect(
+            self._project_sheet_elevation_identifier_selected
+        )
+        self.project_sheet_workspace.text_editor_requested.connect(
+            self._project_sheet_text_editor_requested
+        )
+        self.project_sheet_workspace.table_editor_requested.connect(
+            self._project_sheet_table_editor_requested
+        )
+        self.project_sheet_workspace.annotation_finished.connect(
+            self._project_sheet_annotation_finished
+        )
+        self.project_sheet_workspace.layout_changed.connect(self._store_detailing_state)
+        self.project_sheet_workspace.remove_view_requested.connect(
+            lambda index: self.project_sheets_palette.remove_view_from_active_sheet(index)
+        )
+        self.project_sheet_workspace.element_identification_requested.connect(
+            self._add_project_view_identification
+        )
+        self.project_sheet_workspace.identification_finished.connect(
+            self._finish_project_view_identification
+        )
+        self.project_sheet_workspace.member_break_finished.connect(self._finish_project_member_break)
+        self.project_sheet_workspace.member_break_step_changed.connect(self._project_member_break_step_changed)
+        self.project_sheet_workspace.dimension_finished.connect(
+            self._finish_project_view_dimension
+        )
+        self.project_sheet_workspace.dimension_step_changed.connect(
+            self._project_view_dimension_step_changed
+        )
+        self.project_sheet_workspace.detail_identifier_finished.connect(
+            self._finish_project_detail_identifier
+        )
+        self.project_sheet_workspace.detail_identifier_step_changed.connect(
+            self._project_detail_identifier_step_changed
+        )
+        self.project_sheet_workspace.section_finished.connect(self._finish_project_section)
+        self.project_sheet_workspace.section_step_changed.connect(self._project_section_step_changed)
+        self.project_sheet_workspace.elevation_identifier_finished.connect(
+            self._finish_project_elevation_identifier
+        )
+        self.project_sheet_workspace.elevation_identifier_step_changed.connect(
+            self._project_elevation_identifier_step_changed
+        )
+        self.project_sheet_workspace.element_visibility_finished.connect(
+            self._finish_project_sheet_visibility
+        )
+        self.project_sheet_workspace.element_visibility_view_activated.connect(
+            self._project_sheet_visibility_view_activated
+        )
+        self.project_sheet_workspace.element_visibility_changed.connect(
+            self._project_sheet_element_visibility_changed
+        )
+        self.project_sheet_view_panel.scale_edited.connect(
+            self._project_sheet_view_scale_edited
+        )
+        self.project_sheet_view_panel.identity_edited.connect(
+            self._project_sheet_view_identity_edited
+        )
+        self.project_sheet_view_panel.settings_applied.connect(
+            self.apply_selected_project_sheet_view_settings
+        )
+        self.project_sheet_view_panel.axes_visibility_edited.connect(
+            self._project_sheet_view_axes_visibility_edited
+        )
+        self.project_sheet_detail_group_panel.identity_edited.connect(
+            self._project_sheet_detail_group_identity_edited
+        )
+        self.project_sheet_detail_group_panel.add_views_requested.connect(
+            self.open_component_detail_group_views
+        )
+        self.project_sheet_identification_panel.property_toggled.connect(
+            self._project_sheet_identification_property_toggled
+        )
+        self.project_sheet_detail_identifier_panel.identity_edited.connect(
+            self._project_sheet_detail_identifier_identity_edited
+        )
+        self.project_sheet_section_panel.identity_edited.connect(
+            self._project_sheet_section_identity_edited
+        )
+        self.project_sheet_elevation_identifier_panel.identity_edited.connect(
+            self._project_sheet_elevation_identifier_identity_edited
+        )
         self.selected: tuple[str, str] | None = None
         self.selected_elements: list[tuple[str, str]] = []
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self._plate_saved_endpoint_snap = None
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
         self.scene.element_clicked.connect(self.select_element)
+        self.scene.analysis_point_clicked.connect(self._show_analysis_point_result)
         self.scene.solid_face_clicked.connect(self._align_member_endpoint_to_face)
-        self.scene.empty_clicked.connect(self.clear_selection)
+        self.scene.alignment_face_clicked.connect(self._align_element_face_to_reference)
+        self.scene.detail_end_cut_face_clicked.connect(self._apply_detail_end_cut_face)
+        self.scene.empty_clicked.connect(self._empty_scene_clicked)
         self.scene.selection_changed.connect(self._selection_changed)
         self.scene.enter_pressed.connect(self._confirm_copy_elements)
         self.scene.enter_pressed.connect(self._confirm_scene_view_selection)
@@ -210,9 +398,6 @@ class MainWindow(QMainWindow):
         self.palette = FloatingPalette(self)
         self.palette.reposition()
         self.top_icon_palette = TopIconPalette(self)
-        self.top_icon_palette.set_member_direction_normalization_enabled(
-            self._member_direction_normalization_enabled
-        )
         self.top_icon_palette.reposition()
         self.verification_top_palette = VerificationTopPalette(self)
         self.verification_top_palette.reposition()
@@ -230,6 +415,13 @@ class MainWindow(QMainWindow):
         self.analysis_top_palette.reposition()
         self.detailing_top_palette = DetailingTopPalette(self)
         self.detailing_top_palette.reposition()
+        self.detailing_mode_palette = DetailingModePalette(self)
+        self.detailing_mode_palette.reposition()
+        self.project_sheets_palette = ProjectSheetsPalette(self)
+        self.project_sheet_workspace.remove_component_detail_group_requested.connect(
+            self.project_sheets_palette.remove_component_detail_group_from_active_sheet
+        )
+        self.project_sheets_palette.reposition()
         self.navigation_button = QToolButton(self)
         self.navigation_button.setObjectName("navigationButton")
         self.navigation_button.setFixedSize(34, 34)
@@ -318,8 +510,12 @@ class MainWindow(QMainWindow):
         self.next_plane_button.clicked.connect(self.scene.next_reference_plane)
         self._reposition_navigation_button()
         self.properties = PropertyPanel(self)
+        self.plate_section_panel = PlateSectionPanel(self)
+        self.subtractions_panel = SubtractionsPanel(self)
+        self._detail_subtraction_visible_refs: set[tuple[str, str, str, str]] = set()
         self.displacement_panel = DisplacementPanel(self)
         self.calculation_properties_panel = CalculationPropertiesPanel(self)
+        self.node_components_dialog = None
         self.processing_panel = ProcessingPanel(self)
         self.verification_panel = VerificationPanel(self)
         self.axes_panel = AxesPanel(self)
@@ -327,6 +523,11 @@ class MainWindow(QMainWindow):
         self.reference_panel = ReferencePanel(self)
         self.axes_panel.visibility_changed.connect(self.top_icon_palette.configure_axes_button.setChecked)
         self.reference_panel.visibility_changed.connect(self.top_icon_palette.configure_reference_button.setChecked)
+        reference_axes_button = self.top_icon_palette._visibility_buttons["reference-axes"]
+        with QSignalBlocker(self.axes_panel.visibility_checkbox):
+            self.axes_panel.visibility_checkbox.setChecked(reference_axes_button.isChecked())
+        self.axes_panel.visibility_checkbox.toggled.connect(reference_axes_button.setChecked)
+        reference_axes_button.toggled.connect(self.axes_panel.visibility_checkbox.setChecked)
         self.split_member_dialog = SplitMemberDialog(self)
         self.section_panels = {
             "W Laminado": WLaminadoSectionPanel(self),
@@ -342,6 +543,10 @@ class MainWindow(QMainWindow):
         })
         self.section_panel = self.section_panels["W Laminado"]
         self.member_placement_editor = MemberPlacementEditor(self)
+        self.plate_placement_editor = PlatePlacementEditor(self)
+        self.plate_placement_editor.placement_mode_switch.kind_changed.connect(
+            self._plate_placement_mode_changed
+        )
         self.history = CommandHistory(self)
         self.command_bar = CommandBar(self)
         self.scene.plotter.installEventFilter(self)
@@ -354,8 +559,8 @@ class MainWindow(QMainWindow):
         self.mcp_scene_views_changed.connect(self._refresh_after_mcp_scene_views_change)
         self.mcp_active_action_changed.connect(self._select_active_action)
         self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
-        self.mcp_analysis_diagrams_changed.connect(self.scene.set_analysis_diagrams_visible)
-        self.mcp_session_changed.connect(self.palette.show_group)
+        self.mcp_analysis_diagrams_changed.connect(self._apply_mcp_analysis_diagrams_visible)
+        self.mcp_session_changed.connect(self._apply_mcp_session_change)
         self._mcp_dispatcher = McpQtDispatcher(self)
         self._mcp_dispatcher.suspend()
         self._mcp_dispatcher.busy_changed.connect(self.command_bar.set_mcp_busy)
@@ -372,7 +577,12 @@ class MainWindow(QMainWindow):
             on_analysis_view_changed=self.mcp_analysis_view_changed.emit,
             get_analysis_view_state=self.scene.analysis_view_state,
             on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
+            on_analysis_display_changed=self._apply_mcp_analysis_display,
             on_session_changed=self.mcp_session_changed.emit,
+            get_detailing_data=self._detailing_state_snapshot,
+            on_detailing_changed=self._apply_mcp_detailing_change,
+            on_project_saved=self._apply_mcp_project_saved,
+            can_reverse_member=lambda: not self.member_direction_normalization_enabled,
             get_session=lambda: self.palette.active_group,
             model_lock=self._model_access_lock,
             execute_on_model_thread=self._mcp_dispatcher.call,
@@ -617,6 +827,1758 @@ class MainWindow(QMainWindow):
         dialog = ProgramSettingsDialog(self)
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
+        self.set_plate_result_display_mode(dialog.selected_plate_result_display_mode)
+
+    def set_detailing_project_mode(self, active: bool) -> None:
+        """Switch between the detailing model and its blank project sheet view."""
+        if not active and getattr(self, "_command_mode", None) in {
+            "project_sheet_element_visibility_hide",
+            "project_sheet_element_visibility_reveal",
+            "project_sheet_element_visibility_reveal_all",
+        }:
+            self.project_sheet_workspace.set_element_visibility_mode(None)
+            self._finish_project_sheet_visibility(canceled=True)
+        if not active and getattr(self, "_command_mode", None) == "project_sheet_member_break":
+            self._finish_project_member_break(canceled=True)
+        self._detailing_project_mode = bool(active)
+        if self._detailing_project_mode and hasattr(self, "project_sheets_palette"):
+            self.refresh_project_sheet_views()
+        if not self._detailing_project_mode and hasattr(self, "project_sheet_workspace"):
+            self.project_sheet_workspace.select_view(None)
+        if self.view_stack.currentWidget() is not self.home:
+            self.view_stack.setCurrentWidget(
+                self.project_sheet_workspace if self._detailing_project_mode else self.scene
+            )
+        model_navigation_controls = (
+            self.navigation_button,
+            self.sloped_plane_button,
+            self.sloped_plane_right_button,
+            self.previous_plane_button,
+            self.plane_change_button,
+            self.next_plane_button,
+        )
+        for control in model_navigation_controls:
+            if self._detailing_project_mode:
+                control.hide()
+            elif self.view_stack.currentWidget() is not self.home:
+                control.show()
+        if not self._detailing_project_mode and self.view_stack.currentWidget() is not self.home:
+            self._reposition_navigation_button()
+        self.project_sheet_workspace.set_model_name(self.scene.model_name)
+        detailing_active = self.palette.active_group == "Detalhamento"
+        self.detailing_top_palette.set_detailing_visible(
+            detailing_active and not self._detailing_project_mode
+        )
+        if hasattr(self, "project_sheets_palette"):
+            self.project_sheets_palette.set_project_mode(
+                self._detailing_project_mode
+                and detailing_active
+                and self.view_stack.currentWidget() is not self.home
+            )
+
+    def refresh_project_sheet_views(self, sheet_name: str | None = None) -> None:
+        """Regenerate stale saved sheet linework away from the interface thread."""
+        palette = getattr(self, "project_sheets_palette", None)
+        if palette is None:
+            return
+        sheet_names = (
+            [sheet_name] if sheet_name is not None
+            else list(palette._sheet_names)
+        )
+        component_signature = node_component_geometry_signature(self.model)
+        state_changed = False
+        refresh_jobs = []
+        for current_sheet_name in sheet_names:
+            state_changed |= ensure_base_plate_annotations(
+                self.model, palette._sheet_views.get(current_sheet_name, ()),
+                float(getattr(palette, "_project_settings", {}).get("view_element_text_height_mm", 3.)),
+            )
+            for view in palette._sheet_views.get(current_sheet_name, ()):
+                if self._refresh_project_view_identifications(view):
+                    state_changed = True
+                if (
+                    view.get("model_revision") == self.model.revision
+                    and view.get("linework_version") == DETAILING_LINEWORK_VERSION
+                    and view.get("component_geometry_signature") == component_signature
+                ):
+                    continue
+                projection = view.get("projection")
+                if (
+                    not isinstance(projection, dict)
+                    or not isinstance(projection.get("plane"), str)
+                    or "coordinate" not in projection
+                ):
+                    continue
+                refresh_jobs.append((
+                    current_sheet_name, view, copy.deepcopy(projection),
+                    bool(view.get("segments")),
+                    tuple(sorted({str(owner) for owner in view.get("hidden_owners", ())})),
+                ))
+
+        if state_changed:
+            current_sheet_name = palette.sheet_selector.currentText()
+            if current_sheet_name in sheet_names:
+                self.project_sheet_workspace.set_sheet_views(
+                    palette._sheet_views.get(current_sheet_name, ()),
+                )
+            self._store_detailing_state()
+        if refresh_jobs:
+            self._queue_sheet_linework_upgrade(refresh_jobs)
+
+    def _queue_sheet_linework_upgrade(self, jobs) -> None:
+        revision = self.model.revision
+        group_revision = self.model.verification_group_revision
+        if not hasattr(self, "_sheet_linework_pending"):
+            self._sheet_linework_pending = set()
+            self._sheet_linework_cancel = threading.Event()
+            self._sheet_linework_signals = SheetLineworkSignals()
+            self._sheet_linework_signals.finished.connect(self._sheet_linework_upgraded)
+        pending = self._sheet_linework_pending
+        fresh = [
+            job for job in jobs
+            if (id(job[1]), revision, group_revision, tuple(job[4])) not in pending
+        ]
+        if not fresh:
+            if pending and self._detailing_project_mode:
+                self.project_sheet_workspace.set_linework_updating(True)
+                self._show_sheet_views_updating_dialog()
+            return
+        pending.update(
+            (id(job[1]), revision, group_revision, tuple(job[4])) for job in fresh
+        )
+        self.project_sheet_workspace.set_linework_updating(True)
+        if self._detailing_project_mode:
+            self._show_sheet_views_updating_dialog()
+
+        def start_refresh() -> None:
+            snapshot = _ModelSnapshot(self.model)
+            signatures = getattr(self, "_sheet_linework_component_signatures", {})
+            signature = node_component_geometry_signature(snapshot)
+            for job in fresh:
+                signatures[(id(job[1]), revision, group_revision, tuple(job[4]))] = signature
+            self._sheet_linework_component_signatures = signatures
+            source = _DetachedDetailingScene(self.scene)
+            task = SheetLineworkTask(
+                self._sheet_linework_signals, snapshot, source, revision, group_revision, fresh,
+                self._sheet_linework_cancel,
+            )
+            QThreadPool.globalInstance().start(task)
+
+        QTimer.singleShot(75, start_refresh)
+
+    @Slot(object, object, int, int, object, object, object, object, bool)
+    def _sheet_linework_upgraded(self, sheet_name, view, revision, group_revision,
+                                 projection, excluded_owners, segments, owners, success) -> None:
+        pending = self._sheet_linework_pending
+        excluded_owners = tuple(sorted({str(owner) for owner in excluded_owners}))
+        key = (id(view), revision, group_revision, excluded_owners)
+        pending.discard(key)
+        current_signature = node_component_geometry_signature(self.model)
+        result_signature = getattr(self, "_sheet_linework_component_signatures", {}).pop(key, current_signature)
+        self.project_sheet_workspace.set_linework_updating(bool(pending))
+        if not pending:
+            self._sheet_views_updating_dialog.hide()
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
+        current_hidden = tuple(sorted({str(owner) for owner in view.get("hidden_owners", ())}))
+        if (
+            any(item is view for item in views)
+            and view.get("projection") == projection
+            and current_hidden != excluded_owners
+        ):
+            self._queue_sheet_linework_upgrade([(
+                sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), current_hidden,
+            )])
+            return
+        if (not success or revision != self.model.revision
+                or group_revision != self.model.verification_group_revision
+                or not any(item is view for item in views) or view.get("projection") != projection):
+            return
+        if result_signature != current_signature:
+            self._queue_sheet_linework_upgrade([(
+                sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), current_hidden,
+            )])
+            return
+        merged_segments = list(segments)
+        merged_owners = [str(owner) for owner in owners]
+        hidden_linework = view.get("hidden_linework", {})
+        if isinstance(hidden_linework, dict):
+            for hidden_owner in excluded_owners:
+                for segment in hidden_linework.get(hidden_owner, ()):
+                    merged_segments.append(segment)
+                    merged_owners.append(hidden_owner)
+        view["segments"] = tuple(merged_segments)
+        view["segment_owners"] = tuple(merged_owners)
+        view["model_revision"] = revision
+        view["component_geometry_signature"] = result_signature
+        view["linework_version"] = DETAILING_LINEWORK_VERSION
+        if self.project_sheets_palette.sheet_selector.currentText() == sheet_name:
+            view_index = next((
+                index for index, candidate in enumerate(views) if candidate is view
+            ), None)
+            if view_index is not None:
+                self.project_sheet_workspace.invalidate_view_geometry(view_index)
+            self.project_sheet_workspace.update()
+        self._store_detailing_state()
+
+    def _project_sheet_element_visibility_changed(self, view_index: int, hidden_owners) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, ())
+        if not 0 <= view_index < len(views):
+            return
+        view = views[view_index]
+        projection = view.get("projection")
+        if not isinstance(projection, dict):
+            self._store_detailing_state()
+            return
+        owners = tuple(sorted({str(owner) for owner in hidden_owners}))
+        self._queue_sheet_linework_upgrade([(
+            sheet_name, view, copy.deepcopy(projection), bool(view.get("segments")), owners,
+        )])
+
+    def _show_sheet_views_updating_dialog(self) -> None:
+        dialog = self._sheet_views_updating_dialog
+        dialog.adjustSize()
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.show()
+        dialog.raise_()
+
+    def _create_sheet_views_updating_dialog(self) -> None:
+        dialog = _ProjectLoadingDialog(self)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.setModal(True)
+        dialog.setWindowTitle("Atualizando vistas")
+        dialog.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+        )
+        dialog.setObjectName("sheetViewsUpdatingDialog")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+        title = QLabel("Atualizando vistas…", dialog)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
+        description = QLabel(
+            "Aguarde enquanto as vistas inseridas nas folhas são atualizadas.", dialog,
+        )
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(LoadingIndicator(dialog))
+        dialog.setFixedWidth(420)
+        dialog.hide()
+        self._sheet_views_updating_dialog = dialog
+
+    def _refresh_project_view_identifications(self, view: dict) -> bool:
+        """Refresh label text from current element names and bar sections."""
+        changed = False
+        for identification in view.get("identifications", ()):
+            if not isinstance(identification, dict):
+                continue
+            before = (
+                identification.get("text"),
+                identification.get("text_lines"),
+                identification.get("text_runs"),
+                identification.get("show_identity"),
+                identification.get("show_name"),
+                identification.get("show_section"),
+            )
+            self._update_project_identification_text(identification)
+            after = (
+                identification.get("text"),
+                identification.get("text_lines"),
+                identification.get("text_runs"),
+                identification.get("show_identity"),
+                identification.get("show_name"),
+                identification.get("show_section"),
+            )
+            if before != after:
+                changed = True
+        return changed
+
+    def _project_sheet_view_selected(self, view: dict | None) -> None:
+        identification_panel = getattr(self, "project_sheet_identification_panel", None)
+        if identification_panel is not None:
+            identification_panel.hide()
+        detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if detail_panel is not None:
+            detail_panel.hide()
+        section_panel = getattr(self, "project_sheet_section_panel", None)
+        if section_panel is not None:
+            section_panel.hide()
+        elevation_panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if elevation_panel is not None:
+            elevation_panel.hide()
+        group_panel = getattr(self, "project_sheet_detail_group_panel", None)
+        if group_panel is not None:
+            group_panel.hide()
+        panel = getattr(self, "project_sheet_view_panel", None)
+        if isinstance(view, dict) and view.get("_selection_type") == "component_detail_group":
+            if panel is not None:
+                panel.show_for(None)
+            if group_panel is not None:
+                group_panel.show_for(view)
+            return
+        if panel is not None:
+            panel.show_for(view)
+
+    def _project_sheet_detail_group_identity_edited(self, identity: str) -> None:
+        self.project_sheet_workspace.set_component_detail_group_identity(identity)
+
+    def open_component_detail_group_views(self) -> None:
+        workspace = self.project_sheet_workspace
+        group_id = workspace._selected_component_detail_group
+        if not group_id or getattr(self, "_component_details_dialog_open", False):
+            return
+        palette = self.project_sheets_palette
+        sheet_name = palette.sheet_selector.currentText()
+        current_views = list(palette._sheet_views.get(sheet_name, ())) if sheet_name else []
+        group_views = [
+            view for view in current_views
+            if isinstance(view.get("component_detail_group"), dict)
+            and str(view["component_detail_group"].get("id")) == str(group_id)
+        ]
+        if not group_views:
+            return
+        self._component_details_dialog_open = True
+        dialog = None
+        cancel_action = getattr(self, "_cancel_placement_action", None)
+        cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
+        try:
+            if cancel_action is not None:
+                cancel_action.setEnabled(False)
+            dialog = ComponentDetailsDialog(
+                self, editing_group_id=str(group_id), existing_views=group_views,
+            )
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                first_index = next(
+                    index for index, view in enumerate(current_views)
+                    if isinstance(view.get("component_detail_group"), dict)
+                    and str(view["component_detail_group"].get("id")) == str(group_id)
+                )
+                replacement = []
+                inserted = False
+                for view in current_views:
+                    metadata = view.get("component_detail_group")
+                    if isinstance(metadata, dict) and str(metadata.get("id")) == str(group_id):
+                        if not inserted:
+                            replacement.extend(dialog.result_views)
+                            inserted = True
+                        continue
+                    replacement.append(view)
+                if not inserted:
+                    replacement[first_index:first_index] = dialog.result_views
+                palette._sheet_views[sheet_name] = replacement
+                workspace._selected_component_detail_group = (
+                    str(group_id) if dialog.result_views else None
+                )
+                workspace.select_view(None)
+                workspace.set_sheet_views(replacement, clear_selection=True)
+                if dialog.result_views:
+                    workspace._selected_component_detail_group = str(group_id)
+                    workspace.selection_changed.emit(
+                        workspace._component_detail_group_selection(str(group_id))
+                    )
+                self._store_detailing_state()
+        finally:
+            self._component_details_dialog_open = False
+            if dialog is not None:
+                dialog.deleteLater()
+            if cancel_action is not None:
+                cancel_action.setEnabled(cancel_action_was_enabled)
+
+    def _project_sheet_identification_selected(self, identification: dict | None) -> None:
+        if identification is None:
+            selected_elevation = self.project_sheet_workspace._selected_elevation_identifier
+            if selected_elevation is not None:
+                view_index, identifier_index = selected_elevation
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("elevation_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_elevation_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+            selected_detail = self.project_sheet_workspace._selected_detail_identifier
+            if selected_detail is not None:
+                view_index, identifier_index = selected_detail
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("detail_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_detail_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+            selected_section = self.project_sheet_workspace._selected_section
+            if selected_section is not None:
+                view_index, section_index = selected_section
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    sections = views[view_index].get("sections", ())
+                    if 0 <= section_index < len(sections):
+                        self.project_sheet_view_panel.hide()
+                        self.project_sheet_identification_panel.hide()
+                        self.project_sheet_section_panel.show_for(sections[section_index])
+                        return
+        detail_panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if detail_panel is not None:
+            detail_panel.hide()
+        elevation_panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if elevation_panel is not None:
+            elevation_panel.hide()
+        panel = getattr(self, "project_sheet_identification_panel", None)
+        if panel is None:
+            return
+        if identification is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        identifications = identification if isinstance(identification, (list, tuple)) else [identification]
+        properties = [
+            self._project_sheet_identification_properties(item)
+            for item in identifications if isinstance(item, dict)
+        ]
+        if not properties:
+            panel.hide()
+            return
+        aggregated = {}
+        for key in ("identity", "name", "section"):
+            values = [item[key] for item in properties]
+            aggregated[key] = values[0] if all(value == values[0] for value in values) else "Variado"
+            states = [item[f"show_{key}"] for item in properties]
+            aggregated[f"show_{key}"] = (
+                Qt.CheckState.PartiallyChecked
+                if any(state != states[0] for state in states)
+                else Qt.CheckState.Checked if states[0] else Qt.CheckState.Unchecked
+            )
+            aggregated[f"disabled_{key}"] = all(item[f"disabled_{key}"] for item in properties)
+        panel.show_for(aggregated)
+
+    def _project_sheet_detail_identifier_selected(self, identifier: dict | None) -> None:
+        panel = getattr(self, "project_sheet_detail_identifier_panel", None)
+        if panel is None:
+            return
+        if identifier is None:
+            panel.hide()
+            selected_elevation = self.project_sheet_workspace._selected_elevation_identifier
+            if selected_elevation is not None:
+                view_index, identifier_index = selected_elevation
+                views = self.project_sheet_workspace._sheet_views
+                if 0 <= view_index < len(views):
+                    identifiers = views[view_index].get("elevation_identifiers", ())
+                    if 0 <= identifier_index < len(identifiers):
+                        self.project_sheet_elevation_identifier_panel.show_for(
+                            identifiers[identifier_index]
+                        )
+                        return
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if not self.project_sheet_workspace._selected_identification_indices:
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_elevation_identifier_panel.hide()
+        panel.show_for(identifier)
+
+    def _project_sheet_elevation_identifier_selected(self, identifier: dict | None) -> None:
+        panel = getattr(self, "project_sheet_elevation_identifier_panel", None)
+        if panel is None:
+            return
+        if identifier is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if (
+                self.project_sheet_workspace._selected_detail_identifier is None
+                and not self.project_sheet_workspace._selected_identification_indices
+            ):
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_detail_identifier_panel.hide()
+        panel.show_for(identifier)
+
+    def _project_sheet_detail_identifier_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_detail_identifier
+        if selected is None:
+            return
+        view_index, identifier_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        identifiers = views[view_index].get("detail_identifiers", ())
+        if not 0 <= identifier_index < len(identifiers):
+            return
+        identifier = identifiers[identifier_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(identifier.get("name", "")):
+            return
+        identifier["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_detail_identifier_panel.show_for(identifier)
+
+    def _project_sheet_section_selected(self, section: dict | None) -> None:
+        panel = getattr(self, "project_sheet_section_panel", None)
+        if panel is None:
+            return
+        if section is None:
+            panel.hide()
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            view = views[selected] if selected is not None and selected < len(views) else None
+            if not any((self.project_sheet_workspace._selected_detail_identifier,
+                        self.project_sheet_workspace._selected_elevation_identifier,
+                        self.project_sheet_workspace._selected_identification_indices)):
+                self.project_sheet_view_panel.show_for(view)
+            return
+        self.project_sheet_view_panel.hide()
+        self.project_sheet_identification_panel.hide()
+        self.project_sheet_detail_identifier_panel.hide()
+        self.project_sheet_elevation_identifier_panel.hide()
+        panel.show_for(section)
+
+    def _project_sheet_section_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_section
+        if selected is None:
+            return
+        view_index, section_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        sections = views[view_index].get("sections", ())
+        if not 0 <= section_index < len(sections):
+            return
+        section = sections[section_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(section.get("name", "")):
+            return
+        section["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_section_panel.show_for(section)
+
+    def _project_sheet_elevation_identifier_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_elevation_identifier
+        if selected is None:
+            return
+        view_index, identifier_index = selected
+        views = self.project_sheet_workspace._sheet_views
+        if not 0 <= view_index < len(views):
+            return
+        identifiers = views[view_index].get("elevation_identifiers", ())
+        if not 0 <= identifier_index < len(identifiers):
+            return
+        identifier = identifiers[identifier_index]
+        identity = str(identity).strip()
+        if not identity or identity == str(identifier.get("name", "")):
+            return
+        identifier["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_elevation_identifier_panel.show_for(identifier)
+
+    def _project_sheet_identification_properties(self, identification: dict) -> dict:
+        """Resolve read-only identifier properties from the current model."""
+        kind = str(identification.get("kind", ""))
+        element = str(identification.get("element", ""))
+        identity = element.replace("|", ", ")
+        name = ""
+        section = ""
+
+        if kind in COMPONENT_IDENTIFIER_KINDS:
+            identity, _quantity = component_identifier(self.model, kind, element)
+        elif kind in {"bar", "bar_group"}:
+            member_names = tuple(
+                member for member in element.split("|") if member
+            ) if kind == "bar_group" else (element,)
+            bars = [self.model.bars[member] for member in member_names if member in self.model.bars]
+            if kind == "bar_group" and member_names:
+                group = self.model.verification_group_for(member_names[0])
+                if group is not None:
+                    name = str(group.get("name", "")).strip()
+            elif bars:
+                name = str(self.model.verification_element_names.get(bars[0].name, "")).strip()
+            section_names = list(dict.fromkeys(
+                str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                for bar in bars
+                if str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+            ))
+            section = " / ".join(section_names)
+        elif kind == "plate":
+            name = str(self.model.plate_display_names.get(element, "")).strip()
+        elif kind == "node":
+            name = str(self.model.node_display_names.get(element, "")).strip()
+
+        if (
+            not identification.get("visibility_customized")
+            and "show_identity" not in identification
+            and "show_name" not in identification
+        ):
+            identification["show_name"] = bool(name)
+            identification["show_identity"] = not bool(name)
+            identification["show_section"] = bool(section)
+        else:
+            identification.setdefault("show_section", bool(section))
+        return {
+            "identity": identity,
+            "name": name,
+            "section": section,
+            "show_identity": identification.get("show_identity", False),
+            "show_name": identification.get("show_name", False),
+            "show_section": identification.get("show_section", False),
+            "disabled_identity": False,
+            "disabled_name": not bool(name),
+            "disabled_section": not bool(section),
+        }
+
+    def _project_sheet_identification_property_toggled(self, key: str, state: int) -> None:
+        workspace = self.project_sheet_workspace
+        view_index = workspace._selected_view_index
+        if view_index is None or not 0 <= view_index < len(workspace._sheet_views):
+            return
+        identifications = workspace._sheet_views[view_index].get("identifications", [])
+        selected = [
+            identifications[index]
+            for index in workspace._selected_identification_indices
+            if 0 <= index < len(identifications)
+        ]
+        if not selected:
+            return
+        checked = state != Qt.CheckState.Unchecked.value
+        for identification in selected:
+            properties = self._project_sheet_identification_properties(identification)
+            if key in {"identity", "name"}:
+                name_available = bool(properties["name"])
+                if key == "name" and not name_available:
+                    continue
+                other = "name" if key == "identity" else "identity"
+                if checked:
+                    identification[f"show_{key}"] = True
+                    identification[f"show_{other}"] = False
+                elif (
+                    not identification.get("show_section")
+                    and not identification.get(f"show_{other}")
+                ):
+                    # Keep the last visible property enabled.
+                    continue
+                else:
+                    identification[f"show_{key}"] = False
+            elif key == "section":
+                if (
+                    not checked
+                    and not identification.get("show_identity")
+                    and not identification.get("show_name")
+                ):
+                    continue
+                identification["show_section"] = checked
+            identification["visibility_customized"] = True
+            self._update_project_identification_text(identification)
+        self.project_sheet_workspace.update()
+        workspace._emit_identification_selection()
+        self._store_detailing_state()
+
+    def _update_project_identification_text(self, identification: dict) -> None:
+        if identification.get("kind") in COMPONENT_IDENTIFIER_KINDS:
+            update_component_identifier(self.model, identification)
+            return
+        properties = self._project_sheet_identification_properties(identification)
+        primary = (
+            properties["name"] if identification.get("show_name")
+            else properties["identity"] if identification.get("show_identity")
+            else ""
+        )
+        section = properties["section"] if identification.get("show_section") else ""
+        has_section = bool(section)
+        if "stacked_text" not in identification:
+            identification["stacked_text"] = (
+                len(identification.get("text_runs", ())) > 1
+                or len(identification.get("text_lines", ())) > 1
+            )
+        stacked = bool(identification.get("stacked_text")) and has_section and bool(primary)
+        text = f"{primary} {section}".strip()
+        identification["text"] = text
+        identification["text_lines"] = [primary, section] if stacked else [text]
+        identification["text_runs"] = (
+            [
+                [{"text": primary, "role": "element"}],
+                [{"text": section, "role": "section"}],
+            ] if stacked else [
+                ([{"text": primary, "role": "element"}] if primary else [])
+                + ([{"text": f" {section}", "role": "section"}] if has_section else [])
+            ]
+        )
+
+    def _project_sheet_view_scale_edited(self, text: str) -> None:
+        try:
+            denominator = float(text.strip().replace(",", "."))
+        except ValueError:
+            denominator = 0.0
+        if denominator <= 0:
+            selected = self.project_sheet_workspace._selected_view_index
+            views = self.project_sheet_workspace._sheet_views
+            self.project_sheet_view_panel.show_for(
+                views[selected] if selected is not None and selected < len(views) else None
+            )
+            return
+        self.project_sheet_workspace.set_selected_view_scale(denominator)
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        self.project_sheet_view_panel.show_for(
+            views[selected] if selected is not None and selected < len(views) else None
+        )
+
+    def _project_sheet_view_identity_edited(self, identity: str) -> None:
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if selected is None or not 0 <= selected < len(views):
+            return
+        identity = str(identity).strip()
+        if not identity:
+            return
+        view = views[selected]
+        if identity == str(view.get("name", "Vista")):
+            return
+        view["name"] = identity
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+        self.project_sheet_view_panel.show_for(view)
+
+    def _project_sheet_view_axes_visibility_edited(self, visible: bool) -> None:
+        selected = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if selected is None or selected >= len(views):
+            return
+        views[selected]["axes_visible"] = bool(visible)
+        self.project_sheet_workspace.update()
+        self.project_sheet_workspace.layout_changed.emit()
+
+    def start_project_weld(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.project_weld_tool.start()
+
+    def start_project_member_break(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_member_break"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_member_break_mode(True)
+        self.history.append(
+            "> <b>Zig-zag</b> <span style='color:#57606a'>(Selecione uma vista da folha)</span>"
+        )
+
+    def _project_member_break_step_changed(self, _step: int) -> None:
+        self.history.append(
+            "> <b>Zig-zag</b> <span style='color:#57606a'>"
+            "(Selecione a barra pela face, perto da extremidade desejada; "
+            "clique novamente para remover; Esc cancela)</span>"
+        )
+
+    def _finish_project_member_break(self, canceled: bool = False) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self.project_sheet_workspace.set_member_break_mode(False)
+        self._command_mode = None
+        self._store_detailing_state()
+
+    def start_project_view_identification(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self._command_mode = "project_sheet_identification"
+        self.project_sheet_workspace.set_identification_mode(True)
+        self.history.append(
+            "> <b>Identificador de elemento</b> <span style='color:#57606a'>"
+            "(Clique sobre um elemento da vista; clique nos próximos; Enter encerra; "
+            "Esc encerra preservando as identificações lançadas)</span>"
+        )
+
+    def start_project_detail_identifier(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_detail_identifier"
+        self.project_sheet_workspace.set_detail_identifier_mode(True)
+        self.history.append(
+            "> <b>Identificador de detalhe</b> "
+            "<span style='color:#57606a'>(Clique na vista em que o detalhe será identificado)</span>"
+        )
+
+    def start_project_section(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_section"
+        self.project_sheet_workspace.set_section_mode(True)
+        self.history.append(
+            "> <b>Corte</b> <span style='color:#57606a'>"
+            "(Selecione a vista, clique nas duas extremidades da linha e indique o lado do corte; "
+            "Esc encerra)</span>"
+        )
+
+    def _project_section_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_section":
+            return
+        prompt = {
+            1: "Clique na primeira extremidade do corte",
+            2: "Clique na segunda extremidade; o alinhamento ajusta em 45°",
+            4: "Clique no lado para o qual as setas devem apontar",
+        }.get(step)
+        if prompt:
+            self.history.append(f"> <b>Corte</b> <span style='color:#57606a'>({prompt}; Esc encerra)</span>")
+
+    def _finish_project_section(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_section":
+            return
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento encerrado" if not canceled else "Lançamento encerrado; cortes preservados"
+        self.history.append(f"> <b>Corte</b> <span style='color:#8c959f'>({message})</span>")
+
+    def start_project_elevation_identifier(self) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_elevation_identifier"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_elevation_identifier_mode(True)
+        self.history.append(
+            "> <b>Identificador de elevação</b> "
+            "<span style='color:#57606a'>(Clique na vista em que a elevação será identificada)</span>"
+        )
+
+    def _steel_profile_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, self.model.calculation_properties_revision)
+        cached = getattr(self, "_steel_profiles_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, steel_profile_rows(self.model))
+            self._steel_profiles_table_cache = cached
+        return cached[1]
+
+    def _steel_plate_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, self.model.calculation_properties_revision,
+               node_component_geometry_signature(self.model))
+        cached = getattr(self, "_steel_plates_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, steel_plate_rows(self.model))
+            self._steel_plates_table_cache = cached
+        return cached[1]
+
+    def _accessory_table_rows(self) -> list[dict]:
+        key = (self.model, self.model.revision, node_component_geometry_signature(self.model))
+        cached = getattr(self, "_accessories_table_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, component_accessory_rows(self.model))
+            self._accessories_table_cache = cached
+        return cached[1]
+
+    def open_project_sheet_tables(self) -> None:
+        palette = self.project_sheets_palette
+        if not self._detailing_project_mode or not palette.sheet_selector.currentText():
+            return
+        dialog = InsertSheetTableDialog(
+            self, palette._sheet_names, palette.sheet_selector.currentText(),
+            palette._sheet_settings, palette._project_settings, self._steel_profile_table_rows(),
+            self._steel_plate_table_rows(), self._accessory_table_rows(),
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_table is None:
+            return
+        sheet_name, kind = dialog.result_table
+        settings = palette._sheet_settings[sheet_name]
+        scope = palette._project_settings if kind == "project_revisions" else settings
+        if kind not in {"steel_profiles", "steel_plates", "accessories"} and not isinstance(scope.get(kind), list):
+            scope[kind] = initial_revision_rows()
+        settings.setdefault("tables", []).append({"kind": kind})
+        palette.sheet_selector.setCurrentText(sheet_name)
+        workspace = self.project_sheet_workspace
+        workspace.set_sheet_settings(sheet_name, settings, palette._project_settings, len(palette._sheet_names))
+        workspace.select_view(None)
+        workspace._selected_sheet_text = None
+        workspace._selected_sheet_line = None
+        workspace._selected_component_detail_group = None
+        workspace._selected_sheet_table = len(settings["tables"]) - 1
+        workspace.update()
+        self._store_detailing_state()
+
+    def _project_sheet_table_editor_requested(self, index: int) -> None:
+        palette = self.project_sheets_palette
+        sheet_name = palette.sheet_selector.currentText()
+        settings = palette._sheet_settings.get(sheet_name, {})
+        tables = settings.get("tables", ())
+        if not 0 <= index < len(tables):
+            return
+        kind = tables[index].get("kind")
+        if kind not in {"sheet_revisions", "project_revisions"}:
+            return
+        dialog = RevisionTableEditor(
+            self, kind, revision_rows_for(settings, palette._project_settings, kind), sheet_name,
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            scope = palette._project_settings if kind == "project_revisions" else settings
+            scope[kind] = dialog.result_rows
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+
+    def start_project_sheet_image(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Inserir imagem na folha", "", "Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff)",
+        )
+        if not filename:
+            return
+        try:
+            from .sheet_images import image_annotation
+            annotation = image_annotation(filename)
+        except (ValueError, OSError) as error:
+            self.show_error(f"Não foi possível inserir a imagem: {error}")
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_image"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_image_mode(annotation)
+        self.history.append(
+            "> <b>Inserir imagem</b> <span style='color:#57606a'>"
+            "(Clique na folha para posicionar a imagem; Esc cancela)</span>"
+        )
+
+    def start_project_sheet_text(self) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = "project_sheet_text"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_text_mode(True)
+        self.history.append(
+            "> <b>Inserir texto</b> <span style='color:#57606a'>"
+            "(Clique na folha para definir o canto superior esquerdo; Esc cancela)</span>"
+        )
+
+    def start_project_sheet_line(self) -> None:
+        self._start_project_sheet_shape("line")
+
+    def start_project_sheet_rectangle(self) -> None:
+        self._start_project_sheet_shape("rectangle")
+
+    def start_project_sheet_circle(self) -> None:
+        self._start_project_sheet_shape("circle")
+
+    def _start_project_sheet_shape(self, kind: str) -> None:
+        if not self._detailing_project_mode or not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = f"project_sheet_{kind}"
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self.project_sheet_workspace.set_sheet_line_mode(True, kind)
+        title, prompt = {
+            "line": ("Desenhar linha", "Defina os pontos inicial e final; Shift libera o ângulo"),
+            "rectangle": ("Desenhar retângulo", "Defina dois cantos opostos do retângulo"),
+            "circle": ("Desenhar círculo", "Defina o centro e depois o raio do círculo"),
+        }[kind]
+        self.history.append(
+            f"> <b>{title}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>"
+        )
+
+    def _project_sheet_text_editor_requested(self, annotation: dict) -> None:
+        dialog = ProjectSheetTextDialog(
+            self, html=str(annotation.get("html", "")),
+            text_height_mm=float(annotation.get("text_height_mm", 3.0)),
+        )
+        self._active_sheet_text_dialog = dialog
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self._active_sheet_text_dialog = None
+        if accepted:
+            html = dialog.html()
+            edit_key = annotation.get("_edit_key")
+            if annotation.get("_existing_text") and isinstance(edit_key, tuple):
+                existing = self.project_sheet_workspace._annotation_for_text_key(edit_key)
+                if existing is not None:
+                    existing["html"] = html
+                    existing["text_height_mm"] = dialog.text_height_input.value()
+                    self.project_sheet_workspace._selected_sheet_text = edit_key
+                    self.project_sheet_workspace.update()
+                    self.project_sheet_workspace.layout_changed.emit()
+            else:
+                annotation["html"] = html
+                annotation["text_height_mm"] = dialog.text_height_input.value()
+                annotation.pop("_edit_key", None)
+                annotation.pop("_existing_text", None)
+                self.project_sheet_workspace.add_sheet_text(annotation)
+            self._store_detailing_state()
+            message = "Concluído"
+        else:
+            self.project_sheet_workspace.set_sheet_text_mode(False)
+            message = "Operação cancelada"
+        self._command_mode = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self.history.append(f"> <b>Inserir texto</b> <span style='color:#8c959f'>({message})</span>")
+
+    def _project_sheet_annotation_finished(self, kind: str, canceled: bool) -> None:
+        if kind in {"line", "rectangle", "circle", "image"}:
+            self._command_mode = None
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self._store_detailing_state()
+            message = "Operação cancelada" if canceled else "Concluído"
+            title = {"line": "Desenhar linha", "rectangle": "Desenhar retângulo", "circle": "Desenhar círculo", "image": "Inserir imagem"}[kind]
+            self.history.append(
+                f"> <b>{title}</b> <span style='color:#8c959f'>({message})</span>"
+            )
+        elif kind == "text" and canceled:
+            self._command_mode = None
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self.history.append("> <b>Inserir texto</b> <span style='color:#8c959f'>(Operação cancelada)</span>")
+
+    def _project_elevation_identifier_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_elevation_identifier":
+            return
+        prompt = {
+            1: "Clique no ponto do símbolo",
+            2: "Aponte a direção; o snap angular está ativo e Shift deixa a direção livre",
+        }.get(step)
+        if prompt:
+            self.history.append(
+                f"> <b>Identificador de elevação</b> "
+                f"<span style='color:#57606a'>({prompt}; Esc cancela)</span>"
+            )
+
+    def _finish_project_elevation_identifier(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_elevation_identifier":
+            return
+        self._command_mode = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._store_detailing_state()
+        message = "Lançamento cancelado; identificadores preservados" if canceled else "Lançamento encerrado"
+        self.history.append(
+            f"> <b>Identificador de elevação</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
+    def _project_detail_identifier_step_changed(self, step: int) -> None:
+        if self._command_mode != "project_sheet_detail_identifier":
+            return
+        prompt = {
+            1: "Clique no centro do círculo; os snaps da vista estão ativos",
+            2: "Clique para definir o raio do círculo",
+        }.get(step)
+        if prompt:
+            self.history.append(
+                f"> <b>Identificador de detalhe</b> "
+                f"<span style='color:#57606a'>({prompt}; Esc cancela)</span>"
+            )
+
+    def _finish_project_detail_identifier(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_detail_identifier":
+            return
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento cancelado; identificadores preservados" if canceled else "Lançamento encerrado"
+        self.history.append(
+            f"> <b>Identificador de detalhe</b> "
+            f"<span style='color:#8c959f'>({message})</span>"
+        )
+
+    def start_project_sheet_visibility(self, mode: str) -> None:
+        if not self._detailing_project_mode or mode not in {"hide", "reveal", "reveal_all"}:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = f"project_sheet_element_visibility_{mode}"
+        labels = {
+            "hide": "Ocultar elemento",
+            "reveal": "Reexibir elemento",
+            "reveal_all": "Reexibir tudo",
+        }
+        has_selected_view = self.project_sheet_workspace._selected_view_index is not None
+        if mode == "hide":
+            prompt = "Selecione uma vista da folha para ocultar elementos"
+        elif mode == "reveal":
+            prompt = "Selecione uma vista da folha para reexibir elementos ocultos"
+        else:
+            prompt = "Selecione a vista da folha em que deseja reexibir tudo"
+        if mode == "reveal_all" and has_selected_view:
+            prompt = "Reexibindo todos os elementos da vista selecionada"
+        if not has_selected_view or mode == "reveal_all":
+            self.history.append(f"> <b>{labels[mode]}</b> <span style='color:#57606a'>({prompt})</span>")
+        self.project_sheet_workspace.set_element_visibility_mode(mode)
+
+    def _project_sheet_visibility_view_activated(self, _view_index: int) -> None:
+        prompts = {
+            "project_sheet_element_visibility_hide": (
+                "Selecione um ou mais elementos; pressione Enter para confirmar ou Esc para cancelar"
+            ),
+            "project_sheet_element_visibility_reveal": (
+                "Selecione um ou mais elementos ocultos; pressione Enter para confirmar ou Esc para cancelar"
+            ),
+        }
+        prompt = prompts.get(self._command_mode)
+        if prompt:
+            self.history.append(
+                f"> <b>Vista selecionada</b> <span style='color:#57606a'>"
+                f"({prompt}; Enter ou Esc encerra)</span>"
+            )
+
+    def _finish_project_sheet_visibility(self, canceled: bool = False) -> None:
+        labels = {
+            "project_sheet_element_visibility_hide": "Ocultar elemento",
+            "project_sheet_element_visibility_reveal": "Reexibir elemento",
+            "project_sheet_element_visibility_reveal_all": "Reexibir tudo",
+        }
+        label = labels.get(self._command_mode)
+        if label is None:
+            return
+        self._command_mode = None
+        self.project_sheet_workspace.set_element_visibility_mode(None)
+        self._store_detailing_state()
+        message = "Operação encerrada" if canceled else "Concluído"
+        self.history.append(
+            f"> <b>{label}</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
+    def start_project_view_dimension(self) -> None:
+        self._start_project_view_dimension("aligned")
+
+    def start_project_view_orthogonal_dimension(self) -> None:
+        self._start_project_view_dimension("orthogonal")
+
+    def start_project_view_angular_dimension(self) -> None:
+        self._start_project_view_dimension("angular")
+
+    def start_project_view_level_dimension(self) -> None:
+        self._start_project_view_dimension("level")
+
+    def _start_project_view_dimension(self, dimension_type: str) -> None:
+        if not self._detailing_project_mode:
+            return
+        if not self.project_sheets_palette.sheet_selector.currentText():
+            return
+        self.command_session.cancel()
+        self._command_mode = f"project_sheet_{dimension_type}_dimension"
+        self.project_sheet_workspace.set_identification_mode(False)
+        self.project_sheet_workspace.set_dimension_mode(True, dimension_type)
+        label = {"aligned": "Cota alinhada", "orthogonal": "Cota ortogonal", "angular": "Cota angular", "level": "Cota de nível"}[dimension_type]
+        prompt = {"angular": "Selecione o vértice do ângulo",
+                  "level": "Selecione o ponto cuja elevação será medida"}.get(dimension_type, "Selecione o ponto inicial da cota")
+        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>")
+
+    def _project_view_dimension_step_changed(self, step: int) -> None:
+        if self._command_mode not in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
+        }:
+            return
+        label = {"project_sheet_aligned_dimension": "Cota alinhada", "project_sheet_orthogonal_dimension": "Cota ortogonal",
+                 "project_sheet_angular_dimension": "Cota angular", "project_sheet_level_dimension": "Cota de nível"}[self._command_mode]
+        placement_prompt = "Clique na posição da linha de cota"
+        if self._command_mode == "project_sheet_orthogonal_dimension":
+            placement_prompt = (
+                "Posicione acima/abaixo para medir X ou à esquerda/direita para medir Y"
+            )
+        prompt = {
+            0: "Selecione o ponto inicial da próxima cota",
+            1: "Selecione o ponto final da cota",
+            2: placement_prompt,
+        }.get(step, "Selecione o ponto inicial da cota")
+        if self._command_mode == "project_sheet_angular_dimension":
+            prompt = {0: "Selecione o vértice do ângulo", 1: "Selecione um ponto no primeiro lado",
+                      2: "Selecione um ponto no segundo lado", 3: "Clique na posição do arco da cota"}.get(step, prompt)
+        elif self._command_mode == "project_sheet_level_dimension":
+            prompt = {0: "Selecione o ponto cuja elevação será medida", 1: "Clique na posição da chamada de nível"}.get(step, prompt)
+        self.history.append(f"> <b>{label}</b> <span style='color:#57606a'>({prompt}; Esc cancela)</span>")
+
+    def _finish_project_view_dimension(self, canceled: bool = False) -> None:
+        if self._command_mode not in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
+        }:
+            return
+        label = {"project_sheet_aligned_dimension": "Cota alinhada", "project_sheet_orthogonal_dimension": "Cota ortogonal",
+                 "project_sheet_angular_dimension": "Cota angular", "project_sheet_level_dimension": "Cota de nível"}[self._command_mode]
+        self._command_mode = None
+        self._store_detailing_state()
+        message = "Lançamento cancelado" if canceled else "Cota lançada"
+        self.history.append(f"> <b>{label}</b> <span style='color:#8c959f'>({message})</span>")
+
+    def _finish_project_view_identification(self, canceled: bool = False) -> None:
+        if self._command_mode != "project_sheet_identification":
+            return
+        self._command_mode = None
+        self.project_sheet_workspace.set_identification_mode(False)
+        self._store_detailing_state()
+        message = (
+            "Lançamento cancelado; identificações preservadas"
+            if canceled else "Lançamento encerrado"
+        )
+        self.history.append(
+            f"> <b>Identificador de elemento</b> <span style='color:#8c959f'>({message})</span>"
+        )
+
+    def _add_project_view_identification(self, view_index: int, name: str, projected_point) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        views = self.project_sheets_palette._sheet_views.get(sheet_name, [])
+        if not 0 <= view_index < len(views):
+            return
+        try:
+            projected_point = tuple(float(value) for value in projected_point)
+        except (TypeError, ValueError):
+            return
+        if len(projected_point) != 2:
+            return
+        view = views[view_index]
+        if not name:
+            self.history.append(
+                "> <b>Identificador de elemento</b> <span style='color:#8c959f'>"
+                "(Esta vista é antiga; adicione-a novamente para habilitar a identificação)</span>"
+            )
+            return
+        source = str(name)
+        if source.startswith("componente:chapa_base:"):
+            nodes = view.get("component_detail_group", {}).get("members", ())
+            if not nodes:
+                return
+            kind = "component_plate" if source.rsplit(":", 1)[-1] == "0" else "component_fastener"
+            if any(item.get("kind") == kind and item.get("element") == nodes[0]
+                   for item in view.get("identifications", ())):
+                return
+            identification = dict(kind=kind, element=nodes[0], projected_point=projected_point)
+            self._update_project_identification_text(identification)
+            view.setdefault("identifications", []).append(identification)
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+            return
+        kind, separator, owner_name = source.partition(":")
+        group_members: tuple[str, ...] = ()
+        custom_name = ""
+        if kind == "bar_group" and separator:
+            group_members = tuple(member for member in owner_name.split("|") if member)
+            group = (
+                self.model.verification_group_for(group_members[0])
+                if group_members else None
+            )
+            if group is None or set(group.get("members", ())) != set(group_members):
+                return
+            owner_name = "|".join(group_members)
+            custom_name = str(group.get("name", "")).strip()
+            label = custom_name or ", ".join(group_members)
+        else:
+            group = None
+        if not separator or kind not in {"bar", "plate", "rigid_bar", "node"}:
+            if kind != "bar_group":
+                owner_name = source
+                kind = ""
+        if kind in {"bar", "bar_group", "plate", "rigid_bar", "node"}:
+            for existing in view.get("identifications", ()):
+                if not isinstance(existing, dict) or existing.get("kind") != kind:
+                    continue
+                existing_element = str(existing.get("element", ""))
+                same_element = (
+                    set(existing_element.split("|")) == set(group_members)
+                    if kind == "bar_group" else existing_element == owner_name
+                )
+                if same_element:
+                    self.history.append(
+                        "> <b>Identificador de elemento</b> <span style='color:#8c959f'>"
+                        "(Este elemento já possui uma etiqueta nesta vista)</span>"
+                    )
+                    return
+        if kind != "bar_group":
+            if kind == "bar":
+                custom_name = str(self.model.verification_element_names.get(owner_name, "")).strip()
+            elif kind == "plate":
+                custom_name = str(self.model.plate_display_names.get(owner_name, "")).strip()
+            elif kind == "node":
+                custom_name = str(self.model.node_display_names.get(owner_name, "")).strip()
+            else:
+                custom_name = ""
+            label = custom_name or owner_name
+        element_label = label
+        section_members = group_members if group_members else (
+            (owner_name,) if kind == "bar" else ()
+        )
+        section_labels = []
+        for member_name in section_members:
+            member = self.model.bars.get(member_name)
+            if member is None:
+                continue
+            section_name = (
+                member.profile
+                or self.section_profiles.get(member_name)
+                or member.section
+            )
+            section_name = str(section_name).strip()
+            if section_name and section_name not in section_labels:
+                section_labels.append(section_name)
+        section_label = " / ".join(section_labels)
+        if section_labels:
+            label = f"{element_label} {section_label}"
+        source_owners = (
+            tuple(f"bar:{member}" for member in group_members)
+            if group_members else (source,)
+        )
+        element_coordinates = np.asarray(
+            self.project_sheet_workspace.projected_points_for_owners(
+                view_index, source_owners,
+            ),
+            dtype=float,
+        )
+        if element_coordinates.size == 0:
+            return
+        min_x = float(element_coordinates[:, 0].min())
+        max_x = float(element_coordinates[:, 0].max())
+        min_y = float(element_coordinates[:, 1].min())
+        max_y = float(element_coordinates[:, 1].max())
+        stacked_text = False
+        text_rotation = 0.0
+        axis_direction: tuple[float, float] | None = None
+        world_length = 0.0
+        projected_axis_length = 0.0
+        has_projection = isinstance(view.get("projection"), dict)
+        for member_name in section_members:
+            member = self.model.bars.get(member_name)
+            if member is None:
+                continue
+            start_node = self.model.nodes.get(member.start_node)
+            end_node = self.model.nodes.get(member.end_node)
+            if start_node is None or end_node is None:
+                continue
+            start_world = (start_node.x, start_node.y, start_node.z)
+            end_world = (end_node.x, end_node.y, end_node.z)
+            member_length = math.sqrt(sum(
+                (end_world[axis] - start_world[axis]) ** 2 for axis in range(3)
+            ))
+            world_length += member_length
+            if has_projection:
+                start_projected = self.project_sheet_workspace._project_world_point(
+                    view, start_world,
+                )
+                end_projected = self.project_sheet_workspace._project_world_point(
+                    view, end_world,
+                )
+                if start_projected is not None and end_projected is not None:
+                    projected_dx = end_projected[0] - start_projected[0]
+                    projected_dy = end_projected[1] - start_projected[1]
+                    projected_axis_length += math.hypot(projected_dx, projected_dy)
+                    if axis_direction is None:
+                        axis_direction = (projected_dx, projected_dy)
+        projected_span = projected_axis_length
+        if not has_projection:
+            # Older sheets do not store the view projection. Infer an in-plane
+            # bar direction from the principal axis of its owned 2D linework.
+            coordinates = element_coordinates
+            if coordinates.shape[0] >= 2:
+                centered = coordinates - coordinates.mean(axis=0)
+                covariance = centered.T @ centered
+                eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+                direction = eigenvectors[:, int(np.argmax(eigenvalues))]
+                axis_direction = (float(direction[0]), float(direction[1]))
+                projected_values = centered @ direction
+                projected_span = float(projected_values.max() - projected_values.min())
+        if axis_direction is not None and world_length > 1e-12:
+            if projected_span / world_length < math.sqrt(0.5):
+                stacked_text = True
+            else:
+                if math.hypot(*axis_direction) > 1e-12:
+                    text_rotation = math.degrees(math.atan2(-axis_direction[1], axis_direction[0]))
+                    if text_rotation > 90.0:
+                        text_rotation -= 180.0
+                    elif text_rotation < -90.0:
+                        text_rotation += 180.0
+        denominator = max(1.0, float(view.get("scale_denominator", 100.0)))
+        text_height_mm = float(
+            self.project_sheets_palette._project_settings.get("view_element_text_height_mm", 3.0)
+        )
+        gap_mm = 2.0
+        gap = (text_height_mm + gap_mm) * denominator / 1000.0
+        label_position = ((min_x + max_x) / 2.0, max_y + gap)
+        if not stacked_text and axis_direction is not None:
+            magnitude = math.hypot(*axis_direction)
+            if magnitude > 1e-12:
+                axis_x, axis_y = axis_direction[0] / magnitude, axis_direction[1] / magnitude
+                normal_x, normal_y = -axis_y, axis_x
+                if normal_y < 0.0 or (abs(normal_y) <= 1e-9 and normal_x > 0.0):
+                    normal_x, normal_y = -normal_x, -normal_y
+                normal_projections = element_coordinates @ np.asarray((normal_x, normal_y))
+                normal_min = float(normal_projections.min())
+                normal_max = float(normal_projections.max())
+                normal_center = (normal_min + normal_max) / 2.0
+                normal_offset = (normal_max - normal_min) / 2.0 + gap
+                axis_projections = element_coordinates @ np.asarray((axis_x, axis_y))
+                axis_center = (
+                    float(axis_projections.min()) + float(axis_projections.max())
+                ) / 2.0
+                label_position = (
+                    axis_center * axis_x + (normal_center + normal_offset) * normal_x,
+                    axis_center * axis_y + (normal_center + normal_offset) * normal_y,
+                )
+        identification = {
+            "kind": kind,
+            "element": owner_name,
+            "text": label,
+            "text_lines": (
+                [element_label, section_label]
+                if stacked_text and section_label else [label]
+            ),
+            "text_runs": (
+                [
+                    [{"text": element_label, "role": "element"}],
+                    [{"text": section_label, "role": "section"}],
+                ]
+                if stacked_text and section_label else [
+                    [{"text": element_label, "role": "element"}]
+                    + ([{"text": f" {section_label}", "role": "section"}] if section_label else [])
+                ]
+            ),
+            "text_rotation_degrees": 0.0 if stacked_text else text_rotation,
+            "projected_point": label_position,
+            "layout_version": 3,
+            "stacked_text": stacked_text,
+            "show_identity": not bool(custom_name),
+            "show_name": bool(custom_name),
+            "show_section": bool(section_label),
+        }
+        view.setdefault("identifications", []).append(identification)
+        self._update_project_identification_text(identification)
+        self.project_sheet_workspace.update()
+        self._store_detailing_state()
+        self.history.append(
+            "> <b>Identificador de elemento</b> <span style='color:#57606a'>"
+            f"({escape(label)} identificado; clique no próximo elemento ou pressione Enter)</span>"
+        )
+
+    def _detailing_state_snapshot(self) -> dict:
+        palette = self.project_sheets_palette
+        model_key = id(self.model)
+
+        def current_model_entries(attribute: str) -> dict:
+            values = getattr(self, attribute, {})
+            return {
+                str(key[1]): copy.deepcopy(value)
+                for key, value in values.items()
+                if isinstance(key, tuple) and len(key) == 2 and key[0] == model_key
+            }
+
+        preferred = getattr(self, "_detailing_preferred_view_key", None)
+        # Generated linework is replaced as a whole when a view is refreshed;
+        # its segment and owner buffers are read-only between refreshes. Share
+        # those large buffers with the stored state and copy the small mutable
+        # annotations/settings, instead of deep-copying tens of thousands of
+        # line segments every time a dimension or identifier is added.
+        sheet_views = {
+            sheet_name: [
+                {
+                    key: value if key in {"segments", "segment_owners"}
+                    else copy.deepcopy(value)
+                    for key, value in view.items()
+                }
+                if isinstance(view, dict) else copy.deepcopy(view)
+                for view in views
+            ]
+            for sheet_name, views in palette._sheet_views.items()
+        }
+        return {
+            "version": 1,
+            "sheets": {
+                "sheet_names": list(palette._sheet_names),
+                "active_sheet": palette.sheet_selector.currentText(),
+                "sheet_settings": copy.deepcopy(palette._sheet_settings),
+                "project_settings": copy.deepcopy(palette._project_settings),
+                "sheet_views": sheet_views,
+                "sheet_texts": copy.deepcopy(palette._sheet_texts),
+                "sheet_lines": copy.deepcopy(palette._sheet_lines),
+            },
+            "detail_views": {
+                "names": current_model_entries("_detailing_view_names"),
+                "settings": current_model_entries("_detailing_view_settings"),
+                "custom_planes": copy.deepcopy(
+                    getattr(self, "_detailing_custom_planes", {}).get(model_key, [])
+                ),
+                "preferred_view": (
+                    preferred[1]
+                    if isinstance(preferred, tuple) and len(preferred) == 2
+                    and preferred[0] == model_key else None
+                ),
+            },
+        }
+
+    def _store_detailing_state(self) -> None:
+        if not hasattr(self, "project_sheets_palette"):
+            return
+        state = self._detailing_state_snapshot()
+        if state != self.model.detailing_data:
+            self.model.detailing_data = state
+            self.model.view_revision += 1
+
+    def _restore_detailing_state(self) -> None:
+        state = self.model.detailing_data if isinstance(self.model.detailing_data, dict) else {}
+        self.project_sheets_palette.restore_detailing_state(state.get("sheets"))
+        detail_views = state.get("detail_views", {})
+        if not isinstance(detail_views, dict):
+            detail_views = {}
+        model_key = id(self.model)
+        self._detailing_view_names = {
+            (model_key, str(key)): str(value)
+            for key, value in detail_views.get("names", {}).items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        self._detailing_view_settings = {
+            (model_key, str(key)): dict(value)
+            for key, value in detail_views.get("settings", {}).items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
+        custom_planes = detail_views.get("custom_planes", [])
+        self._detailing_custom_planes = {
+            model_key: [dict(item) for item in custom_planes if isinstance(item, dict)]
+        }
+        preferred = detail_views.get("preferred_view")
+        self._detailing_preferred_view_key = (
+            (model_key, preferred) if isinstance(preferred, str) else None
+        )
+        if self._upgrade_project_identification_layouts():
+            self.project_sheet_workspace.update()
+            self._store_detailing_state()
+
+    def _upgrade_project_identification_layouts(self) -> bool:
+        """Recompute label orientation for saved tags made before the layout rules."""
+        changed = False
+        for views in self.project_sheets_palette._sheet_views.values():
+            for view in views:
+                for identification in view.get("identifications", ()):
+                    if not isinstance(identification, dict) or identification.get("layout_version", 0) >= 3:
+                        continue
+                    kind = str(identification.get("kind", ""))
+                    element = str(identification.get("element", ""))
+                    members = (
+                        tuple(member for member in element.split("|") if member)
+                        if kind == "bar_group" else (element,) if kind == "bar" else ()
+                    )
+                    bars = [self.model.bars[name] for name in members if name in self.model.bars]
+                    if not bars:
+                        text = str(identification.get("text", ""))
+                        identification["text_runs"] = [[{"text": text, "role": "element"}]]
+                        identification["layout_version"] = 3
+                        changed = True
+                        continue
+                    if kind == "bar_group":
+                        group = self.model.verification_group_for(bars[0].name)
+                        element_label = (
+                            str(group.get("name", "")).strip() or ", ".join(members)
+                            if group else ", ".join(members)
+                        )
+                    else:
+                        element_label = str(
+                            self.model.verification_element_names.get(bars[0].name, "")
+                        ).strip() or bars[0].name
+                    section_labels = list(dict.fromkeys(
+                        str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                        for bar in bars
+                        if str(bar.profile or self.section_profiles.get(bar.name) or bar.section).strip()
+                    ))
+                    section_label = " / ".join(section_labels)
+                    owner_tokens = {f"bar:{bar.name}" for bar in bars}
+                    points = [
+                        point
+                        for segment, owner in zip(
+                            view.get("segments", ()), view.get("segment_owners", ()),
+                        )
+                        if str(owner) in owner_tokens
+                        for point in segment
+                    ]
+                    if len(points) < 2:
+                        text = str(identification.get("text", ""))
+                        identification["text_runs"] = [[{"text": text, "role": "element"}]]
+                        identification["layout_version"] = 3
+                        changed = True
+                        continue
+                    coordinates = np.asarray(points, dtype=float)
+                    minimum = coordinates.min(axis=0)
+                    maximum = coordinates.max(axis=0)
+                    axis_direction = None
+                    projected_length = 0.0
+                    world_length = 0.0
+                    has_projection = isinstance(view.get("projection"), dict)
+                    for bar in bars:
+                        start_node = self.model.nodes.get(bar.start_node)
+                        end_node = self.model.nodes.get(bar.end_node)
+                        if start_node is None or end_node is None:
+                            continue
+                        start = (start_node.x, start_node.y, start_node.z)
+                        end = (end_node.x, end_node.y, end_node.z)
+                        world_length += math.dist(start, end)
+                        if has_projection:
+                            start_2d = self.project_sheet_workspace._project_world_point(view, start)
+                            end_2d = self.project_sheet_workspace._project_world_point(view, end)
+                            if start_2d is not None and end_2d is not None:
+                                delta = (end_2d[0] - start_2d[0], end_2d[1] - start_2d[1])
+                                projected_length += math.hypot(*delta)
+                                if axis_direction is None:
+                                    axis_direction = delta
+                    if not has_projection:
+                        centered = coordinates - coordinates.mean(axis=0)
+                        _eigenvalues, eigenvectors = np.linalg.eigh(centered.T @ centered)
+                        direction = eigenvectors[:, -1]
+                        axis_direction = (float(direction[0]), float(direction[1]))
+                        projected = centered @ direction
+                        projected_length = float(projected.max() - projected.min())
+                    stacked = (
+                        world_length > 1e-12
+                        and projected_length / world_length < math.sqrt(0.5)
+                    )
+                    rotation = 0.0
+                    if axis_direction is not None and not stacked and math.hypot(*axis_direction) > 1e-12:
+                        rotation = math.degrees(math.atan2(-axis_direction[1], axis_direction[0]))
+                        if rotation > 90:
+                            rotation -= 180
+                        elif rotation < -90:
+                            rotation += 180
+                    label = f"{element_label} {section_label}".strip()
+                    identification["text"] = label
+                    identification["text_lines"] = (
+                        [element_label, section_label] if stacked and section_label else [label]
+                    )
+                    identification["text_runs"] = (
+                        [
+                            [{"text": element_label, "role": "element"}],
+                            [{"text": section_label, "role": "section"}],
+                        ]
+                        if stacked and section_label else [
+                            [{"text": element_label, "role": "element"}]
+                            + ([{"text": f" {section_label}", "role": "section"}] if section_label else [])
+                        ]
+                    )
+                    identification["text_rotation_degrees"] = 0.0 if stacked else rotation
+                    denominator = max(1.0, float(view.get("scale_denominator", 100.0)))
+                    text_height = float(
+                        self.project_sheets_palette._project_settings.get(
+                            "view_element_text_height_mm", 3.0,
+                        )
+                    )
+                    gap = (text_height + 2.0) * denominator / 1000.0
+                    point = ((minimum[0] + maximum[0]) / 2, maximum[1] + gap)
+                    if not stacked and axis_direction is not None and math.hypot(*axis_direction) > 1e-12:
+                        axis_length = math.hypot(*axis_direction)
+                        axis_x, axis_y = axis_direction[0] / axis_length, axis_direction[1] / axis_length
+                        normal_x, normal_y = -axis_y, axis_x
+                        if normal_y < 0 or (abs(normal_y) <= 1e-9 and normal_x > 0):
+                            normal_x, normal_y = -normal_x, -normal_y
+                        normal_values = coordinates @ np.asarray((normal_x, normal_y))
+                        axis_values = coordinates @ np.asarray((axis_x, axis_y))
+                        normal_center = (float(normal_values.min()) + float(normal_values.max())) / 2
+                        axis_center = (float(axis_values.min()) + float(axis_values.max())) / 2
+                        offset = (float(normal_values.max()) - float(normal_values.min())) / 2 + gap
+                        point = (
+                            axis_center * axis_x + (normal_center + offset) * normal_x,
+                            axis_center * axis_y + (normal_center + offset) * normal_y,
+                        )
+                    identification["projected_point"] = point
+                    identification["layout_version"] = 3
+                    changed = True
+        return changed
+
+    def _set_model_display_name(self, name: str) -> None:
+        self.scene.set_model_name(name)
+        if hasattr(self, "project_sheet_workspace"):
+            self.project_sheet_workspace.set_model_name(self.scene.model_name)
+
+    def confirm_remove_project_sheet(self, name: str) -> bool:
+        dialog = RemoveProjectSheetDialog(name, self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _manage_project_sheets_from_settings(self, operation: str, sheet_label: str) -> dict:
+        palette = self.project_sheets_palette
+        if sheet_label in palette._sheet_names:
+            palette.sheet_selector.setCurrentText(sheet_label)
+        if operation == "add":
+            palette._add_sheet()
+        elif operation == "remove":
+            palette._remove_sheet()
+        return {"names": list(palette._sheet_names), "settings": palette._sheet_settings,
+                "active": palette.sheet_selector.currentText()}
+
+    def open_project_sheet_settings(self) -> None:
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        settings = self.project_sheets_palette._sheet_settings.get(sheet_name)
+        if settings is None:
+            settings = default_project_sheet_settings("")
+        dialog = ProjectSheetSettingsDialog(
+            sheet_name,
+            settings,
+            self.project_sheets_palette._project_settings,
+            self.project_sheets_palette.sheet_selector.count(),
+            self,
+            rename_sheet_callback=self.project_sheets_palette._rename_sheet,
+            sheet_settings=self.project_sheets_palette._sheet_settings,
+            sheet_names=self.project_sheets_palette._sheet_names,
+            manage_sheets_callback=self._manage_project_sheets_from_settings,
+        )
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        if (
+            dialog.exec() == QDialog.DialogCode.Accepted
+            and dialog.result_settings is not None
+            and dialog.result_project_settings is not None
+        ):
+            self.project_sheets_palette._sheet_settings.update(dialog.result_sheet_settings or {})
+            self.project_sheets_palette._project_settings = dialog.result_project_settings
+            sheet_name = dialog._active_sheet_label
+            if not sheet_name:
+                self.project_sheets_palette._on_sheet_selected("")
+                self._store_detailing_state()
+                return
+            self.project_sheet_workspace.set_sheet_settings(
+                sheet_name,
+                self.project_sheets_palette._sheet_settings[sheet_name],
+                self.project_sheets_palette._project_settings,
+                len(self.project_sheets_palette._sheet_names),
+            )
+            self.project_sheets_palette.reorder_sheet(
+                sheet_name, dialog.result_settings.get("sheet_number", "01"),
+            )
 
     def open_detailing_views(self) -> None:
         if self._detailing_views_dialog_open:
@@ -631,9 +2593,12 @@ class MainWindow(QMainWindow):
             dialog = DetailingViewsDialog(self)
             self._detailing_views_dialog = dialog
             dialog._add_plane_requested = False
+            dialog._add_view_requested = False
             dialog.move(self.geometry().center() - dialog.rect().center())
             dialog.exec()
             add_plane_requested = dialog._add_plane_requested
+            add_view_requested = dialog._add_view_requested
+            requested_sheet_view = dialog._requested_sheet_view
         finally:
             self._detailing_views_dialog_open = False
             self._detailing_views_dialog = None
@@ -642,8 +2607,195 @@ class MainWindow(QMainWindow):
                 dialog.deleteLater()
             if cancel_action is not None:
                 cancel_action.setEnabled(cancel_action_was_enabled)
-        if add_plane_requested:
+        self._store_detailing_state()
+        if add_view_requested and requested_sheet_view is not None:
+            self.project_sheets_palette.add_view_to_active_sheet(requested_sheet_view)
+        elif add_plane_requested:
+            self._detail_plane_return_to_project = self._detailing_project_mode
+            if self._detail_plane_return_to_project:
+                self.detailing_mode_palette._buttons[0].click()
             self._start_detail_plane_placement()
+
+    def open_component_details(self) -> None:
+        if getattr(self, "_component_details_dialog_open", False):
+            return
+        self._component_details_dialog_open = True
+        dialog = None
+        cancel_action = getattr(self, "_cancel_placement_action", None)
+        cancel_action_was_enabled = cancel_action.isEnabled() if cancel_action is not None else None
+        try:
+            if cancel_action is not None:
+                cancel_action.setEnabled(False)
+            dialog = ComponentDetailsDialog(self)
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_views:
+                palette = self.project_sheets_palette
+                sheet_name = palette.sheet_selector.currentText()
+                if sheet_name:
+                    sheet_views = palette._sheet_views.setdefault(sheet_name, [])
+                    sheet_views.extend(dialog.result_views)
+                    self.project_sheet_workspace.set_sheet_views(sheet_views)
+                    self.project_sheet_workspace.select_view(len(sheet_views) - 1)
+                    self._store_detailing_state()
+        finally:
+            self._component_details_dialog_open = False
+            if dialog is not None:
+                dialog.deleteLater()
+            if cancel_action is not None:
+                cancel_action.setEnabled(cancel_action_was_enabled)
+
+    def apply_selected_project_sheet_view_settings(self, settings: dict) -> None:
+        if not self._detailing_project_mode or not isinstance(settings, dict):
+            return
+        index = self.project_sheet_workspace._selected_view_index
+        views = self.project_sheet_workspace._sheet_views
+        if index is None or not 0 <= index < len(views):
+            return
+        view = views[index]
+        projection = view.get("projection")
+        if not isinstance(projection, dict):
+            return
+        updated_projection = {**projection, **settings}
+        self._transform_projected_view_annotations(view, projection, updated_projection)
+        projection.update(settings)
+        view["model_revision"] = None
+        self.project_sheet_view_panel.show_for(view)
+        sheet_name = self.project_sheets_palette.sheet_selector.currentText()
+        hidden_owners = tuple(sorted({
+            str(owner) for owner in view.get("hidden_owners", ())
+        }))
+        self._queue_sheet_linework_upgrade([(
+            sheet_name,
+            view,
+            copy.deepcopy(projection),
+            bool(view.get("segments")),
+            hidden_owners,
+        )])
+        self._store_detailing_state()
+
+    @staticmethod
+    def _projected_view_axes(projection: dict) -> tuple[np.ndarray, np.ndarray] | None:
+        plane = str(projection.get("plane", ""))
+        if plane == "custom":
+            try:
+                points = np.asarray(projection.get("coordinate"), dtype=float)
+                if points.shape != (3, 3):
+                    return None
+                origin = points[0]
+                right = points[1] - origin
+                right_length = float(np.linalg.norm(right))
+                if right_length <= 1e-12:
+                    return None
+                right /= right_length
+                normal = np.cross(right, points[2] - origin)
+                normal_length = float(np.linalg.norm(normal))
+                if normal_length <= 1e-12:
+                    return None
+                normal /= normal_length
+                base_up = np.cross(normal, right)
+            except (TypeError, ValueError):
+                return None
+        elif plane in DetailingViewPreview._isometric_directions:
+            normal = np.asarray(DetailingViewPreview._isometric_directions[plane], dtype=float)
+            normal /= np.linalg.norm(normal)
+            base_up = np.asarray((0.0, 0.0, 1.0), dtype=float)
+            base_up -= np.dot(base_up, normal) * normal
+            length = float(np.linalg.norm(base_up))
+            if length <= 1e-12:
+                return None
+            base_up /= length
+        else:
+            plane_data = DetailingViewPreview._plane_data.get(plane)
+            if plane_data is None:
+                return None
+            normal = np.asarray(plane_data[0], dtype=float)
+            base_up = np.asarray(plane_data[2], dtype=float)
+
+        if projection.get("orientation") == "Inferior para superior":
+            camera_direction = -normal
+        else:
+            camera_direction = normal
+        view_direction = -camera_direction
+        angle = math.radians(-float(projection.get("rotation_degrees", 0.0)))
+        rotated_up = (
+            base_up * math.cos(angle)
+            + np.cross(view_direction, base_up) * math.sin(angle)
+            + view_direction * np.dot(view_direction, base_up) * (1.0 - math.cos(angle))
+        )
+        right_axis = np.cross(view_direction, rotated_up)
+        right_length = float(np.linalg.norm(right_axis))
+        up_length = float(np.linalg.norm(rotated_up))
+        if right_length <= 1e-12 or up_length <= 1e-12:
+            return None
+        return right_axis / right_length, rotated_up / up_length
+
+    @classmethod
+    def _transform_projected_view_annotations(
+        cls, view: dict, old_projection: dict, new_projection: dict,
+    ) -> None:
+        old_axes = cls._projected_view_axes(old_projection)
+        new_axes = cls._projected_view_axes(new_projection)
+        if old_axes is None or new_axes is None:
+            return
+        old_right, old_up = old_axes
+        new_right, new_up = new_axes
+        transform = np.asarray((
+            (np.dot(new_right, old_right), np.dot(new_right, old_up)),
+            (np.dot(new_up, old_right), np.dot(new_up, old_up)),
+        ), dtype=float)
+        if np.allclose(transform, np.eye(2), rtol=0.0, atol=1e-10):
+            return
+
+        def point(value):
+            try:
+                result = transform @ np.asarray(value, dtype=float)
+                if result.shape != (2,):
+                    return value
+                return tuple(float(component) for component in result)
+            except (TypeError, ValueError):
+                return value
+
+        for dimension in view.get("dimensions", ()):
+            if not isinstance(dimension, dict):
+                continue
+            old_start = dimension.get("start")
+            old_end = dimension.get("end")
+            axis = dimension.get("orthogonal_axis")
+            direction = None
+            if axis in {"x", "y"}:
+                try:
+                    delta = np.asarray(old_end, dtype=float) - np.asarray(old_start, dtype=float)
+                    direction = np.asarray((delta[0], 0.0) if axis == "x" else (0.0, delta[1]))
+                except (TypeError, ValueError, IndexError):
+                    direction = None
+            if old_start is not None:
+                dimension["start"] = point(old_start)
+            if old_end is not None:
+                dimension["end"] = point(old_end)
+            if dimension.get("offset") is not None:
+                dimension["offset"] = point(dimension["offset"])
+            if direction is not None:
+                transformed_direction = transform @ direction
+                dimension["orthogonal_axis"] = (
+                    "x" if abs(transformed_direction[0]) >= abs(transformed_direction[1]) else "y"
+                )
+        for identification in view.get("identifications", ()):
+            if not isinstance(identification, dict):
+                continue
+            if identification.get("projected_point") is not None:
+                identification["projected_point"] = point(identification["projected_point"])
+        for detail_identifier in view.get("detail_identifiers", ()):
+            if not isinstance(detail_identifier, dict):
+                continue
+            for key in ("center", "label_position"):
+                if detail_identifier.get(key) is not None:
+                    detail_identifier[key] = point(detail_identifier[key])
+        for section in view.get("sections", ()):
+            if not isinstance(section, dict):
+                continue
+            for key in ("start", "end"):
+                if section.get(key) is not None:
+                    section[key] = point(section[key])
 
     def _detailing_group_member_names(self, member_name: str) -> tuple[str, ...]:
         """Expand a picked bar to its group only while detailing is active."""
@@ -656,12 +2808,12 @@ class MainWindow(QMainWindow):
         return (member_name,) if member_name in self.model.bars else ()
 
     def start_member_endpoint_alignment(self) -> None:
-        """Start the two-step command for aligning a bar end to a connected face."""
+        """Start the two-step command for aligning a bar end or plate edge to a face."""
         if self._command_mode is not None:
             self.cancel_member_placement()
         self.command_session.cancel()
         self.scene.set_member_placement_mode(False)
-        self._endpoint_alignment_source_bar = None
+        self._endpoint_alignment_source = None
         if not self.scene._solid_members_visible:
             self._apply_mcp_view_change("solid_members_visible", True)
         self.clear_selection()
@@ -672,29 +2824,667 @@ class MainWindow(QMainWindow):
         self.axes_panel.hide()
         self.reference_panel.hide()
         self._command_mode = "endpoint_alignment_bar_selection"
+        self.scene.set_node_component_pick_through(True)
         self.scene.set_endpoint_alignment_target(None)
         self.history.append(
             "> <b>Alinhar extremidade</b> "
-            "<span style='color:#57606a'>(Selecione a barra que terá uma extremidade alinhada; Esc cancela)</span>"
+            "<span style='color:#57606a'>(Selecione a barra ou placa que será ajustada; Esc cancela)</span>"
         )
         self.scene.plotter.setFocus()
+
+    def start_detail_subtraction(self) -> None:
+        """Start a target-then-cutter detailing subtraction command."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._detail_subtraction_target = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "detail_subtraction_target_selection"
+        self.scene.set_node_component_pick_through(True)
+        self.history.append(
+            "> <b>Subtrair trecho</b> "
+            "<span style='color:#57606a'>(Selecione a barra ou placa que será cortada; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_detail_end_cut(self) -> None:
+        """Start a bar selection followed by a reference face for an end cut."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._detail_end_cut_target = None
+        self._detail_end_cut_reference_faces = []
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "detail_end_cut_target_selection"
+        self.scene.set_node_component_pick_through(True)
+        self.scene.set_detail_end_cut_target(None)
+        self.history.append(
+            "> <b>Subtrair extremidade</b> "
+            "<span style='color:#57606a'>(Selecione a barra; depois escolha uma face, "
+            "use Ctrl+clique para adicionar outras e pressione Enter para aplicar; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _apply_detail_end_cut_face(self, hit: object, add_face: bool = False) -> None:
+        """Collect reference faces; Ctrl-click adds to the pending intersection."""
+        if self._command_mode != "detail_end_cut_face_selection":
+            return
+        try:
+            face_kind, face_name, cell_id, face_point, face_normal = hit
+            face_point = np.asarray(face_point, dtype=float)
+            face_normal = np.asarray(face_normal, dtype=float)
+        except (TypeError, ValueError):
+            return
+        target_name = self._detail_end_cut_target
+        if target_name not in self.model.bars:
+            return
+        if face_kind not in {"bar", "plate", "component"}:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa, chapa de base ou degrau)</span>"
+            )
+            return
+        if face_kind == "bar" and face_name == target_name:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione a face de outro elemento como referência)</span>"
+            )
+            return
+        normal_length = float(np.linalg.norm(face_normal))
+        if normal_length <= 1e-12 or not np.isfinite(face_point).all():
+            return
+        face_normal /= normal_length
+        selected_face = (
+            str(face_kind), str(face_name), int(cell_id),
+            tuple(float(value) for value in face_point),
+            tuple(float(value) for value in face_normal),
+        )
+        if add_face:
+            if selected_face not in self._detail_end_cut_reference_faces:
+                self._detail_end_cut_reference_faces.append(selected_face)
+        else:
+            # A plain click starts a new face selection; Ctrl-click extends it.
+            self._detail_end_cut_reference_faces = [selected_face]
+        count = len(self._detail_end_cut_reference_faces)
+        self.history.append(
+            "> <b>Subtrair extremidade</b> <span style='color:#57606a'>"
+            f"({count} face{'s' if count != 1 else ''} selecionada{'s' if count != 1 else ''}; "
+            "Ctrl+clique adiciona faces; pressione Enter para aplicar)</span>"
+        )
+
+    @staticmethod
+    def _detail_end_cut_face_label(face) -> str:
+        kind, name = face[0], face[1]
+        if kind == "bar":
+            return f"Barra {name}"
+        if kind == "plate":
+            return f"Placa {name}"
+        return f"Chapa de base/topo no nó {name}"
+
+    def _commit_detail_end_cut_faces(self) -> None:
+        """Apply one face plane or the intersection of the selected face planes."""
+        target_name = self._detail_end_cut_target
+        faces = tuple(self._detail_end_cut_reference_faces)
+        if target_name not in self.model.bars or not faces:
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Selecione pelo menos uma face e pressione Enter)</span>"
+            )
+            return
+        member = self.model.bars[target_name]
+        start_node = self.model.nodes[member.start_node]
+        end_node = self.model.nodes[member.end_node]
+        basis = LocalAxesRenderer.basis(start_node, end_node, rotation=member.rotation)
+        if basis is None:
+            return
+        start = np.asarray((start_node.x, start_node.y, start_node.z), dtype=float)
+        end = np.asarray((end_node.x, end_node.y, end_node.z), dtype=float)
+        section_offset = LocalAxesRenderer.section_offset(member, start_node, end_node)
+        rendered_start = start - basis[0] * float(member.solid_face_offsets[0]) + section_offset
+        rendered_end = end + basis[0] * float(member.solid_face_offsets[1]) + section_offset
+        face_points = np.asarray([face[3] for face in faces], dtype=float)
+        face_normals = np.asarray([face[4] for face in faces], dtype=float)
+        axis_direction = np.asarray(basis[0], dtype=float)
+        removal_planes = ()
+
+        if len(faces) == 1:
+            face_point, face_normal = face_points[0], face_normals[0]
+            signed_distances = (
+                float(np.dot(rendered_start - face_point, face_normal)),
+                float(np.dot(rendered_end - face_point, face_normal)),
+            )
+            if signed_distances[0] * signed_distances[1] > 1e-10:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(A face de referência não cruza a barra)</span>"
+                )
+                return
+            endpoint_index = min(range(2), key=lambda index: abs(signed_distances[index]))
+            side = signed_distances[endpoint_index]
+            if abs(side) <= 1e-8:
+                outward = -axis_direction if endpoint_index == 0 else axis_direction
+                side = float(np.dot(outward, face_normal))
+            if abs(side) <= 1e-8:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(Não foi possível identificar o lado da extremidade; "
+                    "selecione outra face)</span>"
+                )
+                return
+            cut_point = face_point
+            removal_normal = face_normal if side > 0.0 else -face_normal
+        else:
+            # Find the common line/point of the selected infinite face planes.
+            offsets = np.einsum("ij,ij->i", face_normals, face_points)
+            intersection_point, _, rank, _ = np.linalg.lstsq(
+                face_normals, offsets, rcond=None,
+            )
+            _, _, right_vectors = np.linalg.svd(face_normals, full_matrices=True)
+            residual = np.abs(face_normals @ intersection_point - offsets)
+            scale = max(1.0, float(np.linalg.norm(rendered_end - rendered_start)))
+            if rank < 2 or float(np.max(residual, initial=0.0)) > scale * 1e-6:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(As faces selecionadas não formam uma interseção comum)</span>"
+                )
+                return
+            axis_length = float(np.linalg.norm(rendered_end - rendered_start))
+            if axis_length <= 1e-12:
+                return
+            axis_direction = (rendered_end - rendered_start) / axis_length
+            if rank == 2:
+                line_direction = right_vectors[-1]
+                line_direction /= max(float(np.linalg.norm(line_direction)), 1e-12)
+                # Closest approach between the face-intersection line and the
+                # target member axis gives the station at which to cut.
+                parameters, *_ = np.linalg.lstsq(
+                    np.column_stack((line_direction, -axis_direction)),
+                    rendered_start - intersection_point,
+                    rcond=None,
+                )
+                axis_parameter = float(parameters[1])
+            else:
+                axis_parameter = float(np.dot(intersection_point - rendered_start, axis_direction))
+            tolerance = max(1e-8, axis_length * 1e-7)
+            if axis_parameter < -tolerance or axis_parameter > axis_length + tolerance:
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(A interseção das faces está fora da barra)</span>"
+                )
+                return
+            axis_parameter = min(axis_length, max(0.0, axis_parameter))
+            cut_point = rendered_start + axis_direction * axis_parameter
+            removing_start = axis_parameter <= axis_length / 2
+            removal_normal = -axis_direction if removing_start else axis_direction
+            selected_end = rendered_start if removing_start else rendered_end
+            removal_planes_list = []
+            for plane_point, plane_normal in zip(face_points, face_normals):
+                side = float(np.dot(selected_end - plane_point, plane_normal))
+                if abs(side) <= 1e-8:
+                    outward = -axis_direction if removing_start else axis_direction
+                    side = float(np.dot(outward, plane_normal))
+                oriented_normal = plane_normal if side >= 0.0 else -plane_normal
+                removal_planes_list.append((
+                    tuple(float(value) for value in plane_point),
+                    tuple(float(value) for value in oriented_normal),
+                ))
+            removal_planes = tuple(removal_planes_list)
+
+        labels = tuple(dict.fromkeys(self._detail_end_cut_face_label(face) for face in faces))
+        reference_label = labels[0] if len(labels) == 1 else "Interseção das faces: " + ", ".join(labels)
+        cut_id = str(uuid.uuid4())
+        try:
+            self.model.add_detail_end_cut(
+                target_name, cut_id, cut_point, removal_normal, reference_label,
+                planes=removal_planes,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Subtrair extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self.refresh_scene()
+        cut_reference = ("end_cut", cut_id)
+        if ("bar", target_name, *cut_reference) in self.scene._detail_subtraction_failures:
+            member = self.model.bars[target_name]
+            self.model.update_detail_end_cuts(
+                target_name,
+                tuple(cut for cut in member.detail_end_cuts if cut.identifier != cut_id),
+            )
+            self.refresh_scene()
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Não foi possível gerar um corte válido; "
+                "a geometria original foi preservada)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        self._detail_end_cut_target = None
+        self._detail_end_cut_reference_faces = []
+        self._command_mode = "detail_end_cut_target_selection"
+        self.scene.set_detail_end_cut_target(None)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Subtrair extremidade</b> <span style='color:#57606a'>"
+            f"(Extremidade de {escape(target_name)} cortada por {escape(reference_label)}; "
+            "selecione outra barra ou pressione Esc)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_face_alignment(self) -> None:
+        """Start a two-step command to align one picked face with another."""
+        if self._command_mode is not None:
+            self.cancel_member_placement()
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._face_alignment_source = None
+        self._face_alignment_source_hit = None
+        if not self.scene._solid_members_visible:
+            self._apply_mcp_view_change("solid_members_visible", True)
+        self.clear_selection()
+        self.properties.close_color_palette()
+        self.properties.hide()
+        self.close_section_panel()
+        self.close_displacement_panel()
+        self.axes_panel.hide()
+        self.reference_panel.hide()
+        self._command_mode = "face_alignment_source_selection"
+        self.scene.set_node_component_pick_through(False)
+        self.scene.set_face_alignment_mode(True)
+        self.history.append(
+            "> <b>Alinhar faces</b> "
+            "<span style='color:#57606a'>(Selecione a face que será movida; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _align_element_face_to_reference(self, hit: object) -> None:
+        """Use two picked faces to translate a bar or plate onto its reference plane."""
+        try:
+            target_kind, target_name, _cell_id, target_point, target_normal = hit
+            target_point = np.asarray(target_point, dtype=float)
+            target_normal = np.asarray(target_normal, dtype=float)
+        except (TypeError, ValueError):
+            return
+        if self._command_mode == "face_alignment_source_selection":
+            if target_kind not in {"bar", "plate"}:
+                self.history.append(
+                    "> <b>Alinhar faces</b> "
+                    "<span style='color:#8c959f'>(Selecione uma face de barra ou placa que será movida)</span>"
+                )
+                return
+            self._face_alignment_source = (target_kind, target_name)
+            self._face_alignment_source_hit = (
+                target_kind, target_name, _cell_id, target_point.copy(), target_normal.copy(),
+            )
+            self._command_mode = "face_alignment_reference_selection"
+            self.scene.set_face_alignment_mode(True, self._face_alignment_source)
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#57606a'>(Selecione a face que servirá como referência; Esc cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        if self._command_mode != "face_alignment_reference_selection":
+            return
+        source = self._face_alignment_source
+        source_hit = self._face_alignment_source_hit
+        if source is None or source_hit is None:
+            return
+        source_kind, source_name = source
+        if target_kind not in {"bar", "plate", "component"}:
+            return
+        if (target_kind, target_name) == source:
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#8c959f'>(Escolha uma face de outro elemento como referência)</span>"
+            )
+            return
+        _source_kind, _source_name, source_cell, source_point, source_normal = source_hit
+        source_point = np.asarray(source_point, dtype=float)
+        source_normal = np.asarray(source_normal, dtype=float)
+        normal_length = float(np.linalg.norm(target_normal))
+        source_normal_length = float(np.linalg.norm(source_normal))
+        if (
+            normal_length <= 1e-12 or source_normal_length <= 1e-12
+            or not np.isfinite(target_point).all() or not np.isfinite(source_point).all()
+        ):
+            return
+        target_normal /= normal_length
+        source_normal /= source_normal_length
+        if source_kind == "plate" and source_cell >= 2:
+            try:
+                edge_name, offset_mm, angle_degrees = self._plate_edge_alignment_values(
+                    self.model.plates[source_name], source_cell - 2,
+                    target_point, target_normal,
+                )
+                plate = self.model.plates[source_name]
+                saved = {
+                    name: (offset, angle)
+                    for name, offset, angle in plate.edge_positioning
+                }
+                saved[edge_name] = (offset_mm, angle_degrees)
+                edge_values = tuple(
+                    (name, *saved.get(name, (0.0, 0.0)))
+                    for _kind, name in plate.supports
+                )
+                self.model_service.update_plate_edge_positioning(source_name, edge_values)
+                self.scene.update_plate_rendering(source_name)
+            except (KeyError, ValueError) as error:
+                self.history.append(
+                    f"> <b>Alinhar faces</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+                )
+                return
+            self._face_alignment_source = None
+            self._face_alignment_source_hit = None
+            self._command_mode = "face_alignment_source_selection"
+            self.scene.set_face_alignment_mode(True)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                f"<span style='color:#57606a'>(Face da aresta {escape(edge_name)} alinhada por "
+                f"YZ = {offset_mm:.2f} mm e α = {angle_degrees:.2f}°. "
+                "Selecione outra face para continuar; Esc encerra)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        if abs(float(np.dot(source_normal, target_normal))) < 1.0 - 1e-6:
+            self.history.append(
+                "> <b>Alinhar faces</b> "
+                "<span style='color:#8c959f'>(As faces selecionadas precisam ser paralelas)</span>"
+            )
+            return
+        gap = float(np.dot(target_normal, source_point - target_point))
+        translation = -gap * target_normal
+        source_names = (
+            self._detailing_group_member_names(source_name)
+            if source_kind == "bar" else (source_name,)
+        )
+        try:
+            if source_kind == "plate":
+                plate = self.model.plates[source_name]
+                points = np.asarray(plate.contour, dtype=float)
+                _, _, basis = np.linalg.svd(points - points[0], full_matrices=False)
+                plate_normal = basis[-1]
+                if plate_normal[np.argmax(np.abs(plate_normal))] < 0:
+                    plate_normal = -plate_normal
+                if abs(float(np.dot(plate_normal, target_normal))) < 1.0 - 1e-6:
+                    raise ValueError("A placa só pode ser movida perpendicularmente ao seu plano.")
+                displacement = plate.positioning_displacement + float(np.dot(translation, plate_normal))
+                self.model_service.update_plate_positioning_displacement(source_name, displacement)
+                self.scene.update_plate_rendering(source_name)
+                self.properties.update_positioning_status(source_name)
+            elif source_kind == "bar":
+                self._translate_bar_positioning(source_names, translation)
+                for name in source_names:
+                    self.refresh_member_positioning(name)
+                    self.properties.update_positioning_status(name)
+            else:
+                raise ValueError("Alinhar faces funciona com barras e placas.")
+        except (KeyError, ValueError) as error:
+            self.history.append(
+                f"> <b>Alinhar faces</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+
+        distance_mm = abs(gap) * 1000.0
+        self._face_alignment_source = None
+        self._face_alignment_source_hit = None
+        self._command_mode = "face_alignment_source_selection"
+        self.scene.set_face_alignment_mode(True)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Alinhar faces</b> "
+            f"<span style='color:#57606a'>(Faces alinhadas; deslocamento de {distance_mm:.2f} mm. "
+            "Selecione outra face para continuar; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _plate_support_for_edge(self, plate, edge_index: int) -> str | None:
+        points = np.asarray(plate.contour, dtype=float)
+        if edge_index < 0 or edge_index >= len(points):
+            return None
+        edge = points[[edge_index, (edge_index + 1) % len(points)]]
+        for kind, name in plate.supports:
+            member = (
+                self.model.bars.get(name) if kind == "bar"
+                else self.model.rigid_bars.get(name)
+            )
+            if member is None:
+                continue
+            start_node = self.model.nodes[member.start_node]
+            end_node = self.model.nodes[member.end_node]
+            endpoints = np.asarray((
+                (start_node.x, start_node.y, start_node.z),
+                (end_node.x, end_node.y, end_node.z),
+            ), dtype=float)
+            direct = max(np.linalg.norm(endpoints[0] - edge[0]),
+                         np.linalg.norm(endpoints[1] - edge[1]))
+            reverse = max(np.linalg.norm(endpoints[0] - edge[1]),
+                          np.linalg.norm(endpoints[1] - edge[0]))
+            if min(direct, reverse) <= 1e-7:
+                return name
+        return None
+
+    def _plate_edge_alignment_values(
+        self, plate, edge_index: int, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> tuple[str, float, float]:
+        """Solve the stored edge offset and inclination for a picked reference plane."""
+        points = np.asarray(plate.contour, dtype=float)
+        if edge_index < 0 or edge_index >= len(points):
+            raise ValueError("A face selecionada não corresponde a uma aresta da placa.")
+        edge = points[[edge_index, (edge_index + 1) % len(points)]]
+        edge_name = self._plate_support_for_edge(plate, edge_index)
+        if edge_name is None:
+            raise ValueError("Não foi encontrada a barra que define essa aresta da placa.")
+
+        centered = points - points[0]
+        _u, singular, basis = np.linalg.svd(centered, full_matrices=False)
+        if len(singular) < 2 or singular[1] <= 1e-12:
+            raise ValueError("Não foi possível calcular o plano da placa.")
+        normal = basis[-1]
+        if normal[np.argmax(np.abs(normal))] < 0:
+            normal = -normal
+        tangent = edge[1] - edge[0]
+        tangent_length = float(np.linalg.norm(tangent))
+        if tangent_length <= 1e-12:
+            raise ValueError("A aresta da placa possui comprimento nulo.")
+        tangent /= tangent_length
+        axis_u = points[1] - points[0]
+        axis_u /= max(float(np.linalg.norm(axis_u)), 1e-12)
+        axis_v = np.cross(normal, axis_u)
+        local = np.column_stack((centered @ axis_u, centered @ axis_v))
+        signed_area = 0.5 * float(np.sum(
+            local[:, 0] * np.roll(local[:, 1], -1)
+            - local[:, 1] * np.roll(local[:, 0], -1)
+        ))
+        winding = 1.0 if signed_area >= 0 else -1.0
+        inward = winding * np.cross(normal, tangent)
+        target_normal = target_normal / max(float(np.linalg.norm(target_normal)), 1e-12)
+        if abs(float(np.dot(target_normal, tangent))) > 1e-5:
+            raise ValueError("A face de referência precisa ser paralela à aresta da placa.")
+        if float(np.dot(target_normal, inward)) > 0:
+            target_normal = -target_normal
+        angle = math.degrees(math.atan2(
+            float(np.dot(target_normal, normal)),
+            -float(np.dot(target_normal, inward)),
+        ))
+        limit = self.solid_face_angle_limit_degrees
+        if abs(angle) > limit + 1e-9:
+            raise ValueError(f"A inclinação excede o limite de {limit:.1f}°.")
+        cosine = math.cos(math.radians(angle))
+        if abs(cosine) <= 1e-8:
+            raise ValueError("A inclinação da face é muito próxima de 90°.")
+        base_point = edge[0] + normal * float(plate.positioning_displacement)
+        geometric_offset = -float(
+            np.dot(target_normal, target_point - base_point)
+        ) / cosine
+        # The UI convention is positive outward, opposite the inward line offset.
+        offset_mm = -geometric_offset * 1000.0
+        return edge_name, offset_mm, angle
+
+    def _plate_edge_offset_to_face(
+        self, plate, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> tuple[str, float]:
+        """Find the nearest supported plate edge parallel to a picked face and solve YZ."""
+        points = np.asarray(plate.contour, dtype=float)
+        if len(points) < 3:
+            raise ValueError("A placa não possui arestas suficientes para alinhamento.")
+        centered = points - points[0]
+        _u, singular, basis = np.linalg.svd(centered, full_matrices=False)
+        if len(singular) < 2 or singular[1] <= 1e-12:
+            raise ValueError("Não foi possível calcular o plano da placa.")
+        plate_normal = basis[-1]
+        if plate_normal[np.argmax(np.abs(plate_normal))] < 0:
+            plate_normal = -plate_normal
+        axis_u = points[1] - points[0]
+        axis_u_length = float(np.linalg.norm(axis_u))
+        if axis_u_length <= 1e-12:
+            raise ValueError("A placa possui uma aresta de comprimento nulo.")
+        axis_u /= axis_u_length
+        axis_v = np.cross(plate_normal, axis_u)
+        local = np.column_stack((centered @ axis_u, centered @ axis_v))
+        signed_area = 0.5 * float(np.sum(
+            local[:, 0] * np.roll(local[:, 1], -1)
+            - local[:, 1] * np.roll(local[:, 0], -1)
+        ))
+        winding = 1.0 if signed_area >= 0 else -1.0
+        target_normal = np.asarray(target_normal, dtype=float)
+        target_length = float(np.linalg.norm(target_normal))
+        if target_length <= 1e-12:
+            raise ValueError("Não foi possível calcular a normal da face selecionada.")
+        target_normal = target_normal / target_length
+        target_point = np.asarray(target_point, dtype=float)
+        if not np.isfinite(target_point).all() or not np.isfinite(target_normal).all():
+            raise ValueError("A face selecionada possui uma geometria inválida.")
+
+        candidates = []
+        for edge_index in range(len(points)):
+            edge = points[[edge_index, (edge_index + 1) % len(points)]]
+            tangent = edge[1] - edge[0]
+            edge_length = float(np.linalg.norm(tangent))
+            if edge_length <= 1e-12 or abs(float(np.dot(target_normal, tangent / edge_length))) > 1e-5:
+                continue
+            edge_name = self._plate_support_for_edge(plate, edge_index)
+            if edge_name is None:
+                continue
+            inward = winding * np.cross(plate_normal, tangent / edge_length)
+            normal_component = float(np.dot(target_normal, inward))
+            if abs(normal_component) <= 1e-8:
+                continue
+            midpoint = 0.5 * (edge[0] + edge[1])
+            base_point = midpoint + plate_normal * float(plate.positioning_displacement)
+            signed_distance = float(np.dot(target_normal, base_point - target_point))
+            # The mesh applies inward * (-YZ), so solve the target plane using
+            # target_normal · (base - target) = YZ * target_normal · inward.
+            offset_mm = signed_distance / normal_component * 1000.0
+            candidates.append((abs(signed_distance), edge_index, edge_name, offset_mm))
+        if not candidates:
+            raise ValueError("A face selecionada não é paralela a uma aresta apoiada da placa.")
+        _distance, _edge_index, edge_name, offset_mm = min(candidates)
+        return edge_name, offset_mm
+
+    def _align_plate_endpoint_to_face(
+        self, plate_name: str, target_point: np.ndarray, target_normal: np.ndarray,
+    ) -> None:
+        plate = self.model.plates.get(plate_name)
+        if plate is None:
+            return
+        try:
+            edge_name, offset_mm = self._plate_edge_offset_to_face(
+                plate, target_point, target_normal,
+            )
+            saved = {
+                name: (float(offset), float(angle))
+                for name, offset, angle in plate.edge_positioning
+            }
+            old_angle = saved.get(edge_name, (0.0, 0.0))[1]
+            saved[edge_name] = (offset_mm, old_angle)
+            edge_values = tuple(
+                (name, *saved.get(name, (0.0, 0.0)))
+                for _kind, name in plate.supports
+            )
+            self.model_service.update_plate_edge_positioning(plate_name, edge_values)
+            self.scene.update_plate_rendering(plate_name)
+        except (KeyError, ValueError) as error:
+            self.history.append(
+                f"> <b>Alinhar extremidade</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._command_mode = "endpoint_alignment_bar_selection"
+        self._endpoint_alignment_source = None
+        self.scene.set_endpoint_alignment_target(None)
+        self.refresh_selected_property_panel(self.palette.active_group)
+        self.history.append(
+            "> <b>Alinhar extremidade</b> "
+            f"<span style='color:#57606a'>(Aresta {escape(edge_name)} alinhada; "
+            f"YZ = {offset_mm:.2f} mm. Selecione outra barra ou placa; Esc encerra)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _translate_bar_positioning(self, names: tuple[str, ...], translation: np.ndarray) -> None:
+        for name in names:
+            bar = self.model.bars[name]
+            start_node = self.model.nodes[bar.start_node]
+            end_node = self.model.nodes[bar.end_node]
+            basis = LocalAxesRenderer.basis(start_node, end_node, rotation=bar.rotation)
+            base_basis = LocalAxesRenderer.basis(start_node, end_node, rotation=0)
+            if basis is None or base_basis is None:
+                raise ValueError(f"Não foi possível calcular os eixos locais da barra {name}.")
+            delta_x = float(np.dot(translation, basis[0]))
+            delta_y = float(np.dot(translation, base_basis[1]))
+            delta_z = float(np.dot(translation, base_basis[2]))
+            face_offsets = list(bar.solid_face_offsets)
+            face_offsets[0] -= delta_x
+            face_offsets[1] += delta_x
+            section_offsets = list(bar.solid_section_offsets)
+            section_offsets[0] += delta_y
+            section_offsets[1] += delta_z
+            self.model_service.update_member_solid_face_offsets(name, tuple(face_offsets))
+            self.model_service.update_member_solid_section_offsets(name, tuple(section_offsets))
 
     def _align_member_endpoint_to_face(self, hit: object) -> None:
         """Match a connected bar end face to the clicked solid face plane."""
         if self._command_mode != "endpoint_alignment_face_selection":
             return
         try:
-            target_name, _cell_id, face_point, face_normal = hit
+            target_kind, target_name, target_cell_id, face_point, face_normal = hit
             face_point = np.asarray(face_point, dtype=float)
             face_normal = np.asarray(face_normal, dtype=float)
         except (TypeError, ValueError):
             return
-        source_name = self._endpoint_alignment_source_bar
-        target = self.model.bars.get(target_name)
-        if source_name is None or target is None:
+        source = self._endpoint_alignment_source
+        if source is None or target_kind not in {"bar", "plate", "component"}:
+            return
+        source_kind, source_name = source
+        if source_kind == "plate":
+            if target_kind == "plate" and target_name == source_name:
+                self.history.append(
+                    "> <b>Alinhar extremidade</b> "
+                    "<span style='color:#8c959f'>(Selecione a face de outro elemento)</span>"
+                )
+                return
+            self._align_plate_endpoint_to_face(source_name, face_point, face_normal)
             return
         source_names = self._detailing_group_member_names(source_name)
-        if target_name in source_names:
+        if target_kind == "bar" and target_name in source_names:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
                 "<span style='color:#8c959f'>(Selecione uma face de outra barra conectada)</span>"
@@ -707,15 +3497,49 @@ class MainWindow(QMainWindow):
              else self.model.bars[member_name].end_node)
             for member_name, endpoint_index in outer_faces.values()
         }
-        target_group_names = self._detailing_group_member_names(target_name)
-        target_outer_nodes = {
-            (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
-             else self.model.bars[member_name].end_node)
-            for member_name, endpoint_index in group_endpoint_faces(
-                self.model, target_group_names,
-            ).values()
-        }
-        target_endpoints = (target.start_node, target.end_node)
+        if target_kind == "bar":
+            target_group_names = self._detailing_group_member_names(target_name)
+            target_outer_nodes = {
+                (member_name, self.model.bars[member_name].start_node if endpoint_index == 0
+                 else self.model.bars[member_name].end_node)
+                for member_name, endpoint_index in group_endpoint_faces(
+                    self.model, target_group_names,
+                ).values()
+            }
+            target_members = [
+                ("bar", name, self.model.bars[name])
+                for name in target_group_names if name in self.model.bars
+            ]
+        elif target_kind == "plate":
+            plate = self.model.plates.get(target_name)
+            if plate is None:
+                return
+            if target_cell_id >= 2:
+                edge_name = self._plate_support_for_edge(plate, target_cell_id - 2)
+                target_supports = tuple(
+                    (kind, name) for kind, name in plate.supports if name == edge_name
+                ) if edge_name is not None else ()
+            else:
+                target_supports = plate.supports
+            target_members = [
+                (kind, name, self.model.bars[name] if kind == "bar"
+                 else self.model.rigid_bars[name])
+                for kind, name in target_supports
+                if name in (self.model.bars if kind == "bar" else self.model.rigid_bars)
+            ]
+            target_outer_nodes = {
+                (name, node_name)
+                for _kind, name, member in target_members
+                for node_name in (member.start_node, member.end_node)
+            }
+        else:
+            node_name = target_name
+            target_members = [
+                ("bar", name, member)
+                for name, member in self.model.bars.items()
+                if node_name in (member.start_node, member.end_node)
+            ]
+            target_outer_nodes = {(name, node_name) for _kind, name, _member in target_members}
         candidates = []
         for candidate_name in source_names:
             source_candidate = self.model.bars.get(candidate_name)
@@ -725,29 +3549,34 @@ class MainWindow(QMainWindow):
             for source_node in endpoints:
                 if (candidate_name, source_node) not in outer_nodes:
                     continue
-                shared_nodes = set(endpoints).intersection(target_endpoints)
-                if (
-                    source_node in shared_nodes and len(shared_nodes) == 1
-                    and (target_name, source_node) in target_outer_nodes
-                ):
-                    candidates.append((source_candidate, (source_node, source_node)))
-                    continue
-                # A rigid bar connects distinct nodes at the ends of two bars.
-                for rigid in self.model.rigid_bars.values():
+                for target_bar_kind, target_bar_name, target_bar in target_members:
+                    if target_bar_kind == "bar" and target_bar_name in source_names:
+                        continue
+                    target_endpoints = (target_bar.start_node, target_bar.end_node)
+                    shared_nodes = set(endpoints).intersection(target_endpoints)
                     if (
-                        rigid.start_node == source_node and rigid.end_node in target_endpoints
-                        and (target_name, rigid.end_node) in target_outer_nodes
+                        source_node in shared_nodes and len(shared_nodes) == 1
+                        and (target_bar_name, source_node) in target_outer_nodes
                     ):
-                        candidates.append((source_candidate, (source_node, rigid.end_node)))
-                    elif (
-                        rigid.end_node == source_node and rigid.start_node in target_endpoints
-                        and (target_name, rigid.start_node) in target_outer_nodes
-                    ):
-                        candidates.append((source_candidate, (source_node, rigid.start_node)))
+                        candidates.append((source_candidate, (source_node, source_node)))
+                        continue
+                    # A rigid bar connects distinct nodes at the ends of two bars.
+                    for rigid in self.model.rigid_bars.values():
+                        if (
+                            rigid.start_node == source_node and rigid.end_node in target_endpoints
+                            and (target_bar_name, rigid.end_node) in target_outer_nodes
+                        ):
+                            candidates.append((source_candidate, (source_node, rigid.end_node)))
+                        elif (
+                            rigid.end_node == source_node and rigid.start_node in target_endpoints
+                            and (target_bar_name, rigid.start_node) in target_outer_nodes
+                        ):
+                            candidates.append((source_candidate, (source_node, rigid.start_node)))
         if len(candidates) != 1:
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#8c959f'>(A face deve pertencer a uma barra ligada a uma extremidade externa do grupo)</span>"
+                "<span style='color:#8c959f'>(Selecione uma face de barra, placa, chapa de base ou degrau "
+                "conectada a uma barra ligada à extremidade externa do grupo)</span>"
             )
             return
         source, endpoint_pair = candidates[0]
@@ -822,7 +3651,7 @@ class MainWindow(QMainWindow):
             return
 
         self._command_mode = "endpoint_alignment_bar_selection"
-        self._endpoint_alignment_source_bar = None
+        self._endpoint_alignment_source = None
         self.scene.set_endpoint_alignment_target(None)
         self.refresh_member_positioning(source.name)
         self.properties.update_positioning_status(source.name)
@@ -831,7 +3660,7 @@ class MainWindow(QMainWindow):
             "> <b>Alinhar extremidade</b> "
             f"<span style='color:#57606a'>(Extremidade {endpoint} alinhada; "
             f"{endpoint} = {offset_mm:.2f} mm; αY/αZ = {alpha_y:.2f}°/{alpha_z:.2f}°. "
-            "Selecione outra barra para continuar; Esc encerra)</span>"
+            "Selecione outra barra ou placa para continuar; Esc encerra)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -853,6 +3682,7 @@ class MainWindow(QMainWindow):
         self.reference_panel.hide()
         self.scene.set_endpoint_alignment_target(None)
         self._command_mode = "connect_member_ends_selection"
+        self.scene.set_node_component_pick_through(True)
         self.history.append(
             "> <b>Conectar extremidades</b> "
             "<span style='color:#57606a'>(Selecione a primeira barra; Esc cancela)</span>"
@@ -1164,6 +3994,7 @@ class MainWindow(QMainWindow):
         self.history.append(
             f"> <b>Adicionar plano</b> <span style='color:#57606a'>({record['name']} criado)</span>"
         )
+        self._store_detailing_state()
         QTimer.singleShot(0, self._finish_detail_plane_placement)
 
     def _finish_detail_plane_placement(self) -> None:
@@ -1172,7 +4003,15 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
         self.refresh_scene()
+        self._restore_project_mode_after_detail_plane()
         QTimer.singleShot(0, self.open_detailing_views)
+
+    def _restore_project_mode_after_detail_plane(self) -> None:
+        if not self._detail_plane_return_to_project:
+            return
+        self._detail_plane_return_to_project = False
+        if not self._detailing_project_mode:
+            self.detailing_mode_palette._buttons[1].click()
 
     def open_about(self) -> None:
         dialog = AboutDialog(self)
@@ -1258,15 +4097,11 @@ class MainWindow(QMainWindow):
 
     @property
     def member_direction_normalization_enabled(self) -> bool:
-        return self._member_direction_normalization_enabled
+        return True
 
     def set_member_direction_normalization_enabled(self, enabled: bool) -> None:
-        """Toggle canonical member orientation and synchronize the geometry tool."""
-        enabled = bool(enabled)
-        self._member_direction_normalization_enabled = enabled
-        self.top_icon_palette.set_member_direction_normalization_enabled(enabled)
-        if not enabled:
-            return
+        """Keep canonical member orientation enabled as a fixed program behavior."""
+        self._member_direction_normalization_enabled = True
         changed = self.normalize_member_directions_if_enabled()
         if changed:
             self.refresh_selected_property_panel(self.palette.active_group)
@@ -1275,6 +4110,44 @@ class MainWindow(QMainWindow):
     @property
     def member_intermediate_snap_split_mode(self) -> str:
         return self._member_intermediate_snap_split_mode
+
+    @property
+    def plate_closure_mode(self) -> str:
+        return self._plate_closure_mode
+
+    def set_plate_closure_mode(self, mode: str) -> None:
+        if mode not in {"perguntar", "automatico"}:
+            raise ValueError("Opção inválida para fechamento da placa.")
+        self._plate_closure_mode = mode
+        self._program_settings.setValue("plates/closure", mode)
+        self._program_settings.sync()
+
+    @property
+    def face_intersection_edges_enabled(self) -> bool:
+        return self._face_intersection_edges_enabled
+
+    def set_face_intersection_edges_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._face_intersection_edges_enabled:
+            return
+        self._face_intersection_edges_enabled = enabled
+        self._program_settings.setValue("video/showFaceIntersectionEdges", enabled)
+        self._program_settings.sync()
+        self.scene.set_face_intersection_edges_enabled(enabled)
+
+    @property
+    def plate_result_display_mode(self) -> str:
+        return self._plate_result_display_mode
+
+    def set_plate_result_display_mode(self, mode: str) -> None:
+        if not is_plate_result_display_mode(mode):
+            raise ValueError("Opção inválida para a visualização dos resultados das placas.")
+        if mode == self._plate_result_display_mode:
+            return
+        self._plate_result_display_mode = mode
+        self._program_settings.setValue("plates/resultDisplayMode", mode)
+        self._program_settings.sync()
+        self.scene.set_plate_result_display_mode(mode)
 
     @property
     def minimum_bar_restraint_angle_degrees(self) -> float:
@@ -1394,6 +4267,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "member_placement_editor"):
             self.member_placement_editor.reposition()
+        if hasattr(self, "plate_placement_editor") and self.plate_placement_editor.isVisible():
+            self.plate_placement_editor.reposition()
         if hasattr(self, "palette"):
             self.palette.reposition()
         if hasattr(self, "top_icon_palette"):
@@ -1407,6 +4282,32 @@ class MainWindow(QMainWindow):
             self.analysis_top_palette.reposition()
         if hasattr(self, "detailing_top_palette"):
             self.detailing_top_palette.reposition()
+        if hasattr(self, "detailing_mode_palette"):
+            self.detailing_mode_palette.reposition()
+        if hasattr(self, "project_sheets_palette") and self.project_sheets_palette.isVisible():
+            self.project_sheets_palette.reposition()
+        if hasattr(self, "project_sheet_view_panel") and self.project_sheet_view_panel.isVisible():
+            self.project_sheet_view_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_identification_panel")
+            and self.project_sheet_identification_panel.isVisible()
+        ):
+            self.project_sheet_identification_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_detail_identifier_panel")
+            and self.project_sheet_detail_identifier_panel.isVisible()
+        ):
+            self.project_sheet_detail_identifier_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_section_panel")
+            and self.project_sheet_section_panel.isVisible()
+        ):
+            self.project_sheet_section_panel.reposition()
+        if (
+            hasattr(self, "project_sheet_elevation_identifier_panel")
+            and self.project_sheet_elevation_identifier_panel.isVisible()
+        ):
+            self.project_sheet_elevation_identifier_panel.reposition()
         if hasattr(self, "navigation_button"):
             self._reposition_navigation_button()
         if hasattr(self, "properties"):
@@ -1425,6 +4326,10 @@ class MainWindow(QMainWindow):
             self.history.reposition()
         if hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.section_panel.reposition()
+        if hasattr(self, "plate_section_panel") and self.plate_section_panel.isVisible():
+            self.plate_section_panel.reposition()
+        if hasattr(self, "subtractions_panel") and self.subtractions_panel.isVisible():
+            self.subtractions_panel.reposition()
         if hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
             self.displacement_panel.reposition()
         if hasattr(self, "calculation_properties_panel") and self.calculation_properties_panel.isVisible():
@@ -1445,6 +4350,33 @@ class MainWindow(QMainWindow):
         else:
             self.show_section_panel(section, button)
 
+    def toggle_plate_section_panel(self, button=None) -> None:
+        if self.plate_section_panel.isVisible():
+            self.close_plate_section_panel(button)
+            return
+        selected = self.selected
+        if selected is None or selected[0] != "plate" or selected[1] not in self.model.plates:
+            if button is not None:
+                button.setChecked(False)
+            return
+        self.properties.close_color_palette()
+        self.close_section_panel(self.properties._section_settings_button)
+        self.close_displacement_panel(self.properties._displacement_settings_button)
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
+        self.plate_section_panel.configure_for_plate(selected[1])
+        self.plate_section_panel.layout().activate()
+        self.plate_section_panel.adjustSize()
+        self.plate_section_panel.reposition()
+        self.plate_section_panel.show()
+        self.plate_section_panel.raise_()
+        if button is not None:
+            button.setChecked(True)
+
+    def close_plate_section_panel(self, button=None) -> None:
+        self.plate_section_panel.hide()
+        if button is not None:
+            button.setChecked(False)
+
     def toggle_displacement_panel(self, button=None) -> None:
         """Show or hide the selected member's positioning editor."""
         if self.displacement_panel.isVisible():
@@ -1453,8 +4385,12 @@ class MainWindow(QMainWindow):
         self.properties.close_color_palette()
         self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_section_panel(self.properties._section_settings_button)
-        member_name = self.selected[1] if self.selected and self.selected[0] == "bar" else ""
-        self.displacement_panel.configure_for(member_name)
+        selected = self.selected
+        if selected is not None and selected[0] == "plate":
+            self.displacement_panel.configure_for_plate(selected[1])
+        else:
+            member_name = selected[1] if selected and selected[0] == "bar" else ""
+            self.displacement_panel.configure_for(member_name)
         self.displacement_panel.reposition()
         self.displacement_panel.show()
         self.displacement_panel.raise_()
@@ -1511,8 +4447,94 @@ class MainWindow(QMainWindow):
         )
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and getattr(self, "_command_mode", None) == "project_sheet_member_break"
+            and event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            if event.key() == Qt.Key.Key_Escape:
+                self._finish_project_member_break(canceled=True)
+            event.accept()
+            return True
         scene = getattr(self, "scene", None)
         command_bar = getattr(self, "command_bar", None)
+        if (
+            command_bar is not None and watched is command_bar.input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "move_elements_selection"
+            and not command_bar.input.text().strip()
+        ):
+            self._confirm_copy_elements()
+            event.accept()
+            return True
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode in {"project_sheet_text", "project_sheet_line", "project_sheet_rectangle", "project_sheet_circle", "project_sheet_image"}
+        ):
+            if self._command_mode == "project_sheet_text":
+                dialog = getattr(self, "_active_sheet_text_dialog", None)
+                if dialog is not None and dialog.isVisible():
+                    dialog.reject()
+                    event.accept()
+                    return True
+                self.project_sheet_workspace.set_sheet_text_mode(False)
+                self.project_sheet_workspace.annotation_finished.emit("text", True)
+            else:
+                kind = self.project_sheet_workspace._annotation_mode
+                self.project_sheet_workspace.set_sheet_line_mode(False)
+                if kind in {"line", "rectangle", "circle", "image"}:
+                    self.project_sheet_workspace.annotation_finished.emit(kind, True)
+            event.accept()
+            return True
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode == "project_sheet_elevation_identifier"
+        ):
+            self.project_sheet_workspace._finish_elevation_identifier_mode(True)
+            event.accept()
+            return True
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._command_mode == "stair_custom_geometry_placement"
+        ):
+            self._cancel_stair_custom_geometry_capture()
+            event.accept()
+            return True
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "stair_custom_geometry_placement"
+        ):
+            self._finish_stair_custom_geometry_capture()
+            event.accept()
+            return True
+        if (command_bar is not None and watched is command_bar.input
+                and event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and self._command_mode == "plate_selection"
+                and not command_bar.input.text().strip()):
+            self._confirm_command_selection()
+            return True
+        if (
+            scene is not None
+            and command_bar is not None
+            and watched in (scene.plotter, command_bar.input)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._command_mode == "project_sheet_identification"
+        ):
+            self._finish_project_view_identification()
+            return True
         if (
             scene is not None
             and command_bar is not None
@@ -1564,6 +4586,10 @@ class MainWindow(QMainWindow):
         self.section_panel.hide()
         if button is not None:
             button.setChecked(False)
+        if hasattr(self, "plate_section_panel") and self.plate_section_panel.isVisible():
+            self.close_plate_section_panel(
+                self.properties._plate_section_settings_button,
+            )
 
     def close_displacement_panel(self, button=None) -> None:
         """Hide the displacement editor and restore its trigger state."""
@@ -1575,6 +4601,81 @@ class MainWindow(QMainWindow):
         self.calculation_properties_panel.hide()
         if button is not None:
             button.setChecked(False)
+
+    def close_subtractions_panel(self, button=None) -> None:
+        self.subtractions_panel.hide()
+        if self._detail_subtraction_visible_refs:
+            self._detail_subtraction_visible_refs.clear()
+            self.scene.set_detail_subtraction_previews(())
+        trigger = button if button is not None else self.properties._subtractions_button
+        if trigger is not None:
+            trigger.setChecked(False)
+
+    def toggle_subtractions_panel(self, kind: str, name: str, button=None) -> None:
+        panel = self.subtractions_panel
+        if panel.isVisible() and panel._target == (kind, name):
+            self.close_subtractions_panel(button)
+            return
+        self.properties.close_color_palette()
+        self.close_displacement_panel(self.properties._displacement_settings_button)
+        self.close_section_panel(self.properties._section_settings_button)
+        self.close_calculation_properties_panel(self.properties._calculation_properties_button)
+        if panel.isVisible():
+            self.close_subtractions_panel()
+        panel.configure_for(kind, name)
+        panel.reposition()
+        panel.show()
+        panel.raise_()
+        if button is not None:
+            button.setChecked(True)
+
+    def set_detail_subtraction_preview(
+        self, target: tuple[str, str], cutter: tuple[str, str], visible: bool,
+    ) -> None:
+        key = (*target, *cutter)
+        if visible:
+            self._detail_subtraction_visible_refs.add(key)
+        else:
+            self._detail_subtraction_visible_refs.discard(key)
+        self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
+
+    def remove_detail_subtraction(
+        self, target: tuple[str, str], cutter: tuple[str, str],
+    ) -> None:
+        target_kind, target_name = target
+        elements = self.model.bars if target_kind == "bar" else self.model.plates
+        element = elements.get(target_name)
+        if element is None:
+            return
+        if cutter[0] == "end_cut":
+            cuts = getattr(element, "detail_end_cuts", ())
+            if not any(cut.identifier == cutter[1] for cut in cuts):
+                return
+        elif cutter not in element.detail_subtractions:
+            return
+        was_open = self.subtractions_panel.isVisible()
+        self._detail_subtraction_visible_refs.discard((*target, *cutter))
+        self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
+        if cutter[0] == "end_cut":
+            self.model.update_detail_end_cuts(
+                target_name,
+                tuple(cut for cut in element.detail_end_cuts if cut.identifier != cutter[1]),
+            )
+        else:
+            self.model.update_detail_subtractions(
+                target_kind, target_name,
+                tuple(reference for reference in element.detail_subtractions if reference != cutter),
+            )
+        self.refresh_scene()
+        self.properties.update_subtractions_status(*target)
+        if was_open:
+            self.subtractions_panel.configure_for(*target)
+            self.subtractions_panel.reposition()
+            self.subtractions_panel.show()
+            self.subtractions_panel.raise_()
+            if self.properties._subtractions_button is not None:
+                self.properties._subtractions_button.setChecked(True)
+            self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
 
     def toggle_calculation_properties_panel(self, button=None) -> None:
         if self.calculation_properties_panel.isVisible():
@@ -1595,6 +4696,186 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(True)
 
+    def show_node_components_dialog(self, node_name: str) -> None:
+        """Open the component catalog for one selected node."""
+        if node_name not in self.model.nodes or self.palette.active_group != "Geometria":
+            return
+        dialog = NodeComponentsDialog(self, node_name, self)
+        self.node_components_dialog = dialog
+        dialog.finished.connect(
+            lambda _result, current=dialog: self._node_components_dialog_finished(current)
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _node_components_dialog_finished(self, dialog) -> None:
+        if self.node_components_dialog is dialog:
+            self.node_components_dialog = None
+        dialog.deleteLater()
+
+    def start_stair_custom_geometry_capture(self, dialog) -> bool:
+        """Temporarily return to the 3D scene to capture a planar tread outline."""
+        if (
+            self._command_mode is not None
+            or dialog._draft_component_id != "stair_plate"
+            or dialog.node_name not in self.model.nodes
+        ):
+            return False
+        self._stair_geometry_capture_dialog = dialog
+        self._stair_geometry_capture_node = dialog.node_name
+        self._stair_geometry_capture_points = []
+        node = self.model.nodes[dialog.node_name]
+        self._command_mode = "stair_custom_geometry_placement"
+        self.scene.set_stair_polygon_capture_plane(node.z)
+        self.scene.set_stair_polygon_preview(())
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(True)
+        self.history.append(
+            "> <b>Geometria personalizada do degrau</b> "
+            "<span style='color:#57606a'>(Clique nos vértices do plano; clique no primeiro ponto "
+            "ou pressione Enter para fechar; Esc cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+        return True
+
+    def _handle_stair_custom_geometry_point(self, point: object) -> None:
+        coordinates = np.asarray(tuple(float(value) for value in point), dtype=float)
+        if self._stair_geometry_capture_points:
+            first = np.asarray(self._stair_geometry_capture_points[0], dtype=float)
+            first_screen, first_visible = self.scene._world_to_screen(first)
+            point_screen, point_visible = self.scene._world_to_screen(coordinates)
+            if first_visible and point_visible and float(np.linalg.norm(first_screen - point_screen)) <= 9.0:
+                if len(self._stair_geometry_capture_points) >= 3:
+                    self._finish_stair_custom_geometry_capture()
+                else:
+                    self.history.append(
+                        "> <b>Geometria personalizada do degrau</b> "
+                        "<span style='color:#8c959f'>(Defina ao menos três vértices antes de fechar)</span>"
+                    )
+                return
+        if self._stair_geometry_capture_points:
+            previous = np.asarray(self._stair_geometry_capture_points[-1], dtype=float)
+            if float(np.linalg.norm(coordinates - previous)) <= 1e-4:
+                return
+        self._stair_geometry_capture_points.append(tuple(float(value) for value in coordinates))
+        self.scene.set_stair_polygon_preview(self._stair_geometry_capture_points)
+        self.scene.set_member_preview_start(coordinates)
+        self.scene.plotter.render()
+
+    def _finish_stair_custom_geometry_capture(self) -> None:
+        points = self._stair_geometry_capture_points
+        if len(points) < 3:
+            self.history.append(
+                "> <b>Geometria personalizada do degrau</b> "
+                "<span style='color:#8c959f'>(Defina ao menos três vértices antes de fechar)</span>"
+            )
+            return
+        node_name = self._stair_geometry_capture_node
+        dialog = self._stair_geometry_capture_dialog
+        node = self.model.nodes.get(node_name) if node_name is not None else None
+        if node is None or dialog is None:
+            self._cancel_stair_custom_geometry_capture()
+            return
+        parameters = dialog._draft_parameters
+        angle = math.radians(float(parameters.get("rotacao_deg", 0.0)))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        displacement_a = float(parameters.get("madeira_deslocamento_a_mm", 0.0))
+        displacement_b = float(parameters.get("madeira_deslocamento_b_mm", 0.0))
+        outline_mm = []
+        for x, y, _z in points:
+            dx, dy = x - node.x, y - node.y
+            local_x = (dx * cosine + dy * sine) * 1000.0 - displacement_a
+            local_y = (-dx * sine + dy * cosine) * 1000.0 - displacement_b
+            outline_mm.append((local_x, local_y))
+        if not self._stair_outline_is_simple(outline_mm):
+            self._cancel_stair_custom_geometry_capture(
+                "o contorno se cruza ou repete vértices; reinicie o desenho"
+            )
+            return
+        area_twice = sum(
+            first[0] * second[1] - second[0] * first[1]
+            for first, second in zip(outline_mm, (*outline_mm[1:], outline_mm[0]))
+        )
+        if abs(area_twice) <= 1e-3:
+            self._cancel_stair_custom_geometry_capture(
+                "A geometria capturada não delimita uma área. Desenhe vértices diferentes."
+            )
+            return
+        self._end_stair_custom_geometry_capture()
+        dialog._stair_custom_geometry_captured(outline_mm)
+        self.history.append(
+            f"> <b>Geometria personalizada do degrau</b> "
+            f"<span style='color:#57606a'>({len(outline_mm)} vértices capturados)</span>"
+        )
+
+    @staticmethod
+    def _stair_outline_is_simple(points: list[tuple[float, float]]) -> bool:
+        """Reject self-crossing outlines before passing them to VTK tessellation."""
+        if len(points) < 3 or not np.isfinite(np.asarray(points, dtype=float)).all():
+            return False
+
+        def orientation(a, b, c) -> float:
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+        def on_segment(a, b, point, epsilon) -> bool:
+            return (
+                min(a[0], b[0]) - epsilon <= point[0] <= max(a[0], b[0]) + epsilon
+                and min(a[1], b[1]) - epsilon <= point[1] <= max(a[1], b[1]) + epsilon
+            )
+
+        def intersects(a, b, c, d, epsilon) -> bool:
+            ab_c, ab_d = orientation(a, b, c), orientation(a, b, d)
+            cd_a, cd_b = orientation(c, d, a), orientation(c, d, b)
+            if (
+                ((ab_c > epsilon and ab_d < -epsilon) or (ab_c < -epsilon and ab_d > epsilon))
+                and ((cd_a > epsilon and cd_b < -epsilon) or (cd_a < -epsilon and cd_b > epsilon))
+            ):
+                return True
+            return (
+                abs(ab_c) <= epsilon and on_segment(a, b, c, epsilon)
+                or abs(ab_d) <= epsilon and on_segment(a, b, d, epsilon)
+                or abs(cd_a) <= epsilon and on_segment(c, d, a, epsilon)
+                or abs(cd_b) <= epsilon and on_segment(c, d, b, epsilon)
+            )
+
+        count = len(points)
+        scale = max(1.0, *(abs(value) for point in points for value in point))
+        epsilon = 1e-10 * scale * scale
+        for first in range(count):
+            a, b = points[first], points[(first + 1) % count]
+            if math.dist(a, b) <= 1e-7:
+                return False
+            for second in range(first + 1, count):
+                if second == first or second == (first + 1) % count or first == (second + 1) % count:
+                    continue
+                c, d = points[second], points[(second + 1) % count]
+                if intersects(a, b, c, d, epsilon):
+                    return False
+        return True
+
+    def _cancel_stair_custom_geometry_capture(self, message: str | None = None) -> None:
+        dialog = self._stair_geometry_capture_dialog
+        self._end_stair_custom_geometry_capture()
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+        self.history.append(
+            "> <b>Geometria personalizada do degrau</b> "
+            f"<span style='color:#8c959f'>({message or 'Lançamento cancelado'})</span>"
+        )
+
+    def _end_stair_custom_geometry_capture(self) -> None:
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_stair_polygon_capture_plane(None)
+        self.scene.set_stair_polygon_preview(())
+        self._command_mode = None
+        self._stair_geometry_capture_dialog = None
+        self._stair_geometry_capture_node = None
+        self._stair_geometry_capture_points = []
+        self.scene.plotter.render()
+
     def show_section_panel(self, section: str, button=None) -> None:
         """Show the geometry panel that corresponds to a section family."""
         panel = self.section_panels.get(section)
@@ -1603,6 +4884,7 @@ class MainWindow(QMainWindow):
                 button.setChecked(False)
             return
         self.properties.close_color_palette()
+        self.close_plate_section_panel(self.properties._plate_section_settings_button)
         self.close_calculation_properties_panel(self.properties._calculation_properties_button)
         self.close_displacement_panel(self.properties._displacement_settings_button)
         for candidate in self.section_panels.values():
@@ -1693,6 +4975,7 @@ class MainWindow(QMainWindow):
     def _remember_last_command(self, callback) -> None:
         """Keep the most recently started graphical command for Enter to repeat."""
         self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
         self._last_command_callback = callback
 
     def start_member_placement(self) -> None:
@@ -1793,7 +5076,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._pending_action_launch = dialog.launch_data()
-        target_label = "nós" if self._pending_action_launch[0] == "node" else "barras"
+        target_label = {"node": "nós", "bar": "barras", "plate": "placas"}[self._pending_action_launch[0]]
         self._command_mode = "action_selection"
         self.history.append(
             "> <b>Adicionar ação</b> "
@@ -1827,8 +5110,8 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
             return
 
-        if not self.model.bars:
-            self.show_error("Não há barras no modelo para aplicar o peso próprio.")
+        if not self.model.bars and not self.model.plates:
+            self.show_error("Não há barras ou placas no modelo para aplicar o peso próprio.")
             return
         if not self.model.materials:
             self.show_error("Não há materiais cadastrados para aplicar o peso próprio.")
@@ -1843,19 +5126,22 @@ class MainWindow(QMainWindow):
         try:
             selected_types = set(dialog.selected_material_types)
             materials = dict.fromkeys(
-                member.material
-                for member in self.model.bars.values()
-                if self.model.material_types.get(member.material, "Aço") in selected_types
+                material
+                for material in [
+                    *(member.material for member in self.model.bars.values()),
+                    *(plate.material for plate in self.model.plates.values()),
+                ]
+                if self.model.material_types.get(material, "Aço") in selected_types
             )
             for material in materials:
-                weights.extend(self.model_service.member_selfweights(material))
+                weights.extend(self.model_service.selfweights(material))
         except ValueError as error:
             self.show_error(str(error))
             return
 
         if not weights:
             self.show_error(
-                "Não há barras associadas aos tipos de material selecionados "
+                "Não há barras ou placas associadas aos tipos de material selecionados "
                 "para aplicar o peso próprio."
             )
             return
@@ -1893,6 +5179,169 @@ class MainWindow(QMainWindow):
             "<span style='color:#57606a'>(Selecione apenas uma barra para dividir)</span>"
         )
         self.scene.plotter.setFocus()
+
+    def start_split_plate(self) -> None:
+        """Select a plate, then define the two boundary points of its split."""
+        self._remember_last_command(self.start_split_plate)
+        self.command_session.cancel()
+        self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
+        self.properties.hide()
+        self._restore_plate_snap()
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
+        self._command_mode = "split_plate_selection"
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_member_preview_start(None)
+        self.clear_selection()
+        self.history.append(
+            "> <b>Dividir placa</b> <span style='color:#57606a'>"
+            "(Selecione a placa que será dividida; pressione ESC para cancelar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _begin_split_plate_points(self, plate_name: str) -> None:
+        if plate_name not in self.model.plates:
+            return
+        self._plate_split_source = plate_name
+        self._plate_split_points = []
+        self._plate_split_saved_snap_types = dict(self.scene._snap_types)
+        self._command_mode = "split_plate_placement"
+        self.scene.set_snap_type_enabled("endpoint", True)
+        self.scene.set_snap_type_enabled("center", True)
+        self.scene.set_member_placement_mode(True)
+        self.scene.set_member_preview_start(None)
+        self.history.append(
+            f"> <b>Dividir placa {escape(plate_name)}</b> "
+            "<span style='color:#57606a'>(Clique em dois pontos da borda; os snaps estão ativos; ESC cancela)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _plate_at_boundary_point(
+        self, point, tolerance: float = 0.004, *, plate_name: str | None = None,
+    ) -> str | None:
+        """Find the plate boundary nearest a snapped point."""
+        coordinates = tuple(float(value) for value in point)
+        matches = []
+        plates = (
+            ((plate_name, self.model.plates[plate_name]),)
+            if plate_name in self.model.plates else ()
+        ) if plate_name is not None else self.model.plates.items()
+        for name, plate in plates:
+            for start, end in zip(plate.contour, (*plate.contour[1:], plate.contour[0])):
+                vector = tuple(b - a for a, b in zip(start, end))
+                length2 = sum(value * value for value in vector)
+                if length2 <= 1e-24:
+                    continue
+                fraction = min(1.0, max(0.0, sum(
+                    (value - a) * direction
+                    for value, a, direction in zip(coordinates, start, vector)
+                ) / length2))
+                projected = tuple(a + fraction * direction for a, direction in zip(start, vector))
+                distance = math.dist(coordinates, projected)
+                if distance <= tolerance:
+                    matches.append((distance, name))
+        return min(matches)[1] if matches else None
+
+    def _split_plate_placement_point(self, point) -> None:
+        coordinates = tuple(float(value) for value in point)
+        plate_name = self._plate_split_source
+        if plate_name is None:
+            return
+        point_plate = self._plate_at_boundary_point(coordinates, plate_name=plate_name)
+        if point_plate is None:
+            self.history.append(
+                "> <b>Dividir placa</b> <span style='color:#8c959f'>"
+                "(Capture um vértice ou o meio de uma borda da placa selecionada)</span>"
+            )
+            return
+        if not self._plate_split_points:
+            self._plate_split_points = [coordinates]
+            self.scene.set_member_preview_start(coordinates)
+            self.history.append(
+                f"> <b>Dividir placa {escape(plate_name)}</b> "
+                "<span style='color:#57606a'>(Clique no segundo ponto da borda)</span>"
+            )
+            return
+        try:
+            first, second = self.model.split_plate(
+                plate_name, self._plate_split_points[0], coordinates,
+            )
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Dividir placa {escape(plate_name)}</b> "
+                f"<span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._finish_split_plate_mode()
+        self.clear_selection()
+        self.history.append(
+            f"> <b>Dividir placa</b> <span style='color:#57606a'>"
+            f"({escape(first.name)} dividida; nova placa {escape(second.name)})</span>"
+        )
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
+
+    def _finish_split_plate_mode(self) -> None:
+        if self._plate_split_saved_snap_types is not None:
+            for kind, enabled in self._plate_split_saved_snap_types.items():
+                self.scene.set_snap_type_enabled(kind, enabled)
+        self._plate_split_saved_snap_types = None
+        self._plate_split_source = None
+        self._plate_split_points = []
+        self._command_mode = None
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+
+    def start_join_plates(self) -> None:
+        """Join exactly two selected adjacent plates, or request a selection."""
+        self._remember_last_command(self.start_join_plates)
+        self.command_session.cancel()
+        self.scene.set_member_placement_mode(False)
+        self._command_mode = "join_plate_selection"
+        plates = tuple(dict.fromkeys(
+            name for kind, name in self.selected_elements
+            if kind == "plate" and name in self.model.plates
+        ))
+        if len(plates) == 2:
+            self._join_plates(*plates)
+            return
+        self.selected_elements = []
+        self.selected = None
+        self.scene.set_selection_highlight(())
+        self.properties.hide()
+        self.history.append(
+            "> <b>Unir placas</b> <span style='color:#57606a'>"
+            "(Selecione duas placas com Ctrl e pressione ENTER)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def _join_plates(self, *plate_names: str) -> None:
+        names = tuple(dict.fromkeys(plate_names))
+        if len(names) != 2:
+            self.history.append(
+                "> <b>Unir placas</b> <span style='color:#8c959f'>"
+                "(Selecione exatamente duas placas e pressione ENTER)</span>"
+            )
+            return
+        try:
+            merged = self.model.join_plates(*names)
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Unir placas</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._command_mode = None
+        self.history.append(
+            f"> <b>Unir placas</b> <span style='color:#57606a'>"
+            f"(Placas unidas em {escape(merged.name)})</span>"
+        )
+        self.clear_selection()
+        self.refresh_action_palette()
+        self.refresh_analysis_palette()
+        self.refresh_scene()
 
     def _selected_command_members(self) -> tuple[str, ...]:
         targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
@@ -2049,14 +5498,16 @@ class MainWindow(QMainWindow):
         self.scene.set_member_placement_mode(False)
         self._copy_elements_selection = []
         self._copy_elements_reference = None
-        members = self._selected_command_members()
+        kind = self.member_property_copy_panel.kind
+        targets = self.selected_elements or ([self.selected] if self.selected else [])
+        members = tuple(name for target_kind, name in targets if target_kind == kind)
         self._copy_properties_reference = (
             members[0]
             if members
             else None
         )
         self._command_mode = "copy_member_properties_selection"
-        targets = tuple(("bar", name) for name in members[1:])
+        targets = tuple((kind, name) for name in members[1:])
         self.scene.set_selection_highlight(targets)
         self.selected_elements = list(targets)
         self.selected = targets[-1] if targets else None
@@ -2064,7 +5515,7 @@ class MainWindow(QMainWindow):
         message = (
             f"Referência: {escape(self._copy_properties_reference)}; selecione destinos com Ctrl e pressione ENTER"
             if self._copy_properties_reference is not None
-            else "Selecione a barra de referência"
+            else "Selecione o elemento de referência"
         )
         self.history.append(
             "> <b>Copiar propriedades</b> "
@@ -2072,18 +5523,45 @@ class MainWindow(QMainWindow):
         )
         self.scene.plotter.setFocus()
 
+    def _copy_property_kind_changed(self) -> None:
+        self._copy_properties_reference = None
+        if self._command_mode == "copy_member_properties_selection":
+            self.clear_selection()
+            self.history.append("> <b>Copiar propriedades</b> (Selecione o elemento de referência)")
+            self.scene.plotter.setFocus()
+
+    def _confirm_property_copy_selection(self) -> None:
+        kind = self.member_property_copy_panel.kind
+        names = tuple(dict.fromkeys(name for target_kind, name in self.selected_elements if target_kind == kind))
+        if self._copy_properties_reference is None:
+            if len(names) != 1:
+                self.history.append("> <b>Copiar propriedades</b> (Selecione apenas um elemento de referência)")
+                return
+            self._copy_properties_reference = names[0]
+            self.clear_selection()
+            self.history.append("> <b>Copiar propriedades</b> (Selecione os destinos; ENTER confirma)")
+            return
+        targets = tuple(name for name in names if name != self._copy_properties_reference)
+        if not targets:
+            self.history.append("> <b>Copiar propriedades</b> (Selecione destinos diferentes da referência)")
+            return
+        for name in targets:
+            self._copy_member_properties(self._copy_properties_reference, name, refresh=False)
+        self.clear_selection()
+        self.refresh_scene()
+
     def _copy_member_properties(self, source_name: str, target_name: str, *, refresh: bool = True) -> None:
         properties = self.member_property_copy_panel.selected_properties()
         try:
-            copied = self.model_service.copy_member_properties(
-                source_name, target_name, properties,
+            copied = self.model.copy_element_properties(
+                self.member_property_copy_panel.kind, source_name, target_name, properties,
             )
         except ValueError as error:
             self.history.append(
                 f"> <b>Copiar propriedades</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
             )
             return
-        if "section" in properties:
+        if "section" in properties and self.member_property_copy_panel.kind == "bar":
             if copied.profile:
                 self.section_profiles[target_name] = copied.profile
             else:
@@ -2102,13 +5580,13 @@ class MainWindow(QMainWindow):
             self.refresh_scene()
 
     def start_copy_elements(self) -> None:
-        """Start selecting nodes, members, and rigid bars for a translated copy."""
+        """Start selecting nodes and elements for a translated copy."""
         self._remember_last_command(self.start_copy_elements)
         self.command_session.cancel()
         self._member_placement_start = None
         targets = self.selected_elements or ([self.selected] if self.selected is not None else [])
         self._copy_elements_selection = [
-            target for target in targets if target[0] in {"node", "bar", "rigid_bar"}
+            target for target in targets if target[0] in {"node", "bar", "rigid_bar", "plate"}
         ]
         self._copy_elements_reference = None
         self._copy_properties_reference = None
@@ -2123,7 +5601,29 @@ class MainWindow(QMainWindow):
         self.close_displacement_panel()
         self.history.append(
             "> <b>Copiar</b> <span style='color:#57606a'>"
-            "(Selecione nós, barras e barras rígidas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+            "(Selecione nós, barras, barras rígidas e placas; use Ctrl para multiseleção e ENTER para confirmar)</span>"
+        )
+        self.scene.plotter.setFocus()
+
+    def start_move_elements(self) -> None:
+        """Select geometry, then pick reference and destination with existing snaps."""
+        targets = list(self.selected_elements or ([self.selected] if self.selected else []))
+        self.cancel_member_placement()
+        self.command_session.cancel()
+        self._remember_last_command(self.start_move_elements)
+        self._move_elements_selection = [
+            target for target in targets if target[0] in {"node", "bar", "rigid_bar", "plate"}
+        ]
+        self._move_elements_reference = None
+        self._command_mode = "move_elements_selection"
+        self.selected_elements = list(self._move_elements_selection)
+        self.selected = self.selected_elements[-1] if self.selected_elements else None
+        self.scene.set_selection_highlight(self.selected_elements)
+        self.scene.set_member_placement_mode(False)
+        self.properties.hide()
+        self.history.append(
+            "> <b>Mover</b> <span style='color:#57606a'>"
+            "(Selecione nós, barras, barras rígidas e placas; Ctrl permite multiseleção; ENTER confirma; ESC cancela)</span>"
         )
         self.scene.plotter.setFocus()
 
@@ -2201,11 +5701,21 @@ class MainWindow(QMainWindow):
 
     def _confirm_copy_elements(self) -> None:
         """Confirm the element set and begin the two-point copy placement."""
+        if self._command_mode == "move_elements_selection":
+            self._move_elements_selection = list(self.selected_elements)
+            if not self._move_elements_selection:
+                self.history.append("> <b>Mover</b> (Selecione pelo menos um nó ou elemento)")
+                return
+            self._command_mode = "move_elements_reference_placement"
+            self.scene.set_member_placement_mode(True)
+            self.history.append("> <b>Mover</b> (Selecione a posição de referência)")
+            self.scene.plotter.setFocus()
+            return
         if self._command_mode != "copy_elements_selection":
             return
         self._copy_elements_selection = [
             target for target in self.selected_elements
-            if target[0] in {"node", "bar", "rigid_bar"}
+            if target[0] in {"node", "bar", "rigid_bar", "plate"}
         ]
         if not self._copy_elements_selection:
             self.history.append(
@@ -2225,6 +5735,25 @@ class MainWindow(QMainWindow):
     def _confirm_command_selection(self) -> None:
         """Apply commands to the shared Ctrl selection when ENTER is pressed."""
         mode = self._command_mode
+        if mode == "copy_member_properties_selection":
+            self._confirm_property_copy_selection()
+            return
+        if mode == "detail_end_cut_face_selection":
+            self._commit_detail_end_cut_faces()
+            return
+        if mode == "plate_selection":
+            self._finish_plate_selection()
+            return
+        if mode == "plate_point_placement":
+            self._finish_plate_point_contour()
+            return
+        if mode == "join_plate_selection":
+            plates = tuple(dict.fromkeys(
+                name for kind, name in self.selected_elements
+                if kind == "plate" and name in self.model.plates
+            ))
+            self._join_plates(*plates)
+            return
         if mode not in {
             "split_member_selection", "reverse_member_selection", "join_member_selection",
             "copy_member_properties_selection", "action_selection", "verification_group_selection",
@@ -2313,6 +5842,31 @@ class MainWindow(QMainWindow):
 
     def _handle_copy_placement_point(self, point: object) -> None:
         """Collect the reference/destination points and copy the selection."""
+        if self._command_mode == "move_elements_reference_placement":
+            self._move_elements_reference = tuple(float(value) for value in point)
+            self._command_mode = "move_elements_destination_placement"
+            self.scene.set_member_preview_start(self._move_elements_reference)
+            self.history.append("> <b>Mover</b> (Selecione a posição de destino; ESC cancela)")
+            return
+        if self._command_mode == "move_elements_destination_placement":
+            offset = tuple(float(value) - origin for value, origin in zip(point, self._move_elements_reference))
+            try:
+                moved = self.model.move_elements(self._move_elements_selection, offset)
+            except ValueError as error:
+                self.history.append(f"> <b>Mover</b> ({escape(str(error))})")
+                return
+            self._command_mode = None
+            self._move_elements_selection = []
+            self._move_elements_reference = None
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.clear_selection()
+            self.normalize_member_directions_if_enabled()
+            self.refresh_action_palette()
+            self.refresh_analysis_palette()
+            self.refresh_scene()
+            self.history.append(f"> <b>Mover</b> ({len(moved)} nó(s) movido(s); elementos conectados atualizados)")
+            return
         if self._command_mode == "copy_elements_reference_placement":
             self._copy_elements_reference = tuple(float(value) for value in point)
             self._command_mode = "copy_elements_destination_placement"
@@ -2341,10 +5895,13 @@ class MainWindow(QMainWindow):
         rigid_bar_names = tuple(
             name for kind, name in self._copy_elements_selection if kind == "rigid_bar"
         )
+        plate_names = tuple(
+            name for kind, name in self._copy_elements_selection if kind == "plate"
+        )
         rigid_bars_before = set(self.model.rigid_bars)
         try:
-            copied_nodes, copied_members = self.model_service.copy_elements(
-                node_names, member_names, offset, rigid_bar_names,
+            copied_nodes, copied_members, copied_plates = self.model_service.copy_elements_with_plates(
+                node_names, member_names, offset, rigid_bar_names, plate_names,
             )
         except ValueError as error:
             self.history.append(
@@ -2361,11 +5918,12 @@ class MainWindow(QMainWindow):
                 self.section_geometry[member_name] = copied_member.geometry_dict()
 
         self._command_mode = "copy_elements_destination_placement"
-        if copied_nodes or copied_members or copied_rigid_bars:
+        if copied_nodes or copied_members or copied_rigid_bars or copied_plates:
             self.history.append(
                 "> <b>Copiar</b> <span style='color:#57606a'>"
                 f"({len(copied_nodes)} nó(s), {len(copied_members)} barra(s) e "
-                f"{len(copied_rigid_bars)} barra(s) rígida(s) criada(s); "
+                f"{len(copied_rigid_bars)} barra(s) rígida(s) e "
+                f"{len(copied_plates)} placa(s) criada(s); "
                 "selecione outro destino ou pressione ESC para encerrar)</span>"
             )
         else:
@@ -2377,6 +5935,280 @@ class MainWindow(QMainWindow):
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.refresh_scene()
+
+    def start_plate_placement(self) -> None:
+        self.cancel_member_placement()
+        self._remember_last_command(self.start_plate_placement)
+        self.command_session.cancel()
+        self.clear_selection()
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self.plate_placement_editor.show_for_model(self.model)
+        self._plate_placement_mode_changed(self.plate_placement_editor.placement_mode)
+        self.scene.plotter.setFocus()
+
+    def _plate_placement_mode_changed(self, mode: str) -> None:
+        """Switch between the existing boundary-bar flow and coordinate drawing."""
+        if self._command_mode not in {None, "plate_selection", "plate_point_placement"}:
+            return
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self.scene.set_plate_manual_segments([])
+        self.scene.set_member_preview_start(None)
+        self.clear_selection()
+        if mode == "exact":
+            self._enable_plate_endpoint_snap()
+            self._command_mode = "plate_point_placement"
+            self.scene.set_member_placement_mode(True)
+            prompt = "Clique nos vértices externos da placa; ENTER fecha o contorno"
+        else:
+            self._restore_plate_snap()
+            self._command_mode = "plate_selection"
+            self.scene.set_member_placement_mode(False)
+            prompt = "Selecione as barras do contorno; ENTER conclui"
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>({prompt}; ESC cancela)</span>"
+        )
+
+    def _plate_point_placement_point(self, point) -> None:
+        coordinates = tuple(float(value) for value in point)
+        if self._plate_point_vertices:
+            if math.dist(coordinates, self._plate_point_vertices[-1]) <= 1e-8:
+                self.history.append(
+                    "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                    "(Cada vértice precisa ser diferente do anterior)</span>"
+                )
+                return
+            if len(self._plate_point_vertices) >= 3 and math.dist(
+                coordinates, self._plate_point_vertices[0]
+            ) <= 0.002:
+                self._finish_plate_point_contour()
+                return
+        self._plate_point_vertices.append(coordinates)
+        self._plate_manual_segments = list(zip(
+            self._plate_point_vertices, self._plate_point_vertices[1:]
+        ))
+        self.scene.set_plate_manual_segments(self._plate_manual_segments)
+        self.scene.set_member_preview_start(coordinates)
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>"
+            f"(Vértice {len(self._plate_point_vertices)} definido; ENTER fecha o contorno)</span>"
+        )
+
+    def _finish_plate_point_contour(self) -> None:
+        if len(self._plate_point_vertices) < 3:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Defina pelo menos três vértices e pressione ENTER para fechar)</span>"
+            )
+            return
+        segments = list(zip(
+            self._plate_point_vertices,
+            (*self._plate_point_vertices[1:], self._plate_point_vertices[0]),
+        ))
+        try:
+            contour = plate_contour(segments)
+            contour = tuple(self.model.node_coordinates(*point) for point in contour)
+            contour = plate_contour(zip(contour, (*contour[1:], contour[0])))
+        except ValueError as error:
+            self.history.append(
+                f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>"
+            )
+            return
+        self._create_plate(contour)
+
+    def _plate_add_selection(self, kind: str, name: str) -> None:
+        target = (kind, name)
+        if kind not in {"bar", "rigid_bar"} or target in self._plate_selection:
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        element = (self.model.bars if kind == "bar" else self.model.rigid_bars).get(name)
+        if element is None:
+            return
+        a, b = (self.model.nodes[element.start_node], self.model.nodes[element.end_node])
+        segment = ((a.x, a.y, a.z), (b.x, b.y, b.z))
+        if any(
+            all(math.dist(point, endpoint) < 1e-8 for point, endpoint in zip(segment, old))
+            or all(math.dist(point, endpoint) < 1e-8 for point, endpoint in zip(segment, reversed(old)))
+            for old in self._plate_segments
+        ) or any(
+            sum(math.dist(point, endpoint) < 1e-8 for old in self._plate_segments for endpoint in old) >= 2
+            for point in segment
+        ):
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(A barra repetiria uma aresta ou criaria uma ramificação)</span>"
+            )
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        self._plate_selection.append(target)
+        self._plate_segments.append(segment)
+        self.selected_elements = list(self._plate_selection)
+        self.selected = target
+        self.scene.set_selection_highlight(self._plate_selection)
+        self.history.append(
+            f"> <b>Adicionar placa</b> <span style='color:#57606a'>"
+            f"(Barra {escape(name)} selecionada; selecione a próxima ou pressione ENTER)</span>"
+        )
+        try:
+            contour = plate_contour(self._plate_segments)
+        except ValueError:
+            return
+        self._create_plate(contour)
+
+    def _finish_plate_selection(self) -> None:
+        if not self._plate_segments:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Selecione as barras do contorno)</span>"
+            )
+            return
+        if self.plate_closure_mode == "automatico":
+            choice = "automatic"
+        else:
+            dialog = PlateClosureDialog(self)
+            dialog.move(self.geometry().center() - dialog.rect().center())
+            dialog.exec()
+            choice = dialog.choice
+        if choice == "automatic":
+            try:
+                contour = plate_contour(self._plate_segments, close_automatically=True)
+            except ValueError as error:
+                self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                return
+            self._create_plate(contour)
+        elif choice == "manual":
+            self._command_mode = "plate_manual"
+            self._enable_plate_endpoint_snap()
+            self.scene.set_member_placement_mode(True)
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>"
+                "(Clique em duas extremidades livres para ligá-las; ESC cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+        else:
+            self.cancel_member_placement()
+
+    def _plate_manual_point(self, point) -> None:
+        segments = self._plate_segments + self._plate_manual_segments
+        points = [p for segment in segments for p in segment]
+        free = [p for p in points if sum(math.dist(p, q) < 1e-8 for q in points) == 1]
+        if not free:
+            return
+        nearest = min(free, key=lambda p: math.dist(p, point))
+        if math.dist(nearest, point) > 0.002:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Selecione uma extremidade livre)</span>"
+            )
+            return
+        if self._plate_manual_start is None:
+            self._plate_manual_start = nearest
+            self.scene.set_member_preview_start(nearest)
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>(Selecione outra extremidade livre)</span>"
+            )
+            return
+        if math.dist(self._plate_manual_start, nearest) < 1e-8:
+            return
+        new_segment = (self._plate_manual_start, nearest)
+        candidate = self._plate_segments + self._plate_manual_segments + [new_segment]
+        remaining = len(free) - 2
+        reachable = {self._plate_manual_start}
+        while True:
+            extended = reachable | {
+                endpoint for a, b in segments for endpoint, other in ((a, b), (b, a))
+                if any(math.dist(other, point) < 1e-8 for point in reachable)
+            }
+            if extended == reachable:
+                break
+            reachable = extended
+        if remaining and any(math.dist(nearest, point) < 1e-8 for point in reachable):
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Esta ligação fecharia apenas parte do contorno)</span>"
+            )
+            self.scene.set_member_preview_start(None)
+            self._plate_manual_start = None
+            return
+        if remaining == 0:
+            try:
+                plate_contour(candidate)
+            except ValueError as error:
+                self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+                self.scene.set_member_preview_start(None)
+                self._plate_manual_start = None
+                return
+        self._plate_manual_segments.append(new_segment)
+        self._plate_manual_start = None
+        self.scene.set_member_preview_start(None)
+        self.scene.set_plate_manual_segments(self._plate_manual_segments)
+        try:
+            contour = plate_contour(self._plate_segments + self._plate_manual_segments)
+        except ValueError as error:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#57606a'>"
+                f"({escape(str(error))} Selecione outras extremidades livres)</span>"
+            )
+            return
+        self._create_plate(contour)
+
+    def _create_plate(self, contour) -> None:
+        material = self.plate_placement_editor.material
+        if not material:
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>"
+                "(Selecione um material)</span>"
+            )
+            return
+        try:
+            supports = self._plate_selection if self._command_mode == "plate_selection" else ()
+            plate = self.model.add_plate(
+                contour,
+                supports=supports,
+                material=material,
+                thickness_mm=self.plate_placement_editor.thickness_mm.value(),
+                restrictions=self.plate_placement_editor.restrictions,
+                restriction_stiffness=(
+                    self.plate_placement_editor.restriction_stiffness
+                ),
+                restriction_directions=(
+                    self.plate_placement_editor.restriction_directions
+                ),
+            )
+        except ValueError as error:
+            self.history.append(f"> <b>Adicionar placa</b> <span style='color:#8c959f'>({escape(str(error))})</span>")
+            return
+        self._command_mode = None
+        self.plate_placement_editor.hide()
+        self._restore_plate_snap()
+        self.scene.set_member_preview_start(None)
+        self.scene.set_member_placement_mode(False)
+        self.scene.set_plate_manual_segments([])
+        self.clear_selection()
+        self.scene.render_model(self.model)
+        self.history.append(f"> <b>Adicionar placa</b> <span style='color:#57606a'>(Placa {escape(plate.name)} criada)</span>")
+
+    def _restore_plate_snap(self) -> None:
+        if self._plate_saved_endpoint_snap is not None:
+            self.scene._snap_types["endpoint"] = self._plate_saved_endpoint_snap
+            self._plate_saved_endpoint_snap = None
+        if self._plate_split_saved_snap_types is not None:
+            for kind, enabled in self._plate_split_saved_snap_types.items():
+                self.scene.set_snap_type_enabled(kind, enabled)
+            self._plate_split_saved_snap_types = None
+            self._plate_split_source = None
+            self._plate_split_points = []
+
+    def _enable_plate_endpoint_snap(self) -> None:
+        """Keep plate placement attached to existing structural vertices."""
+        if self._plate_saved_endpoint_snap is None:
+            self._plate_saved_endpoint_snap = self.scene._snap_types["endpoint"]
+        self.scene._snap_types["endpoint"] = True
 
     def _handle_interface_command(self, command: str) -> bool:
         """Dispatch one-word commands that mirror visible interface buttons."""
@@ -2397,20 +6229,28 @@ class MainWindow(QMainWindow):
             "axes": "reference-axes",
             "nodelabels": "node",
             "memberlabels": "bar",
+            "platelabels": "plate",
             "localaxes": "axes",
             "nodes": "nodes",
             "solids": "solid",
             "releases": "releases",
             "semirigid": "semirigid",
             "supports": "supports",
+            "components": "components",
         }
         action_visibility = {
             "nodeforce": "node_forces",
             "nodemoment": "node_moments",
             "memberforce": "member_forces",
             "membermoment": "member_moments",
+            "platepressure": "plate_pressures",
         }
         command_label = escape(name.upper())
+
+        if name == "plate":
+            self.palette.show_group("Geometria")
+            self.start_plate_placement()
+            return True
 
         if name == "scene":
             self.palette.show_group("Geometria")
@@ -2442,10 +6282,12 @@ class MainWindow(QMainWindow):
         callbacks = {
             "bar": ("Geometria", self.start_member_placement),
             "split": ("Geometria", self.start_split_member),
-            "reverse": ("Geometria", self.start_reverse_member),
+            "splitplate": ("Geometria", self.start_split_plate),
+            "joinplates": ("Geometria", self.start_join_plates),
             "join": ("Geometria", self.start_join_members),
             "rigid": ("Geometria", self.start_rigid_bar_placement),
             "copy": ("Geometria", self.start_copy_elements),
+            "move": ("Geometria", self.start_move_elements),
             "cprop": ("Geometria", self.start_copy_member_properties),
             "measure": ("Geometria", self.start_measurement),
             "configaxes": ("Geometria", self.toggle_axes_panel),
@@ -2567,6 +6409,18 @@ class MainWindow(QMainWindow):
 
     def _handle_member_placement_point(self, point: object) -> None:
         """Advance the two-click graphical member placement flow."""
+        if self._command_mode == "stair_custom_geometry_placement":
+            self._handle_stair_custom_geometry_point(point)
+            return
+        if self._command_mode == "plate_manual":
+            self._plate_manual_point(tuple(float(value) for value in point))
+            return
+        if self._command_mode == "plate_point_placement":
+            self._plate_point_placement_point(tuple(float(value) for value in point))
+            return
+        if self._command_mode == "split_plate_placement":
+            self._split_plate_placement_point(tuple(float(value) for value in point))
+            return
         if self._command_mode != "member_placement":
             return
         coordinates = tuple(float(value) for value in point)
@@ -2813,9 +6667,102 @@ class MainWindow(QMainWindow):
         self.scene.set_measurement_mode(False)
 
     def cancel_member_placement(self) -> None:
+        if getattr(self, "_command_mode", None) in {
+            "move_elements_selection", "move_elements_reference_placement", "move_elements_destination_placement",
+        }:
+            self.command_session.cancel()
+            self._command_mode = None
+            self._move_elements_selection = []
+            self._move_elements_reference = None
+            self.scene.cancel_ctrl_selection()
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.clear_selection()
+            self.history.append("> <b>Mover</b> (Operação cancelada)")
+            return
+        workspace = getattr(self, "project_sheet_workspace", None)
+        if workspace is not None and workspace.cancel_identification_resize():
+            return
+        if workspace is not None and workspace.cancel_member_break_drag():
+            return
         """Cancel the active graphical geometry launch."""
+        workspace = self.project_sheet_workspace
+        if workspace._annotation_mode is not None:
+            kind = workspace._annotation_mode
+            workspace.set_sheet_text_mode(False) if kind == "text" else workspace.set_sheet_line_mode(False)
+            workspace.annotation_finished.emit(kind, True)
+            return
         self.member_placement_editor.hide()
+        self.plate_placement_editor.hide()
+        if self._command_mode == "stair_custom_geometry_placement":
+            self._cancel_stair_custom_geometry_capture()
+            return
+        if self._command_mode == "project_sheet_weld":
+            self.project_weld_tool.finish()
+            return
+        if self._command_mode == "project_sheet_member_break":
+            self._finish_project_member_break(canceled=True)
+            return
+        if self._command_mode == "project_sheet_detail_identifier":
+            self.project_sheet_workspace.set_detail_identifier_mode(False)
+            self._finish_project_detail_identifier(canceled=True)
+        if self._command_mode == "project_sheet_section":
+            self.project_sheet_workspace.set_section_mode(False)
+            self._finish_project_section(canceled=True)
+            return
+        if self._command_mode == "project_sheet_elevation_identifier":
+            self.project_sheet_workspace._finish_elevation_identifier_mode(True)
+            return
+        if self._command_mode in {
+            "project_sheet_aligned_dimension", "project_sheet_orthogonal_dimension",
+            "project_sheet_angular_dimension", "project_sheet_level_dimension",
+        }:
+            self.project_sheet_workspace.set_dimension_mode(False)
+            self._finish_project_view_dimension(canceled=True)
+            return
+        if self._command_mode == "project_sheet_identification":
+            self._finish_project_view_identification(canceled=True)
+            return
+        if self._command_mode in {
+            "project_sheet_element_visibility_hide",
+            "project_sheet_element_visibility_reveal",
+            "project_sheet_element_visibility_reveal_all",
+        }:
+            self.project_sheet_workspace.set_element_visibility_mode(None)
+            self._finish_project_sheet_visibility(canceled=True)
+            return
+        if self._command_mode in {"split_plate_selection", "split_plate_placement"}:
+            self._finish_split_plate_mode()
+            self.clear_selection()
+            self.history.append(
+                "> <b>Dividir placa</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode == "join_plate_selection":
+            self._command_mode = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Unir placas</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {"plate_selection", "plate_manual", "plate_point_placement"}:
+            self._command_mode = None
+            self._restore_plate_snap()
+            self._plate_selection = []
+            self._plate_segments = []
+            self._plate_manual_segments = []
+            self._plate_manual_start = None
+            self._plate_point_vertices = []
+            self.scene.set_member_preview_start(None)
+            self.scene.set_member_placement_mode(False)
+            self.scene.set_plate_manual_segments([])
+            self.clear_selection()
+            self.history.append(
+                "> <b>Adicionar placa</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
         if self._command_mode == "connect_member_ends_selection":
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
             self._connect_member_ends_first_bar = None
             self.clear_selection()
@@ -2825,15 +6772,55 @@ class MainWindow(QMainWindow):
             )
             return
         if self._command_mode in {
+            "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
+        }:
+            self.scene.set_node_component_pick_through(False)
+            self._command_mode = None
+            self._detail_subtraction_target = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Subtrair trecho</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
+            "detail_end_cut_target_selection", "detail_end_cut_face_selection",
+        }:
+            self.scene.set_node_component_pick_through(False)
+            self.scene.set_detail_end_cut_target(None)
+            self._detail_end_cut_target = None
+            self._detail_end_cut_reference_faces = []
+            self._command_mode = None
+            self.clear_selection()
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
             "endpoint_alignment_bar_selection", "endpoint_alignment_face_selection",
         }:
+            self.scene.set_node_component_pick_through(False)
             self._command_mode = None
-            self._endpoint_alignment_source_bar = None
+            self._endpoint_alignment_source = None
             self.scene.set_endpoint_alignment_target(None)
             self.clear_selection()
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
                 "<span style='color:#8c959f'>(Operação cancelada)</span>"
+            )
+            return
+        if self._command_mode in {
+            "face_alignment_source_selection", "face_alignment_reference_selection",
+        }:
+            self.scene.set_node_component_pick_through(False)
+            self._command_mode = None
+            self._face_alignment_source = None
+            self._face_alignment_source_hit = None
+            self.scene.set_face_alignment_mode(False)
+            self.clear_selection()
+            self.history.append(
+                "> <b>Alinhar faces</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
             )
             return
         if self._command_mode == "detail_plane_placement":
@@ -2843,6 +6830,7 @@ class MainWindow(QMainWindow):
             self.history.append(
                 "> <b>Adicionar plano</b> <span style='color:#8c959f'>(Operação cancelada)</span>"
             )
+            self._restore_project_mode_after_detail_plane()
             QTimer.singleShot(0, self.open_detailing_views)
             return
         if self._command_mode == "reference_axis_placement":
@@ -3034,7 +7022,7 @@ class MainWindow(QMainWindow):
             return
         target_kind, reference, values = launch
         if kind != target_kind:
-            expected = "nó" if target_kind == "node" else "barra"
+            expected = {"node": "nó", "bar": "barra", "plate": "placa"}[target_kind]
             self.history.append(
                 "> <b>Adicionar ação</b> "
                 f"<span style='color:#8c959f'>(Selecione apenas {expected})</span>"
@@ -3059,6 +7047,12 @@ class MainWindow(QMainWindow):
                         self.action_service.add_node_force(name, axis, value, load_case)
                     else:
                         self.action_service.add_node_moment(name, axis, value, load_case)
+            elif target_kind == "plate":
+                x = values.get("PX", (0.0,))
+                y = values.get("PY", (0.0,))
+                self.action_service.add_plate_surface_pressure_profiles(
+                    name, x[0], x[-1], y[0], y[-1], load_case,
+                )
             else:
                 for label, components in values.items():
                     axis = label[-1]
@@ -3090,6 +7084,128 @@ class MainWindow(QMainWindow):
 
 
     def select_element(self, kind: str, name: str, center: object) -> None:
+        if self.palette.active_group == "Análise":
+            return
+        if self._command_mode == "plate_selection":
+            self._plate_add_selection(kind, name)
+            return
+        if self._command_mode == "split_plate_selection":
+            if kind != "plate" or name not in self.model.plates:
+                self.history.append(
+                    "> <b>Dividir placa</b> <span style='color:#8c959f'>"
+                    "(Selecione uma placa)</span>"
+                )
+                return
+            self.selected = (kind, name)
+            self.selected_elements = [(kind, name)]
+            self.scene.set_selection_highlight(self.selected_elements)
+            self._begin_split_plate_points(name)
+            return
+        if self._command_mode == "join_plate_selection":
+            targets = tuple(dict.fromkeys(
+                target for target in (*self.selected_elements, (kind, name))
+                if target[0] == "plate" and target[1] in self.model.plates
+            ))
+            self.selected_elements = list(targets)
+            self.selected = targets[-1] if targets else None
+            self.scene.set_selection_highlight(targets)
+            self.properties.hide()
+            self.history.append(
+                "> <span style='color:#57606a'>"
+                f"({len(targets)} placa(s) selecionada(s); pressione ENTER para unir)</span>"
+            )
+            return
+        if self._command_mode == "detail_end_cut_target_selection":
+            if kind != "bar":
+                self.history.append(
+                    "> <b>Subtrair extremidade</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                )
+                self.clear_selection()
+                return
+            self._detail_end_cut_target = name
+            self._detail_end_cut_reference_faces = []
+            self._command_mode = "detail_end_cut_face_selection"
+            self.clear_selection()
+            self.scene.set_detail_end_cut_target(name)
+            self.history.append(
+                "> <b>Subtrair extremidade</b> "
+                "<span style='color:#57606a'>(Selecione uma face; Ctrl+clique adiciona outras; "
+                "pressione Enter para aplicar; Esc cancela)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
+        if self._command_mode in {
+            "detail_subtraction_target_selection", "detail_subtraction_cutter_selection",
+        }:
+            if kind not in {"bar", "plate"}:
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Selecione uma barra ou placa)</span>"
+                )
+                self.clear_selection()
+                return
+            if self._command_mode == "detail_subtraction_target_selection":
+                self._detail_subtraction_target = (kind, name)
+                self._command_mode = "detail_subtraction_cutter_selection"
+                self.clear_selection()
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#57606a'>(Selecione o elemento que servirá de cortador; "
+                    "o alvo pode receber outros cortes; Esc encerra)</span>"
+                )
+                self.scene.plotter.setFocus()
+                return
+            target = self._detail_subtraction_target
+            if target is None:
+                self._command_mode = "detail_subtraction_target_selection"
+                self.clear_selection()
+                return
+            if target == (kind, name):
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Escolha um elemento cortador diferente do alvo)</span>"
+                )
+                self.clear_selection()
+                return
+            try:
+                self.model_service.add_detail_subtraction(*target, kind, name)
+            except ValueError as error:
+                self.history.append(
+                    f"> <b>Subtrair trecho</b> "
+                    f"<span style='color:#8c959f'>({escape(str(error))})</span>"
+                )
+                self.clear_selection()
+                return
+            self.refresh_scene()
+            self.clear_selection()
+            if (*target, kind, name) in self.scene._detail_subtraction_failures:
+                target_element = (
+                    self.model.bars[target[1]] if target[0] == "bar"
+                    else self.model.plates[target[1]]
+                )
+                self.model.update_detail_subtractions(
+                    *target,
+                    tuple(
+                        reference for reference in target_element.detail_subtractions
+                        if reference != (kind, name)
+                    ),
+                )
+                self.refresh_scene()
+                self.history.append(
+                    "> <b>Subtrair trecho</b> "
+                    "<span style='color:#8c959f'>(Não foi possível gerar um corte válido; "
+                    "a geometria original foi preservada)</span>"
+                )
+                self.scene.plotter.setFocus()
+                return
+            self.history.append(
+                "> <b>Subtrair trecho</b> <span style='color:#57606a'>"
+                f"(Corte de {escape(name)} aplicado em {escape(target[1])}; "
+                "selecione outro cortador ou pressione Esc)</span>"
+            )
+            self.scene.plotter.setFocus()
+            return
         self.axes_panel.hide()
         self.reference_panel.hide()
         self.selected = kind, name
@@ -3162,20 +7278,20 @@ class MainWindow(QMainWindow):
                 self.clear_selection()
             return
         if self._command_mode == "endpoint_alignment_bar_selection":
-            if kind != "bar":
+            if kind not in {"bar", "plate"}:
                 self.history.append(
                     "> <b>Alinhar extremidade</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra)</span>"
+                    "<span style='color:#8c959f'>(Selecione uma barra ou placa)</span>"
                 )
                 self.clear_selection()
                 return
-            self._endpoint_alignment_source_bar = name
+            self._endpoint_alignment_source = (kind, name)
             self._command_mode = "endpoint_alignment_face_selection"
             self.clear_selection()
             self.scene.set_endpoint_alignment_target(name)
             self.history.append(
                 "> <b>Alinhar extremidade</b> "
-                "<span style='color:#57606a'>(Selecione uma face de uma barra conectada; Esc cancela)</span>"
+                "<span style='color:#57606a'>(Selecione uma face de barra, placa, chapa de base ou degrau; Esc cancela)</span>"
             )
             self.scene.plotter.setFocus()
             return
@@ -3242,15 +7358,12 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._join_members(self._join_member_first, name)
-        elif self._command_mode == "copy_elements_selection":
+        elif self._command_mode in {"copy_elements_selection", "move_elements_selection"}:
             self._selection_changed(((kind, name),))
             return
         elif self._command_mode == "copy_member_properties_selection":
-            if kind != "bar":
-                self.history.append(
-                    "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra, não um nó ou barra rígida)</span>"
-                )
+            if kind != self.member_property_copy_panel.kind:
+                self.history.append("> <b>Copiar propriedades</b> (Selecione o tipo de elemento indicado no painel)")
             elif self._copy_properties_reference is None:
                 self._copy_properties_reference = name
                 self.clear_selection()
@@ -3261,7 +7374,7 @@ class MainWindow(QMainWindow):
             elif name == self._copy_properties_reference:
                 self.history.append(
                     "> <b>Copiar propriedades</b> "
-                    "<span style='color:#8c959f'>(Selecione uma barra de destino diferente)</span>"
+                    "<span style='color:#8c959f'>(Selecione um destino diferente)</span>"
                 )
             else:
                 self._copy_member_properties(self._copy_properties_reference, name)
@@ -3275,6 +7388,28 @@ class MainWindow(QMainWindow):
             self.refresh_selected_property_panel(self.palette.active_group)
 
     def _selection_changed(self, elements: tuple[tuple[str, str], ...]) -> None:
+        if self.palette.active_group == "Análise":
+            self.clear_selection()
+            return
+        if self._command_mode == "plate_selection":
+            for kind, name in elements:
+                if self._command_mode == "plate_selection":
+                    self._plate_add_selection(kind, name)
+            return
+        if self._command_mode == "join_plate_selection":
+            targets = tuple(dict.fromkeys(
+                (kind, name) for kind, name in elements
+                if kind == "plate" and name in self.model.plates
+            ))
+            self.selected_elements = list(targets)
+            self.selected = targets[-1] if targets else None
+            self.scene.set_selection_highlight(targets)
+            self.properties.hide()
+            self.history.append(
+                "> <span style='color:#57606a'>"
+                f"({len(targets)} placa(s) selecionada(s); pressione ENTER para unir)</span>"
+            )
+            return
         if self.palette.active_group == "Detalhamento":
             expanded = list(elements)
             seen = set(expanded)
@@ -3297,11 +7432,13 @@ class MainWindow(QMainWindow):
             self.selected = self.selected_elements[-1] if self.selected_elements else None
             return
         if self._command_mode in {
-            "copy_elements_selection", "copy_member_properties_selection", "split_member_selection",
+            "copy_elements_selection", "move_elements_selection", "copy_member_properties_selection", "split_member_selection",
             "reverse_member_selection", "join_member_selection", "action_selection", "verification_group_selection",
             "verification_ungroup_selection",
         }:
-            kinds = {"node", "bar", "rigid_bar"} if self._command_mode == "copy_elements_selection" else {"bar"}
+            kinds = {"node", "bar", "rigid_bar", "plate"} if self._command_mode in {"copy_elements_selection", "move_elements_selection"} else {"bar"}
+            if self._command_mode == "copy_member_properties_selection":
+                kinds = {self.member_property_copy_panel.kind}
             if self._command_mode == "action_selection" and self._pending_action_launch is not None:
                 kinds = {self._pending_action_launch[0]}
             targets = tuple(target for target in elements if target[0] in kinds)
@@ -3330,6 +7467,9 @@ class MainWindow(QMainWindow):
     def refresh_selected_property_panel(self, section: str | None) -> None:
         """Rebuild the open inspector when the work section changes."""
         active_section = section or "Geometria"
+        if active_section == "Análise":
+            self.clear_selection()
+            return
         if active_section != "Geometria" and hasattr(self, "section_panel") and self.section_panel.isVisible():
             self.close_section_panel()
         if active_section != "Geometria" and hasattr(self, "displacement_panel") and self.displacement_panel.isVisible():
@@ -3362,13 +7502,24 @@ class MainWindow(QMainWindow):
                         self.properties._calculation_properties_button.setChecked(True)
                     else:
                         self.close_calculation_properties_panel()
+            elif active_section == "Detalhamento" and self.selected[0] == "plate":
+                if self.displacement_panel.isVisible():
+                    self.displacement_panel.configure_for_plate(self.selected[1])
+                    self.properties._displacement_settings_button.setChecked(True)
             elif active_section == "Geometria":
                 self.close_section_panel()
                 self.close_displacement_panel()
 
+    def _empty_scene_clicked(self) -> None:
+        if self._command_mode == "plate_selection":
+            self.scene.set_selection_highlight(self._plate_selection)
+            return
+        self.clear_selection()
+
     def clear_selection(self) -> None:
         self.selected = None
         self.selected_elements = []
+        self.close_subtractions_panel()
         if self.scene._selected_elements:
             self.scene.set_selection_highlight(())
         self.properties.hide()
@@ -3382,10 +7533,34 @@ class MainWindow(QMainWindow):
 
     def delete_selected(self) -> None:
         """Delete selected elements, removing members before their endpoint nodes."""
-        if self.selected is None:
-            return
         focus = QApplication.focusWidget()
+        if (
+            self._detailing_project_mode
+            and self.project_sheet_workspace.delete_selected_dimension()
+        ):
+            return
         if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
+            return
+        if self._detailing_project_mode:
+            if self.project_sheet_workspace.delete_selected_sheet_table():
+                return
+            if self.project_sheet_workspace.delete_selected_sheet_text():
+                return
+            if self.project_sheet_workspace.delete_selected_sheet_line():
+                return
+            if self.project_sheet_workspace.delete_selected_elevation_identifier():
+                return
+            if self.project_sheet_workspace.delete_selected_detail_identifier():
+                return
+            if self.project_sheet_workspace.delete_selected_section():
+                return
+            if self.project_sheet_workspace.delete_selected_identification():
+                return
+            index = self.project_sheet_workspace._selected_view_index
+            if index is not None:
+                self.project_sheets_palette.remove_view_from_active_sheet(index)
+            return
+        if self.selected is None:
             return
         targets = self.selected_elements or [self.selected]
         ordered = sorted(targets, key=lambda item: item[0] == "node")
@@ -3407,12 +7582,17 @@ class MainWindow(QMainWindow):
                     self.model_service.remove_member(name)
                 elif kind == "rigid_bar":
                     self.model_service.remove_rigid_bar(name)
+                elif kind == "plate":
+                    self.model.remove_plate(name)
                 else:
                     continue
             except ValueError as error:
                 self.show_error(str(error))
                 continue
-            self.scene.remove_element(kind, name)
+            if kind == "plate":
+                self.scene.render_model(self.model)
+            else:
+                self.scene.remove_element(kind, name)
         self.clear_selection()
 
 
@@ -3431,6 +7611,13 @@ class MainWindow(QMainWindow):
         self.show_home()
 
     def _reset_model_state(self) -> None:
+        self._restore_plate_snap()
+        self._plate_selection = []
+        self._plate_segments = []
+        self._plate_manual_segments = []
+        self._plate_manual_start = None
+        self._plate_point_vertices = []
+        self.plate_placement_editor.hide()
         self.member_placement_editor.reset()
         self.reference_panel.hide()
         self.split_member_dialog.hide()
@@ -3454,7 +7641,8 @@ class MainWindow(QMainWindow):
         self.scene.set_selection_highlight(())
         self.clear_selection()
         self.current_path = None
-        self.scene.set_model_name("Novo modelo")
+        self._set_model_display_name("Novo modelo")
+        self._restore_detailing_state()
         self._import_save_path = None
         self._saved_revision = self.model.revision
         self._saved_view_revision = self.model.view_revision
@@ -3483,6 +7671,35 @@ class MainWindow(QMainWindow):
         if selected_path.suffix.casefold() != ".osa":
             selected_path = selected_path.with_suffix(".osa")
         self._save_model_to(selected_path)
+
+    def export_project_pdf(self) -> None:
+        workspace = self.project_sheet_workspace
+        if not workspace._linework_update_label.isHidden():
+            self.show_error("Aguarde a atualização das vistas antes de exportar a folha.")
+            return
+        directory = (self.current_path.parent if self.current_path else Path.home())
+        directory = Path(self._program_settings.value("detailing/pdfDirectory", str(directory)))
+        suggested = directory / f"{workspace._sheet_name}.pdf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Exportar projeto para PDF", str(suggested), "Arquivo PDF (*.pdf)",
+        )
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.casefold() != ".pdf":
+            path = path.with_suffix(".pdf")
+            if path.exists() and QMessageBox.question(
+                self, "Substituir arquivo", f"O arquivo {path.name} já existe. Deseja substituí-lo?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            from .project_sheet_pdf import export_sheet_pdf
+            export_sheet_pdf(workspace, path)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.show_error(f"Não foi possível exportar o PDF: {error}")
+            return
+        self._program_settings.setValue("detailing/pdfDirectory", str(path.parent))
+        DetailingExportSuccessDialog(self, "Arquivo PDF exportado com sucesso").exec()
 
     def export_model_dxf(self) -> None:
         """Exporta o modelo unifilar para DXF, sem a geometria dos sólidos."""
@@ -3516,10 +7733,11 @@ class MainWindow(QMainWindow):
 
     def _save_model_to(self, path: str | Path) -> None:
         try:
+            self._store_detailing_state()
             thumbnail = ThumbnailService.generate(self.model)
             self.project_service.save(path, thumbnail=thumbnail)
             self.current_path = Path(path)
-            self.scene.set_model_name(self.current_path.stem)
+            self._set_model_display_name(self.current_path.stem)
             self._saved_revision = self.model.revision
             self._saved_view_revision = self.model.view_revision
             self.home.store.add(self.current_path)
@@ -3568,7 +7786,7 @@ class MainWindow(QMainWindow):
         worker = ProjectLoadWorker(
             path,
             normalize_member_directions=self._member_direction_normalization_enabled,
-            solid_members_visible=self.scene._solid_members_visible,
+            solid_members_visible=self.scene._solid_members_preference,
             solid_positioning_enabled=self.palette.active_group == "Detalhamento",
             reference_plane=self.scene._reference_plane_mode,
             preferred_plane_level=self.scene._reference_plane_z,
@@ -3621,11 +7839,13 @@ class MainWindow(QMainWindow):
         try:
             self.axes_panel.discard()
             self.reference_panel.hide()
+            self.plate_placement_editor.hide()
             self.member_placement_editor.reset()
             with self._model_access_lock:
                 loaded_model.revision = self.model.revision + 1
                 loaded_model.view_revision = self.model.view_revision + 1
                 self.model.__dict__.update(loaded_model.__dict__)
+            self._restore_detailing_state()
             self.scene.set_scene_selection_mode(None, render=False)
             self.top_icon_palette.reload_scene_views()
             self.section_profiles = {
@@ -3652,10 +7872,10 @@ class MainWindow(QMainWindow):
             if importing:
                 original_name = path.name[:-4] if path.name.casefold().endswith(".zip") else path.name
                 self._import_save_path = path.with_name(Path(original_name).stem + ".osa")
-                self.scene.set_model_name(Path(original_name).stem)
+                self._set_model_display_name(Path(original_name).stem)
             else:
                 self._import_save_path = None
-                self.scene.set_model_name(path.stem)
+                self._set_model_display_name(path.stem)
                 self.home.store.add(path)
             self._saved_revision = self.model.revision - 1 if importing else self.model.revision
             self._saved_view_revision = self.model.view_revision
@@ -3782,6 +8002,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self._confirm_pending_changes():
+            cancel_linework = getattr(self, "_sheet_linework_cancel", None)
+            if cancel_linework is not None:
+                cancel_linework.set()
             self._mcp_dispatcher.suspend()
             self._mcp_server.stop()
             event.accept()
@@ -3796,10 +8019,14 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.scene.refresh_model_changes(self.model)
+        if self._detail_subtraction_visible_refs:
+            self.scene.set_detail_subtraction_previews(self._detail_subtraction_visible_refs)
         self.properties.update_delete_button_state()
 
     def show_home(self) -> None:
         """Exibe a tela inicial sem deixar controles do editor sobrepostos."""
+        if self._detailing_project_mode:
+            self.detailing_mode_palette.set_detailing_visible(False)
         self.member_placement_editor.hide()
         self.reference_panel.hide()
         self.view_stack.setCurrentWidget(self.home)
@@ -3812,6 +8039,9 @@ class MainWindow(QMainWindow):
             self.verification_top_palette,
             self.action_top_palette,
             self.analysis_top_palette,
+            self.detailing_top_palette,
+            self.detailing_mode_palette,
+            self.project_sheets_palette,
             self.navigation_button,
             self.sloped_plane_button,
             self.sloped_plane_right_button,
@@ -3831,7 +8061,9 @@ class MainWindow(QMainWindow):
 
     def show_editor(self) -> None:
         """Retorna à cena 3D e restaura seus controles contextuais."""
-        self.view_stack.setCurrentWidget(self.scene)
+        self.view_stack.setCurrentWidget(
+            self.project_sheet_workspace if self._detailing_project_mode else self.scene
+        )
         self.title_bar.set_project_actions_enabled(True)
         for widget in (
             self.palette,
@@ -3845,7 +8077,26 @@ class MainWindow(QMainWindow):
             self.command_bar,
         ):
             widget.show()
+        if self._detailing_project_mode:
+            for control in (
+                self.navigation_button,
+                self.sloped_plane_button,
+                self.sloped_plane_right_button,
+                self.previous_plane_button,
+                self.plane_change_button,
+                self.next_plane_button,
+            ):
+                control.hide()
         self.top_icon_palette.set_geometry_visible(self.palette.active_group == "Geometria")
+        detailing_active = self.palette.active_group == "Detalhamento"
+        self.detailing_top_palette.set_detailing_visible(
+            detailing_active and not self._detailing_project_mode
+        )
+        self.detailing_mode_palette.set_detailing_visible(detailing_active)
+        if self._detailing_project_mode:
+            self.project_sheets_palette.set_project_mode(True)
+        else:
+            self.project_sheets_palette.set_project_mode(False)
         self.palette.reposition()
         self.top_icon_palette.reposition()
         self.command_bar.reposition()
@@ -3860,11 +8111,30 @@ class MainWindow(QMainWindow):
 
     def _refresh_after_mcp_change(self) -> None:
         """Atualiza a interface após uma operação recebida pelo MCP local."""
+        if self.view_stack.currentWidget() is self.home and self.model.nodes:
+            self.show_editor()
         self.normalize_member_directions_if_enabled()
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.reference_panel.reload()
         self.refresh_scene()
+        self.refresh_selected_property_panel(self.palette.active_group)
+
+    def _apply_mcp_session_change(self, group: str) -> None:
+        self.show_editor()
+        self.palette.show_group(group)
+
+    def _apply_mcp_detailing_change(self) -> None:
+        self._restore_detailing_state()
+        self.detailing_mode_palette.set_project_mode(True)
+        self.set_detailing_project_mode(True)
+        self.show_editor()
+
+    def _apply_mcp_project_saved(self, path) -> None:
+        self.current_path = Path(path)
+        self._set_model_display_name(self.current_path.stem)
+        self._saved_revision = self.model.revision
+        self._saved_view_revision = self.model.view_revision
 
     def _refresh_after_mcp_scene_views_change(self) -> None:
         """Atualiza o seletor e a geometria após operações MCP de vistas."""
@@ -3881,6 +8151,7 @@ class MainWindow(QMainWindow):
             "member_releases_visible": self.scene.set_member_releases_visible,
             "semirigid_links_visible": self.scene.set_semirigid_links_visible,
             "node_supports_visible": self.scene.set_node_supports_visible,
+            "node_components_visible": self.scene.set_node_components_visible,
         }
         if option in setters:
             setters[option](visible)
@@ -3888,9 +8159,12 @@ class MainWindow(QMainWindow):
             self.scene.set_labels_visible("node", visible)
         elif option == "member_labels_visible":
             self.scene.set_labels_visible("bar", visible)
+        elif option == "plate_labels_visible":
+            self.scene.set_labels_visible("plate", visible)
         elif option in {
             "node_forces_visible", "node_moments_visible",
             "member_forces_visible", "member_moments_visible",
+            "plate_pressures_visible",
         }:
             self.scene.set_action_visibility(option.removesuffix("_visible"), visible)
         else:
@@ -3931,8 +8205,8 @@ class MainWindow(QMainWindow):
             # group can request a stale deformation diagram with no result to
             # render.
             self.selected_analysis_combination = None
-            self.selected_analysis_diagram = "Normal"
             self.analysis_top_palette.reset_result_view()
+            self.selected_analysis_diagram = self.analysis_top_palette.diagram_selector.currentData()
         previous = self.selected_analysis_combination
         self.analysis_top_palette.set_combinations(names, previous)
         self.analysis_top_palette.set_analysis_ready(bool(names))
@@ -3952,6 +8226,246 @@ class MainWindow(QMainWindow):
         if hasattr(self, "scene"):
             self.scene.set_analysis_result(self.selected_analysis_combination, self.selected_analysis_diagram)
 
+    def _show_analysis_point_result(self, kind: str, name: str, point: object) -> None:
+        """Show the active analysis value at a clicked model location."""
+        point = np.asarray(point, dtype=float).reshape(3)
+        combination = self.selected_analysis_combination
+        result = next((item for item in self.model.analysis_results
+                       if item.load_reference == combination
+                       and item.model_revision == self.model.revision), None)
+        if result is None:
+            self.scene.hide_analysis_point_result()
+            return
+        diagram = self.selected_analysis_diagram
+        renderer = self.scene._result_renderer
+        unit = self.scene._result_unit(diagram)
+        detail = " · ".join(
+            f"{axis}: {coordinate:.3f}".replace(".", ",") + " m"
+            for axis, coordinate in zip("XYZ", point)
+        )
+        raw_value: float | None = None
+        display_value = "Sem resultados neste ponto"
+        if kind == "bar" and self.analysis_top_palette.result_kind == "bar":
+            member = self.model.bars.get(name)
+            member_result = result.member_results.get(name)
+            if member is not None and member_result:
+                first, last = self.model.nodes[member.start_node], self.model.nodes[member.end_node]
+                start = np.asarray((first.x, first.y, first.z), dtype=float)
+                end = np.asarray((last.x, last.y, last.z), dtype=float)
+                length = float(member_result.get("length", np.linalg.norm(end - start)))
+                samples = member_result.get("samples", ())
+                if diagram.startswith("Deformação") and len(samples) >= 2:
+                    components = diagram.removeprefix("Deformação ") or "XYZ"
+                    basis = LocalAxesRenderer.basis(first, last, member.rotation)
+                    scale = max(1.0, min(100.0, float(self.scene._analysis_deformation_scale)))
+                    if basis is not None:
+                        curve = np.asarray([
+                            start + basis[0] * float(sample.get("x", 0.0)) + np.asarray((
+                                float(sample.get("deflection_x", 0.0)) if "X" in components else 0.0,
+                                float(sample.get("deflection_y", 0.0)) if "Y" in components else 0.0,
+                                float(sample.get("deflection_z", 0.0)) if "Z" in components else 0.0,
+                            )) * scale for sample in samples
+                        ], dtype=float)
+                        distances = []
+                        positions = []
+                        for index, (a, b) in enumerate(zip(curve, curve[1:])):
+                            delta = b - a
+                            denominator = float(np.dot(delta, delta))
+                            fraction = 0.0 if denominator <= 1e-12 else float(np.clip(
+                                np.dot(point - a, delta) / denominator, 0.0, 1.0,
+                            ))
+                            distances.append(float(np.linalg.norm(point - (a + fraction * delta))))
+                            x0 = float(samples[index].get("x", 0.0))
+                            x1 = float(samples[index + 1].get("x", x0))
+                            positions.append(x0 + fraction * (x1 - x0))
+                        position = positions[int(np.argmin(distances))]
+                    else:
+                        position = 0.0
+                else:
+                    fraction = float(np.clip(np.dot(point - start, end - start) /
+                                             max(float(np.dot(end - start, end - start)), 1e-12), 0.0, 1.0))
+                    position = fraction * length
+                if diagram.startswith("Deformação"):
+                    components = diagram.removeprefix("Deformação ") or "XYZ"
+                    key = {"X": "deflection_x", "Y": "deflection_y", "Z": "deflection_z"}.get(components)
+                    if samples:
+                        if key:
+                            raw_value = self._interpolate_member_samples(samples, position, key) * 1000.0
+                        else:
+                            vector = np.asarray([self._interpolate_member_samples(samples, position, f"deflection_{axis}")
+                                                 for axis in "xyz"], dtype=float)
+                            raw_value = float(np.linalg.norm(vector) * 1000.0)
+                elif diagram in renderer.DIAGRAMS and samples:
+                    result_key, _axis, _result_unit, display_sign, _geometry_sign = renderer.DIAGRAMS[diagram]
+                    raw_value = self._interpolate_member_samples(samples, position, result_key) * display_sign
+                if diagram in renderer.DIAGRAMS:
+                    unit = renderer.DIAGRAMS[diagram][2]
+        elif kind == "node":
+            node_values = result.node_results.get(name, {})
+            if diagram == renderer.REACTION_DIAGRAM:
+                components = [(key.removeprefix("RXN_"), float(node_values.get(key, 0.0)))
+                              for key in (*renderer._REACTION_FORCE_KEYS, *renderer._REACTION_MOMENT_KEYS)]
+                forces = " · ".join(
+                    f"{label}: {renderer._format_value(value, 'kN')}"
+                    for label, value in components[:3]
+                )
+                moments = " · ".join(
+                    f"{label}: {renderer._format_value(value, 'kN·m')}"
+                    for label, value in components[3:]
+                )
+                display_value = f"Reações de apoio\n{forces}\n{moments}"
+            elif diagram.startswith("Deformação"):
+                components = diagram.removeprefix("Deformação ") or "XYZ"
+                raw_value = renderer._deformation_display_value(node_values, components)
+            elif diagram in renderer.DIAGRAMS:
+                result_key, _axis, _result_unit, display_sign, _geometry_sign = renderer.DIAGRAMS[diagram]
+                connected_values = []
+                for bar_name, bar in self.model.bars.items():
+                    if name not in {bar.start_node, bar.end_node}:
+                        continue
+                    member_result = result.member_results.get(bar_name, {})
+                    samples = member_result.get("samples", ())
+                    if not samples:
+                        continue
+                    sample = samples[0] if bar.start_node == name else samples[-1]
+                    value = float(sample.get(result_key, 0.0)) * display_sign
+                    connected_values.append(f"{bar_name}: {renderer._format_value(value, renderer.DIAGRAMS[diagram][2])}")
+                if connected_values:
+                    display_value = "\n".join(connected_values)
+        elif kind == "plate" and self.analysis_top_palette.result_kind == "plate":
+            plate_result = result.plate_results.get(name)
+            if plate_result:
+                raw_value = self._sample_analysis_plate(plate_result, diagram, point)
+        if raw_value is not None:
+            display_value = renderer._format_value(raw_value, unit)
+        no_reaction_result = (
+            diagram == renderer.REACTION_DIAGRAM
+            and kind in {"bar", "plate", "rigid_bar"}
+        )
+        if no_reaction_result:
+            display_value = "Reações de apoio:\nSem resultados neste ponto"
+        elif not (kind == "node" and diagram == renderer.REACTION_DIAGRAM):
+            display_value = f"{self.analysis_top_palette.diagram_selector.currentText()}: {display_value}"
+        self.scene.show_analysis_point_result(
+            kind, name, point, detail, display_value,
+            wide=kind == "node" and diagram == renderer.REACTION_DIAGRAM,
+        )
+
+    @staticmethod
+    def _interpolate_member_samples(samples, position: float, key: str) -> float:
+        rows = [(float(sample.get("x", 0.0)), float(sample.get(key, 0.0))) for sample in samples]
+        if not rows:
+            return 0.0
+        rows.sort(key=lambda row: row[0])
+        positions = [row[0] for row in rows]
+        index = int(np.searchsorted(positions, position, side="right"))
+        if index <= 0:
+            return rows[0][1]
+        if index >= len(rows):
+            return rows[-1][1]
+        x0, y0 = rows[index - 1]
+        x1, y1 = rows[index]
+        fraction = 0.0 if abs(x1 - x0) <= 1e-12 else (position - x0) / (x1 - x0)
+        return y0 + fraction * (y1 - y0)
+
+    def _sample_analysis_plate(self, plate_result, diagram: str, point: np.ndarray) -> float | None:
+        renderer = self.scene._result_renderer
+        plate_nodes = plate_result.get("nodes", {})
+        elements = plate_result.get("elements", {})
+        if diagram.startswith("Deformação"):
+            components = diagram.removeprefix("Deformação ") or "XYZ"
+            nodal_values = {node: renderer._deformation_display_value(values, components)
+                            for node, values in plate_nodes.items()}
+            element_values = {}
+        else:
+            element_values = renderer._plate_element_values(plate_result, diagram)
+            nodal_values = {}
+            if self.scene._plate_result_display_mode in {"nos_media", "nos_media_macro"}:
+                sums: dict[str, float] = {}
+                counts: dict[str, int] = {}
+                active_result = next((item for item in self.model.analysis_results
+                                      if item.load_reference == self.selected_analysis_combination
+                                      and item.model_revision == self.model.revision), None)
+                sources = (
+                    active_result.plate_results.values()
+                    if self.scene._plate_result_display_mode == "nos_media" and active_result
+                    else (plate_result,)
+                )
+                for source in sources:
+                    source_values = renderer._plate_element_values(source, diagram)
+                    for element_name, (_center, corners) in source_values.items():
+                        for node_name, value in zip(source.get("elements", {}).get(element_name, {}).get("nodes", ()), corners):
+                            sums[node_name] = sums.get(node_name, 0.0) + value
+                            counts[node_name] = counts.get(node_name, 0) + 1
+                nodal_values = {node: sums[node] / counts[node] for node in sums if counts[node]}
+        for element_name, element in elements.items():
+            node_names = element.get("nodes", ())
+            if len(node_names) != 4 or any(node not in plate_nodes for node in node_names):
+                continue
+            corners = np.asarray([plate_nodes[node].get("coordinates", ()) for node in node_names], dtype=float)
+            if corners.shape != (4, 3):
+                continue
+            if diagram.startswith("Deformação"):
+                components = diagram.removeprefix("Deformação ") or "XYZ"
+                scale = self.scene._analysis_deformation_scale
+                corners = corners + np.asarray([
+                    [float(plate_nodes[node].get(f"D{axis}", 0.0)) if axis in components else 0.0
+                     for axis in "XYZ"] for node in node_names
+                ]) * scale
+            local = np.asarray(point, dtype=float)
+            u = v = 0.5
+            for _ in range(12):
+                weights = np.asarray(((1-u)*(1-v), u*(1-v), u*v, (1-u)*v))
+                current = weights @ corners
+                du = (1-v)*(corners[1]-corners[0]) + v*(corners[2]-corners[3])
+                dv = (1-u)*(corners[3]-corners[0]) + u*(corners[2]-corners[1])
+                jacobian = np.column_stack((du, dv))
+                step = np.linalg.lstsq(jacobian, local-current, rcond=None)[0]
+                u += float(step[0]); v += float(step[1])
+                if np.linalg.norm(step) < 1e-8:
+                    break
+            weights = np.asarray(((1-u)*(1-v), u*(1-v), u*v, (1-u)*v))
+            residual = float(np.linalg.norm(weights @ corners - local))
+            if residual > max(0.02, float(np.ptp(corners, axis=0).max()) * 0.03) or not (-0.05 <= u <= 1.05 and -0.05 <= v <= 1.05):
+                continue
+            if diagram.startswith("Deformação"):
+                values = [nodal_values.get(node) for node in node_names]
+                return None if any(value is None for value in values) else float(weights @ np.asarray(values))
+            if element_name not in element_values:
+                return None
+            center, corners_value = element_values[element_name]
+            if self.scene._plate_result_display_mode == "centros":
+                return float(center)
+            if self.scene._plate_result_display_mode == "nos_sem_media":
+                values = np.asarray(corners_value, dtype=float)
+            else:
+                values = np.asarray([nodal_values.get(node, corners_value[index])
+                                     for index, node in enumerate(node_names)], dtype=float)
+            return float(weights @ values)
+        return None
+
+    def _apply_mcp_analysis_diagrams_visible(self, visible: bool) -> None:
+        if self.analysis_top_palette.result_kind == "plate":
+            self.scene.set_analysis_plate_diagrams_visible(visible)
+        else:
+            self.scene.set_analysis_diagrams_visible(visible)
+
+    def _apply_mcp_analysis_display(self, state: dict) -> None:
+        palette = self.analysis_top_palette
+        self.selected_analysis_combination = state['selected_combination']
+        palette.set_combinations(tuple(r.load_reference for r in self.model.analysis_results),
+                                 self.selected_analysis_combination)
+        palette.select_diagram(state['selected_diagram'], state['result_kind'])
+        self.selected_analysis_diagram = state['selected_diagram']
+        self.scene.set_analysis_result_kind(state['result_kind'], state['selected_diagram'])
+        self.scene.set_analysis_deformation_scale(state['deformation_scale'])
+        self.scene.set_analysis_diagram_scale(state['diagram_scale'])
+        self.set_plate_result_display_mode(state['plate_result_display_mode'])
+        palette._deformation_scale_position = int(state['deformation_scale'] // 10)
+        palette._bar_diagram_scale_position = round(state['diagram_scale'] * 10) - 1
+        palette._update_scale_controls(palette.diagram_selector.currentText())
+        self._sync_analysis_result()
+
     def _apply_mcp_analysis_view(self, combination: str, diagram: str) -> None:
         """Atualiza os seletores e o resultado visual após uma chamada MCP."""
         self.selected_analysis_combination = combination or None
@@ -3960,9 +8474,7 @@ class MainWindow(QMainWindow):
             tuple(result.load_reference for result in self.model.analysis_results),
             self.selected_analysis_combination,
         )
-        self.analysis_top_palette.diagram_selector.blockSignals(True)
-        self.analysis_top_palette.diagram_selector.setCurrentText(self.selected_analysis_diagram)
-        self.analysis_top_palette.diagram_selector.blockSignals(False)
+        self.analysis_top_palette.select_diagram(self.selected_analysis_diagram)
         self._sync_analysis_result()
 
     def _select_active_action(self, name: str) -> None:

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from math import cos, pi, sin
+from math import pi
 
 import numpy as np
+
+_LOOP_ANGLES = np.linspace(0.0, 2.0 * pi, 40)
+_LOOP_COS = np.cos(_LOOP_ANGLES)[:, None]
+_LOOP_SIN = np.sin(_LOOP_ANGLES)[:, None]
 
 
 def release_symbol_polylines(
@@ -53,9 +57,5 @@ def release_symbol_polylines(
         first = axes[(axis_index + 1) % 3]
         second = axes[(axis_index + 2) % 3]
         loop_radius = scale * (1.05 + 0.25 * (axis_index))
-        angles = np.linspace(0.0, 2.0 * pi, 40)
-        marks.append(np.asarray([
-            center + loop_radius * (first * cos(angle) + second * sin(angle))
-            for angle in angles
-        ]))
+        marks.append(center + loop_radius * (_LOOP_COS * first + _LOOP_SIN * second))
     return marks

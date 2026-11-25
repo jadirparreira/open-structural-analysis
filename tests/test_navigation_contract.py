@@ -727,3 +727,20 @@ def test_explicit_view_controls_are_the_only_controls_that_reframe(qt_app):
     assert scene.plotter.camera_set
     scene.reset_camera()
     assert scene.plotter.camera_set
+
+
+@pytest.mark.parametrize('section', ['Geometria', 'Ações', 'Análise', 'Memorial', 'Detalhamento'])
+def test_middle_double_click_frames_model_in_all_sections(qt_app, monkeypatch, section):
+    from types import SimpleNamespace
+
+    scene = StructureScene()
+    monkeypatch.setattr(scene, 'window', lambda: SimpleNamespace(palette=SimpleNamespace(active_group=section)))
+    calls = []
+    monkeypatch.setattr(scene, 'reset_camera', lambda: calls.append('frame'))
+    event = _mouse_event(
+        QEvent.Type.MouseButtonDblClick, 100, 100,
+        Qt.MouseButton.MiddleButton, Qt.MouseButton.MiddleButton,
+    )
+    assert scene.eventFilter(scene.plotter, event)
+    assert calls == ['frame']
+    scene.plotter.close()
