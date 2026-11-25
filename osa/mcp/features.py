@@ -5,7 +5,8 @@ from __future__ import annotations
 import copy
 import inspect
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
+from typing_extensions import TypedDict
 
 from osa.domain import NodeComponentAssignment
 from osa.domain.node_components import node_component_definition, node_components
@@ -13,6 +14,11 @@ from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS
 from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 
 from .project_features import ProjectFeatures
+
+
+class PlateEdgeConnection(TypedDict):
+    edge_index: int
+    state: Literal["free", "supported", "fixed"]
 
 
 class CurrentFeatures(ProjectFeatures):
@@ -42,6 +48,13 @@ class CurrentFeatures(ProjectFeatures):
                 for kind, options in (("bar", BAR_DIAGRAMS), ("plate", PLATE_DIAGRAMS))
             },
             "plate_result_display_modes": dict(PLATE_RESULT_DISPLAY_MODES),
+            "plate_edge_connections": {
+                "states": {"free": "Livre", "supported": "Apoiado", "fixed": "Engastado"},
+                "edge_index_base": 0,
+                "new_plate_default": "supported",
+                "update_behavior": "Somente as arestas informadas são alteradas; as demais são preservadas.",
+                "geometry": "A vinculação só atua nos trechos da aresta coincidentes com barras.",
+            },
             "plate_postprocessing": self._plate_postprocessing_info(),
             "deprecated_options": {
                 "snap_enabled": "Removida: a captura permanece ativa; use os controles de tipo na interface."
@@ -66,14 +79,35 @@ class CurrentFeatures(ProjectFeatures):
         }
 
     def list_plates(self) -> dict[str, Any]:
-        """Lista placas, contornos, espessuras, apoios e restrições distribuídas."""
+        """Lista placas e arestas com índice base 0, coordenadas, barras e vinculação efetiva; configurable=false indica aresta sem barra, naturalmente livre."""
         return {
             "revision": self.model.revision,
             "plates": [self._plate_payload(plate) for plate in self.model.plates.values()],
         }
 
     def _plate_payload(self, plate) -> dict[str, Any]:
-        return {**asdict(plate), "display_name": self.model.plate_display_names.get(plate.name, "")}
+        states = dict(plate.edge_connections)
+        edges = []
+        for index, start in enumerate(plate.contour):
+            bars = self.model.plate_edge_bars(plate.name, index, include_rigid=True)
+            edges.append({
+                "edge_index": index,
+                "label": f"Aresta {index + 1}",
+                "start": start,
+                "end": plate.contour[(index + 1) % len(plate.contour)],
+                "boundary_members": list(bars),
+                "state": states.get(index, "fixed") if bars else "free",
+                "configurable": bool(bars),
+            })
+        return {**asdict(plate), "display_name": self.model.plate_display_names.get(plate.name, ""),
+                "edges": edges}
+
+    def _merge_plate_connections(self, values, edge_count, existing):
+        requested = tuple((item["edge_index"], item["state"]) for item in values)
+        validated = self.model._validated_plate_edge_connections(requested, edge_count)
+        merged = dict(existing)
+        merged.update(validated)
+        return tuple(sorted(merged.items()))
 
     def create_plate(
         self,
@@ -84,8 +118,9 @@ class CurrentFeatures(ProjectFeatures):
         restrictions: list[bool] | None = None,
         restriction_stiffness: list[float] | None = None,
         restriction_directions: list[str] | None = None,
+        edge_connections: list[PlateEdgeConnection] | None = None,
     ) -> dict[str, Any]:
-        """Cria placa de concreto, aço ou madeira com contorno em m, espessura em mm e molas distribuídas em kN/m³."""
+        """Cria placa: contorno m, espessura mm, molas kN/m³. edge_connections: [{edge_index: 0, state: supported}]; índices iniciam em 0; free=Livre, supported=Apoiado (padrão), fixed=Engastado."""
         kwargs = {
             key: value
             for key, value in {
@@ -95,6 +130,10 @@ class CurrentFeatures(ProjectFeatures):
             }.items()
             if value is not None
         }
+        if edge_connections is not None:
+            kwargs["edge_connections"] = self._merge_plate_connections(
+                edge_connections, len(contour), tuple((index, "supported") for index in range(len(contour))),
+            )
         plate = self.model.add_plate(
             contour, thickness_mm=thickness_mm, material=material, supports=supports or (), **kwargs
         )
@@ -112,10 +151,17 @@ class CurrentFeatures(ProjectFeatures):
         restrictions: list[bool] | None = None,
         restriction_stiffness: list[float] | None = None,
         restriction_directions: list[str] | None = None,
+        edge_connections: list[PlateEdgeConnection] | None = None,
     ) -> dict[str, Any]:
-        """Atualiza placa: espessura em mm; deslocamento visual em m; molas em kN/m³; arestas [barra, mm, graus]."""
+        """Atualiza placa: espessura mm; deslocamento visual m; molas kN/m³; edge_positioning=[barra,mm,graus]. edge_connections=[{edge_index: 0, state: fixed}]: altera só as arestas informadas. Consulte list_plates.edges; índice 0 corresponde à Aresta 1. Estados free=Livre, supported=Apoiado, fixed=Engastado."""
         if plate_name not in self.model.plates:
             raise ValueError(f"Placa '{plate_name}' não encontrada.")
+        connections = None
+        if edge_connections is not None:
+            plate = self.model.plates[plate_name]
+            connections = self._merge_plate_connections(
+                edge_connections, len(plate.contour), plate.edge_connections,
+            )
         self.model.update_plate(
             plate_name,
             thickness_mm=thickness_mm,
@@ -126,6 +172,7 @@ class CurrentFeatures(ProjectFeatures):
             restrictions=restrictions,
             restriction_stiffness=restriction_stiffness,
             restriction_directions=restriction_directions,
+            edge_connections=connections,
         )
         self._notify_model_changed()
         return {"revision": self.model.revision, "plate": self._plate_payload(self.model.plates[plate_name])}

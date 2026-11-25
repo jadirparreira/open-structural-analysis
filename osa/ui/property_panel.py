@@ -817,6 +817,7 @@ class PropertyPanel(QFrame):
                     self._plate_restriction_boxes.append(checkbox)
                     self._plate_restriction_direction_inputs.append(direction)
                     self._plate_restriction_stiffness_inputs.append(stiffness)
+                self._show_plate_connections(name)
             elif section == "Ações":
                 self._show_plate_pressure_input(name)
                 self._show_plate_edge_actions(name)
@@ -3288,6 +3289,50 @@ class PropertyPanel(QFrame):
                     self._plate_section_combo.setCurrentIndex(
                         0 if self.window.model.plates[name].thickness_mm > 0 else -1
                     )
+
+    def _show_plate_connections(self, name: str) -> None:
+        plate = self.window.model.plates[name]
+        edges = [
+            (index, self.window.model.plate_edge_bars(name, index, include_rigid=True))
+            for index in range(len(plate.contour))
+        ]
+        edges = [(index, bars) for index, bars in edges if bars]
+        title = QLabel("Vinculações")
+        title.setObjectName("propertySection")
+        self._add_context_widget(title)
+        if not edges:
+            message = QLabel("Sem arestas sobre barras. Arestas livres.")
+            message.setWordWrap(True)
+            self._add_context_widget(message)
+            return
+        selector = SelectorComboBox()
+        selector.setAccessibleName("Aresta da placa")
+        for index, bars in edges:
+            selector.addItem(f"Aresta {index + 1} — {', '.join(bars)}", index)
+        connection = SelectorComboBox()
+        connection.setAccessibleName("Vinculação da aresta da placa")
+        for label, state in (("Livre", "free"), ("Apoiado", "supported"), ("Engastado", "fixed")):
+            connection.addItem(label, state)
+
+        def select_edge(_index=0):
+            current = self.window.model.plates[name]
+            state = dict(current.edge_connections).get(selector.currentData(), "fixed")
+            with QSignalBlocker(connection):
+                connection.setCurrentIndex(connection.findData(state))
+
+        def set_connection(_index):
+            if self._selected != ("plate", name) or name not in self.window.model.plates:
+                return
+            values = dict(self.window.model.plates[name].edge_connections)
+            values[selector.currentData()] = connection.currentData()
+            self.window.model.update_plate(name, edge_connections=tuple(values.items()))
+            self.window.refresh_scene()
+
+        select_edge()
+        selector.currentIndexChanged.connect(select_edge)
+        connection.currentIndexChanged.connect(set_connection)
+        self._add_context_widget(selector)
+        self._add_context_widget(connection)
 
     def _plate_restriction_changed(self, name: str, index: int, restrained: bool) -> None:
         if self._selected != ("plate", name) or name not in self.window.model.plates:

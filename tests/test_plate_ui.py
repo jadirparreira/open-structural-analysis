@@ -56,6 +56,65 @@ def test_closed_contour_create_inspect_save_delete(window, tmp_path):
     assert not window.model.plates
 
 
+def test_plate_connections_use_standard_selectors_and_hide_edges_without_bars(window):
+    from osa.ui.selector import SelectorComboBox
+
+    window.model.remove_rigid_bar('N4-N1')
+    window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    window.scene.render_model(window.model)
+    window.properties.show_for('plate', 'P1', 'Geometria')
+    selectors = {field.accessibleName(): field for field in window.properties.findChildren(SelectorComboBox)}
+    edges = selectors['Aresta da placa']
+    connection = selectors['Vinculação da aresta da placa']
+    assert edges.count() == 3
+    assert [connection.itemText(index) for index in range(3)] == ['Livre', 'Apoiado', 'Engastado']
+    assert connection.currentData() == 'supported'
+    edge = edges.currentData()
+    connection.setCurrentIndex(connection.findData('free'))
+    assert dict(window.model.plates['P1'].edge_connections)[edge] == 'free'
+    window.properties.show_for('plate', 'P1', 'Geometria')
+    connection = next(field for field in window.properties._context_widgets
+                      if isinstance(field, SelectorComboBox)
+                      and field.accessibleName() == 'Vinculação da aresta da placa')
+    assert connection.currentData() == 'free'
+
+
+def test_plate_connection_symbols_follow_the_common_visibility_toggle_and_refresh(window):
+    plate = window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    scene = window.scene
+    scene.render_model(window.model)
+    assert scene._plate_connection_actors[plate.name].GetVisibility()
+    scene.set_member_releases_visible(False)
+    assert not scene._plate_connection_actors[plate.name].GetVisibility()
+    scene.set_member_releases_visible(True)
+    assert scene._plate_connection_actors[plate.name].GetVisibility()
+    scene.set_solid_members_visible(True)
+    assert scene._plate_connection_actors[plate.name].GetVisibility()
+    window.model.update_plate(plate.name, edge_connections=tuple((edge, 'free') for edge in range(4)))
+    scene.update_plate_rendering(plate.name)
+    assert plate.name not in scene._plate_connection_actors
+
+
+def test_mcp_plate_connection_edit_updates_the_selected_panel_and_symbols(window):
+    from osa.ui.selector import SelectorComboBox
+
+    window.model.add_plate(((0, 0, 0), (4, 0, 0), (4, 3, 0), (0, 3, 0)))
+    window.refresh_scene()
+    click(window, 'plate', 'P1')
+    before = window.scene._plate_connection_actors['P1'].GetMapper().GetInput().GetNumberOfLines()
+    window._mcp_dispatcher.resume()
+    window._mcp_application.update_plate_properties(
+        'P1', edge_connections=[{'edge_index': 0, 'state': 'fixed'}],
+    )
+    QApplication.processEvents()
+    connection = next(field for field in window.properties._context_widgets
+                      if isinstance(field, SelectorComboBox)
+                      and field.accessibleName() == 'Vinculação da aresta da placa')
+    assert connection.currentData() == 'fixed'
+    after = window.scene._plate_connection_actors['P1'].GetMapper().GetInput().GetNumberOfLines()
+    assert after < before
+
+
 def test_automatic_and_manual_closure(window, monkeypatch):
     import osa.ui.main_window as module
     class Auto:

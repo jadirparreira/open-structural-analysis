@@ -1624,7 +1624,7 @@ class TopIconPalette(QFrame):
                                         ("minus-m.svg", "Identificadores das barras", "bar"),
                                         ("square-p.svg", "Identificadores das placas", "plate"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
-                                        ("release.svg", "Vinculações das barras", "releases"),
+                                        ("release.svg", "Vinculações", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
                                         ("support-3d.svg", "Apoios dos nós", "supports"),
                                         ("component.svg", "Componente", "components")):

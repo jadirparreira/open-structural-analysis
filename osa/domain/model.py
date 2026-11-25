@@ -83,6 +83,7 @@ class StructuralModel:
         restriction_stiffness=(0.0, 0.0, 0.0),
         restriction_directions=("=", "=", "="),
         allow_warped=False,
+        edge_connections=None,
     ) -> Plate:
         from osa.services.plate_contour import plate_contour
 
@@ -171,6 +172,11 @@ class StructuralModel:
             restriction_stiffness=restriction_stiffness,
             restriction_directions=restriction_directions,
             vertex_nodes=tuple(vertex_nodes),
+            edge_connections=self._validated_plate_edge_connections(
+                tuple((index, "supported") for index in range(len(ordered)))
+                if edge_connections is None else edge_connections,
+                len(ordered),
+            ),
         )
         self.nodes.update(new_nodes)
         self.plates[name] = plate
@@ -182,6 +188,7 @@ class StructuralModel:
         positioning_displacement=None, edge_positioning=None,
         restrictions=None, restriction_stiffness=None,
         restriction_directions=None,
+        edge_connections=None,
     ) -> None:
         plate = self.plates[name]
         if color is None:
@@ -226,10 +233,26 @@ class StructuralModel:
             positioning_displacement=displacement, edge_positioning=edges,
             restrictions=restrictions, restriction_stiffness=restriction_stiffness,
             restriction_directions=restriction_directions,
+            edge_connections=(plate.edge_connections if edge_connections is None else
+                              self._validated_plate_edge_connections(edge_connections, len(plate.contour))),
         )
         if updated != plate:
             self.plates[name] = updated
             self._touch()
+
+    @staticmethod
+    def _validated_plate_edge_connections(values, edge_count):
+        result = []
+        for item in values:
+            if len(item) != 2:
+                raise ValueError("Vinculação de aresta inválida.")
+            index, state = item
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < edge_count:
+                raise ValueError("Índice de aresta inválido.")
+            if state not in {"free", "supported", "fixed"} or any(i == index for i, _ in result):
+                raise ValueError("Vinculação de aresta inválida ou duplicada.")
+            result.append((index, state))
+        return tuple(sorted(result))
 
     @staticmethod
     def _validated_plate_restrictions(values):
@@ -470,6 +493,7 @@ class StructuralModel:
         }
         first_plate = candidate.add_plate(
             first_contour, name=name, supports=child_supports(first_contour),
+            edge_connections=self._remap_plate_edge_connections((source,), first_contour),
             edge_positioning=tuple(
                 item for item in source.edge_positioning
                 if item[0] in {support_name for _kind, support_name in child_supports(first_contour)}
@@ -481,6 +505,7 @@ class StructuralModel:
         second_supports = child_supports(second_contour)
         second_plate = candidate.add_plate(
             second_contour, supports=second_supports,
+            edge_connections=self._remap_plate_edge_connections((source,), second_contour),
             edge_positioning=tuple(
                 item for item in source.edge_positioning
                 if item[0] in {support_name for _kind, support_name in second_supports}
@@ -625,6 +650,7 @@ class StructuralModel:
 
         merged = candidate.add_plate(
             merged_contour,
+            edge_connections=self._remap_plate_edge_connections((first, second), merged_contour),
             name=first_name,
             supports=supports,
             color=first.color,
@@ -708,7 +734,24 @@ class StructuralModel:
         self._touch()
         return self.plates[first_name]
 
-    def plate_edge_bars(self, name: str, edge_index: int) -> tuple[str, ...]:
+    def _remap_plate_edge_connections(self, plates, contour):
+        result = []
+        for index, start in enumerate(contour):
+            end = contour[(index + 1) % len(contour)]
+            states = set()
+            for plate in plates:
+                values = dict(plate.edge_connections)
+                for old_index, old_start in enumerate(plate.contour):
+                    old_end = plate.contour[(old_index + 1) % len(plate.contour)]
+                    if self._plate_contours_share_edge((start, end), (old_start, old_end)):
+                        states.add(values.get(old_index, "fixed"))
+            if len(states) > 1:
+                raise ValueError("Não é possível unir arestas com vinculações diferentes.")
+            if states and states != {"fixed"}:
+                result.append((index, next(iter(states))))
+        return tuple(result)
+
+    def plate_edge_bars(self, name: str, edge_index: int, *, include_rigid=False) -> tuple[str, ...]:
         """Find bars overlapping the analytical plate edge by a nonzero length."""
         plate = self.plates[name]
         start = plate.contour[edge_index]
@@ -719,7 +762,8 @@ class StructuralModel:
         if length2 <= tolerance ** 2:
             return ()
         matches = []
-        for bar in self.bars.values():
+        members = (*self.bars.values(), *self.rigid_bars.values()) if include_rigid else self.bars.values()
+        for bar in members:
             fractions = []
             for node_name in (bar.start_node, bar.end_node):
                 node = self.nodes[node_name]

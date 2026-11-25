@@ -8118,6 +8118,7 @@ class MainWindow(QMainWindow):
         self.refresh_analysis_palette()
         self.reference_panel.reload()
         self.refresh_scene()
+        self.refresh_selected_property_panel(self.palette.active_group)
 
     def _apply_mcp_session_change(self, group: str) -> None:
         self.show_editor()
