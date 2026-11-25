@@ -3575,7 +3575,6 @@ class StructureScene(QWidget):
             watched is self.plotter
             and event.type() == QEvent.Type.MouseButtonDblClick
             and event.button() == Qt.MouseButton.MiddleButton
-            and getattr(getattr(self.window(), "palette", None), "active_group", None) == "Geometria"
         ):
             self._finish_camera_drag()
             self.reset_camera()
