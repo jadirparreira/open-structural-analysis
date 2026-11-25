@@ -12,8 +12,10 @@ from osa.domain.node_components import node_component_definition, node_component
 from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS
 from osa.rendering.plate_result_display import PLATE_RESULT_DISPLAY_MODES
 
+from .project_features import ProjectFeatures
 
-class CurrentFeatures:
+
+class CurrentFeatures(ProjectFeatures):
     def get_capabilities(self) -> dict[str, Any]:
         """Descobre sessões, diagramas, unidades e recursos suportados nesta versão."""
         from .application import APPLICATION_SESSIONS
@@ -355,7 +357,7 @@ class CurrentFeatures:
 
 
 FEATURE_TOOLS = tuple(
-    name for name, value in CurrentFeatures.__dict__.items() if not name.startswith("_") and callable(value)
+    name for name, value in inspect.getmembers(CurrentFeatures, inspect.isfunction) if not name.startswith("_")
 )
 READ_TOOLS = {
     "get_capabilities",
@@ -364,6 +366,7 @@ READ_TOOLS = {
     "list_node_components",
     "get_verification_state",
     "get_verification_results",
+    "get_project_sheets",
 }
 
 

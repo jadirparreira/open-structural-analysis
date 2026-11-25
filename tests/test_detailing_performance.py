@@ -478,7 +478,8 @@ def test_sheet_linework_upgrade_keeps_annotation_and_rejects_stale_results():
             "dimensions": [{"start": (0, 0), "end": (1, 1)}]}
     workspace = MagicMock()
     window = SimpleNamespace(
-        model=model, _sheet_linework_pending={(id(view), model.revision, model.verification_group_revision)},
+        model=model, _sheet_linework_pending={(id(view), model.revision, model.verification_group_revision, ())},
+        _sheet_views_updating_dialog=MagicMock(),
         project_sheet_workspace=workspace,
         project_sheets_palette=SimpleNamespace(_sheet_views={"Sheet": [view]}, sheet_selector=MagicMock()),
         _store_detailing_state=MagicMock(),
@@ -487,17 +488,17 @@ def test_sheet_linework_upgrade_keeps_annotation_and_rejects_stale_results():
     projection = dict(view["projection"])
     segments, owners = (((0, 0), (2, 2)),), ("bar:B1",)
     MainWindow._sheet_linework_upgraded(window, "Sheet", view, model.revision,
-                                       model.verification_group_revision, projection, segments, owners, True)
+                                       model.verification_group_revision, projection, (), segments, owners, True)
     assert view["segments"] == segments
     assert view["linework_version"] == DETAILING_LINEWORK_VERSION
     assert view["identifications"] == [{"text": "B1"}]
     assert view["dimensions"] == [{"start": (0, 0), "end": (1, 1)}]
-    workspace._dimension_snap_cache.clear.assert_called_once()
+    workspace.invalidate_view_geometry.assert_called_once_with(0)
     window._store_detailing_state.assert_called_once()
     # A late result must not overwrite a view that has since changed.
     view["projection"] = {"plane": "XZ", "coordinate": 0}
     MainWindow._sheet_linework_upgraded(window, "Sheet", view, model.revision,
-                                       model.verification_group_revision, projection, (), (), True)
+                                       model.verification_group_revision, projection, (), (), (), True)
     assert view["segments"] == segments
 
 
@@ -519,6 +520,7 @@ def test_detailing_state_snapshot_shares_read_only_linework_but_copies_annotatio
         _sheet_settings={"01": {}},
         _project_settings={},
         _sheet_views={"01": [view]},
+        _sheet_texts={}, _sheet_lines={},
     )
     context = SimpleNamespace(model=StructuralModel(), project_sheets_palette=palette)
 

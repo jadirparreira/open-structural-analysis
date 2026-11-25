@@ -168,6 +168,9 @@ def test_dialog_accept_adds_annotations_and_preserves_existing_choices(app):
         _groups={'N':{'label':'DET A - Base inferior','nodes':['N']}},
         _group_views_cache={'N':data}, _window=SimpleNamespace(model=model),
         _VIEW_DEFINITIONS=definitions, _existing_views_by_direction={}, _editing_group_id=None,
+        _preview_rotations={},
+        _rotate_component_view_data=ComponentDetailsDialog._rotate_component_view_data,
+        _rotate_existing_component_view=ComponentDetailsDialog._rotate_existing_component_view,
         _cards={key:(SimpleNamespace(isChecked=lambda key=key:key in {'superior','oeste'}),None,direction)
                 for key,_title,direction in definitions}, accept=lambda:None)
     ComponentDetailsDialog._accept_selected_views(fake)
@@ -180,7 +183,7 @@ def test_dialog_accept_adds_annotations_and_preserves_existing_choices(app):
     fake._editing_group_id='A'
     fake._existing_views_by_direction={'superior':top,'oeste':fake.result_views[1]}
     ComponentDetailsDialog._accept_selected_views(fake)
-    assert fake.result_views[0] is top
+    top = fake.result_views[0]
     assert top['identifications'][0]['projected_point']==(.9,.8)
     assert len(top['identifications'])==2 and len(top['weld_marks'])==1
 

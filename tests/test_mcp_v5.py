@@ -184,3 +184,17 @@ def test_copy_properties_supports_bar_categories_and_detailing(api):
     api.group_verification_elements(['B1', 'B2'])
     api.ungroup_verification_elements('B1')
     assert not api.get_verification_state()['groups']
+
+
+def test_split_member_reuses_existing_node_and_preserves_its_supports(api):
+    for x in (0, 2, 4):
+        api.create_node(x, 0, 0)
+    api.set_node_supports('N2', True, True, True)
+    api.create_member('N1', 'N3')
+    result = api.split_member('B1', 2)
+    assert result['created_nodes'] == []
+    assert result['internal_nodes'] == ['N2']
+    assert len(api.model.nodes) == 3
+    assert api.model.bars['B1'].end_node == 'N2'
+    assert api.model.bars['B2'].start_node == 'N2'
+    assert api.model.nodes['N2'].supports[:3] == (True, True, True)

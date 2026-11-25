@@ -1,6 +1,6 @@
 # Inventário das ferramentas MCP — v5
 
-O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas efetivos do servidor; `get_capabilities` permite consultar recursos e diagramas em tempo de execução.
+O servidor registra **107 ferramentas**. Esta relação corresponde aos esquemas efetivos do servidor; `get_capabilities` permite consultar recursos e diagramas em tempo de execução.
 
 | Ferramenta | Parâmetros | Operação |
 | --- | --- | --- |
@@ -104,3 +104,19 @@ O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas 
 `?` indica parâmetro opcional. As unidades e restrições de cada argumento também constam no esquema MCP, consultável pelo cliente.
 
 Consulte [MCP local](mcp-local.md) para ativação, compatibilidade e validação dos pacotes.
+
+## Folhas e arquivos (plugin 0.3.0)
+
+| Ferramenta | Parâmetros | Operação |
+| --- | --- | --- |
+| `get_project_sheets` | — | Consulta folhas, vistas, cotas e textos. Posições de folha são frações da área útil (0 a 1). |
+| `create_project_sheet` | `name`, `paper_size?`, `orientation?`, `project?` | Cria folha A0–A4, em Paisagem/Retrato. project: client/work/address/responsible/crea; não altera análise. |
+| `create_sheet_view` | `sheet_name`, `name`, `plane`, `coordinate`, `scale_denominator?`, `position?`, `upper_offset_cm?`, `lower_offset_cm?`, `excluded_owners?` | Projeta geometria real na folha. plane: XY/XZ/YZ; coordinate em m; offsets em cm; position: [0..1,0..1]. |
+| `add_sheet_text` | `sheet_name`, `text`, `position`, `width_mm?`, `height_mm?`, `text_height_mm?` | Adiciona texto simples à folha; position é fração da área útil; tamanhos em mm. |
+| `update_sheet_view` | `sheet_name`, `view_index`, `name?`, `position?`, `scale_denominator?`, `axes_visible?`, `clear_dimensions?` | Edita nome, posição (frações 0..1), escala e eixos; em detalhes, posição move o grupo inteiro. clear_dimensions remove cotas. |
+| `add_view_dimension` | `sheet_name`, `view_index`, `start`, `end`, `offset`, `unit?` | Adiciona cota linear em m projetados: XY=(X,Y), XZ=(-X,Z), YZ=(Y,Z); offset também 2D; unidade mm/cm/m. |
+| `create_component_detail` | `sheet_name`, `node_name`, `name?`, `scale_denominator?` | Cria vistas superior/lateral cotadas da chapa de base do nó, usando a geometria da interface; não dimensiona a ligação. |
+| `save_project` | `path`, `overwrite?` | Salva o projeto completo em caminho absoluto .osa; overwrite=true permite substituir arquivo existente. |
+| `export_project_sheet_pdf` | `sheet_name`, `path`, `overwrite?` | Exporta uma folha para PDF vetorial em caminho absoluto; preserva a navegação e seleção da interface. |
+| `export_model_dxf` | `path`, `overwrite?` | Exporta eixos analíticos das barras para DXF 3D em m, em caminho absoluto. |
+| `import_drawing_reference` | `path` | Importa referência DXF/DWG do caminho absoluto local, preservando o arquivo de origem. |

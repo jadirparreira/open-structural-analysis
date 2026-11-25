@@ -58,5 +58,6 @@ def test_escape_after_cancelling_custom_plane_only_closes_view_manager(monkeypat
     finally:
         app.aboutToQuit.disconnect(on_about_to_quit)
         window.scene.plotter.close()
+        monkeypatch.setattr(window, '_confirm_pending_changes', lambda: True)
         window.close()
         app.processEvents()

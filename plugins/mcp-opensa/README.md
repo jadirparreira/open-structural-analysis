@@ -18,12 +18,13 @@ que as ferramentas operem sobre o projeto estrutural ativo.
 Enquanto ativo, qualquer programa neste computador que alcance o endpoint local
 pode consultar e alterar o modelo. Desative o servidor ao terminar.
 
-## Recursos v5 (plugin 0.2.0)
+## Recursos v5 (plugin 0.3.0)
 
-O servidor oferece 96 ferramentas. Comece por `get_capabilities` para consultar
+O servidor oferece 107 ferramentas. Comece por `get_capabilities` para consultar
 sessões, diagramas de barras e placas, unidades e recursos disponíveis. Além da
 modelagem e análise, estão disponíveis componentes dos nós, cargas de placas e
-arestas, verificação e operações de detalhamento.
+arestas, verificação, folhas com vistas/cotas/textos e detalhes de bases.
+Também é possível salvar `.osa`, exportar folhas PDF e eixos DXF e importar referências CAD.
 
 O release inclui o servidor e os recursos do plugin; não exige Git, Python ou uv.
 A configuração do cliente e a ativação manual no OpenSA continuam necessárias.

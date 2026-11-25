@@ -1437,7 +1437,8 @@ class StructuralModel:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace one bar with collinear segments and intermediate nodes.
 
-        ``node_names`` contains only the new internal nodes.  The generated
+        ``node_names`` supplies names for new internal nodes; nodes already at
+        the division points are reused with their properties intact. The generated
         members inherit the source member's analytical properties; releases
         and solid-face offsets remain only at the original outer ends.
         """
@@ -1487,10 +1488,17 @@ class StructuralModel:
         )
         if len(set(coordinates)) != len(coordinates):
             raise ValueError("A divisão criaria nós coincidentes na precisão de um milímetro.")
-        for coordinate in coordinates:
-            self._ensure_unique_coordinates(coordinate)
+        existing_nodes = {
+            (node.x, node.y, node.z): node.name for node in self.nodes.values()
+        }
+        internal_names = tuple(
+            existing_nodes.get(coordinate, proposed)
+            for proposed, coordinate in zip(node_names, coordinates)
+        )
+        if source.start_node in internal_names or source.end_node in internal_names:
+            raise ValueError("A divisão criaria um segmento de comprimento nulo.")
 
-        chain = (source.start_node, *node_names, source.end_node)
+        chain = (source.start_node, *internal_names, source.end_node)
         pairs = tuple(frozenset((chain[index], chain[index + 1])) for index in range(len(member_names)))
         existing_pairs = {
             frozenset((member.start_node, member.end_node))
@@ -1502,7 +1510,8 @@ class StructuralModel:
 
         new_nodes = {
             node_name: Node(node_name, *coordinate)
-            for node_name, coordinate in zip(node_names, coordinates)
+            for node_name, coordinate in zip(internal_names, coordinates)
+            if node_name not in self.nodes
         }
         new_bars = {}
         for index, member_name in enumerate(member_names):
@@ -1577,7 +1586,7 @@ class StructuralModel:
                     suffix += 1
                 self.actions[action_name] = replace(action, name=action_name, target=member_name)
         self._touch()
-        return tuple(node_names), tuple(member_names)
+        return internal_names, tuple(member_names)
 
     def join_bars(self, first_name: str, second_name: str) -> Bar:
         """Merge two contiguous, collinear bars and remove their shared node."""

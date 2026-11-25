@@ -70,6 +70,10 @@ class McpApplication(CurrentFeatures):
         on_analysis_diagrams_changed: Callable[[bool], None] | None = None,
         on_analysis_display_changed: Callable[[dict[str, Any]], None] | None = None,
         on_session_changed: Callable[[str], None] | None = None,
+        get_detailing_data: Callable[[], dict] | None = None,
+        on_detailing_changed: Callable[[], None] | None = None,
+        on_project_saved: Callable[[Any], None] | None = None,
+        can_reverse_member: Callable[[], bool] | None = None,
         get_session: Callable[[], str | None] | None = None,
         model_lock=None,
         execute_on_model_thread: Callable[..., Any] | None = None,
@@ -91,6 +95,10 @@ class McpApplication(CurrentFeatures):
         self._on_analysis_diagrams_changed = on_analysis_diagrams_changed
         self._on_analysis_display_changed = on_analysis_display_changed
         self._on_session_changed = on_session_changed
+        self._get_detailing_data = get_detailing_data
+        self._on_detailing_changed = on_detailing_changed
+        self._on_project_saved = on_project_saved
+        self._can_reverse_member = can_reverse_member
         self._get_session = get_session
         # FastMCP may execute requests concurrently. Standalone callers share
         # the scene lock; the Qt executor additionally places live-model work
@@ -1466,13 +1474,15 @@ class McpApplication(CurrentFeatures):
         }
 
     def split_member(self, member_name: str, parts: int) -> dict[str, Any]:
-        """Divide uma barra em partes iguais, criando nós intermediários."""
+        """Divide uma barra em partes iguais e reutiliza nós existentes nos pontos internos."""
+        previous_nodes = set(self.model.nodes)
         node_names, member_names = self.model_service.split_member(member_name, parts)
         self._notify_model_changed()
         return {
             "revision": self.model.revision,
             "source_member": member_name,
-            "created_nodes": list(node_names),
+            "created_nodes": [name for name in node_names if name not in previous_nodes],
+            "internal_nodes": list(node_names),
             "created_members": list(member_names),
             "members": [self._member_payload(self.model.bars[name]) for name in member_names],
         }
@@ -1488,7 +1498,9 @@ class McpApplication(CurrentFeatures):
         }
 
     def reverse_member(self, member_name: str) -> dict[str, Any]:
-        """Inverte os nós inicial e final de uma barra."""
+        """Inverte os nós inicial/final; rejeita se a interface mantém orientação canônica automática."""
+        if self._can_reverse_member is not None and not self._can_reverse_member():
+            raise ValueError('A orientação canônica automática está ativa; a interface não permite inverter barras.')
         member = self.model_service.reverse_member(member_name)
         self._notify_model_changed()
         return {"revision": self.model.revision, "member": self._member_payload(member)}

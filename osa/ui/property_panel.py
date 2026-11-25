@@ -679,8 +679,12 @@ class PropertyPanel(QFrame):
                 related_names = [
                     element_name for _kind, element_name in plate.supports
                 ]
+                for edge_index in range(len(plate.contour)):
+                    related_names.extend(
+                        self.window.model.plate_edge_bars(name, edge_index)
+                    )
                 related_names.extend(self.window.model.related_plates(name))
-                relationships = ", ".join(related_names) or "Nenhuma"
+                relationships = ", ".join(dict.fromkeys(related_names)) or "Nenhuma"
                 relationships_label = QLabel("Barras e placas")
                 relationships_label.setObjectName("propertySection")
                 relationships_value = QLabel(relationships)
