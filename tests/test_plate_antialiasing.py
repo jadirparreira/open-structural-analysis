@@ -1,7 +1,6 @@
 """Render plate boundaries and depth crossings with antialiasing enabled."""
 
 from dataclasses import replace
-import sys
 
 import numpy as np
 import pytest
@@ -104,10 +103,6 @@ def _project(plotter, point, height):
     return np.array((x, height - y))
 
 
-@pytest.mark.skipif(
-    sys.platform == 'win32',
-    reason='VTK off-screen multisample screenshots can trigger a native access violation on Windows runners',
-)
 def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
     images, effective_samples = [], []
     for samples in (2, 4, 8):
@@ -172,7 +167,8 @@ def test_antialiased_adjacent_plates_have_no_bright_seam(direction, samples):
         plotter.camera.parallel_projection = True
         plotter.camera.parallel_scale = 4
         image = plotter.screenshot(return_img=True)
-        assert plotter.render_window.GetMultiSamples() == samples
+        # Software renderers may cap the requested level (e.g. 8 to 4).
+        assert 2 <= plotter.render_window.GetMultiSamples() <= samples
         assert not plotter.renderer.GetUseOIT()
         assert not bar.GetForceTranslucent()
         assert bar.GetProperty().GetLineWidth() == pytest.approx(1.25)

@@ -353,6 +353,7 @@ def test_old_plate_recovers_matching_supports(window):
 
 def test_dashed_intersections_follow_solid_mode_and_geometry(window):
     model, scene = window.model, window.scene
+    scene.set_face_intersection_edges_enabled(True)
     model.add_plate(((-2, -2, 0), (6, -2, 0), (6, 5, 0), (-2, 5, 0)))
     model.update_bar_section('B1', 'Barra Retangular')
     model.update_member_profile('B1', 'R1', {'b': 300, 'h': 300})
@@ -379,6 +380,7 @@ def test_dashed_intersections_follow_solid_mode_and_geometry(window):
 
 def test_bar_intersections_without_plate_are_solid_only(window):
     model, scene = window.model, window.scene
+    scene.set_face_intersection_edges_enabled(True)
     for name in ('B1', 'B2'):
         model.update_bar_section(name, 'Barra Retangular')
         model.update_member_profile(name, name, {'b': 300, 'h': 300})
@@ -396,6 +398,7 @@ def test_bar_intersections_without_plate_are_solid_only(window):
 def test_bar_hover_and_selection_color_only_associated_intersections(window):
     import pyvista as pv
     model, scene = window.model, window.scene
+    scene.set_face_intersection_edges_enabled(True)
     model.add_plate(((-2, -2, 0), (6, -2, 0), (6, 5, 0), (-2, 5, 0)))
     for name in ('B1', 'B2'):
         model.update_bar_section(name, 'Barra Retangular')
@@ -585,6 +588,7 @@ def test_plate_diagram_toggle_shows_and_hides_colored_plate_results(window):
 def test_plate_selection_highlights_only_its_own_intersections(window):
     import pyvista as pv
     model, scene = window.model, window.scene
+    scene.set_face_intersection_edges_enabled(True)
     model.add_plate(((0, -1, 0), (1.5, -1, 0), (1.5, 1, 0), (0, 1, 0)))
     model.add_plate(((2.5, -1, 0), (4, -1, 0), (4, 1, 0), (2.5, 1, 0)))
     model.update_bar_section('B1', 'Barra Retangular')
