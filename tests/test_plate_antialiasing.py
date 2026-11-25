@@ -1,6 +1,7 @@
 """Render plate boundaries and depth crossings with antialiasing enabled."""
 
 from dataclasses import replace
+import sys
 
 import numpy as np
 import pytest
@@ -103,6 +104,10 @@ def _project(plotter, point, height):
     return np.array((x, height - y))
 
 
+@pytest.mark.skipif(
+    sys.platform == 'win32',
+    reason='VTK off-screen multisample screenshots can trigger a native access violation on Windows runners',
+)
 def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
     images, effective_samples = [], []
     for samples in (2, 4, 8):
