@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_QPA_PLATFORM: xcb
 
     steps:
       - name: Check out source
@@ -48,7 +49,7 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Install virtual display
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb libegl1 libgl1-mesa-dri
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb libegl1 libgl1-mesa-dri libglu1-mesa libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0
 
       - name: Run tests
         run: xvfb-run -a -s "-screen 0 1280x1024x24" uv run pytest -q

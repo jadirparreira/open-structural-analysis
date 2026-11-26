@@ -272,10 +272,7 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             verify_l_slenderness(element, model, model.analysis_results) if is_l_profile else
             verify_t_slenderness(element, model, model.analysis_results) if is_t_profile else None
         )
-        w_torsion_summary = (
-            _w_torsion_summary(element, model, model.analysis_results)
-            if is_w_profile or is_u_profile or is_i_profile else None
-        )
+        w_torsion_summary = _w_torsion_summary(element, model, model.analysis_results)
         checked = [item for item in checks if item.get("status") == "checked"]
         failed = [item for item in checked if item.get("utilization", 0.0) > 1.0]
         controlling = max(
@@ -294,6 +291,12 @@ def verify_model(model, member_names: tuple[str, ...] | None = None) -> dict:
             summary = dict(controlling or tension)
         if w_torsion_summary is not None:
             summary["torsion_summary"] = w_torsion_summary
+            if w_torsion_summary.get("has_torsion") and not failed:
+                summary["status"] = "not_checked"
+                summary["detail"] = "; ".join(filter(None, (
+                    summary.get("detail"),
+                    "Torção solicitante não verificada; resultado global incompleto.",
+                )))
         if w_slenderness_summary is not None:
             summary["slenderness_summary"] = w_slenderness_summary
         summary["checks"] = {

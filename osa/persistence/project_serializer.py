@@ -368,6 +368,7 @@ class ProjectSerializer:
                                 restriction_directions=item.get(
                                     "restriction_directions", ("=", "=", "="),
                                 ),
+                                edge_connections=item.get("edge_connections", ()),
                                 allow_warped=True)
 
         raw_node_names = data.get("node_display_names", {})

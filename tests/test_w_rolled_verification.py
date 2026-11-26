@@ -128,3 +128,15 @@ def test_memorial_shows_the_w_rolled_radius():
 
     assert "Raio de concordância adotado (r)" in html
     assert _w_properties(model.bars["W1"])["r"] == 10.0
+
+
+@pytest.mark.parametrize('torque, expected', [(0.0, 'checked'), (0.001, 'checked'), (0.25, 'not_checked')])
+def test_unverified_torsion_prevents_a_global_approval(torque, expected):
+    model = make_w_model(sample={
+        'x': 0.0, 'axial': 0.0, 'moment_y': 1.0, 'moment_z': 0.0,
+        'shear_y': 0.0, 'shear_z': 0.0, 'torque': torque,
+    })
+    result = verify_model(model)
+    assert result['results']['bar:W1']['status'] == expected
+    assert result['summary']['approved'] == (expected == 'checked')
+    assert result['summary']['unverified'] == (expected == 'not_checked')

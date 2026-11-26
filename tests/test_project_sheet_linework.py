@@ -24,14 +24,15 @@ def test_sheet_linework_updates_after_replacing_views_and_segment_data():
         app.processEvents()
 
     paint()
-    assert widget._view_linework[0][3] == (0.0, 10.0, 0.0, 10.0)
-    assert len(widget._view_linework[0][2]) == 1
+    assert widget._view_linework[0][6] == (0.0, 10.0, 0.0, 10.0)
+    assert widget._view_linework[0][2].elementCount() == 2
+    assert len(widget._view_linework[0][4]) == 1
     view["segments"] = (((-4, -3), (3, 2)),)
     paint()
-    assert widget._view_linework[0][3] == (-4.0, 3.0, -3.0, 2.0)
+    assert widget._view_linework[0][6] == (-4.0, 3.0, -3.0, 2.0)
     widget.set_sheet_views([{"segments": (((1, 1), (2, 2)),)}])
     paint()
-    assert widget._view_linework[0][3] == (1.0, 2.0, 1.0, 2.0)
+    assert widget._view_linework[0][6] == (1.0, 2.0, 1.0, 2.0)
     widget.close()
 
 

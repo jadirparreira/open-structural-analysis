@@ -1,8 +1,10 @@
+import re
+
 from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
 from .selector import SelectorComboBox
-from PySide6.QtWidgets import QWidgetAction
+from PySide6.QtWidgets import QAbstractItemView, QWidgetAction
 from osa.rendering.analysis_diagrams import BAR_DIAGRAMS, PLATE_DIAGRAMS, PLATE_FIELDS, plate_diagram_tooltip
 
 
@@ -22,7 +24,7 @@ class PaletteTooltip(QLabel):
         self.setObjectName("paletteTooltip")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pending: tuple[QToolButton, str, str, int] | None = None
+        self._pending: tuple[QWidget, str, str, int] | None = None
         self._show_timer = QTimer(self)
         self._show_timer.setSingleShot(True)
         self._show_timer.timeout.connect(self._show_pending)
@@ -34,22 +36,62 @@ class PaletteTooltip(QLabel):
         self._fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._fade_animation.finished.connect(self._fade_finished)
 
-    def schedule_for(self, button: QToolButton, text: str, gap: int = 10) -> None:
+    def track(self, widget: QWidget, text: str, placement: str = "below") -> None:
+        """Use this visual tooltip for any interactive control in a top palette."""
+        widget.setToolTip(text)
+        widget.setProperty("paletteTooltip", text)
+        widget.setProperty("paletteTooltipPlacement", placement)
+        if not widget.accessibleName():
+            widget.setAccessibleName(widget.text() if hasattr(widget, "text") else text)
+        if not widget.property("paletteTooltipTracked"):
+            widget.installEventFilter(self)
+            widget.setProperty("paletteTooltipTracked", True)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        selector_view = watched.parentWidget() if (
+            isinstance(watched, QWidget) and watched.property("paletteTooltipSelectorView")
+        ) else None
+        if isinstance(selector_view, QAbstractItemView):
+            if event.type() in (QEvent.Type.MouseMove, QEvent.Type.ToolTip):
+                position = event.position().toPoint() if hasattr(event, "position") else event.pos()
+                index = selector_view.indexAt(position)
+                text = str(index.data(Qt.ItemDataRole.ToolTipRole) or "") if index.isValid() else ""
+                if text:
+                    self._schedule(selector_view, text, "below", 10)
+                else:
+                    self.dismiss()
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self.dismiss()
+            if event.type() == QEvent.Type.ToolTip:
+                return True
+        if isinstance(watched, QWidget) and watched.property("paletteTooltipTracked"):
+            if event.type() == QEvent.Type.Enter:
+                # Read the live tooltip so controls with changing descriptions stay current.
+                text = watched.toolTip() or str(watched.property("paletteTooltip") or "")
+                placement = str(watched.property("paletteTooltipPlacement") or "below")
+                self._schedule(watched, text, placement, 10)
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self.dismiss()
+            elif event.type() == QEvent.Type.ToolTip:
+                return True
+        return super().eventFilter(watched, event)
+
+    def schedule_for(self, button: QWidget, text: str, gap: int = 10) -> None:
         self._schedule(button, text, "right", gap)
 
-    def schedule_below(self, button: QToolButton, text: str) -> None:
+    def schedule_below(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "below", 10)
 
-    def schedule_upper_right(self, button: QToolButton, text: str) -> None:
+    def schedule_upper_right(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "upper-right", 10)
 
-    def schedule_left(self, button: QToolButton, text: str) -> None:
+    def schedule_left(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "left", 10)
 
-    def schedule_above(self, button: QToolButton, text: str) -> None:
+    def schedule_above(self, button: QWidget, text: str) -> None:
         self._schedule(button, text, "above", 10)
 
-    def _schedule(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
+    def _schedule(self, button: QWidget, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
         self._pending = button, text, placement, gap
         if self.isVisible():
@@ -66,7 +108,7 @@ class PaletteTooltip(QLabel):
             return
         self._show_now(button, text, placement, gap)
 
-    def _show_now(self, button: QToolButton, text: str, placement: str, gap: int) -> None:
+    def _show_now(self, button: QWidget, text: str, placement: str, gap: int) -> None:
         self._show_timer.stop()
         self._pending = None
         self.setText(text)
@@ -75,28 +117,33 @@ class PaletteTooltip(QLabel):
         if parent is None:
             return
         if placement == "below":
-            button_position = button.mapTo(parent, QPoint(0, button.height() + 10))
+            global_position = button.mapToGlobal(QPoint(0, button.height() + 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x() + (button.width() - self.width()) // 2,
                 button_position.y(),
             )
         elif placement == "upper-right":
-            button_position = button.mapTo(parent, QPoint(button.width() + 10, -self.height() - 10))
+            global_position = button.mapToGlobal(QPoint(button.width() + 10, -self.height() - 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(button_position)
         elif placement == "above":
-            button_position = button.mapTo(parent, QPoint(0, -self.height() - 10))
+            global_position = button.mapToGlobal(QPoint(0, -self.height() - 10))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x() + (button.width() - self.width()) // 2,
                 button_position.y(),
             )
         elif placement == "left":
-            button_position = button.mapTo(parent, QPoint(-self.width() - 10, 0))
+            global_position = button.mapToGlobal(QPoint(-self.width() - 10, 0))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x(),
                 button_position.y() + (button.height() - self.height()) // 2,
             )
         else:
-            button_position = button.mapTo(parent, QPoint(button.width() + gap, 0))
+            global_position = button.mapToGlobal(QPoint(button.width() + gap, 0))
+            button_position = parent.mapFromGlobal(global_position)
             self.move(
                 button_position.x(),
                 button_position.y() + (button.height() - self.height()) // 2,
@@ -125,6 +172,46 @@ class PaletteTooltip(QLabel):
             self._opacity_effect.setOpacity(0.0)
             return
         self._animate_to(0.0, hide_when_done=True)
+
+
+def _register_palette_tooltips(palette: QFrame) -> None:
+    """Normalize tooltip presentation for every interactive control in a top palette."""
+    tooltip = getattr(palette, "_tooltip", None)
+    if tooltip is None:
+        tooltip = PaletteTooltip(palette.window())
+        palette._tooltip = tooltip
+
+    controls = (QToolButton, QPushButton, QCheckBox, QRadioButton, QComboBox,
+                QAbstractSpinBox, QSlider, QLineEdit)
+    for widget in palette.findChildren(QWidget):
+        # Group menus already label each option in the menu itself. The hidden
+        # source buttons used to build those entries also don't need a tooltip.
+        ancestor = widget.parentWidget()
+        inside_group_menu = False
+        while ancestor is not None and ancestor is not palette:
+            if isinstance(ancestor, QMenu):
+                inside_group_menu = True
+                break
+            ancestor = ancestor.parentWidget()
+        if inside_group_menu or widget.property("paletteMenuItem"):
+            continue
+        if isinstance(widget, QComboBox):
+            view = widget.view()
+            viewport = view.viewport()
+            if not viewport.property("paletteTooltipSelectorView"):
+                viewport.setProperty("paletteTooltipSelectorView", True)
+                viewport.installEventFilter(tooltip)
+        if not isinstance(widget, controls):
+            continue
+        text = widget.toolTip().strip() or widget.accessibleName().strip()
+        if not text and hasattr(widget, "text"):
+            text = str(widget.text()).strip()
+        if not text:
+            # Keep icon-only controls understandable even if a tooltip was omitted.
+            name = widget.objectName()
+            text = " ".join(part for part in re.split(r"(?<=[a-z])(?=[A-Z])|[_-]+", name) if part)
+        if text:
+            tooltip.track(widget, text)
 
 
 class FloatingPalette(QFrame):
@@ -202,6 +289,7 @@ class FloatingPalette(QFrame):
         self._add_group("Detalhamento", "detailing-map.svg", ())
         self._add_unavailable_button("Rotinas", "routines-chevrons.svg")
         self.toggle_group("Geometria", animate=False)
+        _register_palette_tooltips(self)
 
     def _add_group(
         self,
@@ -717,6 +805,8 @@ class VerificationTopPalette(QFrame):
         self.utilization_button.setAccessibleName(utilization_tooltip)
         self.hide()
 
+        _register_palette_tooltips(self)
+
     def _identifier_button(self, icon_name: str, label: str, kind: str) -> QToolButton:
         button = QToolButton(self)
         button.setFixedSize(24, 24)
@@ -884,6 +974,8 @@ class DetailingTopPalette(QFrame):
         layout.addWidget(self.subtract_button)
         self.hide()
 
+        _register_palette_tooltips(self)
+
     def set_detailing_visible(self, visible: bool) -> None:
         if not visible:
             self._tooltip.dismiss()
@@ -983,6 +1075,8 @@ class DetailingModePalette(QFrame):
         self._update_text()
         self.hide()
 
+        _register_palette_tooltips(self)
+
     def _indicator_geometry(self) -> QRect:
         return QRect(4 + 88 * self._selected, 5, 86, 20)
 
@@ -1016,6 +1110,11 @@ class DetailingModePalette(QFrame):
         self.setVisible(visible)
         if visible:
             self.reposition()
+
+    def set_project_mode(self, active: bool) -> None:
+        index = int(bool(active))
+        self._buttons[index].setChecked(True)
+        self._select(index)
 
     def reposition(self) -> None:
         self.adjustSize()
@@ -1185,6 +1284,8 @@ class ProjectSheetsPalette(QFrame):
         self._on_sheet_selected(self.sheet_selector.currentText())
         self.hide()
 
+        _register_palette_tooltips(self)
+
     def _action_button(self, icon_filename: str, tooltip: str, callback) -> QToolButton:
         button = QToolButton(self)
         button.setFixedSize(30, 30)
@@ -1209,6 +1310,7 @@ class ProjectSheetsPalette(QFrame):
             "QMenu::item:disabled { color: #8c959f; }"
         )
         for tool in tools:
+            tool.setProperty("paletteMenuItem", True)
             action = menu.addAction(tool.icon(), tool.toolTip())
             action.triggered.connect(tool.click)
             tool.hide()
@@ -1537,7 +1639,7 @@ class TopIconPalette(QFrame):
                                         ("minus-m.svg", "Identificadores das barras", "bar"),
                                         ("square-p.svg", "Identificadores das placas", "plate"),
                                         ("axis-3d.svg", "Eixos locais", "axes"),
-                                        ("release.svg", "Vinculações das barras", "releases"),
+                                        ("release.svg", "Vinculações", "releases"),
                                         ("elastic-support.svg", "Flexibilização dos vínculos", "semirigid"),
                                         ("support-3d.svg", "Apoios dos nós", "supports"),
                                         ("component.svg", "Componente", "components")):
@@ -1948,9 +2050,12 @@ class TopIconPalette(QFrame):
         self.move_elements_button = move_elements_button
         self.adjustSize()
 
+        _register_palette_tooltips(self)
+
     def _add_menu_item(
         self, menu: QMenu, button: QToolButton, label: str, *, toggle: bool = False,
     ) -> None:
+        button.setProperty("paletteMenuItem", True)
         action = QWidgetAction(menu)
         action.setText(label)
         action.setCheckable(toggle)
@@ -2338,6 +2443,7 @@ class ActionTopPalette(QFrame):
         self.selfweight_button.installEventFilter(self)
         layout.addWidget(self.selfweight_button)
         self.adjustSize()
+        _register_palette_tooltips(self)
 
     def toggle_action_visibility_command(self, kind: str) -> None:
         button = self._action_visibility_buttons.get(kind)
@@ -2605,6 +2711,8 @@ class AnalysisTopPalette(QFrame):
         self.process_button = process_button
         self.pending.setFixedHeight(24)
         self.adjustSize()
+
+        _register_palette_tooltips(self)
 
     def set_combinations(self, names: tuple[str, ...], selected_name: str | None = None) -> None:
         self.combination_selector.blockSignals(True)

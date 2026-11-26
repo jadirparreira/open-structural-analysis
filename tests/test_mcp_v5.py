@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 
 import pytest
 
@@ -73,6 +74,62 @@ def test_plate_loads_validate_reference_and_preserve_selfweight_rules(api):
     with pytest.raises(ValueError):
         api.add_plate_edge_load("P1", 0, case, "moment", "Z", 2, reference="global")
     assert api.model.actions == before
+
+
+def test_mcp_controls_individual_plate_edges_and_preserves_other_connections(api):
+    plate = api.create_plate(
+        [[0, 0, 0], [4, 0, 0], [4, 3, 0], [0, 3, 0]],
+        edge_connections=[{"edge_index": 0, "state": "fixed"}],
+    )["plate"]
+    assert dict(plate["edge_connections"]) == {0: "fixed", 1: "supported", 2: "supported", 3: "supported"}
+    api.create_member(*plate["vertex_nodes"][:2])
+    edge = api.list_plates()["plates"][0]["edges"][0]
+    assert edge == {"edge_index": 0, "label": "Aresta 1", "start": (0, 0, 0),
+                    "end": (4, 0, 0), "boundary_members": ["B1"], "state": "fixed", "configurable": True}
+    unsupported = api.list_plates()["plates"][0]["edges"][1]
+    assert unsupported["state"] == "free" and not unsupported["configurable"]
+    notifications = []
+    api._on_model_changed = lambda: notifications.append(api.model.revision)
+    for state in ("free", "supported", "fixed"):
+        result = api.update_plate_properties("P1", edge_connections=[{"edge_index": 0, "state": state}])
+        assert result["plate"]["edges"][0]["state"] == state
+        assert dict(api.model.plates["P1"].edge_connections)[1] == "supported"
+    assert len(notifications) == 3
+
+
+@pytest.mark.parametrize("connections", [
+    [{"edge_index": -1, "state": "free"}],
+    [{"edge_index": 4, "state": "fixed"}],
+    [{"edge_index": 0, "state": "unknown"}],
+    [{"edge_index": 0, "state": "free"}, {"edge_index": 0, "state": "fixed"}],
+])
+def test_invalid_mcp_plate_connection_changes_are_atomic(api, connections):
+    api.create_plate([[0, 0, 0], [4, 0, 0], [4, 3, 0], [0, 3, 0]])
+    plate, revision = api.model.plates["P1"], api.model.revision
+    with pytest.raises(ValueError):
+        api.update_plate_properties("P1", thickness_mm=200, edge_connections=connections)
+    assert api.model.plates["P1"] == plate
+    assert api.model.revision == revision
+
+
+def test_registered_mcp_plate_connection_schema_and_execution(api):
+    server = LocalMcpServer(api)
+    tools = {tool.name: tool for tool in server.server._tool_manager.list_tools()}
+    for name in ("create_plate", "update_plate_properties"):
+        schema = tools[name].parameters
+        assert "edge_connections" in schema["properties"]
+        assert '"supported"' in json.dumps(schema)
+
+    async def run():
+        await server.server.call_tool("create_plate", {
+            "contour": [[0, 0, 0], [4, 0, 0], [4, 3, 0], [0, 3, 0]],
+            "edge_connections": [{"edge_index": 0, "state": "free"}],
+        })
+        await server.server.call_tool("update_plate_properties", {
+            "plate_name": "P1", "edge_connections": [{"edge_index": 1, "state": "fixed"}],
+        })
+    asyncio.run(run())
+    assert dict(api.model.plates["P1"].edge_connections) == {0: "free", 1: "fixed", 2: "supported", 3: "supported"}
 
 
 def test_components_support_directions_and_detailing_properties(api):
@@ -184,3 +241,17 @@ def test_copy_properties_supports_bar_categories_and_detailing(api):
     api.group_verification_elements(['B1', 'B2'])
     api.ungroup_verification_elements('B1')
     assert not api.get_verification_state()['groups']
+
+
+def test_split_member_reuses_existing_node_and_preserves_its_supports(api):
+    for x in (0, 2, 4):
+        api.create_node(x, 0, 0)
+    api.set_node_supports('N2', True, True, True)
+    api.create_member('N1', 'N3')
+    result = api.split_member('B1', 2)
+    assert result['created_nodes'] == []
+    assert result['internal_nodes'] == ['N2']
+    assert len(api.model.nodes) == 3
+    assert api.model.bars['B1'].end_node == 'N2'
+    assert api.model.bars['B2'].start_node == 'N2'
+    assert api.model.nodes['N2'].supports[:3] == (True, True, True)

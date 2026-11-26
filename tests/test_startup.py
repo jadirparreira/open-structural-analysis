@@ -28,8 +28,11 @@ class WindowShowRecorder(QObject):
 def test_startup_never_exposes_section_fields_as_desktop_windows(monkeypatch):
     from osa.ui import home
     from osa.ui.section_panel import SECTION_PARAMETRIC_SPECS
+    from osa import app as app_module
 
     monkeypatch.setattr(home.RecentProjectStore, "items", lambda self: [])
+    critical_dialogs = []
+    monkeypatch.setattr(app_module.QMessageBox, "critical", lambda *args: critical_dialogs.append(args))
     app = QApplication.instance() or QApplication([])
     recorder = WindowShowRecorder()
     app.installEventFilter(recorder)
@@ -41,6 +44,7 @@ def test_startup_never_exposes_section_fields_as_desktop_windows(monkeypatch):
     window = None
     try:
         app, window = create_application(show_splash=True, on_splash_shown=bootloader_close)
+        assert not critical_dialogs
         geometry_widgets = [
             widget
             for label, box, _field in window.section_panel._geometry_widgets

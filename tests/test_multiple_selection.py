@@ -302,7 +302,10 @@ def test_mixed_node_support_click_disables_all_and_coordinate_edit_is_isolated(q
 
     assert panel.identity_value.text() == "Variado (2)"
     assert panel.fields[0].text() == "Variado"
-    checkbox = panel._supports_widget.findChildren(QCheckBox)[0]
+    checkbox = next(
+        item for item in panel._supports_widget.findChildren(QCheckBox)
+        if item.text() == "Dx"
+    )
     assert checkbox.checkState() == Qt.CheckState.PartiallyChecked
     checkbox.click()
     assert not model.nodes["N1"].supports[0]
@@ -505,9 +508,11 @@ def test_member_actions_show_common_and_varied_values_and_edit_all(qt_app):
     assert panel._member_action_inputs["FZ"].text() == "Variado"
 
     field = panel._member_action_inputs["FZ"]
-    field.setText("1; 3")
+    panel._toggle_member_load_shape("FZ")
+    field.setText("1")
+    panel._member_action_end_inputs["FZ"].setText("3")
     panel._member_action_changed("FZ", field)
-    assert panel._member_action_inputs["FZ"].text() == "1; 3"
+    assert panel._member_action_inputs["FZ"].text() == "1"
     assert {
         action.target: action.components
         for action in model.actions.values() if action.kind == "member_distributed_force_Z"

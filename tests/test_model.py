@@ -40,7 +40,7 @@ def test_node_with_bar_cannot_be_removed():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 1, 0, 0)
     model.add_bar("B1", "N1", "N2")
-    with pytest.raises(ValueError, match="Remova-as primeiro"):
+    with pytest.raises(ValueError, match="Remova-os primeiro"):
         model.remove_node("N1")
 
 
@@ -152,7 +152,7 @@ def test_node_with_rigid_bar_cannot_be_removed():
     model.add_node("N1", 0, 0, 0)
     model.add_node("N2", 1, 0, 0)
     model.add_rigid_bar("N1", "N2")
-    with pytest.raises(ValueError, match="Remova-as primeiro"):
+    with pytest.raises(ValueError, match="Remova-os primeiro"):
         model.remove_node("N1")
 
 

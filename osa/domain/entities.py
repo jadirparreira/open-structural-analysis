@@ -162,6 +162,8 @@ class Plate:
     restriction_directions: tuple[str, str, str] = ("=", "=", "=")
     # Structural node identity at every contour vertex, in contour order.
     vertex_nodes: tuple[str, ...] = ()
+    # Sparse contour-edge overrides: free, supported, fixed. Missing = legacy fixed.
+    edge_connections: tuple[tuple[int, str], ...] = ()
 
 
 # Compatibilidade pública com o nome utilizado até agora.
