@@ -12,6 +12,7 @@ from osa.ui.project_sheet import ProjectSheetWorkspace
 from osa.ui.project_sheet_pdf import export_sheet_pdf
 from osa.ui.special_dimensions import angular_geometry, dimension_layout, elevation
 from osa.ui.dialogs import ProjectSheetSettingsDialog
+from pdf_helpers import wait_for_pdf
 
 
 @pytest.fixture
@@ -52,6 +53,8 @@ def test_angular_snap_clicks_preview_degrees_move_delete_and_escape(scene, tmp_p
     assert json.loads(json.dumps(mark))['kind'] == 'angular'
     pdf_path = tmp_path/'angle.pdf'; export_sheet_pdf(ws,pdf_path)
     pdf = QPdfDocument(); assert pdf.load(str(pdf_path)) == QPdfDocument.Error.None_
+    wait_for_pdf(pdf)
+    pdf.render(0, QSize(1200, 900))
     assert '90,0°' in pdf.getAllText(0).text()
     ws.grab(); layout = dimension_layout(ws,0,mark,ws.font())
     ws.select_view(0); ws.grab()
@@ -77,6 +80,8 @@ def test_level_in_metres_reference_and_pdf(scene, tmp_path):
     assert dimension_layout(ws,0,mark,ws.font())['text'] == '-0,250 m'
     path = tmp_path/'levels.pdf'; export_sheet_pdf(ws,path)
     doc = QPdfDocument(); assert doc.load(str(path)) == QPdfDocument.Error.None_
+    wait_for_pdf(doc)
+    doc.render(0, QSize(1200, 900))
     assert '-0,250 m' in doc.getAllText(0).text()
     doc.render(0,QSize(1500,1050)).save(str(tmp_path/'level.png'))
 

@@ -110,6 +110,14 @@ def _screenshot_plotter(**kwargs):
     return pv.Plotter(off_screen=sys.platform != 'win32', **kwargs)
 
 
+def _take_screenshot(plotter):
+    # Native Windows render windows must be shown before VTK can read the
+    # framebuffer. Keep the window open for subsequent captures.
+    if sys.platform == 'win32':
+        plotter.show(auto_close=False, interactive=False)
+    return plotter.screenshot(return_img=True)
+
+
 def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
     images, effective_samples = [], []
     for samples in (2, 4, 8):
@@ -125,7 +133,7 @@ def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
             plotter.view_xy()
             plotter.camera.parallel_projection = True
             plotter.camera.parallel_scale = 1.5
-            images.append(plotter.screenshot(return_img=True).copy())
+            images.append(_take_screenshot(plotter).copy())
             effective_samples.append(plotter.render_window.GetRenderFramebuffer().GetMultiSamples())
             antialiasing.set_active(False)
             assert plotter.renderer.GetUseOIT() == original_oit
@@ -173,7 +181,7 @@ def test_antialiased_adjacent_plates_have_no_bright_seam(direction, samples):
         plotter.camera.up = (0, 0, 1)
         plotter.camera.parallel_projection = True
         plotter.camera.parallel_scale = 4
-        image = plotter.screenshot(return_img=True)
+        image = _take_screenshot(plotter)
         # Software renderers may cap the requested level (e.g. 8 to 4).
         assert 2 <= plotter.render_window.GetMultiSamples() <= samples
         assert not plotter.renderer.GetUseOIT()
@@ -217,7 +225,7 @@ def test_grid_does_not_draw_over_bar_and_lines_are_smoothed(camera_z, plate_mode
         plotter.camera.up = (0, 1, 0)
         plotter.camera.parallel_projection = True
         plotter.camera.parallel_scale = 2.8
-        image = plotter.screenshot(return_img=True)
+        image = _take_screenshot(plotter)
         cross = np.rint(_project(plotter, (0, 0, 1), image.shape[0])).astype(int)
         pixel = image[cross[1], cross[0], :3].astype(int)
         assert pixel[0] - pixel[1] < 10  # red grid stays behind the bar

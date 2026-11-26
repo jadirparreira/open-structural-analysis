@@ -7,11 +7,13 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtPdf import QPdfDocument
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication
 
 from osa.mcp import McpApplication
 from osa.model import StructuralModel
 from osa.services import ModelService
+from pdf_helpers import wait_for_pdf
 
 
 @pytest.fixture
@@ -47,7 +49,9 @@ def test_sheets_geometry_dimensions_save_reload_and_pdf(api, tmp_path):
     assert api.model.detailing_data == before
     doc = QPdfDocument()
     assert doc.load(str(pdf)) == QPdfDocument.Error.None_
+    wait_for_pdf(doc)
     assert doc.pageCount() == 1
+    doc.render(0, QSize(1200, 900))
     assert 'Nota <literal>' in doc.getAllText(0).text()
     assert '2000' in doc.getAllText(0).text()
     with pytest.raises(ValueError, match='já existe'):
