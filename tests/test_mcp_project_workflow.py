@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 from osa.mcp import McpApplication
 from osa.model import StructuralModel
 from osa.services import ModelService
-from pdf_helpers import wait_for_pdf
+from pdf_helpers import assert_pdf_contains_text, wait_for_pdf
 
 
 @pytest.fixture
@@ -52,8 +52,7 @@ def test_sheets_geometry_dimensions_save_reload_and_pdf(api, tmp_path):
     wait_for_pdf(doc)
     assert doc.pageCount() == 1
     doc.render(0, QSize(1200, 900))
-    assert 'Nota <literal>' in doc.getAllText(0).text()
-    assert '2000' in doc.getAllText(0).text()
+    assert_pdf_contains_text(doc, pdf, 'Nota <literal>', '2000')
     with pytest.raises(ValueError, match='já existe'):
         api.save_project(str(path))
     api.save_project(str(path), overwrite=True)

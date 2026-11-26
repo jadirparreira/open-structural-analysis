@@ -221,6 +221,7 @@ def test_grid_does_not_draw_over_bar_and_lines_are_smoothed(camera_z, plate_mode
     plotter = _screenshot_plotter(window_size=(500, 500))
     try:
         plotter.set_background('white')
+        original_oit = plotter.renderer.GetUseOIT()
         plotter.render_window.SetMultiSamples(4)
         antialiasing = PlateAntialiasing(plotter.renderer)
         antialiasing.set_active(plate_mode)
@@ -234,7 +235,7 @@ def test_grid_does_not_draw_over_bar_and_lines_are_smoothed(camera_z, plate_mode
         plotter.camera.parallel_scale = 2.8
         if sys.platform == 'win32':
             assert plotter.render_window.GetMultiSamples() == 4
-            assert not plotter.renderer.GetUseOIT()
+            assert plotter.renderer.GetUseOIT() == (False if plate_mode else original_oit)
             assert bar.GetProperty().GetLineWidth() == pytest.approx(3)
             assert grid.GetProperty().GetLineWidth() == pytest.approx(2)
             antialiasing.set_active(False)
