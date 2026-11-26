@@ -1,0 +1,18 @@
+{
+  "name": "open-structural-analysis",
+  "owner": {
+    "name": "Open Structural Analysis contributors",
+    "url": "https://github.com/jadirparreira/open-structural-analysis"
+  },
+  "metadata": {
+    "description": "Plugins do Open Structural Analysis para o Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "mcp-opensa",
+      "source": "./plugins/mcp-opensa",
+      "description": "Conecta o Claude Code ao projeto estrutural aberto no Open Structural Analysis.",
+      "category": "engineering"
+    }
+  ]
+}

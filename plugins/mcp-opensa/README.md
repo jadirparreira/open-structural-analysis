@@ -18,6 +18,18 @@ que as ferramentas operem sobre o projeto estrutural ativo.
 Enquanto ativo, qualquer programa neste computador que alcance o endpoint local
 pode consultar e alterar o modelo. Desative o servidor ao terminar.
 
+## Claude Code
+
+O OpenSA instala este plugin no Claude Code ao ativar o servidor MCP, usando a
+ponte `--mcp-stdio` da instalação. Para instalar pelo repositório (transporte
+HTTP, exige o OpenSA aberto antes da sessão):
+
+```text
+/plugin install mcp-opensa --marketplace jadirparreira/open-structural-analysis
+```
+
+Detalhes em `docs/claude-mcp.md`.
+
 ## Recursos v5 (plugin 0.2.0)
 
 O servidor oferece 96 ferramentas. Comece por `get_capabilities` para consultar

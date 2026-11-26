@@ -10,7 +10,7 @@ from PySide6.QtCore import QSettings, QThread, QThreadPool, Signal, Slot
 from osa.domain.node_components import node_component_geometry_signature
 from osa.analysis import AnalysisRequest
 from osa.analysis.pynite import PyniteAdapter
-from osa.integrations import LocalMcpIntegration
+from osa.integrations import ClaudeCodeIntegration, LocalMcpIntegration
 from osa.mcp import LocalMcpServer, McpApplication
 from osa.rendering.local_axes_renderer import LocalAxesRenderer
 from osa.rendering.plate_result_display import (
@@ -587,6 +587,8 @@ class MainWindow(QMainWindow):
         )
         self._mcp_server = LocalMcpServer(self._mcp_application)
         self._mcp_integration = LocalMcpIntegration()
+        self._claude_integration = ClaudeCodeIntegration()
+        self._claude_plugin_registered: bool | None = None
         self._mcp_enabled = False
         self.home.new_project_requested.connect(self.new_model)
         self.home.open_project_requested.connect(self.open_model)
@@ -4031,6 +4033,7 @@ class MainWindow(QMainWindow):
         if enabled:
             try:
                 self._mcp_integration.ensure_installed()
+                self._register_claude_plugin()
                 self._mcp_dispatcher.resume()
                 self._mcp_server.start()
             except (OSError, RuntimeError) as error:
@@ -4042,6 +4045,23 @@ class MainWindow(QMainWindow):
         self._mcp_dispatcher.suspend()
         self._mcp_server.stop()
         self._mcp_enabled = False
+
+    def _register_claude_plugin(self) -> None:
+        """Instala o plugin do Claude Code, quando houver CLI; nunca bloqueia o servidor."""
+        try:
+            self._claude_plugin_registered = self._claude_integration.ensure_installed()
+        except OSError:
+            self._claude_plugin_registered = False
+
+    def _claude_status_lines(self) -> str:
+        if self._claude_plugin_registered:
+            code = (
+                "Claude Code e aba Code do Claude Desktop: plugin mcp-opensa instalado. "
+                "Abra uma nova sessão para carregar as ferramentas."
+            )
+        else:
+            code = "Claude Code: CLI não encontrado; consulte docs/claude-mcp.md para configurar."
+        return f"{code}\nClaude Desktop Chat: use a ponte --mcp-stdio. Consulte docs/claude-mcp.md."
 
     def mcp_status(self) -> dict[str, str]:
         """Retorna o estado que deve ser apresentado na página MCP."""
@@ -4076,8 +4096,7 @@ class MainWindow(QMainWindow):
                 "detail": (
                     "ChatGPT Desktop: plugin registrado. Reinicie o cliente e selecione OpenSA em um chat Work.\n"
                     f"Endpoint local: {self._mcp_server.endpoint}\n"
-                    "Claude Code: use o .mcp.json na raiz do projeto.\n"
-                    "Claude Desktop Chat: configure o adaptador local mcp-remote. Consulte docs/claude-mcp.md."
+                    f"{self._claude_status_lines()}"
                 ),
             }
         return {
@@ -4086,8 +4105,7 @@ class MainWindow(QMainWindow):
             "detail": (
                 "ChatGPT Desktop: registro não confirmado.\n"
                 f"Endpoint local: {self._mcp_server.endpoint}\n"
-                "Claude Code: use o .mcp.json na raiz do projeto.\n"
-                "Claude Desktop Chat: configure o adaptador local mcp-remote. Consulte docs/claude-mcp.md."
+                f"{self._claude_status_lines()}"
             ),
         }
 

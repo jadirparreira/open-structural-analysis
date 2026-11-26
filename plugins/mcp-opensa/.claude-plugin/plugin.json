@@ -1,0 +1,13 @@
+{
+  "name": "mcp-opensa",
+  "version": "0.2.0",
+  "description": "Conecta o Claude Code ao projeto estrutural aberto no Open Structural Analysis.",
+  "author": {
+    "name": "Open Structural Analysis contributors",
+    "url": "https://github.com/jadirparreira/open-structural-analysis"
+  },
+  "homepage": "https://github.com/jadirparreira/open-structural-analysis",
+  "repository": "https://github.com/jadirparreira/open-structural-analysis",
+  "license": "GPL-3.0-or-later",
+  "keywords": ["structural-analysis", "engineering", "mcp", "opensa"]
+}

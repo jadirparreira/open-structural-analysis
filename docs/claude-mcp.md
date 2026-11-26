@@ -1,108 +1,125 @@
-# Claude Desktop e Claude Code
+# Claude Code e Claude Desktop
 
-O Open Structural Analysis expõe seu modelo aberto por um servidor MCP local
-em `http://127.0.0.1:8765/mcp-opensa`. O endpoint existe enquanto o OpenSA está
-aberto e a opção **Servidor MCP** está ativada em **Arquivo > Configurações >
-MCP**. Claude não inicia o OpenSA nem esse servidor.
+O Open Structural Analysis expõe o modelo aberto por um servidor MCP local em
+`http://127.0.0.1:8765/mcp-opensa`, ativado em **Arquivo > Configurações > MCP >
+Servidor MCP**. Para o Claude existem duas peças, além desse endpoint:
 
-A versão instalada pelo release expõe o mesmo endpoint, sem exigir clone do
-repositório ou ambiente Python. O arquivo de configuração abaixo pode ser criado
-na pasta de trabalho do cliente; não precisa ficar junto ao executável do OpenSA.
+- **Ponte stdio** (`--mcp-stdio`): o próprio executável do OpenSA funciona como
+  servidor MCP por `stdio`. Ele lista sempre as 96 ferramentas e encaminha cada
+  chamada ao endpoint HTTP do programa aberto. Se o OpenSA estiver fechado ou o
+  servidor desativado, a ferramenta responde com um erro que explica como
+  ativá-lo, em vez de deixar o Claude sem ferramentas.
+- **Plugin `mcp-opensa` do Claude Code**: instalado automaticamente pelo OpenSA,
+  da mesma forma que o plugin do ChatGPT/Codex.
 
-## Claude Code e a aba Code do Claude Desktop
+Por que a ponte: o Claude lista as ferramentas de um servidor MCP uma única vez,
+ao abrir a sessão. Conectado direto ao endpoint HTTP, ele ficava sem ferramentas
+sempre que a sessão começava antes de o OpenSA ser aberto. Com a ponte, as
+ferramentas estão sempre disponíveis e passam a funcionar assim que o servidor é
+ativado — sem reiniciar a sessão.
 
-O arquivo `.mcp.json` na raiz deste repositório configura o transporte
-Streamable HTTP, que o Claude Code lê diretamente:
+## Claude Code e a aba Code do Claude Desktop (automático)
 
-```json
-{
-  "mcpServers": {
-    "mcp-opensa": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/mcp-opensa"
-    }
-  }
-}
+Ao ativar o Servidor MCP, o OpenSA:
+
+1. monta um marketplace local com o plugin `mcp-opensa`
+   (`%LOCALAPPDATA%\OpenSA\claude-marketplace` no Windows,
+   `~/.local/share/opensa/claude-marketplace` no Linux);
+2. grava no plugin o comando da ponte desta instalação (o executável do
+   OpenSA, o AppImage ou, no código-fonte, `python -m osa`) com
+   `--mcp-stdio`;
+3. chama o CLI do Claude Code em segundo plano:
+   `claude plugin marketplace add`, `claude plugin install
+   mcp-opensa@open-structural-analysis-local --scope user` e, quando o
+   conteúdo muda (nova versão ou novo caminho do executável), `claude plugin
+   update`.
+
+A aba **Code** do Claude Desktop usa a mesma configuração do Claude Code. Abra
+uma sessão nova para carregar as ferramentas; `/mcp` mostra
+`plugin:mcp-opensa:mcp-opensa` conectado. As ferramentas aparecem como
+`mcp__plugin_mcp-opensa_mcp-opensa__<ferramenta>`.
+
+Se o CLI `claude` não for encontrado (no `PATH`, em `%APPDATA%\npm` ou na
+variável `CLAUDE_CLI_PATH`), o OpenSA não instala nada e a página MCP das
+configurações avisa. Se você já havia configurado o OpenSA à mão (por exemplo
+com `claude mcp add ... http://127.0.0.1:8765/mcp-opensa`), remova essa entrada
+para não ter as ferramentas duplicadas: `claude mcp remove <nome>`.
+
+### Instalação manual pelo repositório
+
+O repositório também é um marketplace do Claude Code
+(`.claude-plugin/marketplace.json`). Essa variante usa o endpoint HTTP, porque
+não sabe onde o OpenSA está instalado; ela exige o OpenSA aberto antes de
+iniciar a sessão (ou reconectar em `/mcp`):
+
+```text
+/plugin marketplace add jadirparreira/open-structural-analysis
+/plugin install mcp-opensa@open-structural-analysis
 ```
 
-O Claude Code pode pedir aprovação para usar o servidor definido no projeto.
-Revise e aprove a entrada `mcp-opensa` na primeira sessão. No Claude Desktop,
-escolha o ambiente **Local** na aba **Code**; sessões Cloud e SSH não alcançam o
-loopback do computador onde o OpenSA está aberto. A sessão Code local também
-pode carregar o servidor configurado para o Chat, conforme a precedência do
-Claude Desktop.
-
-O Claude Code instalado separadamente também lê `.mcp.json` quando iniciado
-nesta pasta. Use `/mcp` na sessão para conferir a conexão e as ferramentas.
+Ao trabalhar dentro do checkout, o `.mcp.json` da raiz faz o mesmo para o
+projeto (o Claude Code pede aprovação na primeira sessão).
 
 ## Claude Desktop: Chat
 
-A configuração local do Chat usa um processo MCP por `stdio`. Para conectar o
-servidor HTTP do OpenSA, configure o adaptador `mcp-remote` como esse processo.
-No Linux, o arquivo do Claude Desktop fica em
-`~/.config/Claude/claude_desktop_config.json`.
-
-Adicione esta entrada ao objeto `mcpServers`, preservando quaisquer outros
-servidores que já existam:
+O Chat do Claude Desktop inicia servidores MCP por `stdio`. Use a ponte do
+próprio OpenSA, sem Node.js nem `mcp-remote`. Edite
+`claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`; Linux:
+`~/.config/Claude/`) e acrescente ao objeto `mcpServers`, preservando os demais:
 
 ```json
 {
   "mcpServers": {
     "mcp-opensa": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://127.0.0.1:8765/mcp-opensa"
-      ]
+      "command": "C:\\Program Files\\Open Structural Analysis\\open-structural-analysis.exe",
+      "args": ["--mcp-stdio"],
+      "env": { "PYINSTALLER_SUPPRESS_SPLASH_SCREEN": "1" }
     }
   }
 }
 ```
 
-Esse adaptador requer Node.js/npm disponíveis para o usuário que iniciou o
-Claude Desktop. Se `npx` não for encontrado ao iniciar pelo menu gráfico, use
-no campo `command` o caminho absoluto mostrado por `command -v npx`. Reinicie o
-Claude Desktop depois de editar o arquivo. A primeira inicialização pode levar
-mais tempo enquanto `npx` baixa o adaptador.
+Ajuste `command` para o caminho do executável instalado (no Linux, o caminho do
+AppImage). `PYINSTALLER_SUPPRESS_SPLASH_SCREEN` evita que a tela de abertura do
+OpenSA apareça quando o Claude inicia a ponte. Reinicie o Claude Desktop depois
+de editar o arquivo.
 
-O Claude Desktop também carrega servidores de
-`claude_desktop_config.json` em sessões Code locais. Mantemos o nome
-`mcp-opensa` igual ao de `.mcp.json` para que o Desktop use uma única definição
-e não mostre ferramentas duplicadas.
+Pelo código-fonte, use `"command": "<checkout>/.venv/Scripts/python.exe"` (ou
+`.venv/bin/python`) e `"args": ["-m", "osa", "--mcp-stdio"]`.
+
+## Ponte por linha de comando
+
+```bash
+open-structural-analysis --mcp-stdio [--mcp-endpoint http://127.0.0.1:8765/mcp-opensa]
+uv run python -m osa --mcp-stdio
+```
+
+A ponte não abre a interface. A variável `OSA_MCP_ENDPOINT` também define o
+endpoint. Cada chamada abre uma conexão curta com o servidor (que é stateless),
+então fechar e reabrir o OpenSA durante a sessão do Claude não exige reconectar.
 
 ## Preparação de uma sessão
 
 1. Abra o Open Structural Analysis e o modelo que deseja controlar.
-2. Ative **Arquivo > Configurações > MCP > Servidor MCP**.
-3. Confirme na tela do OpenSA que o endpoint está disponível.
-4. No Claude Desktop, abra uma conversa nova. Para trabalhar no projeto, abra
-   uma sessão na aba **Code** e escolha **Local**.
-5. Na primeira conexão do Code, aprove o servidor do projeto. No Chat, confira
-   se `mcp-opensa` aparece como ferramenta conectada.
-6. Peça primeiro um resumo do modelo antes de solicitar alterações.
+2. Ative **Arquivo > Configurações > MCP > Servidor MCP**. Na primeira vez, o
+   plugin do Claude Code é instalado.
+3. Abra uma sessão nova no Claude Code ou na aba Code do Claude Desktop
+   (ambiente **Local**; sessões Cloud e SSH não alcançam o OpenSA).
+4. Peça primeiro um resumo do modelo antes de solicitar alterações.
 
 ## Limites e segurança
 
 - O servidor escuta somente em `127.0.0.1`; não o exponha em uma interface de
-  rede. Não é necessário publicar o endpoint nem criar um túnel.
+  rede. A ponte também só encaminha para o endpoint local configurado.
 - O servidor não exige credencial local. Enquanto estiver ativo, processos
   locais que alcançam a porta podem consultar e alterar o modelo aberto.
 - Desative o servidor MCP no OpenSA quando terminar.
-- Este repositório fornece a configuração e o endpoint; cada usuário precisa
-  configurar o cliente Claude na própria máquina. A conexão depende do OpenSA
-  estar aberto com o servidor MCP ativado.
 
-## Diagnóstico pelo usuário
+## Diagnóstico
 
-- Se Claude não listar as ferramentas, confirme que o OpenSA está aberto, que o
-  servidor MCP está ativado e que `127.0.0.1:8765` está disponível.
-- Se o Claude Desktop Chat não iniciar o processo MCP, confira o caminho de
-  `npx` e os logs de desenvolvedor do Claude Desktop.
-- Se o Code não listar `mcp-opensa`, abra a sessão na raiz deste repositório,
-  aceite o aviso de confiança do projeto e confira `/mcp`.
+- `/mcp` no Claude Code mostra o estado de `plugin:mcp-opensa:mcp-opensa`.
+- `claude plugin list` mostra se `mcp-opensa@open-structural-analysis-local`
+  está instalado e ativo.
+- Se uma ferramenta responder que o OpenSA não está aberto, abra o programa e
+  ative o Servidor MCP; não é preciso reiniciar a sessão.
 - Se a sessão Code estiver em Cloud ou SSH, troque o ambiente para **Local**.
-
-Não instalamos nem executamos o Claude neste computador. Estes passos deixam a
-integração configurada por documentação; a conexão final precisa ser confirmada
-em uma máquina com o Claude Desktop ou Claude Code disponível.
