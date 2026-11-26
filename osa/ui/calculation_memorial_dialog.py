@@ -18,6 +18,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .latex_export import (
+    DOCX_FILTER,
+    PDF_FILTER,
+    TEX_FILTER,
+    destination_with_suffix,
+    run_with_progress,
+    warn_export_problem,
+)
 from .math_equations import (
     EQUATION_OBJECT_TYPE,
     EQUATION_SVG_PROPERTY,
@@ -61,6 +69,7 @@ class MemorialExportSuccessDialog(QDialog):
 class CalculationMemorialDialog(QDialog):
     def __init__(self, memory: dict | None, parent=None) -> None:
         super().__init__(parent)
+        self._memory = memory or {}
         self.setWindowTitle("Memorial de cálculo")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.resize(700, 540)
@@ -2485,21 +2494,24 @@ class CalculationMemorialDialog(QDialog):
         )
 
     def _export_docx(self) -> None:
-        filename, _ = QFileDialog.getSaveFileName(
+        """Exporta o memorial em PDF (LaTeX), projeto LaTeX (.tex) ou DOCX editável."""
+        filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Exportar memorial de cálculo",
-            "Memorial de cálculo.docx",
-            "Documento Word (*.docx)",
+            "Memorial de cálculo.pdf",
+            f"{PDF_FILTER};;{TEX_FILTER};;{DOCX_FILTER}",
         )
         if not filename:
             return
-        if not filename.lower().endswith(".docx"):
-            filename += ".docx"
+        destination = destination_with_suffix(filename, selected_filter, (".pdf", ".tex", ".docx"))
+        if destination.suffix.lower() != ".docx":
+            self._export_latex(destination)
+            return
         try:
             export_calculation_memorial_docx(
                 self._memorial_html,
                 self._equation_latex,
-                filename,
+                destination,
             )
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(
@@ -2507,5 +2519,34 @@ class CalculationMemorialDialog(QDialog):
                 "Falha ao exportar memorial",
                 f"Não foi possível gerar o arquivo DOCX.\n\n{exc}",
             )
+            return
+        MemorialExportSuccessDialog(self).exec()
+
+    def _export_latex(self, destination) -> None:
+        from osa.reports.memorial_latex import export_element_memorial
+
+        members = tuple(str(name) for name in self._memory.get("members", ()) or ())
+        element = str(self._memory.get("element_name") or "").strip() or ", ".join(members)
+        try:
+            export = run_with_progress(
+                self,
+                "Gerando memorial em LaTeX",
+                lambda _progress: export_element_memorial(
+                    self._memorial_html,
+                    self._equation_latex,
+                    destination,
+                    element=element,
+                    members=members,
+                ),
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(
+                self,
+                "Falha ao exportar memorial",
+                f"Não foi possível gerar o memorial em LaTeX.\n\n{exc}",
+            )
+            return
+        if export.error and destination.suffix.lower() == ".pdf":
+            warn_export_problem(self, "Memorial sem PDF", export)
             return
         MemorialExportSuccessDialog(self).exec()

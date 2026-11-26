@@ -29,6 +29,7 @@ UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/osa-uv-cache}"
 export UV_CACHE_DIR
 
 uv run python scripts/prepare-dwg-converter.py
+uv run python scripts/prepare-latex-engine.py
 uv run pyinstaller --noconfirm --clean "$SPEC_FILE"
 
 rm -rf "$APPDIR/usr"

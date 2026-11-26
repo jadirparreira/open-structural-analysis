@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
     _interface_commands = frozenset({
         "bar", "plate", "split", "splitplate", "joinplates", "join", "rigid", "copy", "move", "cprop", "measure", "axes",
         "nodeforce", "nodemoment", "memberforce", "membermoment", "group", "ungroup",
-        "action", "load", "selfweight", "combinations", "analyze", "verify", "grid",
+        "action", "load", "selfweight", "combinations", "analyze", "verify", "report", "grid",
         "configaxes", "nodelabels", "memberlabels", "platelabels", "localaxes", "nodes",
         "solids", "releases", "semirigid", "supports", "components", "scene", "configreference",
     })
@@ -656,6 +656,18 @@ class MainWindow(QMainWindow):
                     tuple(self.properties._selected_names("bar")),
                 )
         self._start_verification()
+
+    def open_structure_report(self) -> None:
+        """Abre o laudo técnico da estrutura (LaTeX/PDF) com os resultados atuais."""
+        from .structure_report_dialog import StructureReportDialog
+
+        if not self.model.bars and not getattr(self.model, "plates", {}):
+            self.history.append("Laudo estrutural: o modelo não possui elementos.")
+            return
+        dialog = StructureReportDialog(self.model, self.current_path, self)
+        dialog.exec()
+        if dialog.exported_path is not None:
+            self.history.append(f"Laudo estrutural exportado: {escape(str(dialog.exported_path))}")
 
     def verify_selected_bar(self) -> None:
         """Verify only the selected bar or verification group with current overrides."""
@@ -6317,6 +6329,7 @@ class MainWindow(QMainWindow):
             "combinations": ("Análise", self.open_combinations),
             "analyze": ("Análise", self.process_analysis),
             "verify": ("Memorial", self.verify_model),
+            "report": ("Memorial", self.open_structure_report),
         }
         target = callbacks.get(name)
         if target is None:

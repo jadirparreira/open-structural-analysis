@@ -36,7 +36,7 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 - **Apoios e vínculos:** definição de restrições, apoios elásticos, liberações nas extremidades e ligações rígidas.
 - **Ações e combinações:** organização de casos e grupos de ações, aplicação de cargas nodais e em barras, ações nas superfícies e bordas das placas, momentos e peso próprio, e configuração de combinações.
 - **Análise estrutural:** processamento integrado de barras e placas, com malha de elementos finitos, deslocamentos, reações de apoio e diagramas de esforços por combinação. Nas placas, inclui momentos Wood-Armer e tensões equivalentes de von Mises, com convenções e limites descritos na [documentação dos resultados de placas](docs/plate-postprocessing.md).
-- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em DOCX. A cobertura das verificações está em evolução, com hipóteses e limitações apresentadas pelo próprio programa.
+- **Verificações e memorial:** agrupamento de barras, rotinas de verificação disponíveis para barras de aço e visualização da taxa de utilização. O memorial de cálculo pode ser exportado em PDF (LaTeX), projeto `.tex` ou DOCX, e o laudo técnico da estrutura (comando `REPORT`) é gerado em LaTeX/PDF com deformadas desenhadas a partir dos resultados ([detalhes](docs/laudo-latex.md)). A cobertura das verificações está em evolução, com hipóteses e limitações apresentadas pelo próprio programa.
 - **Detalhamento:** criação de vistas de barras, placas e componentes dos nós; cortes de seção, ajustes de extremidades e subtrações, com exportação da vista 2D para DXF.
 - **Folhas de projeto:** composição de vistas e detalhes com cotas, textos, marcas de solda, imagens e tabelas, com exportação para PDF.
 - **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto.
@@ -51,7 +51,7 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 
 Baixe a versão mais recente na página de [Releases](https://github.com/jadirparreira/open-structural-analysis/releases/latest). Escolha o instalador para Windows ou o AppImage para Linux e siga as instruções incluídas no pacote.
 
-Os dois pacotes já incluem o conversor necessário para importar DWG.
+Os dois pacotes já incluem o conversor necessário para importar DWG e o compilador LaTeX (Tectonic) usado para gerar o laudo e o memorial em PDF.
 
 ### Versão de desenvolvimento
 
@@ -79,54 +79,12 @@ uv run python scripts/prepare-dwg-converter.py
 
 O script baixa e prepara o conversor. No Linux, são necessários um compilador C e `make`; no Windows de 64 bits, ele utiliza o executável oficial. Essa etapa é necessária apenas para importar DWG; o programa e a importação de DXF funcionam sem ela. Veja os [detalhes do suporte a DWG](docs/referencias-dxf.md#preparar-o-suporte-a-dwg-no-desenvolvimento).
 
-<a id="mcp"></a>
-## Assistentes de IA (MCP)
+#### Laudo e memorial em PDF no desenvolvimento (opcional)
 
-O OpenSA pode ser controlado por assistentes de IA compatíveis com o [Model Context Protocol](https://modelcontextprotocol.io): o assistente consulta o modelo aberto, cria e altera nós, barras, placas, ações e combinações, roda a análise e a verificação e lê os resultados, enquanto você acompanha tudo na tela do programa.
-
-### 1. Ative o servidor no OpenSA
-
-Abra o OpenSA e ative **Arquivo > Configurações > MCP > Servidor MCP**. O servidor só aceita conexões do próprio computador (`127.0.0.1`) e fica ativo enquanto o programa estiver aberto. Desative a opção quando terminar.
-
-Ao ativar, o OpenSA instala sozinho a integração nos assistentes encontrados no computador. A página MCP das configurações mostra o que foi instalado.
-
-### 2. Conecte o seu assistente
-
-**Claude Code e aba Code do Claude Desktop** — automático. Com o [Claude Code](https://code.claude.com/docs/pt/overview) instalado, o OpenSA registra o plugin `mcp-opensa` ao ativar o servidor. Abra uma sessão nova (no Claude Desktop, ambiente **Local**) e confira com `/mcp`. As ferramentas aparecem mesmo que a sessão comece antes de o OpenSA ser aberto.
-
-Para instalar sem o OpenSA fazer isso, use uma das opções abaixo no Claude Code:
-
-```text
-/plugin marketplace add jadirparreira/open-structural-analysis
-/plugin install mcp-opensa@open-structural-analysis
-```
+O PDF do laudo e do memorial é compilado com o LaTeX instalado no sistema (`pdflatex`, `lualatex`, `xelatex` ou `tectonic` no `PATH`, como no MiKTeX ou no TeX Live) ou indicado pela variável `OSA_LATEX_ENGINE`. Sem nenhum deles, prepare uma vez o compilador Tectonic usado nos pacotes:
 
 ```bash
-claude mcp add --scope user mcp-opensa -e PYINSTALLER_SUPPRESS_SPLASH_SCREEN=1 -- "C:\Program Files\Open Structural Analysis\open-structural-analysis.exe" --mcp-stdio
+uv run python scripts/prepare-latex-engine.py
 ```
 
-A primeira opção usa o endpoint HTTP e exige o OpenSA aberto antes de iniciar a sessão. A segunda usa a ponte do próprio executável (no Linux, informe o caminho do AppImage).
-
-**Claude Desktop (Chat)** — edite `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`; Linux: `~/.config/Claude/`), acrescente a entrada abaixo em `mcpServers` e reinicie o Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "mcp-opensa": {
-      "command": "C:\Program Files\Open Structural Analysis\open-structural-analysis.exe",
-      "args": ["--mcp-stdio"],
-      "env": { "PYINSTALLER_SUPPRESS_SPLASH_SCREEN": "1" }
-    }
-  }
-}
-```
-
-**ChatGPT Desktop / Codex** — automático. Reinicie o cliente depois de ativar o servidor e selecione **OpenSA** em um chat Work.
-
-**Outros clientes MCP** — use o endpoint Streamable HTTP `http://127.0.0.1:8765/mcp-opensa` ou, para clientes que só aceitam `stdio`, o comando `open-structural-analysis --mcp-stdio`.
-
-### 3. Comece pelo resumo do modelo
-
-Peça ao assistente um resumo do projeto aberto antes de solicitar alterações. Enquanto o servidor estiver ativo, programas do próprio computador que alcançam a porta local podem consultar e alterar o modelo aberto.
-
-Mais detalhes: [Claude Code e Claude Desktop](docs/claude-mcp.md) · [MCP local e diagnóstico](docs/mcp-local.md) · [inventário das ferramentas](docs/mcp-ferramentas.md).
+Na primeira compilação, o Tectonic baixa uma única vez os pacotes LaTeX usados. Sem compilador, o programa salva o projeto `.tex` com as figuras para compilar depois. Veja os [detalhes do laudo em LaTeX](docs/laudo-latex.md#compilação).
