@@ -15,7 +15,8 @@
 <p align="center">
   <a href="#sobre">Sobre</a> ·
   <a href="#recursos">Recursos</a> ·
-  <a href="#instalacao">Instalação</a>
+  <a href="#instalacao">Instalação</a> ·
+  <a href="#mcp">Assistentes de IA (MCP)</a>
 </p>
 
 ![Modelo estrutural analisado no Open Structural Analysis](assets/readme-model-preview.png)
@@ -41,7 +42,7 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 - **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto.
 - **Exportação DXF:** exportação do modelo e de vistas de detalhamento para uso em ferramentas CAD.
 - **Organização da cena:** gerenciamento de vistas nomeadas e controle de visibilidade dos elementos no modelo.
-- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com clientes compatíveis.
+- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com assistentes de IA como Claude e ChatGPT ([como instalar](#mcp)).
 
 <a id="instalacao"></a>
 ## Instalação

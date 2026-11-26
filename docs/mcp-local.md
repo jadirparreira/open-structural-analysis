@@ -140,9 +140,14 @@ Ao ativar o servidor, o OpenSA copia o plugin local para o marketplace pessoal e
 tenta registrá-lo no ChatGPT Desktop. Reinicie o cliente se ele já estava aberto
 e selecione OpenSA no chat Work. O plugin local está na versão 0.3.0.
 
-Para outros clientes, configure o endpoint acima. O exemplo `.mcp.json` da raiz
-é uma configuração de cliente, não uma dependência do servidor empacotado.
-Consulte [Claude Desktop e Claude Code](claude-mcp.md) para os exemplos desse cliente.
+No Claude Code (e na aba Code do Claude Desktop), o OpenSA instala da mesma forma
+o plugin `mcp-opensa` pelo CLI `claude`, quando ele existe. Esse plugin usa a ponte
+`--mcp-stdio` do próprio executável: as ferramentas aparecem mesmo que a sessão
+comece antes de o OpenSA ser aberto. Consulte [Claude Desktop e Claude Code](claude-mcp.md).
+
+Para outros clientes, configure o endpoint acima ou, se o cliente só aceitar
+`stdio`, o comando `open-structural-analysis --mcp-stdio`. O exemplo `.mcp.json`
+da raiz é uma configuração de cliente, não uma dependência do servidor empacotado.
 
 O servidor escuta somente em `127.0.0.1`, sem credencial adicional. Enquanto
 ativo, processos locais com acesso à porta podem consultar e alterar o modelo.
