@@ -15,7 +15,8 @@
 <p align="center">
   <a href="#sobre">Sobre</a> ·
   <a href="#recursos">Recursos</a> ·
-  <a href="#instalacao">Instalação</a>
+  <a href="#instalacao">Instalação</a> ·
+  <a href="#mcp">Assistentes de IA (MCP)</a>
 </p>
 
 ![Modelo estrutural analisado no Open Structural Analysis](assets/readme-model-preview.png)
@@ -41,7 +42,7 @@ O OpenSA permite organizar ações e combinações, processar a análise estrutu
 - **Referências CAD:** importação de desenhos DXF e DWG para consulta e captura de pontos durante a modelagem. As referências podem ser posicionadas nos planos XY, XZ ou YZ e ficam salvas no projeto.
 - **Exportação DXF:** exportação do modelo e de vistas de detalhamento para uso em ferramentas CAD.
 - **Organização da cena:** gerenciamento de vistas nomeadas e controle de visibilidade dos elementos no modelo.
-- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com clientes compatíveis.
+- **Projetos e integração:** salvamento e abertura de projetos `.osa` e servidor MCP local opcional para consultar e operar o modelo com assistentes de IA como Claude e ChatGPT ([como instalar](#mcp)).
 
 <a id="instalacao"></a>
 ## Instalação
@@ -77,3 +78,55 @@ uv run python scripts/prepare-dwg-converter.py
 ```
 
 O script baixa e prepara o conversor. No Linux, são necessários um compilador C e `make`; no Windows de 64 bits, ele utiliza o executável oficial. Essa etapa é necessária apenas para importar DWG; o programa e a importação de DXF funcionam sem ela. Veja os [detalhes do suporte a DWG](docs/referencias-dxf.md#preparar-o-suporte-a-dwg-no-desenvolvimento).
+
+<a id="mcp"></a>
+## Assistentes de IA (MCP)
+
+O OpenSA pode ser controlado por assistentes de IA compatíveis com o [Model Context Protocol](https://modelcontextprotocol.io): o assistente consulta o modelo aberto, cria e altera nós, barras, placas, ações e combinações, roda a análise e a verificação e lê os resultados, enquanto você acompanha tudo na tela do programa.
+
+### 1. Ative o servidor no OpenSA
+
+Abra o OpenSA e ative **Arquivo > Configurações > MCP > Servidor MCP**. O servidor só aceita conexões do próprio computador (`127.0.0.1`) e fica ativo enquanto o programa estiver aberto. Desative a opção quando terminar.
+
+Ao ativar, o OpenSA instala sozinho a integração nos assistentes encontrados no computador. A página MCP das configurações mostra o que foi instalado.
+
+### 2. Conecte o seu assistente
+
+**Claude Code e aba Code do Claude Desktop** — automático. Com o [Claude Code](https://code.claude.com/docs/pt/overview) instalado, o OpenSA registra o plugin `mcp-opensa` ao ativar o servidor. Abra uma sessão nova (no Claude Desktop, ambiente **Local**) e confira com `/mcp`. As ferramentas aparecem mesmo que a sessão comece antes de o OpenSA ser aberto.
+
+Para instalar sem o OpenSA fazer isso, use uma das opções abaixo no Claude Code:
+
+```text
+/plugin marketplace add jadirparreira/open-structural-analysis
+/plugin install mcp-opensa@open-structural-analysis
+```
+
+```bash
+claude mcp add --scope user mcp-opensa -e PYINSTALLER_SUPPRESS_SPLASH_SCREEN=1 -- "C:\Program Files\Open Structural Analysis\open-structural-analysis.exe" --mcp-stdio
+```
+
+A primeira opção usa o endpoint HTTP e exige o OpenSA aberto antes de iniciar a sessão. A segunda usa a ponte do próprio executável (no Linux, informe o caminho do AppImage).
+
+**Claude Desktop (Chat)** — edite `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`; Linux: `~/.config/Claude/`), acrescente a entrada abaixo em `mcpServers` e reinicie o Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "mcp-opensa": {
+      "command": "C:\Program Files\Open Structural Analysis\open-structural-analysis.exe",
+      "args": ["--mcp-stdio"],
+      "env": { "PYINSTALLER_SUPPRESS_SPLASH_SCREEN": "1" }
+    }
+  }
+}
+```
+
+**ChatGPT Desktop / Codex** — automático. Reinicie o cliente depois de ativar o servidor e selecione **OpenSA** em um chat Work.
+
+**Outros clientes MCP** — use o endpoint Streamable HTTP `http://127.0.0.1:8765/mcp-opensa` ou, para clientes que só aceitam `stdio`, o comando `open-structural-analysis --mcp-stdio`.
+
+### 3. Comece pelo resumo do modelo
+
+Peça ao assistente um resumo do projeto aberto antes de solicitar alterações. Enquanto o servidor estiver ativo, programas do próprio computador que alcançam a porta local podem consultar e alterar o modelo aberto.
+
+Mais detalhes: [Claude Code e Claude Desktop](docs/claude-mcp.md) · [MCP local e diagnóstico](docs/mcp-local.md) · [inventário das ferramentas](docs/mcp-ferramentas.md).
