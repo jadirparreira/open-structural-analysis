@@ -403,6 +403,9 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
     {"member": window.start_member_placement, "rigid": window.start_rigid_bar_placement,
      "measurement": window.start_measurement}[operation]()
     pick(window, (1, 4, 0))
+    # The first point is supplied through the typed/manual-coordinate path;
+    # the second point must come from the pointer so perpendicular snapping runs.
+    scene._manual_edit_target = None
     screen, visible = scene._world_to_screen(np.asarray((1, 0, 0)))
     assert visible
     scene._pointer_position = tuple(screen)
