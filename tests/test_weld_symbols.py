@@ -5,7 +5,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
@@ -357,7 +357,7 @@ def test_snap_hover_does_not_repaint_model_context_and_clears_on_leave(scene, mo
         app.processEvents()
         assert tool.snap_indicator.isVisible()
     assert not renders
-    QTest.mouseMove(sheet, QPoint(3, 3))
+    QApplication.sendEvent(sheet, QEvent(QEvent.Type.Leave))
     app.processEvents()
     assert tool.snap is None and not tool.snap_indicator.isVisible()
 

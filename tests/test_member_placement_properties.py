@@ -386,6 +386,7 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
     scene = window.scene
     scene._pointer_position = None
     scene.render_model(window.model)
+    scene.plotter.render_window.SetSize(800, 600)
     camera = scene.plotter.renderer.GetActiveCamera()
     camera.SetParallelProjection(True)
     camera.SetPosition(0, 0, 30)
@@ -393,6 +394,7 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
     camera.SetViewUp(0, 1, 0)
     camera.SetParallelScale(10)
     camera.SetClippingRange(0.1, 100)
+    scene.plotter.render()
     scene._snap_enabled = True
     scene._snap_types.update(
         endpoint=False, center=False, intersection=False, perpendicular=True,
