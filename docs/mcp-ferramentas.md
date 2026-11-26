@@ -41,7 +41,7 @@ O servidor registra **107 ferramentas**. Esta relação corresponde aos esquemas
 | `get_plate_analysis_results` | `combination`, `plate_names?` | Consulta deslocamentos nodais, esforços locais e pós-processamento por elemento de placa. Inclui wood_armer [Xsup,Ysup,Xinf,Yinf] em kN·m/m e von_mises [sup,inf,max] em MPa, com campos _nodal, eixos e convenções em postprocessing. |
 | `get_project_summary` | — | Use esta ferramenta para saber o estado do projeto estrutural atualmente aberto no OpenSA antes de executar outras ações. |
 | `get_scene_views` | — | Lista as vistas persistentes do projeto, a vista ativa, as barras ocultas e as barras rígidas ocultas em cada vista. A vista 'Completo' mostra tudo. |
-| `get_session_state` | — | Consulta se Geometria, Ações ou Análise está aberta na interface. |
+| `get_session_state` | — | Consulta qual sessão (Geometria, Verificação, Ações, Análise ou Detalhamento) está aberta. |
 | `get_support_reactions` | `combination`, `node_names?` | Consulta forças e momentos de reação nos nós apoiados. |
 | `get_verification_results` | `element_keys?` | Retorna verificações por chave bar:N ou group:N\|N, preservando status/limitações e todos os checks. |
 | `get_verification_state` | — | Consulta grupos, resultados e se a análise permite executar as verificações. |
@@ -84,7 +84,7 @@ O servidor registra **107 ferramentas**. Esta relação corresponde aos esquemas
 | `set_node_supports` | `node_name`, `dx`, `dy`, `dz`, `rx?`, `ry?`, `rz?` | Define as restrições translacionais e rotacionais de um nó. Use true para restringir cada grau de liberdade, na ordem X, Y, Z, Rx, Ry e Rz. |
 | `set_reference_axes` | `axes` | Substitui os eixos de referência do projeto. Informe um objeto com as chaves X, Y e Z; cada uma contém uma lista de objetos {label, value}. Em XY, value em X posiciona a linha em x=value, value em Y posiciona a linha em y=value e value em Z define a elevação. |
 | `set_scene_members_visibility` | `member_names?`, `visible?`, `rigid_bar_names?` | Define a visibilidade de barras e barras rígidas na vista ativa. Informe member_names e/ou rigid_bar_names. Use visible=false para ocultar ou true para reexibir. É necessário selecionar uma vista nomeada; a vista 'Completo' não permite ocultar elementos. |
-| `set_session` | `session` | Abre uma sessão visual do OpenSA. Use exatamente Geometria, Ações ou Análise antes das operações relacionadas à respectiva sessão. |
+| `set_session` | `session` | Abre uma sessão visual do OpenSA. Use exatamente Geometria, Verificação, Ações, Análise ou Detalhamento antes das operações relacionadas à respectiva sessão. |
 | `set_verification_element_name` | `member_names`, `name` | Define o nome de um elemento ou grupo na sessão Verificação. O nome aceita somente letras e números; use texto vazio para limpar. Para um grupo, informe todos os nomes das barras que o compõem. Informe uma única barra para nomear um elemento individual. |
 | `set_view_options` | `options` | Controla a visualização da cena sem alterar o modelo. Opções: grid_visible, reference_axes_visible, node_labels_visible, member_labels_visible, plate_labels_visible, local_axes_visible, nodes_visible, solid_members_visible, member_releases_visible, semirigid_links_visible, node_supports_visible, node_components_visible, node_forces_visible, node_moments_visible, member_forces_visible, member_moments_visible e plate_pressures_visible. Informe somente os campos desejados. |
 | `show_all_scene_members` | — | Remove as ocultações de barras e barras rígidas da vista nomeada ativa. |

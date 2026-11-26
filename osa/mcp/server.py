@@ -190,7 +190,7 @@ class LocalMcpServer:
         @self.server.tool(
             name="get_session_state",
             title="Consultar sessão aberta",
-            description="Consulta se Geometria, Ações ou Análise está aberta na interface.",
+            description="Consulta qual sessão (Geometria, Verificação, Ações, Análise ou Detalhamento) está aberta.",
             annotations=read_only,
         )
         def get_session_state() -> dict[str, Any]:
@@ -200,8 +200,8 @@ class LocalMcpServer:
             name="set_session",
             title="Abrir sessão do programa",
             description=(
-                "Abre uma sessão visual do OpenSA. Use exatamente Geometria, Ações ou Análise "
-                "antes das operações relacionadas à respectiva sessão."
+                "Abre uma sessão visual do OpenSA. Use exatamente Geometria, Verificação, Ações, "
+                "Análise ou Detalhamento antes das operações relacionadas à respectiva sessão."
             ),
             annotations=write,
         )

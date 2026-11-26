@@ -57,6 +57,7 @@ install_desktop_entry() {
 
 case "${1:-}" in
     --mcp-self-test) ;; # O diagnóstico não deve registrar atalhos no perfil do usuário.
+    --mcp-stdio) ;; # A ponte MCP é iniciada pelo cliente; não registra atalhos.
     *) install_desktop_entry ;;
 esac
 
