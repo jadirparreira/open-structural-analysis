@@ -1,6 +1,7 @@
 """Render plate boundaries and depth crossings with antialiasing enabled."""
 
 from dataclasses import replace
+import sys
 
 import numpy as np
 import pytest
@@ -103,10 +104,16 @@ def _project(plotter, point, height):
     return np.array((x, height - y))
 
 
+def _screenshot_plotter(**kwargs):
+    # Windows' native off-screen multisample framebuffer crashes in VTK 9.7;
+    # use the runner's real display there so these image assertions still run.
+    return pv.Plotter(off_screen=sys.platform != 'win32', **kwargs)
+
+
 def test_multisample_levels_change_the_rendered_plate_and_bar_edges():
     images, effective_samples = [], []
     for samples in (2, 4, 8):
-        plotter = pv.Plotter(off_screen=True, window_size=(500, 500))
+        plotter = _screenshot_plotter(window_size=(500, 500))
         try:
             plotter.set_background('white')
             original_oit = plotter.renderer.GetUseOIT()
@@ -143,7 +150,7 @@ def test_antialiased_adjacent_plates_have_no_bright_seam(direction, samples):
     model.add_plate([(-2, -2, 3), (0, -6, 3), (2, -2, 3)], name='P1')
     model.add_plate([(-4, -2, 3), (-2, -2, 3), (0, -6, 3)], name='P2')
 
-    plotter = pv.Plotter(off_screen=True, window_size=(1600, 1000))
+    plotter = _screenshot_plotter(window_size=(1600, 1000))
     try:
         plotter.set_background('white')
         plotter.render_window.SetMultiSamples(samples)
@@ -196,7 +203,7 @@ def test_antialiased_adjacent_plates_have_no_bright_seam(direction, samples):
 @pytest.mark.parametrize('camera_z', [10, -10])
 @pytest.mark.parametrize('plate_mode', [True, False])
 def test_grid_does_not_draw_over_bar_and_lines_are_smoothed(camera_z, plate_mode):
-    plotter = pv.Plotter(off_screen=True, window_size=(500, 500))
+    plotter = _screenshot_plotter(window_size=(500, 500))
     try:
         plotter.set_background('white')
         plotter.render_window.SetMultiSamples(4)

@@ -91,9 +91,6 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Set up headless VTK rendering
-        uses: pyvista/setup-headless-display-action@v3
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
