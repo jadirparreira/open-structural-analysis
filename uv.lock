@@ -1248,7 +1248,7 @@ wheels = [
 
 [[package]]
 name = "open-structural-analysis"
-version = "2026.5"
+version = "2026.6.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "ezdxf" },

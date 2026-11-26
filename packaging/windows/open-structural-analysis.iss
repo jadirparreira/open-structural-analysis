@@ -1,5 +1,5 @@
 #ifndef AppVersion
-#define AppVersion "2026.5"
+#define AppVersion "2026.6-dev"
 #endif
 
 #define AppName "Open Structural Analysis"
