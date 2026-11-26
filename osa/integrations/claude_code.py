@@ -52,7 +52,9 @@ def find_claude_cli() -> str | None:
     candidates = [configured, shutil.which("claude")]
     if sys.platform == "win32" and os.environ.get("APPDATA"):
         candidates.append(str(Path(os.environ["APPDATA"]) / "npm" / "claude.cmd"))
-    candidates.append(str(Path.home() / ".local" / "bin" / ("claude.exe" if sys.platform == "win32" else "claude")))
+    # Programas abertos pelo menu gráfico (Linux) nem sempre herdam o PATH do terminal.
+    executable = "claude.exe" if sys.platform == "win32" else "claude"
+    candidates += [str(Path.home() / ".local" / "bin" / executable), str(Path.home() / ".claude" / "local" / executable)]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return candidate
