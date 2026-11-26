@@ -51,6 +51,7 @@ from .node_component_renderer import (
     stair_wood_mesh,
 )
 from .plate_antialiasing import PlateAntialiasing
+from .plate_connection_symbols import plate_connection_symbols
 from .plate_member_intersections import dashed_plate_member_intersections
 from .plate_result_display import (
     DEFAULT_PLATE_RESULT_DISPLAY_MODE,
@@ -543,6 +544,7 @@ class StructureScene(QWidget):
         self._release_actor = None
         self._local_axis_actors: list[object] = []
         self._plate_local_axis_actors: list[object] = []
+        self._plate_connection_actors: dict[str, object] = {}
         self._action_actors: list[object] = []
         self._action_label_positions = np.empty((0, 3), dtype=float)
         self._action_labels: tuple[str, ...] = ()
@@ -2214,7 +2216,31 @@ class StructureScene(QWidget):
             mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
             self._update_plate_edge_style(name)
             self._add_plate_local_axes(plate)
+            self._update_plate_connection_symbols(name)
         self._update_plate_antialiasing()
+
+    def _update_plate_connection_symbols(self, name: str) -> None:
+        plate = self._model.plates[name]
+        mesh = plate_connection_symbols(
+            self._model, plate, radius=self._node_marker_radius() * 1.2,
+            display_contour=self._plate_display_contour(plate), solid=self._solid_members_visible,
+        )
+        actor = self._plate_connection_actors.get(name)
+        if not mesh.n_cells:
+            if actor is not None:
+                self.plotter.remove_actor(actor, reset_camera=False, render=False)
+                del self._plate_connection_actors[name]
+            return
+        if actor is None:
+            actor = self.plotter.add_mesh(
+                mesh, color="#000000", line_width=3, pickable=False, lighting=False,
+                reset_camera=False, render=False, name=f"plate-connections:{name}",
+            )
+            self._plate_connection_actors[name] = actor
+        else:
+            actor.GetMapper().SetInputData(mesh)
+            actor.GetMapper().Modified()
+        actor.SetVisibility(self._member_releases_visible)
 
     def _add_plate_local_axes(self, plate) -> None:
         """Draw plate X/Y/Z axes in the same overlay used for member axes."""
@@ -2693,6 +2719,7 @@ class StructureScene(QWidget):
             return
         plate = self._model.plates[name]
         mesh, edges = self._plate_meshes(plate)
+        self._update_plate_connection_symbols(name)
         self._plate_actors[name].GetProperty().SetOpacity(1.0 if self._solid_members_visible else 0.7)
         self._update_plate_edge_style(name)
         for actor, data in ((self._plate_actors[name], mesh), (self._plate_edge_actors[name], edges)):
@@ -7106,6 +7133,8 @@ class StructureScene(QWidget):
             actor.SetVisibility(name not in hidden_plate_names)
         for name, actor in self._plate_fe_mesh_actors.items():
             actor.SetVisibility(name not in hidden_plate_names and not self._solid_members_visible)
+        for name, actor in self._plate_connection_actors.items():
+            actor.SetVisibility(self._member_releases_visible and name not in hidden_plate_names)
         show_plate_intersections = (
             self._face_intersection_edges_enabled
             and not deformation_active
@@ -7746,6 +7775,9 @@ class StructureScene(QWidget):
         self._member_releases_visible = bool(visible)
         if self._release_actor is not None:
             self._release_actor.SetVisibility(visible)
+        for actor in self._plate_connection_actors.values():
+            actor.SetVisibility(visible)
+        self._apply_representation_visibility()
         self.plotter.render()
 
     def set_semirigid_links_visible(self, visible: bool) -> None:
@@ -9145,6 +9177,7 @@ class StructureScene(QWidget):
         self._release_actor = None
         self._local_axis_actors = []
         self._plate_local_axis_actors = []
+        self._plate_connection_actors = {}
         self._action_actors = []
         self._action_layer_key = None
         self._action_label_positions = np.empty((0, 3), dtype=float)

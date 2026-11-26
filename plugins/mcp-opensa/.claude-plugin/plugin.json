@@ -1,6 +1,6 @@
 {
   "name": "mcp-opensa",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Conecta o Claude Code ao projeto estrutural aberto no Open Structural Analysis.",
   "author": {
     "name": "Open Structural Analysis contributors",

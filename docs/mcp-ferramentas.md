@@ -1,6 +1,6 @@
 # Inventário das ferramentas MCP — v5
 
-O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas efetivos do servidor; `get_capabilities` permite consultar recursos e diagramas em tempo de execução.
+O servidor registra **107 ferramentas**. Esta relação corresponde aos esquemas efetivos do servidor; `get_capabilities` permite consultar recursos e diagramas em tempo de execução.
 
 | Ferramenta | Parâmetros | Operação |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas 
 | `create_load_combination` | `name`, `factors?`, `factors_2?`, `factors_3?`, `active_actions?`, `action_group?`, `limit_state?` | Cria uma combinação. factors, factors_2 e factors_3 usam as siglas das ações como chaves; active_actions informa as siglas participantes. limit_state pode ser CAR, ELU ou ELS. |
 | `create_member` | `start_node`, `end_node` | Cria uma barra entre dois nós existentes no projeto aberto. Consulte os nós antes de chamar esta ferramenta. O nome da barra é atribuído automaticamente pelo OpenSA. |
 | `create_node` | `x`, `y`, `z` | Cria um nó no projeto estrutural atualmente aberto. Use coordenadas numéricas e confirme as unidades com o usuário quando necessário. |
-| `create_plate` | `contour`, `thickness_mm?`, `material?`, `supports?`, `restrictions?`, `restriction_stiffness?`, `restriction_directions?` | Cria placa de concreto, aço ou madeira com contorno em m, espessura em mm e molas distribuídas em kN/m³. |
+| `create_plate` | `contour`, `thickness_mm?`, `material?`, `supports?`, `restrictions?`, `restriction_stiffness?`, `restriction_directions?`, `edge_connections?` | Cria placa de concreto, aço ou madeira com contorno em m, espessura em mm e molas distribuídas em kN/m³. |
 | `create_rigid_bar` | `start_node`, `end_node` | Cria uma barra rígida entre dois nós existentes. |
 | `create_scene_view` | `name` | Cria uma vista nomeada vazia e a torna ativa. Depois, use set_scene_members_visibility para ocultar ou reexibir barras e barras rígidas nela. |
 | `delete_action` | `action_name` | Exclui um carregamento específico pelo nome retornado por list_actions. |
@@ -58,7 +58,7 @@ O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas 
 | `list_members` | — | Use esta ferramenta para consultar as barras do projeto aberto. |
 | `list_node_components` | — | Lista tipos, parâmetros padrão e instâncias dos componentes visuais dos nós. |
 | `list_nodes` | — | Use esta ferramenta para consultar os nós do projeto aberto. |
-| `list_plates` | — | Lista placas, contornos, espessuras, apoios e restrições distribuídas. |
+| `list_plates` | — | Lista placas e arestas: índices base 0, coordenadas, barras coincidentes e vinculação efetiva. |
 | `list_profiles` | `material_type`, `section_family` | Consulta perfis e dimensões dos catálogos. Tipos Aço/Concreto/Madeira; use list_sections para famílias. |
 | `list_reference_axes` | — | Consulta os eixos de referência configurados no projeto aberto. |
 | `list_rigid_bars` | — | Consulta as barras rígidas do projeto aberto. |
@@ -98,9 +98,52 @@ O servidor registra **96 ferramentas**. Esta relação corresponde aos esquemas 
 | `update_member_endpoints` | `member_name`, `start_node`, `end_node` | Altera os nós inicial e final de uma barra, preservando sua identidade e propriedades. |
 | `update_member_properties` | `member_names`, `material?`, `section?`, `geometry?`, `profile?`, `rotation?`, `releases?`, `rotation_flexibility_percent?`, `solid_face_offsets_mm?`, `solid_section_offsets_mm?`, `color?`, `section_mirrored?`, `solid_face_angles_deg?` | Atualiza qualquer combinação de propriedades das barras. Informe uma lista de nomes e somente os campos que deseja alterar. Pode alterar material, section, geometry, profile, rotation, releases (12 booleanos na ordem Dxa,Dxb,Dya,Dyb,Dza,Dzb,Rxa,Rxb,Rya,Ryb,Rza,Rzb), rotation_flexibility_percent (6 inteiros), offsets em milímetros, color, section_mirrored e solid_face_angles_deg (4 ângulos em graus). Para geometry, informe ou mantenha material e section válidos. |
 | `update_node_properties` | `node_name`, `x?`, `y?`, `z?`, `supports?`, `support_stiffness?`, `support_directions?` | Atualiza propriedades de um nó existente sem alterar seu nome. Informe somente os campos desejados. Para coordenadas, informe x, y e z juntos. supports possui seis booleanos na ordem Dx,Dy,Dz,Rx,Ry,Rz. support_stiffness possui seis valores, com rigidezas translacionais em kN/m e rotacionais em kN·m/rad. support_directions: seis sentidos -, = ou +. |
-| `update_plate_properties` | `plate_name`, `thickness_mm?`, `material?`, `color?`, `positioning_displacement?`, `edge_positioning?`, `restrictions?`, `restriction_stiffness?`, `restriction_directions?` | Atualiza placa: espessura em mm; deslocamento visual em m; molas em kN/m³; arestas [barra, mm, graus]. |
+| `update_plate_properties` | `plate_name`, `thickness_mm?`, `material?`, `color?`, `positioning_displacement?`, `edge_positioning?`, `restrictions?`, `restriction_stiffness?`, `restriction_directions?`, `edge_connections?` | Atualiza placa: espessura em mm; deslocamento visual em m; molas em kN/m³; arestas [barra, mm, graus]. |
 | `update_rigid_bar_endpoints` | `rigid_bar_name`, `start_node`, `end_node` | Altera os nós de uma barra rígida. O nome da barra rígida será atualizado automaticamente para refletir os novos nós. |
 
 `?` indica parâmetro opcional. As unidades e restrições de cada argumento também constam no esquema MCP, consultável pelo cliente.
 
 Consulte [MCP local](mcp-local.md) para ativação, compatibilidade e validação dos pacotes.
+
+## Folhas e arquivos (plugin 0.3.0)
+
+| Ferramenta | Parâmetros | Operação |
+| --- | --- | --- |
+| `get_project_sheets` | — | Consulta folhas, vistas, cotas e textos. Posições de folha são frações da área útil (0 a 1). |
+| `create_project_sheet` | `name`, `paper_size?`, `orientation?`, `project?` | Cria folha A0–A4, em Paisagem/Retrato. project: client/work/address/responsible/crea; não altera análise. |
+| `create_sheet_view` | `sheet_name`, `name`, `plane`, `coordinate`, `scale_denominator?`, `position?`, `upper_offset_cm?`, `lower_offset_cm?`, `excluded_owners?` | Projeta geometria real na folha. plane: XY/XZ/YZ; coordinate em m; offsets em cm; position: [0..1,0..1]. |
+| `add_sheet_text` | `sheet_name`, `text`, `position`, `width_mm?`, `height_mm?`, `text_height_mm?` | Adiciona texto simples à folha; position é fração da área útil; tamanhos em mm. |
+| `update_sheet_view` | `sheet_name`, `view_index`, `name?`, `position?`, `scale_denominator?`, `axes_visible?`, `clear_dimensions?` | Edita nome, posição (frações 0..1), escala e eixos; em detalhes, posição move o grupo inteiro. clear_dimensions remove cotas. |
+| `add_view_dimension` | `sheet_name`, `view_index`, `start`, `end`, `offset`, `unit?` | Adiciona cota linear em m projetados: XY=(X,Y), XZ=(-X,Z), YZ=(Y,Z); offset também 2D; unidade mm/cm/m. |
+| `create_component_detail` | `sheet_name`, `node_name`, `name?`, `scale_denominator?` | Cria vistas superior/lateral cotadas da chapa de base do nó, usando a geometria da interface; não dimensiona a ligação. |
+| `save_project` | `path`, `overwrite?` | Salva o projeto completo em caminho absoluto .osa; overwrite=true permite substituir arquivo existente. |
+| `export_project_sheet_pdf` | `sheet_name`, `path`, `overwrite?` | Exporta uma folha para PDF vetorial em caminho absoluto; preserva a navegação e seleção da interface. |
+| `export_model_dxf` | `path`, `overwrite?` | Exporta eixos analíticos das barras para DXF 3D em m, em caminho absoluto. |
+| `import_drawing_reference` | `path` | Importa referência DXF/DWG do caminho absoluto local, preservando o arquivo de origem. |
+
+## Vinculações das arestas das placas
+
+`create_plate` e `update_plate_properties` aceitam `edge_connections` como lista de objetos:
+
+```json
+{
+  "plate_name": "P1",
+  "edge_connections": [
+    {"edge_index": 0, "state": "fixed"},
+    {"edge_index": 1, "state": "supported"},
+    {"edge_index": 2, "state": "free"}
+  ]
+}
+```
+
+Os estados são `free` (Livre), `supported` (Apoiado) e `fixed` (Engastado).
+O índice `0` corresponde à **Aresta 1** exibida na interface. Consulte `list_plates`
+antes de editar: o campo `edges` informa coordenadas inicial/final, `boundary_members`,
+`state` efetivo e `configurable`. Arestas sem barras são naturalmente livres e retornam
+`configurable=false`; a vinculação só atua nos trechos que coincidem com barras.
+
+A criação usa Apoiado nas arestas não especificadas. A atualização altera apenas as
+arestas informadas, preservando as demais; omitir o parâmetro ou enviar `[]` preserva
+as vinculações existentes. As mudanças seguem a mesma atualização da interface e
+invalidação da análise das demais propriedades estruturais. As vinculações são salvas
+no arquivo `.osa`.

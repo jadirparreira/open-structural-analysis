@@ -14,10 +14,10 @@ cliente MCP ainda precisa da sua própria configuração ou adaptador.
 
 ## Auditoria e compatibilidade
 
-A atualização amplia o servidor de **74 para 96 ferramentas**. As 74 operações
+A atualização amplia o servidor de **74 para 107 ferramentas**. As 74 operações
 anteriores continuam correspondendo a recursos existentes do programa; nenhuma
 ferramenta inteira precisou ser retirada. Foram atualizados seus argumentos,
-retornos e descrições. O [inventário completo](mcp-ferramentas.md) lista as 96
+retornos e descrições. O [inventário completo](mcp-ferramentas.md) lista as 107
 ferramentas e seus parâmetros.
 
 Novas operações:
@@ -31,6 +31,14 @@ Novas operações:
 - Verificação: `get_verification_state`, `get_verification_results`,
   `run_verification`, `set_member_calculation_properties`, `ungroup_verification_elements`.
 - Detalhamento: `set_detail_subtractions`, `set_member_end_cuts`.
+- Folhas: criação de vistas reais, cotas, textos e detalhes de componentes; consulta e edição de vistas.
+- Arquivos: salvar `.osa`, exportar folhas PDF e eixos de barras DXF, importar referência DXF/DWG.
+
+As operações de sessão abrem o editor mesmo quando a janela está na tela inicial.
+As alterações de folhas também sincronizam o modo Projeto na interface.
+Os arquivos de saída exigem caminho absoluto e `overwrite=true` para substituir um arquivo existente.
+O DXF contém os eixos das barras; não é uma prancha de fabricação.
+O detalhamento de bases representa a geometria cadastrada e não dimensiona chumbadores, soldas ou fundações.
 
 A opção `snap_enabled` foi retirada: ela não alterava a captura e sempre retornava
 verdadeiro. `node_components_visible` agora expõe a preferência real dos componentes.
@@ -130,7 +138,7 @@ servidor e os recursos; não comprova que o usuário selecionou o plugin no clie
 
 Ao ativar o servidor, o OpenSA copia o plugin local para o marketplace pessoal e
 tenta registrá-lo no ChatGPT Desktop. Reinicie o cliente se ele já estava aberto
-e selecione OpenSA no chat Work. O plugin local está na versão 0.2.0.
+e selecione OpenSA no chat Work. O plugin local está na versão 0.3.0.
 
 No Claude Code (e na aba Code do Claude Desktop), o OpenSA instala da mesma forma
 o plugin `mcp-opensa` pelo CLI `claude`, quando ele existe. Esse plugin usa a ponte

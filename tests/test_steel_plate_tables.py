@@ -35,8 +35,8 @@ def test_combines_model_plates_and_both_components_without_fasteners_or_wood():
     model = StructuralModel()
     model.add_plate(rectangle(), thickness_mm=6.35, material="ASTM A36")
     model.add_plate(rectangle(), thickness_mm=6.35, material="Concreto C30")
-    for name, x, component, width, length in (("N1", 1, "base_plate", 200, 300),
-                                              ("N2", 2, "stair_plate", 300, 100)):
+    for name, x, component, width, length in (("C1", 1, "base_plate", 200, 300),
+                                              ("C2", 2, "stair_plate", 300, 100)):
         model.add_node(name, x, 0, 0)
         model.update_node_component(name, NodeComponentAssignment(component, (
             ("largura_mm", width), ("comprimento_mm", length), ("espessura_mm", 6.35),

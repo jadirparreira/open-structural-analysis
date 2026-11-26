@@ -429,7 +429,7 @@ def test_selfweight_creates_negative_global_z_loads_from_member_mass():
     assert response.level == "success"
     assert response.selfweights[0].target == "B1"
     expected_mass = calculate_section_properties("W Laminado", geometry, 7850).mass_kg_m
-    assert response.selfweights[0].value == pytest.approx(-expected_mass / 100.0)
+    assert response.selfweights[0].value == pytest.approx(-expected_mass * 9.80665e-3)
 
 
 def test_selfweight_confirmation_rejects_invalid_answers_and_can_be_cancelled():
@@ -474,7 +474,7 @@ def test_selfweight_filters_members_by_selected_material_and_lists_custom_materi
     created = commands.submit("sim")
     assert tuple(weight.target for weight in created.selfweights) == ("B2",)
     expected = calculate_section_properties("W Laminado", geometry, 500).mass_kg_m
-    assert created.selfweights[0].value == pytest.approx(-expected / 100.0)
+    assert created.selfweights[0].value == pytest.approx(-expected * 9.80665e-3)
 
 
 def test_selfweight_locks_the_active_action_and_toggles_off():

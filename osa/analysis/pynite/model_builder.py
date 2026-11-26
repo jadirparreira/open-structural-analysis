@@ -34,6 +34,7 @@ class ModelBuilder:
         target._osa_plate_edges = {}
         target._osa_plate_surface_axes = {}
         target._osa_node_coordinates = {}
+        target._osa_disconnected_plate_nodes = set()
         target._osa_original_node_names = set(source.nodes)
         rotationally_unconnected = self._rotationally_unconnected_nodes(source)
         node_fixed_supports = {}
@@ -87,14 +88,53 @@ class ModelBuilder:
             if not math.isfinite(plate.thickness_mm) or plate.thickness_mm <= 0:
                 raise ValueError(f"Defina a seção e a espessura da placa '{plate.name}' antes de analisar.")
         plate_mesh = generate_plate_mesh(source.plates)
+        # Detect real analytical edge/bar overlaps, including plates created
+        # from coordinates (which need not contain explicit support references).
+        edge_interfaces = []
+        for plate in source.plates.values():
+            states = dict(plate.edge_connections)
+            for edge in range(len(plate.contour)):
+                bars = source.plate_edge_bars(plate.name, edge, include_rigid=True)
+                if bars:
+                    edge_interfaces.append((
+                        plate, edge, bars, states.get(edge, "fixed"),
+                    ))
+
+        def on_segment(point, start, end):
+            start, end, point = np.asarray(start), np.asarray(end), np.asarray(point)
+            vector = end - start
+            length2 = float(vector @ vector)
+            if length2 <= 1e-16:
+                return False
+            ratio = float((point - start) @ vector / length2)
+            return -1e-8 <= ratio <= 1 + 1e-8 and np.linalg.norm(point - start - ratio * vector) <= 1e-7
+
+        def interfaces_at(point):
+            return [
+                (plate, bars, state) for plate, edge, bars, state in edge_interfaces
+                if on_segment(point, plate.contour[edge], plate.contour[(edge + 1) % len(plate.contour)])
+                and any(on_segment(
+                    point,
+                    tuple(getattr(source.nodes[(source.bars.get(bar) or source.rigid_bars[bar]).start_node], axis) for axis in "xyz"),
+                    tuple(getattr(source.nodes[(source.bars.get(bar) or source.rigid_bars[bar]).end_node], axis) for axis in "xyz"),
+                ) for bar in bars)
+            ]
+
         plate_node_names = []
+        beam_mesh_names = []
+        beam_mesh_members = []
         for index, point in enumerate(plate_mesh.nodes, start=1):
             coordinates = tuple(float(value) for value in point)
+            interfaces = interfaces_at(point)
+            separate = bool(interfaces) and not any(state == "fixed" for _, _, state in interfaces)
             existing = next(
                 (node.name for node in source.nodes.values()
                  if math.dist(coordinates, (node.x, node.y, node.z)) <= 1e-8),
                 None,
             )
+            structural_node = existing
+            if separate:
+                existing = None
             if existing is None:
                 existing = f"FE::N{index}"
                 target.add_node(existing, *coordinates)
@@ -103,6 +143,34 @@ class ModelBuilder:
                 node_spring_stiffness[existing] = [0.0] * 6
                 node_spring_directions[existing] = [set() for _ in range(6)]
             plate_node_names.append(existing)
+            if separate:
+                target._osa_disconnected_plate_nodes.add(existing)
+            connected = {bar for _, bars, state in interfaces if state != "free" for bar in bars}
+            beam_node = existing
+            if separate and connected:
+                beam_node = structural_node or f"FE::BeamN{index}"
+                if beam_node not in target.nodes:
+                    target.add_node(beam_node, *coordinates)
+                    target._osa_node_coordinates[beam_node] = coordinates
+                from .plate_connections import PlateTranslationLink
+                stiffness = max(
+                    source.materials[plate.material][0] * plate.thickness_mm / 1000.0
+                    for plate, _, state in interfaces if state == "supported"
+                ) * 1e5
+                link_name = f"FE::PlateLink{index}"
+                target.springs[link_name] = PlateTranslationLink(
+                    link_name, target.nodes[existing], target.nodes[beam_node], stiffness,
+                    target.load_combos,
+                )
+            beam_mesh_names.append(beam_node)
+            beam_mesh_members.append(connected)
+        # Articulated beam ends can now have a separate plate node. Revisit
+        # their unused rotational DOFs using actual solver connectivity.
+        for name in self._rotationally_unconnected_nodes(source, set(plate_node_names)):
+            for dof in range(3, 6):
+                if source.nodes[name].support_stiffness[dof] <= 0:
+                    node_fixed_supports[name][dof] = True
+            target.def_support(name, *node_fixed_supports[name])
         for plate in source.plates.values():
             contour_points = np.asarray(plate.contour, dtype=float)
             local_x, local_y, _normal = _plate_local_basis(plate.contour)
@@ -195,14 +263,6 @@ class ModelBuilder:
                     target.def_support_spring(
                         node_name, dofs[index], stiffness, direction=direction,
                     )
-        supported_bars = {
-            name for plate in source.plates.values()
-            for kind, name in plate.supports if kind == "bar"
-        }
-        supported_rigid_bars = {
-            name for plate in source.plates.values()
-            for kind, name in plate.supports if kind == "rigid_bar"
-        }
         for member in source.bars.values():
             if member.material not in source.materials:
                 raise ValueError(f"A barra '{member.name}' não possui material válido.")
@@ -230,8 +290,9 @@ class ModelBuilder:
             for index, percent in zip((6, 7, 8, 9, 10, 11), member.rotation_flexibility_percent):
                 releases[index] = releases[index] or percent >= 100
             stations = self._mesh_stations(
-                source, member.start_node, member.end_node, plate_node_names, plate_mesh.nodes,
-                member.name in supported_bars,
+                source, member.start_node, member.end_node,
+                [node for node, bars in zip(beam_mesh_names, beam_mesh_members) if member.name in bars],
+                [point for point, bars in zip(plate_mesh.nodes, beam_mesh_members) if member.name in bars], True,
             )
             self._add_member_segments(
                 target, source, member.name, stations, member.material, section_name,
@@ -264,8 +325,9 @@ class ModelBuilder:
                 properties.j_m4,
             )
             stations = self._mesh_stations(
-                source, rigid.start_node, rigid.end_node, plate_node_names, plate_mesh.nodes,
-                rigid.name in supported_rigid_bars,
+                source, rigid.start_node, rigid.end_node,
+                [node for node, bars in zip(beam_mesh_names, beam_mesh_members) if rigid.name in bars],
+                [point for point, bars in zip(plate_mesh.nodes, beam_mesh_members) if rigid.name in bars], True,
             )
             self._add_member_segments(
                 target, source, rigid.name, stations, material_name, section_name,
@@ -299,6 +361,11 @@ class ModelBuilder:
         for index, ((start_ratio, start_node), (end_ratio, end_node)) in enumerate(pairwise(stations)):
             name = original_name if index == 0 else f"{original_name}::FE{index + 1}"
             target.add_member(name, start_node, end_node, material, section)
+            if target._osa_disconnected_plate_nodes:
+                from .plate_connections import PlateAwareMember
+                target.members[name] = PlateAwareMember(
+                    target, name, target.nodes[start_node], target.nodes[end_node], material, section,
+                )
             analysis_member = target.members[name]
             member = source.bars.get(original_name)
             if member is not None:
@@ -324,7 +391,7 @@ class ModelBuilder:
         mapping[original_name] = tuple(rows)
 
     @staticmethod
-    def _rotationally_unconnected_nodes(source: StructuralModel) -> set[str]:
+    def _rotationally_unconnected_nodes(source: StructuralModel, plate_nodes=None) -> set[str]:
         """Return nodes whose incident members all release local RY and RZ."""
         incident: dict[str, list[tuple[bool, bool]]] = {name: [] for name in source.nodes}
         for member in source.bars.values():
@@ -338,6 +405,8 @@ class ModelBuilder:
         return {
             name for name, releases in incident.items()
             if releases and all(release_y and release_z for release_y, release_z in releases)
-            and not any(math.dist((source.nodes[name].x, source.nodes[name].y, source.nodes[name].z), point) <= 1e-8
-                        for point in plate_points)
+            and not (name in plate_nodes if plate_nodes is not None else any(
+                math.dist((source.nodes[name].x, source.nodes[name].y, source.nodes[name].z), point) <= 1e-8
+                for point in plate_points
+            ))
         }

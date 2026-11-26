@@ -29,17 +29,21 @@ def test_member_rotation_flexibility_changes_the_pynite_response():
     }
 
     assert abs(displacements[0]) < abs(displacements[50]) < abs(displacements[99])
-    assert displacements[50] == pytest.approx(-0.0116666667)
+    assert displacements[50] == pytest.approx(displacements[0] * 1.75)
 
 
 @pytest.mark.parametrize(
-    ("rotation", "expected_y", "expected_z"),
-    ((0, 0.0, -0.0066666667), (90, 0.0, -0.0266666667)),
+    ("rotation", "expected_y"),
+    ((0, 0.0), (90, 0.0)),
 )
-def test_member_deflections_are_reported_in_global_axes(rotation, expected_y, expected_z):
+def test_member_deflections_are_reported_in_global_axes(rotation, expected_y):
     result = _cantilever_tip_result(rotation=rotation)
     node = result.node_results["N2"]
     member_end = result.member_results["B1"]["end"]
+    material_modulus = StructuralModel().materials["Concreto C30"][0]
+    width, depth = (0.2, 0.4) if rotation == 0 else (0.4, 0.2)
+    inertia = width * depth**3 / 12.0
+    expected_z = -10.0 * 4.0**3 / (3.0 * material_modulus * inertia)
 
     assert node["DY"] == pytest.approx(expected_y)
     assert node["DZ"] == pytest.approx(expected_z)

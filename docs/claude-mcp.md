@@ -5,7 +5,7 @@ O Open Structural Analysis expõe o modelo aberto por um servidor MCP local em
 Servidor MCP**. Para o Claude existem duas peças, além desse endpoint:
 
 - **Ponte stdio** (`--mcp-stdio`): o próprio executável do OpenSA funciona como
-  servidor MCP por `stdio`. Ele lista sempre as 96 ferramentas e encaminha cada
+  servidor MCP por `stdio`. Ele lista sempre as ferramentas do servidor e encaminha cada
   chamada ao endpoint HTTP do programa aberto. Se o OpenSA estiver fechado ou o
   servidor desativado, a ferramenta responde com um erro que explica como
   ativá-lo, em vez de deixar o Claude sem ferramentas.

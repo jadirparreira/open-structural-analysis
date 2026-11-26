@@ -12,6 +12,7 @@ from osa.ui.project_sheet import ProjectSheetWorkspace
 from osa.ui.project_sheet_pdf import export_sheet_pdf
 from osa.ui.special_dimensions import angular_geometry, dimension_layout, elevation
 from osa.ui.dialogs import ProjectSheetSettingsDialog
+from pdf_helpers import assert_pdf_contains_text, wait_for_pdf
 
 
 @pytest.fixture
@@ -38,7 +39,9 @@ def test_angular_snap_clicks_preview_degrees_move_delete_and_escape(scene, tmp_p
         click(ws, point)
     assert len(ws._dimension_points) == 3
     target = ws._screen_point(0, (.7,.7))
-    QTest.mouseMove(ws, target.toPoint()); ws.grab()
+    QTest.mouseMove(ws, target.toPoint())
+    ws._special_dimension_input(target, False)
+    ws.grab()
     assert ws._dimension_preview['kind'] == 'angular'
     assert dimension_layout(ws, 0, ws._dimension_preview, ws.font())['text'] == '90,0°'
     QTest.keyClick(ws, Qt.Key.Key_Return)
@@ -50,7 +53,9 @@ def test_angular_snap_clicks_preview_degrees_move_delete_and_escape(scene, tmp_p
     assert json.loads(json.dumps(mark))['kind'] == 'angular'
     pdf_path = tmp_path/'angle.pdf'; export_sheet_pdf(ws,pdf_path)
     pdf = QPdfDocument(); assert pdf.load(str(pdf_path)) == QPdfDocument.Error.None_
-    assert '90,0°' in pdf.getAllText(0).text()
+    wait_for_pdf(pdf)
+    pdf.render(0, QSize(1200, 900))
+    assert_pdf_contains_text(pdf, pdf_path, '90,0°')
     ws.grab(); layout = dimension_layout(ws,0,mark,ws.font())
     ws.select_view(0); ws.grab()
     center = layout['text_rect'].center()
@@ -75,7 +80,9 @@ def test_level_in_metres_reference_and_pdf(scene, tmp_path):
     assert dimension_layout(ws,0,mark,ws.font())['text'] == '-0,250 m'
     path = tmp_path/'levels.pdf'; export_sheet_pdf(ws,path)
     doc = QPdfDocument(); assert doc.load(str(path)) == QPdfDocument.Error.None_
-    assert '-0,250 m' in doc.getAllText(0).text()
+    wait_for_pdf(doc)
+    doc.render(0, QSize(1200, 900))
+    assert_pdf_contains_text(doc, path, '-0,250 m')
     doc.render(0,QSize(1500,1050)).save(str(tmp_path/'level.png'))
 
 

@@ -87,7 +87,7 @@ def test_mcp_application_reads_and_changes_the_open_model():
         "load_cases": 0,
         "load_combinations": 0,
         "analysis_results": 0,
-        "materials": 8,
+        "materials": len(model.materials),
         "drawing_references": 0,
         "scene_views": 1,
         "active_scene_view": "Completo",

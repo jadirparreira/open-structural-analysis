@@ -292,7 +292,12 @@ def test_dialog_labels_and_accepts_signed_plate_displacements(qt_app):
         assert list(dialog._inputs)[:4] == [
             "largura_mm", "comprimento_mm", "deslocamento_a_mm", "deslocamento_b_mm",
         ]
-        assert dialog.parameters_scroll.verticalScrollBar().maximum() == 0
+        scrollbar = dialog.parameters_scroll.verticalScrollBar()
+        assert scrollbar.maximum() > 0
+        scrollbar.setValue(scrollbar.maximum())
+        qt_app.processEvents()
+        assert scrollbar.value() == scrollbar.maximum()
+        scrollbar.setValue(0)
         assert dialog._inputs["largura_mm"].accessibleName() == "Dimensão A"
         assert dialog._inputs["comprimento_mm"].accessibleName() == "Dimensão B"
         plane = dialog._inputs["plano"]

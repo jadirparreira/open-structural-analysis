@@ -560,7 +560,7 @@ class MainWindow(QMainWindow):
         self.mcp_active_action_changed.connect(self._select_active_action)
         self.mcp_analysis_view_changed.connect(self._apply_mcp_analysis_view)
         self.mcp_analysis_diagrams_changed.connect(self._apply_mcp_analysis_diagrams_visible)
-        self.mcp_session_changed.connect(self.palette.show_group)
+        self.mcp_session_changed.connect(self._apply_mcp_session_change)
         self._mcp_dispatcher = McpQtDispatcher(self)
         self._mcp_dispatcher.suspend()
         self._mcp_dispatcher.busy_changed.connect(self.command_bar.set_mcp_busy)
@@ -579,6 +579,10 @@ class MainWindow(QMainWindow):
             on_analysis_diagrams_changed=self.mcp_analysis_diagrams_changed.emit,
             on_analysis_display_changed=self._apply_mcp_analysis_display,
             on_session_changed=self.mcp_session_changed.emit,
+            get_detailing_data=self._detailing_state_snapshot,
+            on_detailing_changed=self._apply_mcp_detailing_change,
+            on_project_saved=self._apply_mcp_project_saved,
+            can_reverse_member=lambda: not self.member_direction_normalization_enabled,
             get_session=lambda: self.palette.active_group,
             model_lock=self._model_access_lock,
             execute_on_model_thread=self._mcp_dispatcher.call,
@@ -8125,11 +8129,30 @@ class MainWindow(QMainWindow):
 
     def _refresh_after_mcp_change(self) -> None:
         """Atualiza a interface após uma operação recebida pelo MCP local."""
+        if self.view_stack.currentWidget() is self.home and self.model.nodes:
+            self.show_editor()
         self.normalize_member_directions_if_enabled()
         self.refresh_action_palette()
         self.refresh_analysis_palette()
         self.reference_panel.reload()
         self.refresh_scene()
+        self.refresh_selected_property_panel(self.palette.active_group)
+
+    def _apply_mcp_session_change(self, group: str) -> None:
+        self.show_editor()
+        self.palette.show_group(group)
+
+    def _apply_mcp_detailing_change(self) -> None:
+        self._restore_detailing_state()
+        self.detailing_mode_palette.set_project_mode(True)
+        self.set_detailing_project_mode(True)
+        self.show_editor()
+
+    def _apply_mcp_project_saved(self, path) -> None:
+        self.current_path = Path(path)
+        self._set_model_display_name(self.current_path.stem)
+        self._saved_revision = self.model.revision
+        self._saved_view_revision = self.model.view_revision
 
     def _refresh_after_mcp_scene_views_change(self) -> None:
         """Atualiza o seletor e a geometria após operações MCP de vistas."""

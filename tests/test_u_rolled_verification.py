@@ -124,7 +124,7 @@ def test_slender_web_u_is_unverified_when_annex_e_has_no_u_procedure():
     assert equation_objects
 
 
-def test_significant_torsion_is_informational_and_does_not_count_as_unverified():
+def test_significant_torsion_without_a_check_remains_unverified():
     model = StructuralModel()
     model.add_node("A", 0.0, 0.0, 0.0)
     model.add_node("B", 0.0, 0.0, 3.0)
@@ -145,11 +145,11 @@ def test_significant_torsion_is_informational_and_does_not_count_as_unverified()
     verification = verify_model(model)
     element = verification["results"]["bar:U1"]
 
-    assert element["status"] == "not_applicable"
+    assert element["status"] == "not_checked"
     assert "torsion" not in element["checks"]
     assert element["torsion_summary"]["has_torsion"]
     assert verification["summary"]["approved"] == 0
-    assert verification["summary"]["unverified"] == 0
+    assert verification["summary"]["unverified"] == 1
 
     model.verification_results = verification["results"]
     memorial = CalculationMemorialDialog._render(
