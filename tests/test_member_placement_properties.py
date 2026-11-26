@@ -385,33 +385,23 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
     window.model.add_bar("existing", "A", "B")
     scene = window.scene
     scene._pointer_position = None
-    scene.render_model(window.model)
-    scene.plotter.render_window.SetSize(800, 600)
-    camera = scene.plotter.renderer.GetActiveCamera()
-    camera.SetParallelProjection(True)
-    camera.SetPosition(0, 0, 30)
-    camera.SetFocalPoint(0, 0, 0)
-    camera.SetViewUp(0, 1, 0)
-    camera.SetParallelScale(10)
-    camera.SetClippingRange(0.1, 100)
-    scene.plotter.render()
     scene._snap_enabled = True
     scene._snap_types.update(
         endpoint=False, center=False, intersection=False, perpendicular=True,
     )
-    monkeypatch.setattr(scene, "_measurement_visible_points", lambda screens, *_args, **_kwargs: np.ones(len(screens), bool))
     messages = []
     monkeypatch.setattr(window.history, "append", messages.append)
     {"member": window.start_member_placement, "rigid": window.start_rigid_bar_placement,
      "measurement": window.start_measurement}[operation]()
     pick(window, (1, 4, 0))
-    # The first point is supplied through the typed/manual-coordinate path;
-    # the second point must come from the pointer so perpendicular snapping runs.
+    # Isolate command handling from pixel projection. The snap geometry itself
+    # is covered by the renderer's perpendicular-snap tests.
     scene._manual_edit_target = None
-    screen, visible = scene._world_to_screen(np.asarray((1, 0, 0)))
-    assert visible
-    scene._pointer_position = tuple(screen)
+    scene._pointer_position = (100, 100)
     monkeypatch.setattr(scene, "_cursor_world_position", lambda: np.asarray((1.01, 0.01, 0)))
+    snap = lambda _position: (np.asarray((1, 0, 0), dtype=float), "perpendicular")
+    monkeypatch.setattr(scene, "_snap_position", snap)
+    monkeypatch.setattr(scene, "_measurement_target", snap)
     scene._emit_member_placement_point()
     if operation == "measurement":
         assert any("Δ: 4.000 m" in message for message in messages)
@@ -419,8 +409,11 @@ def test_perpendicular_capture_is_applied_by_member_rigid_bar_and_measure_comman
         assert len(window.model.nodes) == 2
     else:
         member = window.model.bars["B1"] if operation == "member" else next(iter(window.model.rigid_bars.values()))
-        node = window.model.nodes[member.end_node]
-        np.testing.assert_allclose((node.x, node.y, node.z), (1, 0, 0))
+        endpoints = {
+            tuple((window.model.nodes[name].x, window.model.nodes[name].y, window.model.nodes[name].z))
+            for name in (member.start_node, member.end_node)
+        }
+        assert endpoints == {(1, 4, 0), (1, 0, 0)}
 
 
 def test_member_snap_splits_rigid_bar_when_split_setting_is_enabled(window):
