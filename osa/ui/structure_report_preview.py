@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal, Slot, QModelIndex
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal, Slot, QModelIndex
 from PySide6.QtGui import QPixmap
 from PySide6.QtPdf import QPdfBookmarkModel, QPdfDocument
 from PySide6.QtPdf import QPdfPageRenderer
@@ -69,6 +69,7 @@ class StructureReportPreview(QWidget):
         self._page_frames: list[QWidget] = []
         self._page_labels: list[QLabel] = []
         self._page_sizes: list[QSize] = []
+        self._pdf_page_indices: list[int] = []
         self._page_requested: list[bool] = []
         self._page_render_generation = 0
         self._render_requests: dict[int, tuple[int, int]] = {}
@@ -149,27 +150,43 @@ class StructureReportPreview(QWidget):
     def zoom_percent(self) -> int:
         return self._zoom_percent
 
-    def chapter_bookmarks(self) -> list[tuple[str, int]]:
-        chapters: list[tuple[str, int]] = []
+    def chapter_bookmarks(self) -> list[tuple[str, int, QPointF]]:
+        chapters: list[tuple[str, int, QPointF]] = []
         root = QModelIndex()
         for row in range(self.bookmark_model.rowCount(root)):
             index = self.bookmark_model.index(row, 0, root)
             title = str(self.bookmark_model.data(index, QPdfBookmarkModel.Role.Title) or "").strip()
             page = self.bookmark_model.data(index, QPdfBookmarkModel.Role.Page)
+            location = self.bookmark_model.data(index, QPdfBookmarkModel.Role.Location)
             if title and page is not None:
-                chapters.append((title, int(page)))
+                if not isinstance(location, QPointF):
+                    location = QPointF()
+                chapters.append((title, int(page), location))
         return chapters
 
     def go_to_page(self, page: int) -> None:
-        if not self._page_frames:
+        self.go_to_location(page, QPointF())
+
+    def go_to_location(self, page: int, location: QPointF) -> None:
+        if not self._page_frames or not self._pdf_page_indices:
             return
-        index = max(0, min(len(self._page_frames) - 1, int(page)))
-        self.scroll_area.verticalScrollBar().setValue(self._page_frames[index].y())
+        try:
+            index = self._pdf_page_indices.index(int(page))
+        except ValueError:
+            index = max(0, min(len(self._page_frames) - 1, int(page)))
+        point_size = self.pdf_document.pagePointSize(int(page))
+        pixel_height = self._page_sizes[index].height()
+        # Bookmark locations use PDF points; convert them to the rendered page's pixels.
+        scale = pixel_height / point_size.height() if point_size.height() > 0 else 1.0
+        offset = round(max(0.0, location.y()) * scale)
+        target = self._page_frames[index].y() + 1 + offset
+        self.scroll_area.verticalScrollBar().setValue(target)
 
     def _clear_pages(self) -> None:
         self._page_frames.clear()
         self._page_labels.clear()
         self._page_sizes.clear()
+        self._pdf_page_indices.clear()
         self._page_requested.clear()
         self._render_requests.clear()
         self._page_render_generation += 1
@@ -211,6 +228,7 @@ class StructureReportPreview(QWidget):
             self._page_frames.append(holder)
             self._page_labels.append(image_label)
             self._page_sizes.append(image_size)
+            self._pdf_page_indices.append(index)
             self._page_requested.append(False)
         self.page_layout.addStretch(1)
         self.page_layout.activate()

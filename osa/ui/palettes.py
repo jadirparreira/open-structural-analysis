@@ -1,5 +1,7 @@
 import re
 
+from PySide6.QtCore import QPointF
+
 from .common import *
 from .project_sheet import default_project_settings, default_project_sheet_settings
 from .window_frame import WindowFrame
@@ -1256,9 +1258,10 @@ class MemorialTopPalette(QFrame):
         _register_palette_tooltips(self)
 
     def _chapter_selected(self, index: int) -> None:
-        page = self.chapter_selector.itemData(index)
-        if page is not None:
-            self._window.structure_report_preview.go_to_page(int(page))
+        destination = self.chapter_selector.itemData(index)
+        if isinstance(destination, tuple) and len(destination) == 2:
+            page, location = destination
+            self._window.structure_report_preview.go_to_location(int(page), location)
 
     @staticmethod
     def _zoom_percent_for_position(position: int) -> int:
@@ -1305,11 +1308,24 @@ class MemorialTopPalette(QFrame):
         chapters = preview.chapter_bookmarks()
         self.chapter_selector.blockSignals(True)
         self.chapter_selector.clear()
-        for title, page in chapters:
-            self.chapter_selector.addItem(title, page)
-        if chapters:
-            self.chapter_selector.setCurrentIndex(0)
-        self.chapter_selector.setEnabled(bool(chapters))
+        self.chapter_selector.addItem("Capa", (0, QPointF()))
+        summary = next(
+            (chapter for chapter in chapters
+             if chapter[0].strip().casefold().replace("á", "a") == "sumario"),
+            None,
+        )
+        summary_page = (
+            summary[1] if summary is not None else
+            min(1, max(0, preview.pdf_document.pageCount() - 1))
+        )
+        summary_location = summary[2] if summary is not None else QPointF()
+        self.chapter_selector.addItem("Sumário", (summary_page, summary_location))
+        for title, page, location in chapters:
+            if title.strip().casefold().replace("á", "a") == "sumario":
+                continue
+            self.chapter_selector.addItem(title, (page, location))
+        self.chapter_selector.setCurrentIndex(0)
+        self.chapter_selector.setEnabled(preview._has_document)
         self.chapter_selector.blockSignals(False)
         value = preview.zoom_percent()
         self.zoom_slider.blockSignals(True)
