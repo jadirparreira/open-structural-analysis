@@ -810,20 +810,6 @@ class VerificationTopPalette(QFrame):
         self.verify_button.installEventFilter(self)
         self.verify_button.setStyleSheet(self.group_button.styleSheet())
         layout.addWidget(self.verify_button)
-        self.report_button = QToolButton(self)
-        self.report_button.setFixedSize(24, 24)
-        self.report_button.setIcon(
-            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "documentation-scroll.svg"))
-        )
-        self.report_button.setIconSize(QSize(19, 19))
-        tooltip = _command_tooltip("Laudo estrutural (PDF/LaTeX)", "REPORT")
-        self.report_button.setToolTip(tooltip)
-        self.report_button.setProperty("paletteTooltip", tooltip)
-        self.report_button.setAccessibleName("Laudo estrutural")
-        self.report_button.clicked.connect(window.open_structure_report)
-        self.report_button.installEventFilter(self)
-        self.report_button.setStyleSheet(self.group_button.styleSheet())
-        layout.addWidget(self.report_button)
         utilization_tooltip = (
             "Taxa de utilização; * indica valor parcial com aviso no memorial de cálculo"
         )
@@ -880,7 +866,6 @@ class VerificationTopPalette(QFrame):
             self.group_button,
             self.ungroup_button,
             self.verify_button,
-            self.report_button,
         ):
             if event.type() == QEvent.Type.Enter:
                 self._tooltip.schedule_below(watched, watched.property("paletteTooltip"))

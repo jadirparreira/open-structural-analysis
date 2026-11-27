@@ -3790,13 +3790,18 @@ class _DimensionColorDialog(QDialog):
 
 
 class MemorialSettingsDialog(QDialog):
-    """Empty settings shell reserved for future memorial configuration options."""
+    """Settings for the structural memorial, including shared project data."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, project_settings: dict, cover_settings: dict, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Configurar memorial")
+        self.setWindowTitle("Configurações do memorial")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.resize(760, 520)
+        self.resize(760, 540)
+        self._project_settings = dict(project_settings)
+        self._cover_settings = dict(cover_settings)
+        self._initial_cover_settings = dict(cover_settings)
+        self.result_project_settings: dict | None = None
+        self.result_cover_settings: dict | None = None
         self.setStyleSheet(
             "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0; }"
             "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
@@ -3804,9 +3809,21 @@ class MemorialSettingsDialog(QDialog):
             "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
             "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
             "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
-            "QPushButton#closeMemorialSettings { min-height: 34px; padding: 4px 16px; "
-            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
-            "QPushButton#closeMemorialSettings:hover { background: #eaeef2; }"
+            "QLabel { color: #57606a; }"
+            "QLabel#dialogTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QLineEdit, QComboBox { min-height: 32px; padding: 2px 9px; border: 1px solid #d0d7de; "
+            "border-radius: 6px; background: #ffffff; color: #24292f; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QPushButton#cancelMemorialSettings, QPushButton#saveMemorialSettings { min-height: 34px; "
+            "padding: 4px 14px; border: 1px solid #d0d7de; border-radius: 7px; "
+            "color: #24292f; background: #f6f8fa; }"
+            "QPushButton#cancelMemorialSettings:hover { background: #eaeef2; }"
+            "QPushButton#saveMemorialSettings { border: 0; background: #0969da; color: #ffffff; "
+            "font-weight: 600; }"
+            "QPushButton#saveMemorialSettings:hover { background: #0550ae; }"
+            "QPushButton#attachMemorialIdentityButton { min-height: 34px; padding: 4px 12px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; background: #f6f8fa; color: #24292f; }"
+            "QPushButton#attachMemorialIdentityButton:hover { background: #eaeef2; }"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -3816,7 +3833,7 @@ class MemorialSettingsDialog(QDialog):
         titlebar.setFixedHeight(40)
         title_layout = QHBoxLayout(titlebar)
         title_layout.setContentsMargins(12, 6, 8, 6)
-        title = QLabel("Configurar memorial", titlebar)
+        title = QLabel("Configurações do memorial", titlebar)
         title.setObjectName("windowTitle")
         title_layout.addWidget(title)
         title_layout.addStretch(1)
@@ -3828,21 +3845,148 @@ class MemorialSettingsDialog(QDialog):
         navigation.setFixedWidth(170)
         navigation.setSpacing(8)
         navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        navigation.addItem("Geral")
+        navigation.addItems(("Memorial", "Capa"))
         navigation.setCurrentRow(0)
         content.addWidget(navigation)
-        content.addWidget(QWidget(self), 1)
+        pages = QStackedWidget(self)
+        pages.addWidget(self._build_memorial_settings())
+        pages.addWidget(self._build_cover_settings())
+        navigation.currentRowChanged.connect(pages.setCurrentIndex)
+        content.addWidget(pages, 1)
         outer.addLayout(content, 1)
 
         footer_widget = QWidget(self)
         footer = QHBoxLayout(footer_widget)
         footer.setContentsMargins(14, 8, 14, 10)
         footer.addStretch(1)
-        close_button = QPushButton("Fechar", footer_widget)
-        close_button.setObjectName("closeMemorialSettings")
-        close_button.clicked.connect(self.reject)
-        footer.addWidget(close_button)
+        cancel_button = QPushButton("Cancelar", footer_widget)
+        cancel_button.setObjectName("cancelMemorialSettings")
+        cancel_button.clicked.connect(self.reject)
+        save_button = QPushButton("Salvar", footer_widget)
+        save_button.setObjectName("saveMemorialSettings")
+        save_button.clicked.connect(self._save)
+        footer.addWidget(cancel_button)
+        footer.addWidget(save_button)
         outer.addWidget(footer_widget)
+
+    def _build_memorial_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Dados do memorial")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        hint = QLabel("Estas informações também são usadas nas Configurações de projeto")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        form = QFormLayout()
+        self.client_edit = QLineEdit(str(self._project_settings.get("client", "")), page)
+        form.addRow("Cliente", self.client_edit)
+        self.work_edit = QLineEdit(str(self._project_settings.get("work", "")), page)
+        form.addRow("Obra", self.work_edit)
+        self.address_edit = QLineEdit(str(self._project_settings.get("address", "")), page)
+        form.addRow("Endereço", self.address_edit)
+        self.responsible_edit = QLineEdit(str(self._project_settings.get("responsible", "")), page)
+        form.addRow("Responsável", self.responsible_edit)
+        self.crea_edit = QLineEdit(str(self._project_settings.get("crea", "")), page)
+        form.addRow("CREA", self.crea_edit)
+        layout.addLayout(form)
+
+        identity_row = QHBoxLayout()
+        identity_path = str(self._project_settings.get("visual_identity_path", ""))
+        self.identity_path_label = QLabel(Path(identity_path).name if identity_path else "Nenhuma imagem anexada", page)
+        self.identity_path_label.setWordWrap(True)
+        identity_row.addWidget(self.identity_path_label, 1)
+        attach_button = QPushButton("Anexar imagem", page)
+        attach_button.setObjectName("attachMemorialIdentityButton")
+        attach_button.clicked.connect(self._attach_identity_image)
+        identity_row.addWidget(attach_button)
+        layout.addWidget(QLabel("Identidade visual", page))
+        layout.addLayout(identity_row)
+        layout.addStretch(1)
+        return page
+
+    def _build_cover_settings(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 16, 18, 12)
+        layout.setSpacing(10)
+        heading = QLabel("Capa")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        form = QFormLayout()
+        self.cover_title_edit = QLineEdit(
+            str(self._cover_settings.get("title", "Memorial de cálculo estrutural")), page
+        )
+        form.addRow("Título", self.cover_title_edit)
+        self.cover_work_edit = QLineEdit(str(self._cover_settings.get("work", "")), page)
+        form.addRow("Obra", self.cover_work_edit)
+        self.cover_client_edit = QLineEdit(str(self._cover_settings.get("client", "")), page)
+        form.addRow("Cliente", self.cover_client_edit)
+        self.cover_model_selector = SelectorComboBox(page)
+        self.cover_model_selector.setObjectName("memorialCoverModelSelector")
+        self.cover_model_selector.addItem("Analítico", "analytic")
+        self.cover_model_selector.addItem("Executivo", "executive")
+        mode = str(self._cover_settings.get("model_mode", "analytic"))
+        self.cover_model_selector.setCurrentIndex(max(0, self.cover_model_selector.findData(mode)))
+        self.cover_direction_selector = SelectorComboBox(page)
+        self.cover_direction_selector.setObjectName("memorialCoverDirectionSelector")
+        for label, value in (
+            ("Sudeste", "ISO-SE"), ("Nordeste", "ISO-NE"),
+            ("Noroeste", "ISO-NW"), ("Sudoeste", "ISO-SW"),
+        ):
+            self.cover_direction_selector.addItem(label, value)
+        direction = str(self._cover_settings.get("direction", "ISO-SE"))
+        self.cover_direction_selector.setCurrentIndex(
+            max(0, self.cover_direction_selector.findData(direction))
+        )
+        model_row = QWidget(page)
+        model_row_layout = QHBoxLayout(model_row)
+        model_row_layout.setContentsMargins(0, 0, 0, 0)
+        model_row_layout.setSpacing(8)
+        model_row_layout.addWidget(self.cover_model_selector, 1)
+        model_row_layout.addWidget(QLabel("Direção", model_row))
+        model_row_layout.addWidget(self.cover_direction_selector, 1)
+        form.addRow("Modelo", model_row)
+        self.cover_author_edit = QLineEdit(str(self._cover_settings.get("author", "")), page)
+        form.addRow("Responsável", self.cover_author_edit)
+        self.cover_crea_edit = QLineEdit(str(self._cover_settings.get("crea", "")), page)
+        form.addRow("CREA", self.cover_crea_edit)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        return page
+
+    def _attach_identity_image(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self, "Anexar identidade visual", "", "Imagens (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if path:
+            self._project_settings["visual_identity_path"] = path
+            self.identity_path_label.setText(Path(path).name)
+
+    def _save(self) -> None:
+        self._project_settings.update({
+            "client": self.client_edit.text().strip(),
+            "work": self.work_edit.text().strip(),
+            "address": self.address_edit.text().strip(),
+            "responsible": self.responsible_edit.text().strip(),
+            "crea": self.crea_edit.text().strip(),
+        })
+        self._cover_settings.update({
+            "title": self.cover_title_edit.text().strip() or "Memorial de cálculo estrutural",
+            "work": self.cover_work_edit.text().strip(),
+            "client": self.cover_client_edit.text().strip(),
+            "model_mode": self.cover_model_selector.currentData() or "analytic",
+            "model_mode_version": 1,
+            "direction": self.cover_direction_selector.currentData() or "ISO-SE",
+            "author": self.cover_author_edit.text().strip(),
+            "crea": self.cover_crea_edit.text().strip(),
+        })
+        self.result_project_settings = self._project_settings
+        self.result_cover_settings = self._cover_settings
+        self.cover_settings_changed = self._cover_settings != self._initial_cover_settings
+        self.accept()
 
 
 class ProjectSheetSettingsDialog(QDialog):

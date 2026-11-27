@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         self._report_preview_temporary_directory = None
         self._report_preview_thread: QThread | None = None
         self._report_preview_worker: StructureReportPreviewWorker | None = None
+        self._memorial_cover_settings: dict = {}
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
         self._project_loading_path: Path | None = None
@@ -952,6 +953,7 @@ class MainWindow(QMainWindow):
             tuple(id(result) for result in getattr(self.model, "analysis_results", ())),
             tuple(id(result) for result in getattr(self.model, "verification_results", ())),
             self.current_path.name if self.current_path else "",
+            tuple(sorted(self._memorial_cover_settings.items())),
         )
 
     def _ensure_structure_report_preview(self) -> None:
@@ -984,6 +986,7 @@ class MainWindow(QMainWindow):
         worker = StructureReportPreviewWorker(
             snapshot,
             self.current_path.name if self.current_path else "",
+            self._memorial_cover_settings,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1040,6 +1043,12 @@ class MainWindow(QMainWindow):
         self._report_preview_thread = None
         if thread is not None:
             thread.deleteLater()
+        if (
+            self._report_preview_pending_key != self._structure_report_preview_key()
+            and self.palette.active_group == "Memorial"
+            and self._verification_memorial_mode
+        ):
+            QTimer.singleShot(0, self._ensure_structure_report_preview)
 
     def _create_memorial_loading_overlay(self) -> None:
         overlay = _ProjectLoadingDialog(self)
@@ -2563,6 +2572,7 @@ class MainWindow(QMainWindow):
         }
         return {
             "version": 1,
+            "memorial_cover_settings": copy.deepcopy(self._memorial_cover_settings),
             "sheets": {
                 "sheet_names": list(palette._sheet_names),
                 "active_sheet": palette.sheet_selector.currentText(),
@@ -2597,6 +2607,29 @@ class MainWindow(QMainWindow):
     def _restore_detailing_state(self) -> None:
         state = self.model.detailing_data if isinstance(self.model.detailing_data, dict) else {}
         self.project_sheets_palette.restore_detailing_state(state.get("sheets"))
+        project_settings = self.project_sheets_palette._project_settings
+        cover_settings = {
+            "title": "Memorial de cálculo estrutural",
+            "work": str(project_settings.get("work", "")),
+            "client": str(project_settings.get("client", "")),
+            "model_mode": "analytic",
+            "author": str(project_settings.get("responsible", "")),
+            "crea": str(project_settings.get("crea", "")),
+        }
+        saved_cover_settings = state.get("memorial_cover_settings", {})
+        if isinstance(saved_cover_settings, dict):
+            cover_settings.update(saved_cover_settings)
+            try:
+                mode_version = int(saved_cover_settings.get("model_mode_version", 0) or 0)
+            except (TypeError, ValueError):
+                mode_version = 0
+            if mode_version < 1:
+                # Older projects could have Executive saved as the initial
+                # cover mode. Migrate once to the faster analytic default;
+                # later explicit user choices are retained.
+                cover_settings["model_mode"] = "analytic"
+                cover_settings["model_mode_version"] = 1
+        self._memorial_cover_settings = cover_settings
         detail_views = state.get("detail_views", {})
         if not isinstance(detail_views, dict):
             detail_views = {}
@@ -2821,9 +2854,32 @@ class MainWindow(QMainWindow):
             )
 
     def open_memorial_settings(self) -> None:
-        dialog = MemorialSettingsDialog(self)
+        palette = self.project_sheets_palette
+        dialog = MemorialSettingsDialog(
+            palette._project_settings, self._memorial_cover_settings, self,
+        )
         dialog.move(self.geometry().center() - dialog.rect().center())
-        dialog.exec()
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_project_settings is None:
+            return
+        project_settings_changed = dialog.result_project_settings != palette._project_settings
+        cover_settings_changed = bool(dialog.cover_settings_changed)
+        palette._project_settings = dialog.result_project_settings
+        self._memorial_cover_settings = dialog.result_cover_settings or self._memorial_cover_settings
+        sheet_name = palette.sheet_selector.currentText()
+        if sheet_name and sheet_name in palette._sheet_settings:
+            self.project_sheet_workspace.set_sheet_settings(
+                sheet_name,
+                palette._sheet_settings[sheet_name],
+                palette._project_settings,
+                len(palette._sheet_names),
+            )
+        self._store_detailing_state()
+        if (
+            (cover_settings_changed or project_settings_changed)
+            and self.palette.active_group == "Memorial"
+            and self._verification_memorial_mode
+        ):
+            self._ensure_structure_report_preview()
 
     def open_detailing_views(self) -> None:
         if self._detailing_views_dialog_open:

@@ -62,10 +62,21 @@ class View:
 
 VIEWS = {
     "iso": View(-55.0, 28.0),
+    "iso_se": View(-45.0, 35.26438968),
     "top": View(-90.0, 90.0),
     "front": View(-90.0, 0.0),
     "side": View(0.0, 0.0),
 }
+
+
+def cover_view(direction: str) -> View:
+    """Camera matching one of the four detailing isometric directions."""
+    return {
+        "ISO-SE": View(-45.0, 35.26438968),
+        "ISO-NE": View(45.0, 35.26438968),
+        "ISO-NW": View(135.0, 35.26438968),
+        "ISO-SW": View(-135.0, 35.26438968),
+    }.get(str(direction), VIEWS["iso_se"])
 
 
 def _model_points(model) -> np.ndarray:
@@ -343,17 +354,47 @@ def render_model_view(
     view: View | None = None,
     member_status: Mapping[str, str] | None = None,
     max_height_cm: float = 11.5,
+    model_mode: str = "analytic",
+    show_global_axes: bool = True,
+    cover_rendering: bool = False,
+    support_mesh=None,
+    cover_model_image: str | Path | None = None,
 ) -> Path:
-    """Desenha o modelo indeformado; opcionalmente colore as barras pela situação no ELU."""
+    """Desenha o modelo da capa com cores dos elementos, sem indicação de verificação."""
+    destination = Path(destination)
+    if (
+        cover_rendering and model_mode == "executive"
+        and cover_model_image is not None and Path(cover_model_image).is_file()
+    ):
+        from matplotlib.figure import Figure
+        from matplotlib.image import imread
+
+        figure = Figure(figsize=(15.0 * _CM, 10.0 * _CM), dpi=300)
+        axes = figure.add_axes((0.0, 0.0, 1.0, 1.0))
+        axes.imshow(imread(cover_model_image))
+        axes.set_axis_off()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(destination, format=destination.suffix.lstrip(".") or "pdf")
+        return destination
     import matplotlib
     from matplotlib.collections import LineCollection
-    from matplotlib.lines import Line2D
+    from matplotlib.collections import PolyCollection
 
     view = view or default_view(model)
     polylines = _member_polylines(model)
     plates = _plate_polygons(model)
-    points = np.vstack([line for _, line, _ in polylines] + [line for line, _ in plates] or [np.zeros((1, 3))])
-    projected_all = view.project(points)
+    components = (
+        _cover_component_meshes(
+            model,
+            include_stair_components=True,
+            support_mesh=support_mesh,
+        )
+        if cover_rendering and model_mode == "executive" else []
+    )
+    groups = [line for _, line, _ in polylines] + [line for line, _ in plates]
+    groups.extend(mesh.points for mesh, _ in components if mesh.n_points)
+    projected_groups = [view.project(points) for points in groups if len(points)]
+    projected_all = np.vstack(projected_groups or [np.zeros((1, 2))])
     span = np.ptp(projected_all, axis=0)
     aspect = float(span[1] / span[0]) if span[0] > 0 else 0.6
     with matplotlib.rc_context(_RC):
@@ -361,21 +402,34 @@ def render_model_view(
         axes = _setup_axes(figure, projected_all, colorbar=False, bottom=0.08 if member_status else None)
         from matplotlib.patches import Polygon
 
-        for line, _ in plates:
+        for index, (line, _values) in enumerate(plates):
+            plate_color = (
+                list(getattr(model, "plates", {}).values())[index].color
+                if cover_rendering else "#d0d7de"
+            )
             axes.add_patch(Polygon(
-                view.project(line[:-1]), closed=True, facecolor="#d0d7de", edgecolor="#8c959f",
+                view.project(line[:-1]), closed=True, facecolor=plate_color, edgecolor="#8c959f",
                 linewidth=0.4, alpha=0.6, zorder=0,
             ))
         segments, colors = [], []
         for name, line, _ in polylines:
-            projected = view.project(line[[0, -1]])
-            segments.append(projected)
-            status = (member_status or {}).get(name, "none" if member_status else "")
-            colors.append(STATUS_COLORS.get(status, "#24292f"))
+            segments.append(view.project(line[[0, -1]]))
+            if member_status:
+                colors.append(STATUS_COLORS.get(member_status.get(name, "none"), "#24292f"))
+            else:
+                colors.append(
+                    getattr(model.bars.get(name), "color", "#24292f")
+                    if cover_rendering else "#24292f"
+                )
         if segments:
-            axes.add_collection(LineCollection(segments, colors=colors, linewidths=0.75, capstyle="round"))
-        _draw_supports(axes, model, view)
+            axes.add_collection(LineCollection(segments, colors=colors, linewidths=1.0, capstyle="round"))
+        if cover_rendering:
+            _draw_projected_meshes(axes, components, view, PolyCollection, zorder=3)
+        else:
+            _draw_supports(axes, model, view)
         if member_status:
+            from matplotlib.lines import Line2D
+
             present = [key for key in ("ok", "fail", "none") if key in set(member_status.values()) or (
                 key == "none" and len(member_status) < len(model.bars)
             )]
@@ -385,9 +439,242 @@ def render_model_view(
                 labels=[labels[key] for key in present], loc="upper center", bbox_to_anchor=(0.5, 0.0),
                 ncol=len(present), fontsize=7, frameon=False,
             )
-        if view.elevation < 89.0:
+        if show_global_axes and view.elevation < 89.0:
             _draw_triad(figure, view)
-        destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         figure.savefig(destination, format=destination.suffix.lstrip(".") or "pdf")
     return destination
+
+
+def render_executive_model_image(
+    model, direction: str, destination: str | Path, *, support_mesh=None,
+) -> Path:
+    """Render one cover direction with the same solid colors and depth buffer as the model view."""
+    from types import SimpleNamespace
+
+    import pyvista as pv
+
+    from osa.rendering.batched_renderer import (
+        BatchedRigidBarRenderer, BatchedMemberRenderer,
+    )
+    from osa.rendering.node_component_renderer import (
+        STAIR_WOOD_COLOR, STAIR_WOOD_EDGE_COLOR, stair_wood_edge_mesh,
+    )
+    from osa.rendering.solid_member_renderer import SolidMemberRenderer
+    from osa.ui.detailing_viewport import _DetachedDetailingScene
+
+    directions = {
+        "ISO-SE": (1.0, -1.0, 1.0),
+        "ISO-NE": (1.0, 1.0, 1.0),
+        "ISO-NW": (-1.0, 1.0, 1.0),
+        "ISO-SW": (-1.0, -1.0, 1.0),
+    }
+    direction = str(direction) if str(direction) in directions else "ISO-SE"
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    detail_scene = _DetachedDetailingScene(
+        SimpleNamespace(_marker_radius_current=0.05)
+    )
+    solids = list(detail_scene.detailing_view_solid_meshes(model))
+    # The executive cover shows physical components. Analytical restraint
+    # glyphs overlap the anchors below base plates and look like protrusions
+    # on their bends. Never overlay them on the physical detailing solids.
+
+    plotter = pv.Plotter(off_screen=True, window_size=(1500, 1000))
+    plotter.set_background("white")
+    points_for_bounds = []
+    face_groups: dict[str, list] = {}
+    edge_groups: dict[str, list] = {}
+    silhouettes = []
+
+    def add_face(mesh, color):
+        if mesh is not None and mesh.n_points and mesh.n_cells:
+            face_groups.setdefault(str(color), []).append(mesh)
+            points_for_bounds.append(np.asarray(mesh.points, dtype=float))
+
+    def add_edges(mesh, color, *, silhouette=False):
+        if mesh is None or not mesh.n_points or not mesh.n_cells:
+            return
+        if not isinstance(color, str):
+            channels = np.clip(np.asarray(color, dtype=float), 0.0, 1.0)
+            color = "#" + "".join(f"{round(channel * 255):02x}" for channel in channels[:3])
+        edges = mesh.extract_feature_edges(
+            boundary_edges=True, feature_edges=True,
+            manifold_edges=False, non_manifold_edges=False, feature_angle=25.0,
+        )
+        if edges.n_lines:
+            edge_groups.setdefault(str(color), []).append(edges)
+        if silhouette:
+            silhouettes.append((mesh, str(color)))
+
+    edge_color = SolidMemberRenderer.edge_color
+    for name, mesh in solids:
+        if not mesh.n_points or not mesh.n_cells:
+            continue
+        if name.startswith("plate:"):
+            owner = getattr(model, "plates", {}).get(name.partition(":")[2])
+            color = getattr(owner, "color", "#8c959f")
+            add_face(mesh, color)
+            add_edges(mesh, "#6e7781")
+        elif name.startswith("component:"):
+            color = STAIR_WOOD_COLOR if name.endswith(":wood") else "#8c959f"
+            add_face(mesh, color)
+            if name.endswith(":wood"):
+                node_name = name.split(":", 2)[1]
+                node = model.nodes.get(node_name)
+                if node is not None and getattr(node, "component", None) is not None:
+                    wood_edges = stair_wood_edge_mesh(
+                        dict(node.component.parameters), (node.x, node.y, node.z),
+                    )
+                    if wood_edges.n_lines:
+                        edge_groups.setdefault(STAIR_WOOD_EDGE_COLOR, []).append(wood_edges)
+            elif ":rod:" in name:
+                add_edges(mesh, "#57606a", silhouette=True)
+            else:
+                add_edges(mesh, "#57606a")
+        else:
+            owner = getattr(model, "bars", {}).get(name)
+            color = getattr(owner, "color", "#24292f")
+            add_face(mesh, color)
+            add_edges(
+                mesh,
+                edge_color(color),
+                silhouette=bool(owner and owner.section in BatchedMemberRenderer._silhouette_sections),
+            )
+    if getattr(model, "rigid_bars", None):
+        _names, rigid_lines = BatchedRigidBarRenderer().build(model)
+        if rigid_lines.n_cells:
+            points_for_bounds.append(np.asarray(rigid_lines.points, dtype=float))
+            plotter.add_mesh(
+                rigid_lines, color=BatchedRigidBarRenderer.COLOR, line_width=1.2,
+                lighting=False, pickable=False, reset_camera=False, render=False,
+            )
+    if points_for_bounds:
+        bounds_points = np.vstack(points_for_bounds)
+        low, high = bounds_points.min(axis=0), bounds_points.max(axis=0)
+        center = (low + high) / 2.0
+        span = max(float(np.ptp(bounds_points, axis=0).max()), 1e-3)
+    else:
+        center, span = np.zeros(3), 1.0
+    camera_direction = np.asarray(directions[direction], dtype=float)
+    camera_direction /= np.linalg.norm(camera_direction)
+    plotter.camera_position = (
+        center + camera_direction * span * 4.0,
+        center,
+        (0.0, 0.0, 1.0),
+    )
+    plotter.camera.parallel_projection = True
+    plotter.camera.parallel_scale = span * 0.50
+    camera = plotter.renderer.GetActiveCamera()
+    for mesh, color in silhouettes:
+        silhouette = SolidMemberRenderer.silhouette_for(mesh, camera)
+        if silhouette.n_lines:
+            edge_groups.setdefault(color, []).append(silhouette)
+    for color, meshes in face_groups.items():
+        combined = pv.merge(meshes, merge_points=False) if len(meshes) > 1 else meshes[0]
+        plotter.add_mesh(
+            combined, color=color, lighting=True, smooth_shading=False,
+            ambient=0.25, diffuse=0.75, specular=0.12,
+            pickable=False, reset_camera=False, render=False,
+        )
+    for color, meshes in edge_groups.items():
+        combined = pv.merge(meshes, merge_points=False) if len(meshes) > 1 else meshes[0]
+        actor = plotter.add_mesh(
+            combined, color=color, line_width=1.0, lighting=False,
+            pickable=False, reset_camera=False, render=False,
+        )
+        mapper = actor.GetMapper()
+        mapper.SetResolveCoincidentTopologyToPolygonOffset()
+        mapper.SetRelativeCoincidentTopologyLineOffsetParameters(-1.0, -1.0)
+    # Faces are added after the camera is placed. Recompute depth clipping
+    # from the complete scene, including when no support glyph actors exist.
+    plotter.reset_camera_clipping_range()
+    try:
+        plotter.show(
+            auto_close=False, interactive=False, screenshot=str(target),
+            window_size=(1500, 1000),
+        )
+    finally:
+        plotter.close()
+    return target
+
+
+def _cover_component_meshes(model, *, include_stair_components: bool, support_mesh=None):
+    """Build assigned 3D node components for the memorial cover."""
+    from osa.rendering.batched_renderer import BatchedNodeRenderer
+    from osa.rendering.node_component_renderer import (
+        STAIR_WOOD_COLOR, _orient_base_plate_mesh, stair_plate_mesh, stair_wood_mesh,
+    )
+    import pyvista as pv
+
+    meshes = []
+    if support_mesh is None:
+        support_mesh = BatchedNodeRenderer(glyphs=True).build_supports(model, 0.05)
+    if support_mesh.n_cells:
+        # The live support glyphs are intentionally detailed for close-up
+        # interaction. At cover scale, most of those facets are sub-pixel and
+        # make vector PDF export needlessly expensive; retain their 3D shape
+        # while reducing the mesh before projecting it.
+        support_mesh = support_mesh.triangulate().decimate_pro(0.9)
+        meshes.append((support_mesh, "#a8b0b9"))
+    for node in model.nodes.values():
+        assignment = getattr(node, "component", None)
+        if assignment is None:
+            continue
+        parameters = dict(assignment.parameters)
+        origin = (node.x, node.y, node.z)
+        try:
+            if assignment.component_id == "base_plate":
+                width = float(parameters.get("largura_mm", 300.0)) / 1000.0
+                length = float(parameters.get("comprimento_mm", 300.0)) / 1000.0
+                thickness = float(parameters.get("espessura_mm", 20.0)) / 1000.0
+                rotation = float(parameters.get("rotacao_deg", 0.0))
+                displacement_a = float(parameters.get("deslocamento_a_mm", 0.0)) / 1000.0
+                displacement_b = float(parameters.get("deslocamento_b_mm", 0.0)) / 1000.0
+                cosine, sine = np.cos(np.radians(rotation)), np.sin(np.radians(rotation))
+                center_x = node.x + displacement_a * cosine - displacement_b * sine
+                center_y = node.y + displacement_a * sine + displacement_b * cosine
+                plate = pv.Cube(
+                    center=(center_x, center_y, node.z + thickness / 2.0),
+                    x_length=width, y_length=length, z_length=thickness,
+                )
+                if rotation:
+                    plate.rotate_z(rotation, point=(center_x, center_y, node.z), inplace=True)
+                _orient_base_plate_mesh(plate, origin, str(parameters.get("plano", "XY+")))
+                meshes.append((plate, "#8c959f"))
+            elif include_stair_components and assignment.component_id == "stair_plate":
+                meshes.append((stair_plate_mesh(parameters, origin), "#8c959f"))
+                wood = stair_wood_mesh(parameters, origin)
+                if wood.n_points:
+                    meshes.append((wood, STAIR_WOOD_COLOR))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return meshes
+
+
+def _draw_projected_meshes(axes, meshes, view, collection_type, *, zorder=2):
+    polygons, colors, depths = [], [], []
+    towards_camera = view.axes()[2]
+    for mesh, color in meshes:
+        cells = np.asarray(mesh.faces, dtype=np.int64)
+        if not len(cells):
+            continue
+        points = np.asarray(mesh.points, dtype=float)
+        projected_points = view.project(points)
+        cursor = 0
+        while cursor < len(cells):
+            count = int(cells[cursor])
+            ids = cells[cursor + 1:cursor + count + 1]
+            cursor += count + 1
+            polygons.append(projected_points[ids])
+            colors.append(color)
+            depths.append(float(np.mean(points[ids] @ towards_camera)))
+    if not polygons:
+        return
+    order = np.argsort(depths)
+    axes.add_collection(collection_type(
+        [polygons[index] for index in order],
+        facecolors=[colors[index] for index in order],
+        edgecolors="#57606a", linewidths=0.12, zorder=zorder,
+    ))

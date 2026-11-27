@@ -54,6 +54,11 @@ class ReportOptions:
     subject: str = ""
     location: str = ""
     author: str = ""
+    crea: str = ""
+    cover_work: str = ""
+    cover_client: str = ""
+    cover_model_mode: str = "analytic"
+    cover_direction: str = "ISO-SE"
     revision: str = "0"
     issue_date: date = field(default_factory=date.today)
     model_file: str = ""
@@ -142,9 +147,14 @@ def combination_expression(model, combination) -> str:
 class StructureReportBuilder:
     """Monta o ``.tex`` do laudo e as figuras em ``fig/``."""
 
-    def __init__(self, model, options: ReportOptions | None = None) -> None:
+    def __init__(
+        self, model, options: ReportOptions | None = None, *, cover_support_mesh=None,
+        cover_model_image=None,
+    ) -> None:
         self.model = model
         self.options = options or ReportOptions()
+        self.cover_support_mesh = cover_support_mesh
+        self.cover_model_image = cover_model_image
         self.results = {result.load_reference: result for result in getattr(model, "analysis_results", ())}
         self.status = _member_status(model)
         self.version = software_version()
@@ -231,38 +241,51 @@ class StructureReportBuilder:
         options = self.options
         cover = ""
         if self.model.bars or getattr(self.model, "plates", {}):
+            cover_model_image = self.cover_model_image
+            if options.cover_model_mode == "executive" and cover_model_image is None:
+                cover_model_image = figure_folder / "modelo_capa_executivo.png"
+                figures.render_executive_model_image(
+                    self.model,
+                    options.cover_direction,
+                    cover_model_image,
+                    support_mesh=self.cover_support_mesh,
+                )
             figures.render_model_view(
-                self.model, figure_folder / "modelo_capa.pdf", member_status=self.status or None, max_height_cm=10.0,
+                self.model,
+                figure_folder / "modelo_capa.pdf",
+                view=(
+                    figures.cover_view(self.options.cover_direction)
+                    if self.options.cover_model_mode == "executive" else None
+                ),
+                member_status=None,
+                max_height_cm=10.0,
+                model_mode=self.options.cover_model_mode,
+                show_global_axes=False,
+                cover_rendering=True,
+                support_mesh=self.cover_support_mesh,
+                cover_model_image=cover_model_image,
             )
-            if self.status and all(value == "ok" for value in self.status.values()):
-                caption = "Modelo tridimensional -- todas as barras atendem ao ELU (cor verde)"
-            elif self.status:
-                caption = "Modelo tridimensional -- situação das barras no ELU"
-            else:
-                caption = "Modelo tridimensional"
             cover = (
                 "\\includegraphics[width=0.9\\textwidth,height=0.42\\textheight,keepaspectratio]"
-                "{fig/modelo_capa.pdf}\\par\n\\vspace{0.3cm}\n"
-                f"{{\\small {caption}\\par}}\n"
+                "{fig/modelo_capa.pdf}\\par\n"
             )
-        rows = [
-            ("Documento:", f"{options.title}, Rev. {options.revision}"),
-            ("Data:", f"{options.issue_date:%d/%m/%Y}"),
-            ("Software:", f"Open Structural Analysis {self.version} (análise com PyNite)".replace("  ", " ")),
-        ]
         if options.author:
-            rows.append(("Responsável:", options.author))
-        standards = ", ".join(item.split(" -- ")[0].replace("ABNT ", "") for item in options.standards)
-        if standards:
-            rows.append(("Normas:", "ABNT " + standards))
+            rows = [("Responsável:", options.author)]
+        else:
+            rows = []
+        if options.crea:
+            rows.append(("CREA:", options.crea))
         table = "\n".join(f"{tex_escape(label)} & {tex_escape(value)}\\\\" for label, value in rows)
-        location = f"\\vspace{{0.3cm}}\n{{\\large {tex_escape(options.location)}\\par}}\n" if options.location else ""
+        cover_work = options.cover_work or options.subject or self._subject()
+        cover_client = options.cover_client
+        location = f"{{\\Large {tex_escape(cover_work)}\\par}}\n"
+        if cover_client:
+            location += f"\\vspace{{0.3cm}}\n{{\\large {tex_escape(cover_client)}\\par}}\n"
         return (
-            "\\begin{titlepage}\n\\centering\n\\vspace*{3cm}\n"
+            "\\begin{titlepage}\n\\centering\n\\vspace*{2.2cm}\n"
             f"{{\\LARGE\\bfseries {tex_escape(options.title.upper())}\\par}}\n"
             "\\vspace{0.8cm}\n"
-            f"{{\\Large {tex_escape(self._subject())}\\par}}\n"
-            f"{location}\\vspace{{1.5cm}}\n{cover}\\vfill\n"
+            f"{location}\\vspace{{0.8cm}}\n{cover}\\vfill\n"
             "\\begin{tabular}{p{0.16\\textwidth}p{0.74\\textwidth}}\n"
             f"{table}\n\\end{{tabular}}\n\\end{{titlepage}}\n"
         )
@@ -585,7 +608,7 @@ class StructureReportBuilder:
             return ""
         iso = figure_folder / "geometria_3d.pdf"
         top = figure_folder / "geometria_planta.pdf"
-        figures.render_model_view(self.model, iso, view=figures.VIEWS["iso"])
+        figures.render_model_view(self.model, iso, view=figures.VIEWS["iso_se"])
         figures.render_model_view(self.model, top, view=figures.VIEWS["top"], max_height_cm=9.5)
         return (
             "\\section{Geometria}\n"
@@ -707,6 +730,8 @@ def export_structure_report(
     *,
     compile_pdf: bool = True,
     progress: Callable[[str], None] | None = None,
+    cover_support_mesh=None,
+    cover_model_image=None,
 ) -> ReportExport:
     """Gera o laudo.
 
@@ -718,7 +743,10 @@ def export_structure_report(
     destination = Path(destination)
     as_pdf = destination.suffix.lower() == ".pdf"
     folder = destination.with_name(f"{destination.stem}_latex") if as_pdf else destination.parent
-    tex_path = StructureReportBuilder(model, options).build(folder, progress)
+    tex_path = StructureReportBuilder(
+        model, options, cover_support_mesh=cover_support_mesh,
+        cover_model_image=cover_model_image,
+    ).build(folder, progress)
     if not as_pdf:
         tex_path = tex_path.replace(destination) if tex_path != destination else tex_path
     export = ReportExport(tex_path=tex_path)

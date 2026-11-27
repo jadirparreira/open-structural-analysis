@@ -323,10 +323,15 @@ class StructureReportPreviewWorker(QObject):
     failed = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, model, model_file: str = "") -> None:
+    def __init__(
+        self, model, model_file: str = "", cover_settings: dict | None = None,
+        cover_support_mesh=None,
+    ) -> None:
         super().__init__()
         self.model = model
         self.model_file = model_file
+        self.cover_settings = dict(cover_settings or {})
+        self.cover_support_mesh = cover_support_mesh
         self._temporary_directory: TemporaryDirectory | None = None
 
     @Slot()
@@ -334,12 +339,24 @@ class StructureReportPreviewWorker(QObject):
         self._temporary_directory = TemporaryDirectory(prefix="opensa-general-report-")
         destination = Path(self._temporary_directory.name) / "Memorial-geral.pdf"
         try:
+            cover_model_image = self._cover_model_image()
             export = export_structure_report(
                 self.model,
                 destination,
-                ReportOptions(model_file=self.model_file),
+                ReportOptions(
+                    model_file=self.model_file,
+                    title=str(self.cover_settings.get("title", "Memorial de cálculo estrutural")),
+                    cover_work=str(self.cover_settings.get("work", "")),
+                    cover_client=str(self.cover_settings.get("client", "")),
+                    author=str(self.cover_settings.get("author", "")),
+                    crea=str(self.cover_settings.get("crea", "")),
+                    cover_model_mode=str(self.cover_settings.get("model_mode", "analytic")),
+                    cover_direction=str(self.cover_settings.get("direction", "ISO-SE")),
+                ),
                 compile_pdf=True,
                 progress=self.progress.emit,
+                cover_support_mesh=self.cover_support_mesh,
+                cover_model_image=cover_model_image,
             )
             if export.error or export.pdf_path is None:
                 raise RuntimeError(export.error or "O PDF do memorial não foi gerado.")
@@ -349,4 +366,19 @@ class StructureReportPreviewWorker(QObject):
             self.failed.emit(str(error))
             return
         self.finished.emit(self._temporary_directory, str(export.pdf_path))
+
+    def _cover_model_image(self):
+        if self.cover_settings.get("model_mode") != "executive":
+            return None
+        from osa.reports.figures import render_executive_model_image
+
+        image_path = Path(self._temporary_directory.name) / "modelo_capa.png"
+        self.progress.emit("Renderizando modelo executivo da capa")
+        render_executive_model_image(
+            self.model,
+            str(self.cover_settings.get("direction", "ISO-SE")),
+            image_path,
+            support_mesh=self.cover_support_mesh,
+        )
+        return image_path
 
