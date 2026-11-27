@@ -574,7 +574,7 @@ def render_executive_model_image(
     for color, meshes in face_groups.items():
         combined = pv.merge(meshes, merge_points=False) if len(meshes) > 1 else meshes[0]
         plotter.add_mesh(
-            combined, color=color, lighting=True, smooth_shading=False,
+            combined, color=color, lighting=False, smooth_shading=False,
             ambient=0.25, diffuse=0.75, specular=0.12,
             pickable=False, reset_camera=False, render=False,
         )
