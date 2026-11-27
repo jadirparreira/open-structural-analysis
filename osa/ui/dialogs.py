@@ -3796,7 +3796,7 @@ class MemorialSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Configurações do memorial")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.resize(760, 540)
+        self.resize(760, 650)
         self._project_settings = dict(project_settings)
         self._cover_settings = dict(cover_settings)
         self._initial_cover_settings = dict(cover_settings)
@@ -3850,7 +3850,11 @@ class MemorialSettingsDialog(QDialog):
         content.addWidget(navigation)
         pages = QStackedWidget(self)
         pages.addWidget(self._build_memorial_settings())
-        pages.addWidget(self._build_cover_settings())
+        cover_scroll = QScrollArea(self)
+        cover_scroll.setWidgetResizable(True)
+        cover_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cover_scroll.setWidget(self._build_cover_settings())
+        pages.addWidget(cover_scroll)
         navigation.currentRowChanged.connect(pages.setCurrentIndex)
         content.addWidget(pages, 1)
         outer.addLayout(content, 1)
@@ -3893,17 +3897,6 @@ class MemorialSettingsDialog(QDialog):
         form.addRow("CREA", self.crea_edit)
         layout.addLayout(form)
 
-        identity_row = QHBoxLayout()
-        identity_path = str(self._project_settings.get("visual_identity_path", ""))
-        self.identity_path_label = QLabel(Path(identity_path).name if identity_path else "Nenhuma imagem anexada", page)
-        self.identity_path_label.setWordWrap(True)
-        identity_row.addWidget(self.identity_path_label, 1)
-        attach_button = QPushButton("Anexar imagem", page)
-        attach_button.setObjectName("attachMemorialIdentityButton")
-        attach_button.clicked.connect(self._attach_identity_image)
-        identity_row.addWidget(attach_button)
-        layout.addWidget(QLabel("Identidade visual", page))
-        layout.addLayout(identity_row)
         layout.addStretch(1)
         return page
 
@@ -3920,10 +3913,6 @@ class MemorialSettingsDialog(QDialog):
             str(self._cover_settings.get("title", "Memorial de cálculo estrutural")), page
         )
         form.addRow("Título", self.cover_title_edit)
-        self.cover_work_edit = QLineEdit(str(self._cover_settings.get("work", "")), page)
-        form.addRow("Obra", self.cover_work_edit)
-        self.cover_client_edit = QLineEdit(str(self._cover_settings.get("client", "")), page)
-        form.addRow("Cliente", self.cover_client_edit)
         self.cover_model_selector = SelectorComboBox(page)
         self.cover_model_selector.setObjectName("memorialCoverModelSelector")
         self.cover_model_selector.addItem("Analítico", "analytic")
@@ -3949,10 +3938,29 @@ class MemorialSettingsDialog(QDialog):
         model_row_layout.addWidget(QLabel("Direção", model_row))
         model_row_layout.addWidget(self.cover_direction_selector, 1)
         form.addRow("Modelo", model_row)
-        self.cover_author_edit = QLineEdit(str(self._cover_settings.get("author", "")), page)
-        form.addRow("Responsável", self.cover_author_edit)
-        self.cover_crea_edit = QLineEdit(str(self._cover_settings.get("crea", "")), page)
-        form.addRow("CREA", self.cover_crea_edit)
+        identity_row = QHBoxLayout()
+        self._identity_path = str(self._cover_settings.get(
+            "visual_identity_path", self._project_settings.get("visual_identity_path", "")
+        ))
+        self.identity_path_label = ScrollingNameLabel("", page)
+        self.identity_path_label.setObjectName("memorialIdentityFileName")
+        self.identity_path_label.setFont(self.cover_title_edit.font())
+        self.identity_path_label.set_fade_color("#ffffff")
+        identity_row.addWidget(self.identity_path_label, 1)
+        attach_button = QPushButton("Importar imagem", page)
+        attach_button.setObjectName("attachMemorialIdentityButton")
+        attach_button.setToolTip("Importar imagem")
+        attach_button.clicked.connect(self._attach_identity_image)
+        identity_row.addWidget(attach_button)
+        form.addRow("Identidade visual", identity_row)
+        self.identity_preview = QLabel(page)
+        self.identity_preview.setFixedHeight(90)
+        self.identity_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.identity_preview.setStyleSheet(
+            "background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;"
+        )
+        form.addRow("", self.identity_preview)
+        self._refresh_identity_preview()
         layout.addLayout(form)
         layout.addStretch(1)
         return page
@@ -3962,8 +3970,28 @@ class MemorialSettingsDialog(QDialog):
             self, "Anexar identidade visual", "", "Imagens (*.png *.jpg *.jpeg *.bmp)"
         )
         if path:
-            self._project_settings["visual_identity_path"] = path
-            self.identity_path_label.setText(Path(path).name)
+            from PySide6.QtGui import QPixmap
+
+            if QPixmap(path).isNull():
+                QMessageBox.warning(self, "Imagem inválida", "Não foi possível abrir esta imagem.")
+                return
+            self._identity_path = path
+            self._refresh_identity_preview()
+
+    def _refresh_identity_preview(self) -> None:
+        from PySide6.QtGui import QPixmap
+
+        self.identity_path_label.setText(
+            Path(self._identity_path).name if self._identity_path else "Nenhuma imagem anexada"
+        )
+        pixmap = QPixmap(self._identity_path)
+        if pixmap.isNull():
+            self.identity_preview.setText("Prévia indisponível" if self._identity_path else "Nenhuma imagem anexada")
+        else:
+            self.identity_preview.setPixmap(pixmap.scaled(
+                300, 80, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
 
     def _save(self) -> None:
         self._project_settings.update({
@@ -3973,15 +4001,16 @@ class MemorialSettingsDialog(QDialog):
             "responsible": self.responsible_edit.text().strip(),
             "crea": self.crea_edit.text().strip(),
         })
+        for key in ("work", "client", "author", "crea", "address"):
+            self._cover_settings.pop(key, None)
+        self._cover_settings.pop("visual_identity_height_cm", None)
+        self._cover_settings.pop("visual_identity_width_cm", None)
         self._cover_settings.update({
+            "visual_identity_path": self._identity_path,
             "title": self.cover_title_edit.text().strip() or "Memorial de cálculo estrutural",
-            "work": self.cover_work_edit.text().strip(),
-            "client": self.cover_client_edit.text().strip(),
             "model_mode": self.cover_model_selector.currentData() or "analytic",
             "model_mode_version": 1,
             "direction": self.cover_direction_selector.currentData() or "ISO-SE",
-            "author": self.cover_author_edit.text().strip(),
-            "crea": self.cover_crea_edit.text().strip(),
         })
         self.result_project_settings = self._project_settings
         self.result_cover_settings = self._cover_settings

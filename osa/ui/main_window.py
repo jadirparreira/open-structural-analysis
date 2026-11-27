@@ -954,6 +954,8 @@ class MainWindow(QMainWindow):
             tuple(id(result) for result in getattr(self.model, "verification_results", ())),
             self.current_path.name if self.current_path else "",
             tuple(sorted(self._memorial_cover_settings.items())),
+            tuple(str(self.project_sheets_palette._project_settings.get(field, ""))
+                  for field in ("work", "client", "address", "responsible", "crea")),
         )
 
     def _ensure_structure_report_preview(self) -> None:
@@ -986,7 +988,14 @@ class MainWindow(QMainWindow):
         worker = StructureReportPreviewWorker(
             snapshot,
             self.current_path.name if self.current_path else "",
-            self._memorial_cover_settings,
+            {
+                **self._memorial_cover_settings,
+                "work": self.project_sheets_palette._project_settings.get("work", ""),
+                "client": self.project_sheets_palette._project_settings.get("client", ""),
+                "author": self.project_sheets_palette._project_settings.get("responsible", ""),
+                "crea": self.project_sheets_palette._project_settings.get("crea", ""),
+                "address": self.project_sheets_palette._project_settings.get("address", ""),
+            },
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)

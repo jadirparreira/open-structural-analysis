@@ -57,8 +57,10 @@ class ReportOptions:
     crea: str = ""
     cover_work: str = ""
     cover_client: str = ""
+    cover_address: str = ""
     cover_model_mode: str = "analytic"
     cover_direction: str = "ISO-SE"
+    cover_identity_path: str = ""
     revision: str = "0"
     issue_date: date = field(default_factory=date.today)
     model_file: str = ""
@@ -239,6 +241,22 @@ class StructureReportBuilder:
 
     def _title_page(self, figure_folder: Path) -> str:
         options = self.options
+        # Reserve the logo's height even when no visual identity is supplied,
+        # so the title and model keep the same vertical positions.
+        identity = "\\rule{0pt}{3cm}\\par\n"
+        if options.cover_identity_path:
+            from PIL import Image, ImageOps
+
+            source = Path(options.cover_identity_path)
+            if source.is_file():
+                with Image.open(source) as image:
+                    ImageOps.exif_transpose(image).convert("RGBA").save(
+                        figure_folder / "identidade_visual.png"
+                    )
+                identity = (
+                    "\\includegraphics[height=3cm]"
+                    "{fig/identidade_visual.png}\\par\n"
+                )
         cover = ""
         if self.model.bars or getattr(self.model, "plates", {}):
             cover_model_image = self.cover_model_image
@@ -269,20 +287,19 @@ class StructureReportBuilder:
                 "\\includegraphics[width=0.9\\textwidth,height=0.42\\textheight,keepaspectratio]"
                 "{fig/modelo_capa.pdf}\\par\n"
             )
-        if options.author:
-            rows = [("Responsável:", options.author)]
-        else:
-            rows = []
-        if options.crea:
-            rows.append(("CREA:", options.crea))
+        rows = [
+            ("Endereço:", options.cover_address),
+            ("Cliente:", options.cover_client),
+            ("Responsável:", options.author),
+            ("CREA:", options.crea),
+        ]
         table = "\n".join(f"{tex_escape(label)} & {tex_escape(value)}\\\\" for label, value in rows)
         cover_work = options.cover_work or options.subject or self._subject()
-        cover_client = options.cover_client
         location = f"{{\\Large {tex_escape(cover_work)}\\par}}\n"
-        if cover_client:
-            location += f"\\vspace{{0.3cm}}\n{{\\large {tex_escape(cover_client)}\\par}}\n"
         return (
-            "\\begin{titlepage}\n\\centering\n\\vspace*{2.2cm}\n"
+            "\\begin{titlepage}\n\\centering\n"
+            f"{identity}"
+            "\\vspace{2.5cm}\n"
             f"{{\\LARGE\\bfseries {tex_escape(options.title.upper())}\\par}}\n"
             "\\vspace{0.8cm}\n"
             f"{location}\\vspace{{0.8cm}}\n{cover}\\vfill\n"
