@@ -191,3 +191,29 @@ def test_pdf_is_independent_of_zoom_pan_selection_and_preview(sheet, tmp_path):
     export_sheet_pdf(workspace, second)
     first_doc, second_doc = open_pdf(first), open_pdf(second)
     assert first_doc.render(0, QSize(1200, 850)) == second_doc.render(0, QSize(1200, 850))
+
+
+@pytest.mark.parametrize("denominator", [10., 100.])
+def test_pdf_model_strokes_are_half_point_and_annotations_three_quarter_point(sheet, tmp_path, denominator):
+    import re
+    import zlib
+
+    _app, _window, workspace = sheet
+    workspace._sheet_views[0]["scale_denominator"] = denominator
+    path = tmp_path / "stroke-widths.pdf"
+    export_sheet_pdf(workspace, path)
+    contents = []
+    for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", path.read_bytes(), re.DOTALL):
+        try:
+            data = zlib.decompress(match[1])
+        except zlib.error:
+            continue
+        if b" SCN" in data and b" w" in data:
+            contents.append(data)
+    assert contents
+    # The PDF maps 96 dpi drawing coordinates to 72 pt/inch (factor 0.75).
+    assert any(re.search(rb"0\.750+ 0 0 -0\.750+ .*? cm", data) for data in contents)
+    widths_pt = {round(float(value) * .75, 6) for data in contents
+                 for value in re.findall(rb"([0-9]+(?:\.[0-9]+)?)\s+w\b", data)}
+    assert widths_pt == {.5, .75}
+    assert not hasattr(workspace, "_pdf_model_line_width")

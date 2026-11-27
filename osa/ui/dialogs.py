@@ -40,6 +40,8 @@ from osa.rendering.detailing_2d import visible_segments_from_meshes
 from osa.rendering.node_component_renderer import (
     _BASE_PLATE_PLANE_BASES,
     base_plate_component_meshes,
+    stair_plate_mesh,
+    stair_wood_mesh,
 )
 from .home import ScrollingNameLabel, _brand_lockup
 from .profile_selector import ProfileComboBox
@@ -1334,7 +1336,7 @@ class _ComponentDetailViewsWorker(QRunnable):
 
 
 class ComponentDetailsDialog(QDialog):
-    """Choose orthographic detail views for groups of identical base plates."""
+    """Choose orthographic detail views for groups of identical node components."""
 
     CONNECTED_MEMBER_LIMIT_MM = 1000.0
     _VIEW_DEFINITIONS = (
@@ -1558,7 +1560,7 @@ class ComponentDetailsDialog(QDialog):
             first = next(iter(self._groups))
             self._select_group(first)
         else:
-            self._loading_label.setText("Nenhuma chapa de base/topo foi encontrada no modelo")
+            self._loading_label.setText("Nenhuma chapa de base/topo ou de degrau foi encontrada no modelo")
             self._grid_host.hide()
 
     def _collect_component_groups(self):
@@ -1582,7 +1584,7 @@ class ComponentDetailsDialog(QDialog):
 
         for node_name, node in getattr(model, "nodes", {}).items():
             assignment = getattr(node, "component", None)
-            if assignment is None or assignment.component_id != "base_plate":
+            if assignment is None or assignment.component_id not in {"base_plate", "stair_plate"}:
                 continue
             parameters = dict(assignment.parameters)
             full_parameter_key = tuple(sorted(
@@ -1592,6 +1594,11 @@ class ComponentDetailsDialog(QDialog):
                 (key, value) for key, value in full_parameter_key
                 if key.casefold() != "plano"
             )
+            # Preserve existing base-plate group IDs and namespace stair groups.
+            if assignment.component_id == "stair_plate":
+                parameter_key = (("component_id", "stair_plate"), *parameter_key)
+            component_label = ("Chapa de degrau" if assignment.component_id == "stair_plate"
+                               else "Chapa de base/topo")
             identity = str(node.name)
             display_name = str(display_names.get(node_name, "")).strip()
             label = f"{identity} · {display_name}" if display_name else identity
@@ -1601,7 +1608,8 @@ class ComponentDetailsDialog(QDialog):
                     "nodes": [],
                     "labels": [],
                     "label": label,
-                    "component_label": "Chapa de base/topo",
+                    "component_label": component_label,
+                    "component_id": assignment.component_id,
                     "legacy_parameter_keys": set(),
                 }
             groups[parameter_key]["legacy_parameter_keys"].add(full_parameter_key)
@@ -1611,7 +1619,7 @@ class ComponentDetailsDialog(QDialog):
             members = group.pop("labels")
             if len(members) > 1:
                 group["label"] = f"{members[0]} ({len(members)}x)"
-                group["component_label"] = f"Chapa de base/topo · {len(members)} nós"
+                group["component_label"] += f" · {len(members)} nós"
                 group["members_tooltip"] = "\n".join(members)
             else:
                 group["members_tooltip"] = members[0] if members else ""
@@ -1800,12 +1808,14 @@ class ComponentDetailsDialog(QDialog):
         return u, v, normal
 
     @classmethod
-    def _build_group_views(cls, model, marker_radius, group):
+    def _build_group_views(cls, model, marker_radius, group, *, excluded_owners=()):
         parameters = group["parameters"]
         node_name = group["nodes"][0]
         node = model.nodes[node_name]
         origin = np.asarray((node.x, node.y, node.z), dtype=float)
-        u, v, normal = cls._basis_for_parameters(parameters)
+        component_id = group.get("component_id", "base_plate")
+        basis_parameters = parameters if component_id == "base_plate" else {**parameters, "plano": "XY+"}
+        u, v, normal = cls._basis_for_parameters(basis_parameters)
         frame = np.asarray((u, v, normal), dtype=float)
 
         def to_component_coordinates(mesh):
@@ -1813,14 +1823,20 @@ class ComponentDetailsDialog(QDialog):
             local.points = (np.asarray(local.points) - origin) @ frame.T
             return local
 
-        plate, rods, washers, nuts = base_plate_component_meshes(
-            parameters, tuple(float(value) for value in origin),
-        )
-        component_meshes = tuple(
-            to_component_coordinates(mesh) for mesh in (plate, *rods, *washers, *nuts)
-        )
+        mesh_origin = tuple(float(value) for value in origin)
+        if component_id == "stair_plate":
+            plate = stair_plate_mesh(parameters, mesh_origin)
+            wood = stair_wood_mesh(parameters, mesh_origin)
+            rods, washers, nuts = (), (), ()
+            raw_meshes = (plate, wood) if wood.n_points else (plate,)
+            owner_prefix = "componente:chapa_degrau"
+        else:
+            plate, rods, washers, nuts = base_plate_component_meshes(parameters, mesh_origin)
+            raw_meshes = (plate, *rods, *washers, *nuts)
+            owner_prefix = "componente:chapa_base"
+        component_meshes = tuple(to_component_coordinates(mesh) for mesh in raw_meshes)
         meshes = list(component_meshes)
-        owners = [f"componente:chapa_base:{index}" for index in range(len(component_meshes))]
+        owners = [f"{owner_prefix}:{index}" for index in range(len(component_meshes))]
 
         connected_members = {
             name for name, member in (
@@ -1883,7 +1899,14 @@ class ComponentDetailsDialog(QDialog):
             )
             for mesh in meshes
         )
-        owners = tuple(owners)
+        excluded = set(excluded_owners)
+        visible_geometry = [
+            (mesh, edge, owner) for mesh, edge, owner in zip(meshes, feature_edges, owners)
+            if owner not in excluded
+        ]
+        visible_meshes = tuple(mesh for mesh, _edge, _owner in visible_geometry)
+        visible_edges = tuple(edge for _mesh, edge, _owner in visible_geometry)
+        visible_owners = tuple(owner for _mesh, _edge, owner in visible_geometry)
         local_axes = (
             (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
         )
@@ -1896,10 +1919,10 @@ class ComponentDetailsDialog(QDialog):
         for key, (axis, sign) in cls._DIRECTIONS.items():
             camera = tuple(float(sign) * component for component in local_axes[axis])
             view_up = local_up[key]
-            segments, segment_owners = visible_segments_from_meshes(
-                meshes, camera, view_up, feature_edge_meshes=feature_edges,
-                element_names=owners, return_sources=True,
-            )
+            segments, segment_owners = (visible_segments_from_meshes(
+                visible_meshes, camera, view_up, feature_edge_meshes=visible_edges,
+                element_names=visible_owners, return_sources=True,
+            ) if visible_meshes else ([], []))
             view_direction = tuple(-component for component in camera)
             right = (
                 view_direction[1] * view_up[2] - view_direction[2] * view_up[1],
@@ -1913,9 +1936,27 @@ class ComponentDetailsDialog(QDialog):
             plate_projected = np.column_stack((plate_points @ np.asarray(right), plate_points @ np.asarray(view_up)))
             plate_min = plate_projected.min(axis=0)
             plate_max = plate_projected.max(axis=0)
+            body_points = [point for line in segments for point in line]
+            if not body_points:
+                body_points = plate_projected.tolist()
             margin = max(0.04, float(parameters.get("largura_mm", 300.0)) / 1000.0 * 0.15)
             dimensions = []
-            if key in {"top", "bottom"}:
+            if component_id == "stair_plate":
+                # Dimension steel and optional wooden tread separately, including thickness.
+                for index, mesh in enumerate(component_meshes):
+                    points = np.asarray(mesh.points, dtype=float)
+                    projected = np.column_stack((points @ np.asarray(right), points @ np.asarray(view_up)))
+                    lower, upper = projected.min(axis=0), projected.max(axis=0)
+                    offset = margin * (2.0 + index * 1.5)
+                    for axis, axis_name in enumerate(("x", "y")):
+                        end = lower.copy()
+                        end[axis] = upper[axis]
+                        dimensions.append({
+                            "start": tuple(map(float, lower)), "end": tuple(map(float, end)),
+                            "offset": (0.0, -offset) if axis == 0 else (-offset, 0.0),
+                            "orthogonal_axis": axis_name, "decimal_places": 1,
+                        })
+            elif key in {"top", "bottom"}:
                 bolt_centers = []
                 washer_start = 1 + len(rods)
                 for bolt_mesh in component_meshes[washer_start:washer_start + len(washers)]:
@@ -1931,26 +1972,26 @@ class ComponentDetailsDialog(QDialog):
                         "start": (first, float(plate_min[1])),
                         "end": (second, float(plate_min[1])),
                         "offset": (0.0, -chain_offset), "orthogonal_axis": "x",
-                        "unit": "mm", "decimal_places": 0,
+                        "decimal_places": 0,
                     })
                 dimensions.append({
                     "start": (float(plate_min[0]), float(plate_min[1])),
                     "end": (float(plate_max[0]), float(plate_min[1])),
                     "offset": (0.0, -total_offset), "orthogonal_axis": "x",
-                    "unit": "mm", "decimal_places": 0,
+                    "decimal_places": 0,
                 })
                 for first, second in zip([float(plate_min[1]), *bolt_y], [*bolt_y, float(plate_max[1])]):
                     dimensions.append({
                         "start": (float(plate_min[0]), first),
                         "end": (float(plate_min[0]), second),
                         "offset": (-chain_offset, 0.0), "orthogonal_axis": "y",
-                        "unit": "mm", "decimal_places": 0,
+                        "decimal_places": 0,
                     })
                 dimensions.append({
                     "start": (float(plate_min[0]), float(plate_min[1])),
                     "end": (float(plate_min[0]), float(plate_max[1])),
                     "offset": (-total_offset, 0.0), "orthogonal_axis": "y",
-                    "unit": "mm", "decimal_places": 0,
+                    "decimal_places": 0,
                 })
             else:
                 local_rods = component_meshes[1:1 + len(rods)]
@@ -1967,7 +2008,7 @@ class ComponentDetailsDialog(QDialog):
                     "start": (rod_center_x, plate_lower_y),
                     "end": (rod_center_x, rod_lower_y),
                     "offset": (float(plate_min[0]) - rod_center_x - margin * 2.0, 0.0), "orthogonal_axis": "y",
-                    "unit": "mm", "decimal_places": 0,
+                    "decimal_places": 0,
                 }]
             result[key] = {
                 "segments": segments,
@@ -1976,10 +2017,10 @@ class ComponentDetailsDialog(QDialog):
                 "component_annotation_geometry": {
                     "plate_bounds": (*map(float, plate_min), *map(float, plate_max)),
                     "body_bounds": (
-                        min(p[0] for line in segments for p in line),
-                        min(p[1] for line in segments for p in line),
-                        max(p[0] for line in segments for p in line),
-                        max(p[1] for line in segments for p in line),
+                        min(p[0] for p in body_points),
+                        min(p[1] for p in body_points),
+                        max(p[0] for p in body_points),
+                        max(p[1] for p in body_points),
                     ),
                     "weld_points": tuple((float(np.dot(point, right)), float(np.dot(point, view_up)))
                                          for point in connection_points),
@@ -2006,6 +2047,7 @@ class ComponentDetailsDialog(QDialog):
             return
         group = self._groups[self._active_group_key]
         generated = self._group_views_cache[self._active_group_key]
+        component_id = group.get("component_id", "base_plate")
         model_revision = getattr(self._window.model, "revision", None)
         group_id = hashlib.sha1(repr(self._active_group_key).encode("utf-8")).hexdigest()[:12]
         self.result_views = []
@@ -2039,7 +2081,7 @@ class ComponentDetailsDialog(QDialog):
                     "view_count": len(selected_definitions),
                     "preview_rotation_degrees": desired_rotation,
                 })
-                preserved["detail_view_key"] = f"component:base_plate:{group_id}:{direction_key}"
+                preserved["detail_view_key"] = f"component:{component_id}:{group_id}:{direction_key}"
                 self.result_views.append(preserved)
                 continue
             rotation = self._preview_rotations.get((self._active_group_key, direction_key), 0)
@@ -2047,7 +2089,7 @@ class ComponentDetailsDialog(QDialog):
             identity = existing_identity or group["label"]
             view = {
                 "name": f'{group["label"]} - {title}',
-                "detail_view_key": f"component:base_plate:{group_id}:{direction_key}",
+                "detail_view_key": f"component:{component_id}:{group_id}:{direction_key}",
                 "model_revision": model_revision,
                 "component_geometry_signature": node_component_geometry_signature(self._window.model),
                 "linework_version": DETAILING_LINEWORK_VERSION,
@@ -2063,7 +2105,7 @@ class ComponentDetailsDialog(QDialog):
                 "component_annotation_geometry": data.get("component_annotation_geometry"),
                 "component_detail_group": {
                     "id": group_id,
-                    "component_id": "base_plate", "parameter_key": group_id,
+                    "component_id": component_id, "parameter_key": group_id,
                     "members": tuple(group["nodes"]), "direction": title,
                     "title": identity, "identity": identity,
                     "preview_rotation_degrees": rotation,

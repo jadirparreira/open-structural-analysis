@@ -78,7 +78,7 @@ def dimension_layout(ws, view_index, dimension, font):
     path = QPainterPath(); fills = []
     font = QFont(font); font.setPixelSize(max(1, round(float(setting('text_height_mm'))*scale)))
     metrics = QFontMetricsF(font)
-    decimals = max(0, min(8, int(setting('decimal_places'))))
+    decimals = max(0, min(8, int(dimension.get('decimal_places', setting('decimal_places')))))
     if kind == 'angular':
         geometry = angular_geometry(dimension)
         if geometry is None:
@@ -103,7 +103,7 @@ def dimension_layout(ws, view_index, dimension, font):
             normal = QPointF(math.cos(angle), -math.sin(angle))
             fills.append(QPolygonF([tip, tip+tangent*arrow+normal*arrow*.25,
                                    tip+tangent*arrow-normal*arrow*.25]))
-        value = math.degrees(span)
+        value = float(dimension.get("value_override", math.degrees(span)))
         text = f'{value:.{decimals}f}'.replace('.', ',')+'°'
         bisector = a+span/2
         clearance = (abs(math.cos(bisector))*metrics.horizontalAdvance(text)/2
@@ -117,9 +117,12 @@ def dimension_layout(ws, view_index, dimension, font):
         if value is None:
             return None
         value -= float(setting('reference_m'))
+        value = float(dimension.get('value_override', value))
+        unit = dimension.get('unit', 'm')
+        value *= {'mm': 1000., 'cm': 100., 'dm': 10., 'm': 1.}.get(unit, 1.)
         if abs(value) < .5*10**(-decimals):
             value = 0.
-        text = f'{value:+.{decimals}f}'.replace('.', ',')+' m'
+        text = f'{value:+.{decimals}f}'.replace('.', ',')+' '+unit
         size = float(setting('symbol_height_mm'))*scale
         path.moveTo(anchor+QPointF(-size, 0)); path.lineTo(anchor+QPointF(size, 0))
         fills.append(QPolygonF([anchor, anchor+QPointF(-size/2, -size), anchor+QPointF(size/2, -size)]))

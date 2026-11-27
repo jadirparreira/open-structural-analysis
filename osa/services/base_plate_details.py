@@ -14,12 +14,14 @@ COMPONENT_IDENTIFIER_KINDS = {"component_plate", "component_fastener"}
 def component_identifier(model, kind, node_name):
     node = model.nodes.get(node_name)
     assignment = node.component if node is not None else None
-    if assignment is None or assignment.component_id != "base_plate":
+    if assignment is None or assignment.component_id not in {"base_plate", "stair_plate"}:
         return "", 0
     parameters = dict(assignment.parameters)
     if kind == "component_fastener":
+        if assignment.component_id != "base_plate":
+            return "", 0
         return base_plate_fastener_name(parameters), len(base_plate_anchor_offsets(parameters))
-    return "CH " + f'{float(parameters.get("espessura_mm", 20)):g}'.replace(".", ","), 0
+    return "CH " + f'{float(parameters.get("espessura_mm", 6.3 if assignment.component_id == "stair_plate" else 20)):g}'.replace(".", ","), 0
 
 
 def minimum_connected_thickness(model, node_name):

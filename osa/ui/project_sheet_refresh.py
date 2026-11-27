@@ -35,24 +35,27 @@ class SheetLineworkTask(QRunnable):
             segments, owners, success = (), (), False
             try:
                 group = view.get("component_detail_group")
-                if isinstance(group, dict) and group.get("component_id") == "base_plate":
+                if isinstance(group, dict) and group.get("component_id") in {"base_plate", "stair_plate"}:
                     from .dialogs import ComponentDetailsDialog
 
                     nodes = [name for name in group.get("members", ())
-                             if name in self.model.nodes and self.model.nodes[name].component is not None]
+                             if name in self.model.nodes and self.model.nodes[name].component is not None
+                             and self.model.nodes[name].component.component_id == group["component_id"]]
                     if not nodes:
                         raise ValueError("O componente do detalhe não está disponível.")
                     parameters = dict(self.model.nodes[nodes[0]].component.parameters)
                     generated = ComponentDetailsDialog._build_group_views(
-                        self.model, self.source._marker_radius_current, {"nodes": nodes, "parameters": parameters},
+                        self.model, self.source._marker_radius_current,
+                        {"nodes": nodes, "parameters": parameters, "component_id": group["component_id"]},
+                        excluded_owners=excluded_owners,
                     )
                     direction = next(key for _name, title, key in ComponentDetailsDialog._VIEW_DEFINITIONS
                                      if title.casefold() == str(group.get("direction", "")).casefold())
-                    data = generated[direction]
-                    filtered = [(line, owner) for line, owner in zip(data["segments"], data["segment_owners"])
-                                if owner not in excluded_owners]
-                    segments = tuple(line for line, _owner in filtered)
-                    owners = tuple(owner for _line, owner in filtered)
+                    data = ComponentDetailsDialog._rotate_component_view_data(
+                        generated[direction], int(group.get("preview_rotation_degrees", 0)),
+                    )
+                    segments = tuple(data["segments"])
+                    owners = tuple(data["segment_owners"])
                 else:
                     DetailingViewPreview.set_view(
                         calculator, self.model, projection["plane"], projection["coordinate"],

@@ -35,6 +35,9 @@ def _export_workspace(source):
     # geometry is read-only while painting and may be shared without a huge copy.
     workspace = ProjectSheetWorkspace(source.window())
     workspace.setFont(source.font())
+    # QPdfWriter uses 96 device units/inch; PDF points use 72 units/inch.
+    workspace._pdf_model_line_width = 0.5 * 96.0 / 72.0
+    workspace._pdf_annotation_line_width = 0.75 * 96.0 / 72.0
     workspace._settings = copy.deepcopy(source._settings)
     workspace._project_settings = copy.deepcopy(source._project_settings)
     workspace._sheet_name = source._sheet_name
@@ -54,7 +57,7 @@ def export_sheet_pdf(source: ProjectSheetWorkspace, filename: str | Path) -> Non
     """Export the entire active sheet, unaffected by screen zoom and selection.
 
     The 96 dpi coordinate system matches Qt's screen/design metrics; it does
-    not rasterize the output. Cosmetic one-pixel lines become 0.265 mm strokes.
+    not rasterize the output. Model strokes are 0.5 pt; annotations are 0.75 pt.
     QSaveFile keeps an existing destination intact if generation fails.
     """
     width, height = source.paper_size_mm()

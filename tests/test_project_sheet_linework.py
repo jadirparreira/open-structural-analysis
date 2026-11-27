@@ -657,3 +657,52 @@ def test_dimension_drag_invalidates_auto_moved_title_and_view_outline(monkeypatc
     assert len(updates[-1]) > 4
     widget.close()
     app.processEvents()
+
+
+def test_hidden_geometry_refits_detail_and_group_frames_without_moving_visible_lines():
+    from PySide6.QtCore import QRectF
+
+    app = QApplication.instance() or QApplication([])
+    widget = ProjectSheetWorkspace()
+    widget.resize(1500, 1050)
+    view = {
+        "name": "N - Norte", "scale_denominator": 10.,
+        "segments": (((-.1, -.03), (.1, -.03)), ((.1, -.03), (.1, 0.)),
+                     ((-.1, 0.), (.1, 0.)), ((-.1, -.03), (-.1, 0.)),
+                     ((-.4, -.2), (.4, -.2)), ((.4, -.2), (.4, .2))),
+        "segment_owners": ("plate",) * 4 + ("wood",) * 2,
+        "dimensions": [{"start": (-.1, 0.), "end": (.1, 0.), "offset": (0., .04)}],
+        "component_detail_group": {"id": "step", "component_id": "stair_plate",
+                                   "members": ["N"], "direction": "Norte", "title": "Degrau",
+                                   "group_position": (.5, .5)},
+    }
+    widget.set_sheet_views([view])
+    widget.show()
+    app.processEvents()
+    widget.grab()
+    original_frame = QRectF(widget._view_hit_rects[0])
+    original_group = QRectF(widget._component_group_hit_rects["step"])
+    original_point = widget._screen_point(0, (.1, 0.))
+    view["hidden_owners"] = ["wood"]
+    widget.update()
+    widget.grab()
+    assert widget._view_hit_rects[0].width() < original_frame.width()
+    assert widget._view_hit_rects[0].height() < original_frame.height()
+    assert widget._component_group_hit_rects["step"].width() < original_group.width()
+    assert widget._screen_point(0, (.1, 0.)) == original_point
+    assert widget._view_hit_rects[0].contains(widget._view_dimension_bounds[(0, 0)])
+    assert widget._view_hit_rects[0].contains(widget._view_title_hit_rects[0])
+    # Reveal mode still lets users reach the hidden geometry outside the fitted frame.
+    widget.set_element_visibility_mode("reveal")
+    widget.grab()
+    assert widget._view_hit_rects[0].width() == original_frame.width()
+    widget.set_element_visibility_mode(None)
+    widget.grab()
+    assert widget._view_hit_rects[0].width() < original_frame.width()
+    view["hidden_owners"] = []
+    widget.update()
+    widget.grab()
+    assert widget._view_hit_rects[0] == original_frame
+    assert widget._component_group_hit_rects["step"] == original_group
+    widget.close()
+    app.processEvents()

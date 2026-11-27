@@ -54,6 +54,8 @@ from .dialogs import (
     SettingsDialog,
     UnsavedChangesDialog,
 )
+from .sheet_line_panel import ProjectSheetLinePanel
+from .dimension_panel import ProjectSheetDimensionPanel
 from .displacement_panel import DisplacementPanel
 from .detailing_preview import (
     DETAILING_LINEWORK_VERSION, DetailingViewPreview, _ModelSnapshot,
@@ -280,6 +282,14 @@ class MainWindow(QMainWindow):
         self._create_project_loading_overlay()
         self._create_memorial_loading_overlay()
         self._create_sheet_views_updating_dialog()
+        self.project_sheet_line_panel = ProjectSheetLinePanel(self, self.project_sheet_workspace)
+        self.project_sheet_workspace.sheet_line_selection_changed.connect(
+            lambda _selection: QTimer.singleShot(0, self._project_sheet_line_selected)
+        )
+        self.project_sheet_dimension_panel = ProjectSheetDimensionPanel(self, self.project_sheet_workspace)
+        self.project_sheet_workspace.dimension_selection_changed.connect(
+            lambda _selection: QTimer.singleShot(0, self._project_sheet_dimension_selected)
+        )
         self.project_sheet_view_panel = ProjectSheetViewPanel(self)
         self.project_sheet_detail_group_panel = ProjectSheetDetailGroupPanel(self)
         self.project_sheet_identification_panel = ProjectSheetIdentificationPanel(self)
@@ -1122,6 +1132,9 @@ class MainWindow(QMainWindow):
                 control.show()
         if not self._detailing_project_mode and self.view_stack.currentWidget() is not self.home:
             self._reposition_navigation_button()
+        if not self._detailing_project_mode:
+            self.project_sheet_dimension_panel.hide()
+            self.project_sheet_line_panel.hide()
         self.project_sheet_workspace.set_model_name(self.scene.model_name)
         detailing_active = self.palette.active_group == "Detalhamento"
         self.detailing_top_palette.set_detailing_visible(
@@ -1354,6 +1367,22 @@ class MainWindow(QMainWindow):
             if before != after:
                 changed = True
         return changed
+
+    def _project_sheet_line_selected(self):
+        workspace = self.project_sheet_workspace
+        selection = workspace._selected_sheet_line if self._detailing_project_mode else None
+        if selection is not None:
+            for name in ("view", "detail_group", "identification", "detail_identifier", "section", "elevation_identifier", "dimension"):
+                getattr(self, f"project_sheet_{name}_panel").hide()
+        self.project_sheet_line_panel.show_for(selection)
+
+    def _project_sheet_dimension_selected(self):
+        workspace = self.project_sheet_workspace
+        selection = workspace._selected_dimension if self._detailing_project_mode else None
+        if selection is not None:
+            for name in ("view", "detail_group", "identification", "detail_identifier", "section", "elevation_identifier"):
+                getattr(self, f"project_sheet_{name}_panel").hide()
+        self.project_sheet_dimension_panel.show_for(selection)
 
     def _project_sheet_view_selected(self, view: dict | None) -> None:
         identification_panel = getattr(self, "project_sheet_identification_panel", None)
@@ -2336,7 +2365,9 @@ class MainWindow(QMainWindow):
             )
             return
         source = str(name)
-        if source.startswith("componente:chapa_base:"):
+        if source.startswith(("componente:chapa_base:", "componente:chapa_degrau:")):
+            if source.startswith("componente:chapa_degrau:") and source.rsplit(":", 1)[-1] != "0":
+                return
             nodes = view.get("component_detail_group", {}).get("members", ())
             if not nodes:
                 return
@@ -4616,6 +4647,10 @@ class MainWindow(QMainWindow):
             self.detailing_mode_palette.reposition()
         if hasattr(self, "project_sheets_palette") and self.project_sheets_palette.isVisible():
             self.project_sheets_palette.reposition()
+        if hasattr(self, "project_sheet_line_panel") and self.project_sheet_line_panel.isVisible():
+            self.project_sheet_line_panel.reposition()
+        if hasattr(self, "project_sheet_dimension_panel") and self.project_sheet_dimension_panel.isVisible():
+            self.project_sheet_dimension_panel.reposition()
         if hasattr(self, "project_sheet_view_panel") and self.project_sheet_view_panel.isVisible():
             self.project_sheet_view_panel.reposition()
         if (
@@ -7865,12 +7900,12 @@ class MainWindow(QMainWindow):
     def delete_selected(self) -> None:
         """Delete selected elements, removing members before their endpoint nodes."""
         focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
+            return
         if (
             self._detailing_project_mode
             and self.project_sheet_workspace.delete_selected_dimension()
         ):
-            return
-        if isinstance(focus, (QLineEdit, QComboBox, QAbstractSpinBox)):
             return
         if self._detailing_project_mode:
             if self.project_sheet_workspace.delete_selected_sheet_table():

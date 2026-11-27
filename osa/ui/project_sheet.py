@@ -15,6 +15,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from osa.rendering.member_breaks import member_break_linework
 
+from .sheet_line_panel import LINE_STYLES
 from .selector import SelectorComboBox
 from .common import (
     QCheckBox,
@@ -819,6 +820,7 @@ def default_project_settings() -> dict:
         "dimension_line_color": "#ff0000",
         "dimension_extension_color": "#ff0000",
         "dimension_terminator_color": "#ff0000",
+        "sheet_line_custom_colors": [],
         "dimension_custom_colors": [],
         "dimension_text_position": "superior",
         "detail_identifier_circle_color": "#ff0000",
@@ -875,6 +877,32 @@ class ProjectSheetWorkspace(QWidget):
     text_editor_requested = Signal(object)
     table_editor_requested = Signal(int)
     annotation_finished = Signal(str, bool)
+
+    dimension_selection_changed = Signal(object)
+
+    @property
+    def _selected_dimension(self):
+        return getattr(self, "_dimension_selection", None)
+
+    @_selected_dimension.setter
+    def _selected_dimension(self, selection):
+        previous = self._selected_dimension
+        self._dimension_selection = selection
+        if selection != previous:
+            self.dimension_selection_changed.emit(selection)
+
+    sheet_line_selection_changed = Signal(object)
+
+    @property
+    def _selected_sheet_line(self):
+        return getattr(self, "_sheet_line_selection", None)
+
+    @_selected_sheet_line.setter
+    def _selected_sheet_line(self, selection):
+        previous = self._selected_sheet_line
+        self._sheet_line_selection = selection
+        if selection != previous:
+            self.sheet_line_selection_changed.emit(selection)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1127,6 +1155,7 @@ class ProjectSheetWorkspace(QWidget):
         self._settings = settings
         if project_settings is not None:
             self._project_settings = project_settings
+            self.dimension_selection_changed.emit(self._selected_dimension)
         if sheet_count is not None:
             self._sheet_count = sheet_count
         self.update()
@@ -1159,6 +1188,10 @@ class ProjectSheetWorkspace(QWidget):
             self.set_elevation_identifier_mode(False)
             self.elevation_identifier_finished.emit(True)
         self._sheet_views = tuple(views)
+        # Generated details can supply tuples; sheet annotations must be editable.
+        for view in self._sheet_views:
+            if "dimensions" in view and not isinstance(view["dimensions"], list):
+                view["dimensions"] = list(view["dimensions"])
         self._view_linework.clear()
         self._view_segment_grids.clear()
         self._view_axis_geometry.clear()
@@ -1447,6 +1480,7 @@ class ProjectSheetWorkspace(QWidget):
             self._sheet_name,
             round(inner.width() / scale, 6), round(inner.height() / scale, 6),
             repr(self._project_settings),
+            self._element_visibility_mode == "reveal",
             tuple((id(self._sheet_views[i].get("segments")),
                    id(self._sheet_views[i].get("segment_owners")),
                    repr({key: value for key, value in self._sheet_views[i].items()
@@ -2587,12 +2621,31 @@ class ProjectSheetWorkspace(QWidget):
                     else:
                         target_path.moveTo(x1, y1)
                         target_path.lineTo(x2, y2)
+                # Hidden linework remains available for re-showing elements,
+                # but must not enlarge the visible view's frame.
+                source_owners = view.get("segment_owners", ())
+                visible_source_points = [
+                    point for segment_index, segment in enumerate(view.get("segments", ()))
+                    if (segment_index >= len(source_owners)
+                        or str(source_owners[segment_index]) not in hidden_owners)
+                    for point in segment
+                ]
+                visible_bounds = (
+                    min(point[0] for point in visible_source_points),
+                    max(point[0] for point in visible_source_points),
+                    min(point[1] for point in visible_source_points),
+                    max(point[1] for point in visible_source_points),
+                ) if visible_source_points else (
+                    (min_x + max_x) / 2., (min_x + max_x) / 2.,
+                    (min_y + max_y) / 2., (min_y + max_y) / 2.,
+                )
                 cached = (
                     segments, hidden_key, path, hidden_path, points, hidden_points,
-                    (min_x, max_x, min_y, max_y),
+                    (min_x, max_x, min_y, max_y), visible_bounds,
                 )
                 self._view_linework[index] = cached
-            _, _, path, hidden_path, points, hidden_points, (min_x, max_x, min_y, max_y) = cached
+            _, _, path, hidden_path, points, hidden_points, source_bounds, visible_bounds = cached
+            min_x, max_x, min_y, max_y = source_bounds
             center_x = (min_x + max_x) / 2.0
             center_y = (min_y + max_y) / 2.0
             position = view.get("position")
@@ -2628,11 +2681,14 @@ class ProjectSheetWorkspace(QWidget):
                 target_y = drawing_area.top() + float(position[1]) * drawing_area.height()
             model_to_sheet = 1000.0 / max(1.0, float(view.get("scale_denominator", 100.0)))
             model_to_pixels = model_to_sheet * scale
+            frame_min_x, frame_max_x, frame_min_y, frame_max_y = (
+                source_bounds if self._element_visibility_mode == "reveal" else visible_bounds
+            )
             frame = QRectF(
-                target_x - (max_x - min_x) * model_to_pixels / 2.0,
-                target_y - (max_y - min_y) * model_to_pixels / 2.0,
-                max(2.0, (max_x - min_x) * model_to_pixels),
-                max(2.0, (max_y - min_y) * model_to_pixels),
+                target_x + (frame_min_x - center_x) * model_to_pixels,
+                target_y - (frame_max_y - center_y) * model_to_pixels,
+                max(2.0, (frame_max_x - frame_min_x) * model_to_pixels),
+                max(2.0, (frame_max_y - frame_min_y) * model_to_pixels),
             )
             self._view_geometry_bounds[index] = QRectF(frame)
             name_font = QFont(painter.font())
@@ -2760,15 +2816,21 @@ class ProjectSheetWorkspace(QWidget):
             painter.translate(target_x, target_y)
             painter.scale(model_to_pixels, -model_to_pixels)
             painter.translate(-center_x, -center_y)
+            model_pen = QPen(pen)
+            model_pen.setWidthF(getattr(self, "_pdf_model_line_width", 1.0))
+            painter.setPen(model_pen)
             painter.drawPath(path)
             if points:
                 painter.drawPoints(points)
+            painter.setPen(pen)
             for mark_index, lines in symbols.items():
                 mark = view["member_breaks"][mark_index]
                 if mark["owner"] in hidden_owners:
                     continue
                 selected = self._selected_member_break == (index, mark_index)
-                symbol_pen = QPen(QColor("#ff0000"), 2.0 if selected else 1.2)
+                symbol_pen = QPen(QColor("#ff0000"), getattr(
+                    self, "_pdf_annotation_line_width", 2.0 if selected else 1.2,
+                ))
                 symbol_pen.setCosmetic(True)
                 painter.setPen(symbol_pen)
                 for first, last in lines:
@@ -3358,12 +3420,16 @@ class ProjectSheetWorkspace(QWidget):
             return
         key = (view_index if view_index is not None else -1, line_index)
         selected = self._selected_sheet_line == key
-        pen = QPen(QColor("#0969da") if selected else QColor("#000000"), 2.0 if selected else 1.0)
+        pen = QPen(QColor(annotation.get("color", "#000000")), 2.0 if selected else 1.0)
+        pen.setStyle(LINE_STYLES.get(annotation.get("line_style"), Qt.PenStyle.SolidLine))
         pen.setCosmetic(True)
         painter.save()
         painter.setPen(pen)
         self._draw_annotation_geometry(painter, annotation.get("kind", "line"), first_screen, second_screen)
         if selected:
+            handle_pen = QPen(QColor("#0969da"), 1.)
+            handle_pen.setCosmetic(True)
+            painter.setPen(handle_pen)
             painter.setBrush(QColor("#ffffff"))
             painter.drawEllipse(first_screen, 3.5, 3.5)
             painter.drawEllipse(second_screen, 3.5, 3.5)
@@ -5184,7 +5250,7 @@ class ProjectSheetWorkspace(QWidget):
             ))))
         except (TypeError, ValueError):
             decimal_places = 0
-        displayed_value = numeric_value * unit_scale
+        displayed_value = float(dimension.get("value_override", numeric_value)) * unit_scale
         text = f"{displayed_value:.{decimal_places}f}"
         font = QFont(painter.font())
         height_mm = float(self._project_settings.get("dimension_text_height_mm", 3.0))
@@ -5565,6 +5631,7 @@ class ProjectSheetWorkspace(QWidget):
                 return
             line_hit = self._sheet_line_at(event.position())
             if line_hit is not None:
+                self._selected_dimension = None
                 self._selected_sheet_line = line_hit
                 self._selected_sheet_text = None
                 self._selected_component_detail_group = None
@@ -5661,6 +5728,7 @@ class ProjectSheetWorkspace(QWidget):
                 if rect.contains(event.position())
             ), None)
             if section_handle_hit is not None:
+                self._selected_dimension = None
                 view_index, section_index, _handle = section_handle_hit
                 self.select_view(view_index)
                 self._selected_section = (view_index, section_index)
@@ -5679,6 +5747,7 @@ class ProjectSheetWorkspace(QWidget):
                 if rect.contains(event.position())
             ), None)
             if section_hit is not None:
+                self._selected_dimension = None
                 self.select_view(section_hit[0])
                 self._selected_section = section_hit
                 self.section_selection_changed.emit(
