@@ -3789,6 +3789,62 @@ class _DimensionColorDialog(QDialog):
             self._update_custom_styles()
 
 
+class MemorialSettingsDialog(QDialog):
+    """Empty settings shell reserved for future memorial configuration options."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Configurar memorial")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.resize(760, 520)
+        self.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0; }"
+            "QFrame#titleBar { background: #e1e4e8; border-bottom: 1px solid #d0d7de; }"
+            "QLabel#windowTitle { color: #24292f; font-size: 14px; font-weight: 600; }"
+            "QListWidget { background: #f6f8fa; border: 0; padding: 8px; }"
+            "QListWidget::item { padding: 8px 10px; border-radius: 6px; color: #57606a; }"
+            "QListWidget::item:selected { background: #d0d7de; color: #24292f; }"
+            "QPushButton#closeMemorialSettings { min-height: 34px; padding: 4px 16px; "
+            "border: 1px solid #d0d7de; border-radius: 7px; color: #24292f; background: #f6f8fa; }"
+            "QPushButton#closeMemorialSettings:hover { background: #eaeef2; }"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        titlebar = QFrame(self)
+        titlebar.setObjectName("titleBar")
+        titlebar.setFixedHeight(40)
+        title_layout = QHBoxLayout(titlebar)
+        title_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Configurar memorial", titlebar)
+        title.setObjectName("windowTitle")
+        title_layout.addWidget(title)
+        title_layout.addStretch(1)
+        outer.addWidget(titlebar)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        navigation = QListWidget(self)
+        navigation.setFixedWidth(170)
+        navigation.setSpacing(8)
+        navigation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        navigation.addItem("Geral")
+        navigation.setCurrentRow(0)
+        content.addWidget(navigation)
+        content.addWidget(QWidget(self), 1)
+        outer.addLayout(content, 1)
+
+        footer_widget = QWidget(self)
+        footer = QHBoxLayout(footer_widget)
+        footer.setContentsMargins(14, 8, 14, 10)
+        footer.addStretch(1)
+        close_button = QPushButton("Fechar", footer_widget)
+        close_button.setObjectName("closeMemorialSettings")
+        close_button.clicked.connect(self.reject)
+        footer.addWidget(close_button)
+        outer.addWidget(footer_widget)
+
+
 class ProjectSheetSettingsDialog(QDialog):
     """Page, identification, and title block settings for one project sheet."""
 

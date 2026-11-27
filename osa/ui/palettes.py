@@ -214,6 +214,22 @@ def _register_palette_tooltips(palette: QFrame) -> None:
             tooltip.track(widget, text)
 
 
+def _standardize_palette_button_sizes(palette: QFrame) -> None:
+    """Match top-palette buttons to the 30 px controls in the project palette."""
+    for button in palette.findChildren(QToolButton):
+        ancestor = button.parentWidget()
+        skip_button = False
+        while ancestor is not None and ancestor is not palette:
+            if isinstance(ancestor, QMenu) or ancestor.objectName() == "settingsChoiceSwitch":
+                skip_button = True
+                break
+            ancestor = ancestor.parentWidget()
+        if not skip_button:
+            button.setFixedSize(30, 30)
+            if button.iconSize().width() > 19 or button.iconSize().height() > 19:
+                button.setIconSize(QSize(19, 19))
+
+
 class FloatingPalette(QFrame):
     """Compact session selector overlaid on the 3D viewport."""
 
@@ -369,6 +385,7 @@ class FloatingPalette(QFrame):
             # even when solid members are visible.
             self.window.top_icon_palette.set_solid_node_controls_locked(False)
         if previous_group == "Memorial" and next_group != "Memorial":
+            self.window.set_verification_memorial_mode(False)
             self._set_verification_view(False)
         if previous_group == "Detalhamento" and next_group != "Detalhamento":
             self._set_detailing_view(False)
@@ -414,6 +431,13 @@ class FloatingPalette(QFrame):
             self.window.top_icon_palette.set_geometry_visible(next_group == "Geometria")
         if hasattr(self.window, "verification_top_palette"):
             self.window.verification_top_palette.set_verification_visible(next_group == "Memorial")
+        if hasattr(self.window, "verification_mode_palette"):
+            self.window.verification_mode_palette.set_verification_visible(next_group == "Memorial")
+        if hasattr(self.window, "memorial_top_palette"):
+            self.window.memorial_top_palette.set_memorial_visible(
+                next_group == "Memorial"
+                and getattr(self.window, "_verification_memorial_mode", False)
+            )
         if hasattr(self.window, "action_top_palette"):
             self.window.action_top_palette.set_actions_visible(next_group == "Ações")
         if hasattr(self.window, "analysis_top_palette"):
@@ -698,6 +722,7 @@ class VerificationTopPalette(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
         self._window = window
         self._tooltip = PaletteTooltip(window)
         self.utilization_button = self._identifier_button(
@@ -805,6 +830,7 @@ class VerificationTopPalette(QFrame):
         self.utilization_button.setAccessibleName(utilization_tooltip)
         self.hide()
 
+        _standardize_palette_button_sizes(self)
         _register_palette_tooltips(self)
 
     def _identifier_button(self, icon_name: str, label: str, kind: str) -> QToolButton:
@@ -876,6 +902,7 @@ class DetailingTopPalette(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
         self._tooltip = PaletteTooltip(window)
         self.name_button = self._identifier_button(window)
         layout.addWidget(self.name_button)
@@ -974,6 +1001,7 @@ class DetailingTopPalette(QFrame):
         layout.addWidget(self.subtract_button)
         self.hide()
 
+        _standardize_palette_button_sizes(self)
         _register_palette_tooltips(self)
 
     def set_detailing_visible(self, visible: bool) -> None:
@@ -1029,8 +1057,303 @@ class DetailingTopPalette(QFrame):
         return super().eventFilter(watched, event)
 
 
+class VerificationModePalette(QFrame):
+    """Switch between the verification model and its general report preview."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self._selected = 0
+        self.setObjectName("verificationModePalette")
+        self.setFixedSize(186, 30)
+        self.setStyleSheet(
+            "QFrame#verificationModePalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 15px; }"
+        )
+        self._indicator = QFrame(self)
+        self._indicator.setObjectName("verificationModeIndicator")
+        self._indicator.setStyleSheet(
+            "QFrame#verificationModeIndicator { background: #0969da; border: 0; border-radius: 10px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(0)
+        self._buttons: list[QToolButton] = []
+        self._button_group = QButtonGroup(self)
+        self._button_group.setExclusive(True)
+        for index, label in enumerate(("Modelo", "Memorial")):
+            button = QToolButton(self)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.setFixedSize(88, 22)
+            button.setAccessibleName(label)
+            button.setStyleSheet(
+                "QToolButton { border: 0; border-radius: 11px; padding: 0; background: transparent; "
+                "font-size: 12px; font-weight: 600; }"
+                "QToolButton:hover { background: transparent; }"
+            )
+            button.setChecked(index == self._selected)
+            button.clicked.connect(lambda _checked=False, choice=index: self._select(choice))
+            self._button_group.addButton(button)
+            layout.addWidget(button)
+            self._buttons.append(button)
+        self._indicator.setGeometry(self._indicator_geometry())
+        self._indicator.lower()
+        self._update_text()
+        self.hide()
+        _register_palette_tooltips(self)
+
+    def _indicator_geometry(self) -> QRect:
+        return QRect(4 + 88 * self._selected, 5, 86, 20)
+
+    def _update_text(self) -> None:
+        for index, button in enumerate(self._buttons):
+            color = "#ffffff" if index == self._selected else "#57606a"
+            palette = button.palette()
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(color))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
+            button.setPalette(palette)
+            button.update()
+
+    def _select(self, index: int) -> None:
+        if index == self._selected:
+            return
+        self._selected = index
+        animation = QPropertyAnimation(self._indicator, b"geometry", self)
+        animation.setDuration(160)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.setStartValue(self._indicator.geometry())
+        animation.setEndValue(self._indicator_geometry())
+        animation.start()
+        self._indicator_animation = animation
+        self._update_text()
+        self._window.set_verification_memorial_mode(index == 1)
+
+    def set_verification_visible(self, visible: bool) -> None:
+        if not visible and self._selected == 1:
+            self._buttons[0].setChecked(True)
+            self._select(0)
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def set_memorial_mode(self, active: bool) -> None:
+        index = int(bool(active))
+        self._buttons[index].setChecked(True)
+        self._select(index)
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        self._window.verification_top_palette.adjustSize()
+        self._window.verification_top_palette.reposition()
+        top = self._window.verification_top_palette
+        margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
+        x = self._window.width() - self.width() - margin - 24
+        y = top.y() + (top.height() - self.height()) // 2
+        self.move(x, y)
+        self.raise_()
+
+
+class MemorialTopPalette(QFrame):
+    """Chapter selector, memorial settings, and preview zoom controls."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+        self.setObjectName("memorialTopPalette")
+        self.setStyleSheet(
+            "QFrame#memorialTopPalette { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+            "QComboBox { min-height: 30px; padding: 0 8px; border: 0; "
+            "border-radius: 6px; background: #d0d7de; color: #24292f; }"
+            "QComboBox:hover { background: #afb8c1; }"
+            "QComboBox::drop-down { width: 22px; border: 0; }"
+            "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
+            "selection-background-color: #d0d7de; selection-color: #24292f; }"
+            "QToolButton { min-width: 30px; min-height: 30px; border: 0; border-radius: 6px; "
+            "background: transparent; color: #24292f; }"
+            "QToolButton:hover { background: #eaeef2; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 8, 4)
+        layout.setSpacing(6)
+
+        self.chapter_selector = SelectorComboBox(self)
+        self.chapter_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.chapter_selector.setFixedHeight(30)
+        self.chapter_selector.setToolTip("Sessões do memorial")
+        self.chapter_selector.setAccessibleName("Sessões do memorial")
+        self.chapter_selector.currentIndexChanged.connect(self._chapter_selected)
+        layout.addWidget(self.chapter_selector)
+
+        self.settings_button = QToolButton(self)
+        self.settings_button.setFixedSize(30, 30)
+        self.settings_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "settings.svg"))
+        )
+        self.settings_button.setIconSize(QSize(18, 18))
+        self.settings_button.setToolTip("Configurar memorial")
+        self.settings_button.setAccessibleName("Configurar memorial")
+        self.settings_button.clicked.connect(window.open_memorial_settings)
+        layout.addWidget(self.settings_button)
+
+        self.zoom_button = QToolButton(self)
+        self.zoom_button.setFixedSize(24, 24)
+        self.zoom_button.setIcon(
+            QIcon(str(Path(__file__).parents[1] / "resources" / "icons" / "lens.svg"))
+        )
+        self.zoom_button.setIconSize(QSize(19, 19))
+        self.zoom_button.setToolTip("Zoom do memorial")
+        self.zoom_button.setProperty("paletteTooltip", "Zoom do memorial")
+        self.zoom_button.setAccessibleName("Zoom do memorial")
+        self.zoom_button.clicked.connect(self._toggle_zoom_popup)
+        layout.addWidget(self.zoom_button)
+
+        self.zoom_popup = QFrame(
+            window, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint,
+        )
+        self.zoom_popup.setObjectName("memorialZoomPopup")
+        self.zoom_popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.zoom_popup.setStyleSheet(
+            "QFrame#memorialZoomPopup { background: #f6f8fa; border: 1px solid #d0d7de; "
+            "border-radius: 8px; }"
+            "QSlider#memorialZoomSlider { background: transparent; }"
+            "QSlider#memorialZoomSlider:vertical { min-width: 18px; }"
+            "QSlider#memorialZoomSlider::groove:vertical { width: 6px; border-radius: 3px; "
+            "background: #d0d7de; }"
+            "QSlider#memorialZoomSlider::sub-page:vertical { background: #0969da; border-radius: 2px; }"
+            "QSlider#memorialZoomSlider::add-page:vertical { background: #d0d7de; border-radius: 2px; }"
+            "QSlider#memorialZoomSlider::handle:vertical { width: 12px; height: 12px; margin: 0 -3px; "
+            "border: 2px solid #0969da; border-radius: 6px; background: #ffffff; }"
+            "QSlider#memorialZoomSlider::handle:vertical:hover { background: #ddf4ff; }"
+        )
+        zoom_popup_layout = QVBoxLayout(self.zoom_popup)
+        zoom_popup_layout.setContentsMargins(4, 8, 4, 8)
+        zoom_popup_layout.setSpacing(0)
+        self.zoom_slider = QSlider(Qt.Orientation.Vertical, self.zoom_popup)
+        self.zoom_slider.setObjectName("memorialZoomSlider")
+        self.zoom_slider.setRange(0, 10)
+        self.zoom_slider.setSingleStep(1)
+        self.zoom_slider.setPageStep(1)
+        self.zoom_slider.setTickPosition(QSlider.TickPosition.TicksBothSides)
+        self.zoom_slider.setTickInterval(1)
+        self.zoom_slider.setValue(10)
+        self.zoom_slider.setInvertedAppearance(True)
+        self.zoom_slider.setFixedWidth(18)
+        self.zoom_slider.setFixedHeight(144)
+        self.zoom_slider.setAccessibleName("Zoom do memorial")
+        self.zoom_slider.setAccessibleDescription("Níveis de 30% a 80% da largura da área")
+        self.zoom_slider.setEnabled(False)
+        self.zoom_slider.valueChanged.connect(self._zoom_changed)
+        zoom_popup_layout.addWidget(self.zoom_slider, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        preview = window.structure_report_preview
+        preview.document_ready.connect(self._schedule_chapter_refresh)
+        preview.document_unavailable.connect(self.clear_document_state)
+        self.hide()
+        _standardize_palette_button_sizes(self)
+        _register_palette_tooltips(self)
+
+    def _chapter_selected(self, index: int) -> None:
+        page = self.chapter_selector.itemData(index)
+        if page is not None:
+            self._window.structure_report_preview.go_to_page(int(page))
+
+    @staticmethod
+    def _zoom_percent_for_position(position: int) -> int:
+        return 30 + max(0, min(10, int(position))) * 5
+
+    @staticmethod
+    def _zoom_position_for_percent(percent: int) -> int:
+        return round((max(30, min(80, int(percent))) - 30) / 5)
+
+    def _zoom_changed(self, position: int) -> None:
+        value = self._zoom_percent_for_position(position)
+        self.zoom_slider.setToolTip("Zoom do memorial")
+        preview = self._window.structure_report_preview
+        if preview._has_document:
+            preview.set_zoom_percent(value)
+
+    def _toggle_zoom_popup(self) -> None:
+        if not self.zoom_slider.isEnabled():
+            return
+        if self.zoom_popup.isVisible():
+            self.zoom_popup.hide()
+            return
+        self._position_zoom_popup()
+        self.zoom_popup.show()
+        self.zoom_popup.raise_()
+
+    def _position_zoom_popup(self) -> None:
+        self.zoom_popup.setFixedWidth(max(56, self.height()))
+        self.zoom_popup.adjustSize()
+        anchor = self.zoom_button.mapToGlobal(
+            QPoint(self.zoom_button.width() // 2, self.zoom_button.height() + 10)
+        )
+        x = anchor.x() - self.zoom_popup.width() // 2
+        y = anchor.y()
+        screen = QApplication.screenAt(anchor)
+        if screen is not None:
+            bounds = screen.availableGeometry()
+            x = max(bounds.left(), min(x, bounds.right() - self.zoom_popup.width() + 1))
+            y = max(bounds.top(), min(y, bounds.bottom() - self.zoom_popup.height() + 1))
+        self.zoom_popup.move(x, y)
+
+    def refresh_chapters(self) -> None:
+        preview = self._window.structure_report_preview
+        chapters = preview.chapter_bookmarks()
+        self.chapter_selector.blockSignals(True)
+        self.chapter_selector.clear()
+        for title, page in chapters:
+            self.chapter_selector.addItem(title, page)
+        if chapters:
+            self.chapter_selector.setCurrentIndex(0)
+        self.chapter_selector.setEnabled(bool(chapters))
+        self.chapter_selector.blockSignals(False)
+        value = preview.zoom_percent()
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(self._zoom_position_for_percent(value))
+        self.zoom_slider.blockSignals(False)
+        self.zoom_slider.setEnabled(preview._has_document)
+        self.adjustSize()
+        if self.isVisible():
+            self.reposition()
+
+    def _schedule_chapter_refresh(self) -> None:
+        QTimer.singleShot(0, self.refresh_chapters)
+
+    def clear_document_state(self) -> None:
+        self.chapter_selector.blockSignals(True)
+        self.chapter_selector.clear()
+        self.chapter_selector.setEnabled(False)
+        self.chapter_selector.blockSignals(False)
+        self.zoom_slider.setEnabled(False)
+        self.adjustSize()
+        if self.isVisible():
+            self.reposition()
+
+    def set_memorial_visible(self, visible: bool) -> None:
+        if not visible:
+            self.zoom_popup.hide()
+        self.setVisible(visible)
+        if visible:
+            self.reposition()
+
+    def reposition(self) -> None:
+        self.adjustSize()
+        top = self._window.verification_top_palette
+        top.adjustSize()
+        top.reposition()
+        self.setFixedHeight(top.height())
+        self.move((self._window.width() - self.width()) // 2, top.y())
+        self.raise_()
+        if self.zoom_popup.isVisible():
+            self._position_zoom_popup()
+
+
 class DetailingModePalette(QFrame):
-    """Small mode switch centered below the detailing toolbar."""
+    """Mode switch anchored at the upper-right of the detailing workspace."""
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -1121,8 +1444,9 @@ class DetailingModePalette(QFrame):
         self._window.detailing_top_palette.adjustSize()
         self._window.detailing_top_palette.reposition()
         top = self._window.detailing_top_palette
-        x = (self._window.width() - self.width()) // 2
-        y = top.y() + top.height() + 8
+        margin = 0 if self._window.isMaximized() else WindowFrame.MARGIN
+        x = self._window.width() - self.width() - margin - 24
+        y = top.y() + (top.height() - self.height()) // 2
         self.move(x, y)
         self.raise_()
 
@@ -1589,6 +1913,7 @@ class TopIconPalette(QFrame):
         self.setStyleSheet("QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
         self._tooltip = PaletteTooltip(window)
         self._visibility_buttons: dict[str, QToolButton] = {}
         self._solid_node_states: dict[str, tuple[bool, bool]] | None = None
@@ -1754,20 +2079,21 @@ class TopIconPalette(QFrame):
         self.scene_palette.setObjectName("scenePalette")
         self.scene_palette.setStyleSheet(
             "QFrame#scenePalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
-            "QComboBox { min-width: 120px; min-height: 24px; padding: 0 8px; border: 0; "
+            "QComboBox { min-width: 120px; min-height: 30px; padding: 0 8px; border: 0; "
             "border-radius: 6px; background: #d0d7de; color: #24292f; }"
             "QComboBox:hover { background: #afb8c1; }"
             "QComboBox::drop-down { width: 22px; border: 0; }"
             "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
             "selection-background-color: #d0d7de; selection-color: #24292f; }"
-            "QToolButton { min-width: 30px; min-height: 24px; border: 0; border-radius: 5px; "
+            "QToolButton { min-width: 30px; min-height: 30px; border: 0; border-radius: 6px; "
             "background: transparent; color: #24292f; }"
             "QToolButton:hover { background: #eaeef2; }"
         )
         scene_palette_layout = QHBoxLayout(self.scene_palette)
         scene_palette_layout.setContentsMargins(4, 4, 4, 4)
-        scene_palette_layout.setSpacing(3)
+        scene_palette_layout.setSpacing(6)
         self.scene_view_selector = SelectorComboBox(self.scene_palette)
+        self.scene_view_selector.setFixedHeight(30)
         self.scene_view_selector.addItem("Completo")
         self.scene_view_selector.setToolTip("Vista da cena")
         self.scene_view_selector.setAccessibleName("Vista da cena")
@@ -2048,6 +2374,8 @@ class TopIconPalette(QFrame):
         move_elements_button.setStyleSheet(copy_elements_button.styleSheet())
         layout.insertWidget(layout.indexOf(copy_elements_button), move_elements_button)
         self.move_elements_button = move_elements_button
+        _standardize_palette_button_sizes(self)
+        _standardize_palette_button_sizes(self.scene_palette)
         self.adjustSize()
 
         _register_palette_tooltips(self)
@@ -2353,7 +2681,7 @@ class ActionTopPalette(QFrame):
         self.setObjectName("topIconPalette")
         self.setStyleSheet(
             "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
-            "QComboBox { min-width: 210px; min-height: 24px; padding: 0 8px; border: 0; "
+            "QComboBox { min-width: 210px; min-height: 30px; padding: 0 8px; border: 0; "
             "border-radius: 6px; background: #d0d7de; color: #24292f; }"
             "QComboBox:hover { background: #afb8c1; }"
             "QComboBox::drop-down { width: 22px; border: 0; }"
@@ -2366,6 +2694,7 @@ class ActionTopPalette(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
         self._tooltip = PaletteTooltip(window)
         self.action_selector = self.ActionSelector(self)
         self.action_selector.setToolTip("Ação ativa")
@@ -2442,6 +2771,8 @@ class ActionTopPalette(QFrame):
         self.selfweight_button.clicked.connect(window.start_selfweight_command)
         self.selfweight_button.installEventFilter(self)
         layout.addWidget(self.selfweight_button)
+        self.action_selector.setFixedHeight(30)
+        _standardize_palette_button_sizes(self)
         self.adjustSize()
         _register_palette_tooltips(self)
 
@@ -2516,13 +2847,13 @@ class AnalysisTopPalette(QFrame):
         self.setObjectName("topIconPalette")
         self.setStyleSheet(
             "QFrame#topIconPalette { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }"
-            "QComboBox { min-height: 24px; padding: 0 8px; border: 0; "
+            "QComboBox { min-height: 30px; padding: 0 8px; border: 0; "
             "border-radius: 6px; background: #d0d7de; color: #24292f; }"
             "QComboBox:hover { background: #afb8c1; }"
             "QComboBox::drop-down { width: 22px; border: 0; }"
             "QComboBox QAbstractItemView { border: 1px solid #d0d7de; background: #ffffff; "
             "selection-background-color: #d0d7de; selection-color: #24292f; }"
-            "QFrame#analysisPending { min-width: 376px; min-height: 24px; border: 0; border-radius: 6px; "
+            "QFrame#analysisPending { min-width: 376px; min-height: 30px; border: 0; border-radius: 6px; "
             "background: #d0d7de; }"
             "QLabel#analysisPendingLabel { color: #57606a; padding: 0 8px; }"
             "QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 2px; }"
@@ -2559,8 +2890,8 @@ class AnalysisTopPalette(QFrame):
         ) + 48
         self.diagram_selector.setFixedWidth(max(224, diagram_width))
         self.combination_selector.setFixedWidth(224)
-        self.diagram_selector.setFixedHeight(24)
-        self.combination_selector.setFixedHeight(24)
+        self.diagram_selector.setFixedHeight(30)
+        self.combination_selector.setFixedHeight(30)
         self.diagram_selector.setToolTip(
             "Tipo de diagrama a exibir. Y e Z referem-se aos eixos locais de cada barra."
         )
@@ -2709,7 +3040,8 @@ class AnalysisTopPalette(QFrame):
         process_button.installEventFilter(self)
         layout.addWidget(process_button)
         self.process_button = process_button
-        self.pending.setFixedHeight(24)
+        self.pending.setFixedHeight(30)
+        _standardize_palette_button_sizes(self)
         self.adjustSize()
 
         _register_palette_tooltips(self)

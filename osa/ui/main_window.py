@@ -1,6 +1,7 @@
 """Janela principal e composição dos componentes visuais."""
 import copy
 import math
+import shutil
 import threading
 import uuid
 
@@ -43,6 +44,7 @@ from .dialogs import (
     ComponentDetailsDialog,
     ErrorDialog,
     MemberSnapSplitDialog,
+    MemorialSettingsDialog,
     PlateClosureDialog,
     ProgramSettingsDialog,
     ProjectSheetSettingsDialog,
@@ -71,6 +73,8 @@ from .palettes import (
     AnalysisTopPalette,
     DetailingTopPalette,
     DetailingModePalette,
+    MemorialTopPalette,
+    VerificationModePalette,
     ProjectSheetsPalette,
     FloatingPalette,
     MemberPropertyCopyPanel,
@@ -103,6 +107,7 @@ from .section_panel import (
     WLaminadoSectionPanel,
 )
 from .split_member_dialog import SplitMemberDialog
+from .structure_report_preview import StructureReportPreview, StructureReportPreviewWorker
 from .subtractions_panel import SubtractionsPanel
 from .verification_worker import VerificationWorker
 from .window_frame import TitleBar, WindowFrame
@@ -160,6 +165,12 @@ class MainWindow(QMainWindow):
         self._verification_properties_revision: int | None = None
         self._verification_restraint_angle_degrees: float | None = None
         self._verification_result_ids: tuple[int, ...] | None = None
+        self._verification_memorial_mode = False
+        self._report_preview_key = None
+        self._report_preview_pending_key = None
+        self._report_preview_temporary_directory = None
+        self._report_preview_thread: QThread | None = None
+        self._report_preview_worker: StructureReportPreviewWorker | None = None
         self._project_load_thread: QThread | None = None
         self._project_load_worker: ProjectLoadWorker | None = None
         self._project_loading_path: Path | None = None
@@ -256,11 +267,17 @@ class MainWindow(QMainWindow):
         self.project_sheet_workspace.steel_plate_rows_provider = self._steel_plate_table_rows
         self.project_sheet_workspace.accessory_rows_provider = self._accessory_table_rows
         self.view_stack.addWidget(self.project_sheet_workspace)
+        self.structure_report_preview = StructureReportPreview(shell)
+        self.structure_report_preview.export_requested.connect(self.export_structure_report_preview_pdf)
+        self.structure_report_preview.document_ready.connect(self._structure_report_preview_document_ready)
+        self.structure_report_preview.document_failed.connect(self._structure_report_preview_failed)
+        self.view_stack.addWidget(self.structure_report_preview)
         shell_layout.addWidget(self.title_bar)
         shell_layout.addWidget(self.view_stack, 1)
         self.window_frame.body.addWidget(shell)
         self.setCentralWidget(self.window_frame)
         self._create_project_loading_overlay()
+        self._create_memorial_loading_overlay()
         self._create_sheet_views_updating_dialog()
         self.project_sheet_view_panel = ProjectSheetViewPanel(self)
         self.project_sheet_detail_group_panel = ProjectSheetDetailGroupPanel(self)
@@ -401,6 +418,10 @@ class MainWindow(QMainWindow):
         self.top_icon_palette.reposition()
         self.verification_top_palette = VerificationTopPalette(self)
         self.verification_top_palette.reposition()
+        self.verification_mode_palette = VerificationModePalette(self)
+        self.verification_mode_palette.reposition()
+        self.memorial_top_palette = MemorialTopPalette(self)
+        self.memorial_top_palette.reposition()
         self.member_property_copy_panel = MemberPropertyCopyPanel(self)
         self.selected_action_name: str | None = None
         self.action_top_palette = ActionTopPalette(self)
@@ -842,6 +863,211 @@ class MainWindow(QMainWindow):
         dialog.move(self.geometry().center() - dialog.rect().center())
         dialog.exec()
         self.set_plate_result_display_mode(dialog.selected_plate_result_display_mode)
+
+    def set_verification_memorial_mode(self, active: bool) -> None:
+        """Show the general report preview instead of the verification model."""
+        active = bool(active)
+        self._verification_memorial_mode = active
+        if hasattr(self, "verification_mode_palette"):
+            self.verification_mode_palette.set_memorial_mode(active)
+        if self.view_stack.currentWidget() is self.home:
+            if hasattr(self, "memorial_top_palette"):
+                self.memorial_top_palette.set_memorial_visible(False)
+            return
+        if hasattr(self, "memorial_top_palette"):
+            self.memorial_top_palette.set_memorial_visible(active)
+
+        if active:
+            self.view_stack.setCurrentWidget(self.structure_report_preview)
+            self.verification_top_palette.hide()
+            self.properties.hide()
+            for control in (
+                self.navigation_button,
+                self.sloped_plane_button,
+                self.sloped_plane_right_button,
+                self.previous_plane_button,
+                self.plane_change_button,
+                self.next_plane_button,
+            ):
+                control.hide()
+            self._ensure_structure_report_preview()
+            return
+
+        if self.view_stack.currentWidget() is self.structure_report_preview:
+            self.view_stack.setCurrentWidget(self.scene)
+        self.verification_top_palette.set_verification_visible(
+            self.palette.active_group == "Memorial"
+        )
+        if self.palette.active_group == "Memorial":
+            for control in (
+                self.navigation_button,
+                self.sloped_plane_button,
+                self.sloped_plane_right_button,
+                self.previous_plane_button,
+                self.plane_change_button,
+                self.next_plane_button,
+            ):
+                control.show()
+            self._reposition_navigation_button()
+            self.refresh_selected_property_panel("Memorial")
+
+    def export_structure_report_preview_pdf(self) -> None:
+        """Save the currently displayed general report PDF to a user-selected path."""
+        temporary_directory = self._report_preview_temporary_directory
+        if temporary_directory is None:
+            return
+        if self._structure_report_preview_key() != self._report_preview_key:
+            self._ensure_structure_report_preview()
+            return
+        source = Path(temporary_directory.name) / "Memorial-geral.pdf"
+        suggested_name = f"Laudo - {self.current_path.stem if self.current_path else 'estrutura'}.pdf"
+        suggested_path = (
+            str(self.current_path.with_name(suggested_name))
+            if self.current_path else suggested_name
+        )
+        filename, _selected_filter = QFileDialog.getSaveFileName(
+            self, "Exportar memorial geral", suggested_path, "Arquivo PDF (*.pdf)",
+        )
+        if not filename:
+            return
+        destination = Path(filename)
+        if destination.suffix.lower() != ".pdf":
+            destination = destination.with_suffix(".pdf")
+        try:
+            shutil.copyfile(source, destination)
+        except OSError as error:
+            QMessageBox.warning(
+                self, "Falha ao exportar memorial", f"Não foi possível salvar o PDF.\n\n{error}"
+            )
+            return
+        self.history.append(f"Memorial geral exportado: {escape(str(destination))}")
+        DetailingExportSuccessDialog(self, "Memorial exportado com sucesso").exec()
+
+    def _structure_report_preview_key(self) -> tuple:
+        return (
+            id(self.model),
+            self.model.revision,
+            self.model.view_revision,
+            self.model.calculation_properties_revision,
+            tuple(id(result) for result in getattr(self.model, "analysis_results", ())),
+            tuple(id(result) for result in getattr(self.model, "verification_results", ())),
+            self.current_path.name if self.current_path else "",
+        )
+
+    def _ensure_structure_report_preview(self) -> None:
+        key = self._structure_report_preview_key()
+        if (
+            key == self._report_preview_key
+            and self._report_preview_temporary_directory is not None
+        ):
+            self.structure_report_preview.load_pdf(
+                f"{self._report_preview_temporary_directory.name}/Memorial-geral.pdf"
+            )
+            return
+        if self._report_preview_thread is not None:
+            return
+
+        with self._model_access_lock:
+            snapshot = copy.deepcopy(self.model)
+        self._report_preview_pending_key = key
+        self.structure_report_preview.show_message("Preparando a visualização do memorial…")
+        self._memorial_loading_title.setText("Preparando memorial geral…")
+        self._memorial_loading_description.setText("Gerando a visualização inicial do laudo.")
+        self._memorial_loading_overlay.adjustSize()
+        self._memorial_loading_overlay.move(
+            self.geometry().center() - self._memorial_loading_overlay.rect().center()
+        )
+        self._memorial_loading_overlay.show()
+        self._memorial_loading_overlay.raise_()
+
+        thread = QThread(self)
+        worker = StructureReportPreviewWorker(
+            snapshot,
+            self.current_path.name if self.current_path else "",
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._structure_report_preview_stage)
+        worker.finished.connect(self._structure_report_preview_ready)
+        worker.failed.connect(self._structure_report_preview_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._structure_report_preview_thread_finished)
+        self._report_preview_thread = thread
+        self._report_preview_worker = worker
+        QTimer.singleShot(0, thread.start)
+
+    @Slot(str)
+    def _structure_report_preview_stage(self, message: str) -> None:
+        self._memorial_loading_description.setText(message)
+
+    @Slot(object, str)
+    def _structure_report_preview_ready(self, temporary_directory, pdf_path: str) -> None:
+        self.structure_report_preview.pdf_document.close()
+        if self._report_preview_temporary_directory is not None:
+            self._report_preview_temporary_directory.cleanup()
+        self._report_preview_temporary_directory = temporary_directory
+        error = self.structure_report_preview.load_pdf(pdf_path)
+        if error:
+            self._memorial_loading_overlay.hide()
+            self._report_preview_temporary_directory.cleanup()
+            self._report_preview_temporary_directory = None
+            self._report_preview_key = None
+            return
+        self._report_preview_key = self._report_preview_pending_key
+
+    @Slot()
+    def _structure_report_preview_document_ready(self) -> None:
+        self._memorial_loading_overlay.hide()
+
+    @Slot(str)
+    def _structure_report_preview_failed(self, message: str) -> None:
+        self._memorial_loading_overlay.hide()
+        self.structure_report_preview.show_message(
+            "Não foi possível preparar o memorial geral.\n\n" + message
+        )
+        self._report_preview_key = None
+        if self._report_preview_temporary_directory is not None:
+            self.structure_report_preview.pdf_document.close()
+            self._report_preview_temporary_directory.cleanup()
+            self._report_preview_temporary_directory = None
+
+    @Slot()
+    def _structure_report_preview_thread_finished(self) -> None:
+        thread = self._report_preview_thread
+        self._report_preview_worker = None
+        self._report_preview_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _create_memorial_loading_overlay(self) -> None:
+        overlay = _ProjectLoadingDialog(self)
+        overlay.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        overlay.setModal(True)
+        overlay.setWindowTitle("Preparando memorial")
+        overlay.setStyleSheet(
+            "QDialog { background: #ffffff; border: 1px solid #d0d7de; border-radius: 0px; }"
+        )
+        overlay.setObjectName("memorialLoadingOverlay")
+        layout = QVBoxLayout(overlay)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+        title = QLabel("Preparando memorial geral…", overlay)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 17px; font-weight: 600; color: #24292f; border: 0;")
+        self._memorial_loading_title = title
+        description = QLabel("Gerando a visualização inicial do laudo.", overlay)
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet("font-size: 13px; color: #57606a; border: 0;")
+        description.setWordWrap(True)
+        self._memorial_loading_description = description
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(LoadingIndicator(overlay))
+        overlay.setFixedWidth(400)
+        overlay.hide()
+        self._memorial_loading_overlay = overlay
 
     def set_detailing_project_mode(self, active: bool) -> None:
         """Switch between the detailing model and its blank project sheet view."""
@@ -2594,6 +2820,11 @@ class MainWindow(QMainWindow):
                 sheet_name, dialog.result_settings.get("sheet_number", "01"),
             )
 
+    def open_memorial_settings(self) -> None:
+        dialog = MemorialSettingsDialog(self)
+        dialog.move(self.geometry().center() - dialog.rect().center())
+        dialog.exec()
+
     def open_detailing_views(self) -> None:
         if self._detailing_views_dialog_open:
             return
@@ -4312,6 +4543,10 @@ class MainWindow(QMainWindow):
             self.analysis_top_palette.reposition()
         if hasattr(self, "detailing_top_palette"):
             self.detailing_top_palette.reposition()
+        if hasattr(self, "verification_mode_palette") and self.verification_mode_palette.isVisible():
+            self.verification_mode_palette.reposition()
+        if hasattr(self, "memorial_top_palette") and self.memorial_top_palette.isVisible():
+            self.memorial_top_palette.reposition()
         if hasattr(self, "detailing_mode_palette"):
             self.detailing_mode_palette.reposition()
         if hasattr(self, "project_sheets_palette") and self.project_sheets_palette.isVisible():
@@ -8036,6 +8271,10 @@ class MainWindow(QMainWindow):
             cancel_linework = getattr(self, "_sheet_linework_cancel", None)
             if cancel_linework is not None:
                 cancel_linework.set()
+            self.structure_report_preview.pdf_document.close()
+            if self._report_preview_temporary_directory is not None:
+                self._report_preview_temporary_directory.cleanup()
+                self._report_preview_temporary_directory = None
             self._mcp_dispatcher.suspend()
             self._mcp_server.stop()
             event.accept()
@@ -8072,6 +8311,8 @@ class MainWindow(QMainWindow):
             self.analysis_top_palette,
             self.detailing_top_palette,
             self.detailing_mode_palette,
+            self.verification_mode_palette,
+            self.memorial_top_palette,
             self.project_sheets_palette,
             self.navigation_button,
             self.sloped_plane_button,
@@ -8093,7 +8334,11 @@ class MainWindow(QMainWindow):
     def show_editor(self) -> None:
         """Retorna à cena 3D e restaura seus controles contextuais."""
         self.view_stack.setCurrentWidget(
-            self.project_sheet_workspace if self._detailing_project_mode else self.scene
+            self.project_sheet_workspace
+            if self._detailing_project_mode
+            else self.structure_report_preview
+            if self._verification_memorial_mode and self.palette.active_group == "Memorial"
+            else self.scene
         )
         self.title_bar.set_project_actions_enabled(True)
         for widget in (
@@ -8108,7 +8353,9 @@ class MainWindow(QMainWindow):
             self.command_bar,
         ):
             widget.show()
-        if self._detailing_project_mode:
+        if self._detailing_project_mode or (
+            self._verification_memorial_mode and self.palette.active_group == "Memorial"
+        ):
             for control in (
                 self.navigation_button,
                 self.sloped_plane_button,
@@ -8124,6 +8371,16 @@ class MainWindow(QMainWindow):
             detailing_active and not self._detailing_project_mode
         )
         self.detailing_mode_palette.set_detailing_visible(detailing_active)
+        verification_active = self.palette.active_group == "Memorial"
+        self.verification_mode_palette.set_verification_visible(verification_active)
+        self.memorial_top_palette.set_memorial_visible(
+            verification_active and self._verification_memorial_mode
+        )
+        self.verification_top_palette.set_verification_visible(
+            verification_active and not self._verification_memorial_mode
+        )
+        if verification_active and self._verification_memorial_mode:
+            self._ensure_structure_report_preview()
         if self._detailing_project_mode:
             self.project_sheets_palette.set_project_mode(True)
         else:
